@@ -35,6 +35,26 @@ on:
       - '.github/actions/setup-build-env/**'
       # Build scripts
       - 'build_image_list.sh'
+  push:
+    branches:
+      - "pull-request/[0-9]+"
+    paths:
+      # Container-related files
+      - '**/Dockerfile*'
+      - '**/docker/**'
+      - '**/*.go'
+      - '**/go.mod'
+      - '**/go.sum'
+      - '**/pyproject.toml'
+      - '**/poetry.lock'
+      - '**/*Makefile*'
+      - 'scripts/**'
+      # Workflow files
+      - '.github/workflows/container-build-test.yml'
+      - '.github/actions/build-container/**'
+      - '.github/actions/setup-build-env/**'
+      # Build scripts
+      - 'build_image_list.sh'
   workflow_dispatch:
     inputs:
       components:
@@ -132,6 +152,9 @@ jobs:
       - name: Execute build
         if: steps.should-build.outputs.build == 'true'
         uses: ./.github/actions/build-container
+        env:
+          # Disable registry cache for pull requests to avoid permission issues
+          DISABLE_REGISTRY_CACHE: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
         with:
           safe_ref_name: ${{ needs.prepare-environment.outputs.safe_ref_name }}
           nvcr_container_repo: ${{ needs.prepare-environment.outputs.nvcr_container_repo }}

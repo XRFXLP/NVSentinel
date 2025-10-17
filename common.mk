@@ -29,6 +29,11 @@ SAFE_REF_NAME := $(if $(SAFE_REF_NAME),$(SAFE_REF_NAME),local)
 BUILDX_BUILDER ?= nvsentinel-builder
 PLATFORMS ?= linux/arm64,linux/amd64
 
+# Cache configuration (can be disabled via environment variables)
+DISABLE_REGISTRY_CACHE ?= false
+CACHE_FROM_ARG := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME))
+CACHE_TO_ARG := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME),mode=max)
+
 # Auto-detect current module name from directory
 MODULE_NAME := $(shell basename $(CURDIR))
 
@@ -170,11 +175,12 @@ setup-buildx:
 # Standardized Docker build (always from repo root for consistency)
 docker-build: setup-buildx
 	@echo "Building Docker image for $(MODULE_NAME) (local development)..."
+	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
 	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME) \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME),mode=max \
+		$(CACHE_FROM_ARG) \
+		$(CACHE_TO_ARG) \
 		$(DOCKER_EXTRA_ARGS) \
 		--load \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME) \
@@ -196,11 +202,12 @@ docker-build-local: setup-buildx
 # Standardized Docker publish
 docker-publish: setup-buildx
 	@echo "Building and publishing Docker image for $(MODULE_NAME) (production)..."
+	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
 	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME) \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME),mode=max \
+		$(CACHE_FROM_ARG) \
+		$(CACHE_TO_ARG) \
 		$(DOCKER_EXTRA_ARGS) \
 		--push \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME) \

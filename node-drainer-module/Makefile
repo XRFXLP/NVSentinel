@@ -49,11 +49,12 @@ publish: docker-publish
 # Additional target for CI with registry cache
 docker-build-with-cache: setup-buildx
 	@echo "Building Docker image for $(MODULE_NAME) (with registry cache)..."
+	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
 	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME) \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME),mode=max \
+		$(CACHE_FROM_ARG) \
+		$(CACHE_TO_ARG) \
 		$(DOCKER_EXTRA_ARGS) \
 		--load \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME) \

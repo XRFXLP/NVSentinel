@@ -41,6 +41,12 @@ LINT_EXTRA_FLAGS :=
 
 include ../../common.mk
 
+# Cache configuration for specialized builds (respect DISABLE_REGISTRY_CACHE)
+CACHE_FROM_ARG_DCGM3 := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3)
+CACHE_TO_ARG_DCGM3 := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3,mode=max)
+CACHE_FROM_ARG_DCGM4 := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4)
+CACHE_TO_ARG_DCGM4 := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4,mode=max)
+
 # =============================================================================
 # DEFAULT TARGET
 # =============================================================================
@@ -104,11 +110,12 @@ docker-build: setup-buildx docker-build-dcgm3 docker-build-dcgm4
 
 docker-build-dcgm3: setup-buildx
 	@echo "Building Docker image for $(MODULE_NAME) with DCGM 3.x (local development)..."
+	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
 	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3 \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3,mode=max \
+		$(CACHE_FROM_ARG_DCGM3) \
+		$(CACHE_TO_ARG_DCGM3) \
 		$(DOCKER_EXTRA_ARGS) \
 		--load \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME)-dcgm-3.x \
@@ -119,11 +126,12 @@ docker-build-dcgm3: setup-buildx
 
 docker-build-dcgm4: setup-buildx
 	@echo "Building Docker image for $(MODULE_NAME) with DCGM 4.x (local development)..."
+	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
 	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4 \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4,mode=max \
+		$(CACHE_FROM_ARG_DCGM4) \
+		$(CACHE_TO_ARG_DCGM4) \
 		$(DOCKER_EXTRA_ARGS) \
 		--load \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME)-dcgm-4.x \
@@ -135,11 +143,12 @@ docker-publish: setup-buildx docker-publish-dcgm3 docker-publish-dcgm4
 
 docker-publish-dcgm3: setup-buildx
 	@echo "Building and publishing Docker image for $(MODULE_NAME) with DCGM 3.x (production)..."
+	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
 	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3 \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3,mode=max \
+		$(CACHE_FROM_ARG_DCGM3) \
+		$(CACHE_TO_ARG_DCGM3) \
 		$(DOCKER_EXTRA_ARGS) \
 		--push \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME)-dcgm-3.x \
@@ -150,11 +159,12 @@ docker-publish-dcgm3: setup-buildx
 
 docker-publish-dcgm4: setup-buildx
 	@echo "Building and publishing Docker image for $(MODULE_NAME) with DCGM 4.x (production)..."
+	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
 	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4 \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4,mode=max \
+		$(CACHE_FROM_ARG_DCGM4) \
+		$(CACHE_TO_ARG_DCGM4) \
 		$(DOCKER_EXTRA_ARGS) \
 		--push \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME)-dcgm-4.x \
