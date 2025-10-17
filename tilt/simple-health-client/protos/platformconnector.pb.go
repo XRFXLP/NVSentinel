@@ -25,7 +25,7 @@ import (
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
-	unsafe "unsafe"
+	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
 )
