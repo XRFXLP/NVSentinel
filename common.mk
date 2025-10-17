@@ -1,5 +1,5 @@
 # common.mk - Shared Makefile definitions for all nvsentinel Go modules
-# Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 #
 # This file provides standardized build, test, and Docker patterns for all Go modules
 # in the nvsentinel project. Include this file in individual module Makefiles to
