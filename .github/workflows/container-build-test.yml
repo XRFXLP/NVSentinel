@@ -15,28 +15,9 @@
 name: Container Build Validation
 
 on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      # Container-related files
-      - '**/Dockerfile*'
-      - '**/docker/**'
-      - '**/*.go'
-      - '**/go.mod'
-      - '**/go.sum'
-      - '**/pyproject.toml'
-      - '**/poetry.lock'
-      - '**/*Makefile*'
-      - 'scripts/**'
-      # Workflow files
-      - '.github/workflows/container-build-test.yml'
-      - '.github/actions/build-container/**'
-      - '.github/actions/setup-build-env/**'
-      # Build scripts
-      - 'build_image_list.sh'
   push:
     branches:
+      - main
       - "pull-request/[0-9]+"
     paths:
       # Container-related files
