@@ -33,7 +33,7 @@ Use a DaemonSet with init container pattern to collect GPU metadata via go-nvml 
 
 We can classify the metadata into two categories:
 
-1. **Node-level information**: Node labels, provider ID, annotations
+1. **Node-level information**: Node labels, E/W topology, provider ID, annotations
 2. **Entity-level information**: GPU UUID, PCI addresses, device serial numbers, NVLink topology, Chassis serial number
 
 ### Approach
@@ -50,13 +50,13 @@ Since our health monitors are written in different languages (GPU Health Monitor
 ```
     ┌────────────────────────────────────────────────────────┐
     │  GPU Metadata Collector DaemonSet (per node)           │
-    │                                                         │
+    │                                                        │
     │  Init Container:                                       │
-    │  - Uses go-nvml to collect GPU metadata               │
-    │  - Writes to /var/lib/nvsentinel/                     │
-    │    - gpu_metadata.json (all GPU info + PCI mapping)   │
-    │  - Exits after writing files                          │
-    │                                                         │
+    │  - Uses go-nvml to collect GPU metadata                │
+    │  - Writes to /var/lib/nvsentinel/                      │
+    │    - gpu_metadata.json (all GPU info + PCI mapping)    │
+    │  - Exits after writing files                           │
+    │                                                        │
     │  Main Container: pause (minimal resource usage)        │
     └────────────────────────────────────────────────────────┘
                               │
@@ -110,6 +110,7 @@ Since our health monitors are written in different languages (GPU Health Monitor
                                           │ Provides:           │
                                           │ - Node labels       │
                                           │ - Node annotations  │
+                                          │ - Provider ID       │
                                           └─────────────────────┘
 ```
 
@@ -149,7 +150,6 @@ Since our health monitors are written in different languages (GPU Health Monitor
      - **Network Topology** (from node labels):
        - Availability Zone / Region
        - East/West network segment
-       - Data center location
      - **Provider ID** (from node spec):
        - Cloud provider node identifier (e.g., AWS instance ID, GCP node ID, OCI instance OCID)
        - Useful for correlating with cloud provider APIs
