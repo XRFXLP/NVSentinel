@@ -98,12 +98,12 @@ Since our health monitors are written in different languages (GPU Health Monitor
                     │ Platform Connector  │
                     │                     │
                     │ Augments with:      │
-                    │ - Other labels      │◄────────┐
+                    │ - Other labels      │─────────┐
                     │ - Network topology  │         │
                     │ - Provider ID       │         │
                     └─────────────────────┘         │
                                                     │
-                                          ┌─────────────────────┐
+                                          ┌─────────▼───────────┐
                                           │ Kubernetes API      │
                                           │ Server              │
                                           │                     │
@@ -118,20 +118,19 @@ Since our health monitors are written in different languages (GPU Health Monitor
 
 1. **GPU Metadata Collector DaemonSet** (runs on each GPU node):
    - **Init Container**:
-     - Runs on pod startup
+     - Runs on pod startup (scheduled only once GPU driver is ready via node selector)
      - Uses `go-nvml` library to collect comprehensive GPU metadata
      - Writes single JSON file to `/var/lib/nvsentinel/` (hostPath mount):
        - `gpu_metadata.json` - Complete GPU information (ID, UUID, PCI address, serial number, NVLink topology)
      - Exits after successful write
    - **Main Container**:
-     - Simple `pause` container (or `sleep infinity`)
+     - Simple `pause` container
      - Keeps pod alive with minimal resource usage (~1Mi memory)
-     - Allows kubectl exec for debugging if needed
 
 2. **Health Monitors** (Syslog & GPU):
    - Mount `/var/lib/nvsentinel/` as **read-only** volume from host
    - Detect hardware issues from their respective data sources (dmesg/syslog or DCGM)
-   - Read `gpu_metadata.json` on startup or lazily when needed
+   - Read `gpu_metadata.json` lazily when needed
    - **Syslog Health Monitor** (Go):
      - For XID errors: Has GPU PCI ID from syslog (e.g., `0000:1b:00.0`), looks up GPU UUID
      - For SXID errors: Has NVSwitch PCI + Link ID, uses `nvlinks` array to find which GPU is connected
@@ -243,11 +242,13 @@ chassis_serial = metadata.get("chassis_serial")
 
 ```yaml
 DaemonSet:
-  nodeSelector: nvidia.com/gpu.present=true
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
+    nvsentinel.dgxc.nvidia.com/driver.installed: "true"
   volumes:
     - hostPath: /var/lib/nvsentinel/
   initContainers:
-    - image: ghcr.io/nvidia/nvsentinel/gpu-metadata-collector:v1
+    - image: ghcr.io/nvidia/nvsentinel/metadata-collector:v1
       resources: {cpu: 100m, memory: 128Mi}
   containers:
     - image: gcr.io/google_containers/pause:3.9
