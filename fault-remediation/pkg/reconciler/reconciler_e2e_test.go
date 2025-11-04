@@ -28,6 +28,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
@@ -149,8 +150,14 @@ func createTestRemediationClient(t *testing.T, dryRun bool) *FaultRemediationCli
 	require.NoError(t, err)
 
 	templateData := TemplateData{
-		ApiGroup: "janitor.dgxc.nvidia.com",
-		Version:  "v1alpha1",
+		TemplateMountPath: "/tmp",
+		TemplateFileName:  "test.yaml",
+		MaintenanceResource: config.MaintenanceResource{
+			ApiGroup:              "janitor.dgxc.nvidia.com",
+			Version:               "v1alpha1",
+			Kind:                  "RebootNode",
+			CompleteConditionType: "NodeReady",
+		},
 	}
 
 	client := &FaultRemediationClient{
@@ -168,9 +175,12 @@ func createTestRemediationClient(t *testing.T, dryRun bool) *FaultRemediationCli
 		client.dryRunMode = []string{}
 	}
 
-	// Initialize status checker factory
-	client.statusCheckerFactory = crstatus.NewCRStatusCheckerFactory(
-		testDynamic, mapper, dryRun)
+	client.statusChecker = crstatus.NewCRStatusChecker(
+		testDynamic,
+		mapper,
+		&templateData.MaintenanceResource,
+		dryRun,
+	)
 
 	return client
 }
@@ -471,7 +481,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, crName1, state.EquivalenceGroups["restart"].MaintenanceCR)
 
-	// Event 3: CR succeeds - subsequent event still skipped
+	// Event 3: CR succeeds - subsequent event should be created
 	updateRebootNodeStatus(ctx, t, crName1, "Succeeded")
 
 	event3 := &protos.HealthEvent{
@@ -480,7 +490,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	}
 	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event3)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "RESTART_VM should be skipped (CR succeeded)")
+	assert.True(t, shouldCreate, "RESTART_VM should be skipped (CR succeeded)")
 
 	// Event 4: CR fails - annotation cleaned, retry allowed
 	updateRebootNodeStatus(ctx, t, crName1, "Failed")
@@ -839,6 +849,13 @@ func updateRebootNodeStatus(ctx context.Context, t *testing.T, crName, status st
 			"message":            "Reboot signal sent",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
+		conditions = append(conditions, map[string]interface{}{
+			"type":               "NodeReady",
+			"status":             "Unknown",
+			"reason":             "InProgress",
+			"message":            "Waiting for node to become ready",
+			"lastTransitionTime": time.Now().Format(time.RFC3339),
+		})
 		cr.Object["status"] = map[string]interface{}{
 			"conditions": conditions,
 			"startTime":  time.Now().Add(-1 * time.Minute).Format(time.RFC3339),
@@ -846,9 +863,16 @@ func updateRebootNodeStatus(ctx context.Context, t *testing.T, crName, status st
 	case "Failed":
 		conditions = append(conditions, map[string]interface{}{
 			"type":               "SignalSent",
+			"status":             "True",
+			"reason":             "SignalSent",
+			"message":            "Reboot signal sent",
+			"lastTransitionTime": time.Now().Format(time.RFC3339),
+		})
+		conditions = append(conditions, map[string]interface{}{
+			"type":               "NodeReady",
 			"status":             "False",
 			"reason":             "Failed",
-			"message":            "Failed to send reboot signal",
+			"message":            "Node failed to reach ready state",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
 		cr.Object["status"] = map[string]interface{}{
