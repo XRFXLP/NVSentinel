@@ -170,7 +170,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	ctx context.Context,
 	healthEventDoc *HealthEventDoc,
 ) (bool, string) {
-	healthEvent := healthEventDoc.HealthEventWithStatus.HealthEvent
+	healthEvent := healthEventDoc.HealthEvent
 	healthEventID := healthEventDoc.ID.Hex()
 
 	// Generate CR name
@@ -355,9 +355,12 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 				log.Printf("Log collector job %s completed successfully", created.Name)
 				// Use job's actual duration instead of custom tracking
 				duration := job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
+
 				logCollectorJobs.WithLabelValues(nodeName, "success").Inc()
 				logCollectorJobDuration.WithLabelValues(nodeName, "success").Observe(duration)
+
 				done <- nil
+
 				return
 			}
 
@@ -371,10 +374,12 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 				} else {
 					duration = time.Since(job.Status.StartTime.Time).Seconds()
 				}
+
 				logCollectorJobs.WithLabelValues(nodeName, "failure").Inc()
 				logCollectorJobDuration.WithLabelValues(nodeName, "failure").Observe(duration)
-				logCollectorErrors.WithLabelValues("job_failed", nodeName).Inc()
+
 				done <- fmt.Errorf("log collector job %s failed", created.Name)
+
 				return
 			}
 		},

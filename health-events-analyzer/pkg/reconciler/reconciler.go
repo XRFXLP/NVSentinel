@@ -350,6 +350,7 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 							}},
 						}
 					}
+
 					return conditions
 				}()},
 			}},

@@ -75,6 +75,7 @@ func (r *Reconciler) Shutdown() {
 func (r *Reconciler) ProcessEvent(ctx context.Context,
 	event bson.M, collection queue.MongoCollectionAPI, nodeName string) error {
 	start := time.Now()
+
 	defer func() {
 		metrics.EventHandlingDuration.Observe(time.Since(start).Seconds())
 	}()

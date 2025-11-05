@@ -124,7 +124,6 @@ func (m *NodeAnnotationManager) GetRemediationState(
 
 		return nil
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node %s: %w", nodeName, err)
 	}
@@ -154,7 +153,6 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 	group string, crName string) error {
 	// Get current state
 	state, err := m.GetRemediationState(ctx, nodeName)
-
 	if err != nil {
 		// Log but continue with empty state
 		slog.Warn("Failed to get current remediation state", "node", nodeName, "error", err)

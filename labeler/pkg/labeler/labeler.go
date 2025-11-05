@@ -106,6 +106,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 				if app, exists := pod.Labels["app"]; exists && app == dcgmApp {
 					return []string{pod.Spec.NodeName}, nil
 				}
+
 				return []string{}, nil
 			},
 			NodeDriverIndex: func(obj any) ([]string, error) {
@@ -117,6 +118,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 				if app, exists := pod.Labels["app"]; exists && app == driverApp {
 					return []string{pod.Spec.NodeName}, nil
 				}
+
 				return []string{}, nil
 			},
 		})
@@ -171,6 +173,7 @@ func (l *Labeler) registerPodEventHandlers() error {
 			},
 			UpdateFunc: func(oldObj, newObj any) {
 				oldPod, oldOk := oldObj.(*v1.Pod)
+
 				newPod, newOk := newObj.(*v1.Pod)
 				if !oldOk || !newOk {
 					slog.Error("Failed to cast objects to pods in UpdateFunc")
@@ -178,6 +181,7 @@ func (l *Labeler) registerPodEventHandlers() error {
 				}
 
 				oldReady := podutil.IsPodReady(oldPod)
+
 				newReady := podutil.IsPodReady(newPod)
 				if oldReady == newReady {
 					slog.Debug("Pod readiness unchanged", "pod", newPod.Name, "ready", newReady)
@@ -433,7 +437,6 @@ func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expected
 
 		return err
 	})
-
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
 		return fmt.Errorf("failed to reconcile node labeling for %s: %w", nodeName, err)
@@ -486,7 +489,6 @@ func (l *Labeler) updateKataLabel(nodeName, expectedKataLabel string) error {
 
 		return err
 	})
-
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
 		return fmt.Errorf("failed to update kata label for %s: %w", nodeName, err)
@@ -499,6 +501,7 @@ func (l *Labeler) updateKataLabel(nodeName, expectedKataLabel string) error {
 // after excluding the deleted pod from consideration
 func (l *Labeler) handlePodDeleteEvent(obj any) error {
 	startTime := time.Now()
+
 	defer func() {
 		metrics.EventHandlingDuration.Observe(time.Since(startTime).Seconds())
 	}()
@@ -526,6 +529,7 @@ func (l *Labeler) handlePodDeleteEvent(obj any) error {
 // handlePodEvent processes all pod events (add, update) idempotently
 func (l *Labeler) handlePodEvent(obj any) error {
 	startTime := time.Now()
+
 	defer func() {
 		metrics.EventHandlingDuration.Observe(time.Since(startTime).Seconds())
 	}()
