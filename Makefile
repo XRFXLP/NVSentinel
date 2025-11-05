@@ -48,6 +48,7 @@ GO_MODULES := \
 	node-drainer \
 	fault-remediation \
 	janitor \
+	metadata-collector \
 	store-client \
 	commons
 
@@ -434,6 +435,12 @@ lint-test-store-client:
 lint-test-commons:
 	@echo "Linting and testing commons..."
 	$(MAKE) -C commons lint-test
+
+.PHONY: lint-test-metadata-collector
+lint-test-metadata-collector:
+	@echo "Building and testing metadata-collector ..."
+	$(MAKE) -C metadata-collector build
+	$(MAKE) -C metadata-collector test
 
 # Python module lint-test targets (non-health-monitors)
 # Currently no non-health-monitor Python modules
