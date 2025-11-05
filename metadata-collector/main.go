@@ -37,11 +37,18 @@ func main() {
 	logger.SetDefaultStructuredLogger(defaultAgentName, version)
 	slog.Info("Starting metadata-collector", "version", version, "commit", commit, "date", date)
 
-	ret := nvml.Init()
-	if ret != nvml.SUCCESS {
-		slog.Error("Failed to initialize NVML", "error", nvml.ErrorString(ret))
+	if err := run(); err != nil {
+		slog.Error("Metadata collector failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+func run() error {
+	ret := nvml.Init()
+	if ret != nvml.SUCCESS {
+		return fmt.Errorf("failed to initialize NVML: %v", nvml.ErrorString(ret))
+	}
+
 	defer func() {
 		ret := nvml.Shutdown()
 		if ret != nvml.SUCCESS {
@@ -51,8 +58,7 @@ func main() {
 
 	count, ret := nvml.DeviceGetCount()
 	if ret != nvml.SUCCESS {
-		slog.Error("Failed to get device count", "error", nvml.ErrorString(ret))
-		os.Exit(1)
+		return fmt.Errorf("failed to get device count: %v", nvml.ErrorString(ret))
 	}
 
 	hostname, _ := os.Hostname()
@@ -68,6 +74,7 @@ func main() {
 	fmt.Printf("GPUs Found: %d\n", count)
 
 	fmt.Println("\n=== GPU Details ===")
+
 	for i := range count {
 		device, ret := nvml.DeviceGetHandleByIndex(i)
 		if ret != nvml.SUCCESS {
@@ -86,4 +93,6 @@ func main() {
 	}
 
 	slog.Info("Metadata collector hello world completed successfully")
+
+	return nil
 }
