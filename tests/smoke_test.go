@@ -146,7 +146,7 @@ func TestFatalHealthEvent(t *testing.T) {
 		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
 		assert.Equal(t, "True", string(nodeCondition.Status))
 		assert.Equal(t, "GpuXidErrorIsNotHealthy", nodeCondition.Reason)
-		assert.Equal(t, "ErrorCode:79 gpu:0 XID error occurred Recommended Action=RESTART_VM;", nodeCondition.Message)
+		assert.Equal(t, "ErrorCode:79 GPU:0 XID error occurred Recommended Action=RESTART_VM;", nodeCondition.Message)
 
 		return ctx
 	})
@@ -343,7 +343,7 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
 		assert.Equal(t, "True", string(nodeCondition.Status))
 		assert.Equal(t, "GpuXidErrorIsNotHealthy", nodeCondition.Reason)
-		assert.Equal(t, "ErrorCode:145 gpu:0 XID error occurred Recommended Action=CONTACT_SUPPORT;", nodeCondition.Message)
+		assert.Equal(t, "ErrorCode:145 GPU:0 XID error occurred Recommended Action=CONTACT_SUPPORT;", nodeCondition.Message)
 
 		return ctx
 	})

@@ -432,6 +432,9 @@ func DeleteAllRebootNodeCRs(ctx context.Context, t *testing.T, c klient.Client) 
 func DeleteRebootNodeCR(ctx context.Context, c klient.Client, rebootNode *unstructured.Unstructured) error {
 	err := c.Resources().Delete(ctx, rebootNode)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("failed to delete RebootNode CR %s: %w", rebootNode.GetName(), err)
 	}
 
@@ -1254,4 +1257,48 @@ func PortForwardPod(ctx context.Context, restConfig *rest.Config, namespace, pod
 	}()
 
 	return stopChan, readyChan
+}
+
+// WaitForNodeConditionWithCheckName waits for the node to have a condition with the reason as checkName.
+func WaitForNodeConditionWithCheckName(ctx context.Context, t *testing.T, c klient.Client, nodeName, checkName, message string) {
+	require.Eventually(t, func() bool {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			t.Logf("failed to get node %s: %v", nodeName, err)
+			return false
+		}
+
+		for _, condition := range node.Status.Conditions {
+			if condition.Status == v1.ConditionTrue && condition.Reason == checkName+"IsNotHealthy" && message == condition.Message {
+				t.Logf("Found node condition: Type=%s, Reason=%s, Status=%s, Message=%s",
+					condition.Type, condition.Reason, condition.Status, condition.Message)
+				return true
+			}
+		}
+
+		t.Logf("Node %s does not have a condition with check name '%s'", nodeName, checkName)
+		return false
+	}, EventuallyWaitTimeout, WaitInterval, "node %s should have a condition with check name %s", nodeName, checkName)
+}
+
+// EnsureNodeConditionNotPresent ensures that the node does NOT have a condition with the reason as checkName.
+func EnsureNodeConditionNotPresent(ctx context.Context, t *testing.T, c klient.Client, nodeName, checkName string) {
+	require.Never(t, func() bool {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			t.Logf("failed to get node %s: %v", nodeName, err)
+			return false
+		}
+
+		for _, condition := range node.Status.Conditions {
+			if condition.Status == v1.ConditionTrue && condition.Reason == checkName+"IsNotHealthy" {
+				t.Logf("ERROR: Found unexpected node condition: Type=%s, Reason=%s, Status=%s, Message=%s",
+					condition.Type, condition.Reason, condition.Status, condition.Message)
+				return true
+			}
+		}
+
+		t.Logf("Node %s correctly does not have a condition with check name '%s'", nodeName, checkName)
+		return false
+	}, NeverWaitTimeout, WaitInterval, "node %s should NOT have a condition with check name %s", nodeName, checkName)
 }

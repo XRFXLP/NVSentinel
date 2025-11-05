@@ -21,7 +21,7 @@ image:
 
 podAnnotations: {}
 
-resources: 
+resources:
   limits:
     cpu: "1"
     memory: "1Gi"
@@ -33,25 +33,14 @@ logLevel: info
 
 config: |
   [[rules]]
-  name = "Rule1"
-  description = "Detect occurrence of XID13 -> XID31 within 30 minutes"
-  time_window = "30m"
-  recommended_action = "COMPONENT_RESET"
-  
-  [[rules.sequence]]
-  criteria = { "healthevent.entitiesimpacted.0.entitytype" = "GPU", "healthevent.entitiesimpacted.0.entityvalue" = "this.healthevent.entitiesimpacted.0.entityvalue", "healthevent.errorcode.0" = "13", "healthevent.nodename" = "this.healthevent.nodename" }
-  errorCount = 1
-  
-  [[rules.sequence]]
-  criteria = { "healthevent.entitiesimpacted.0.entitytype" = "GPU", "healthevent.entitiesimpacted.0.entityvalue" = "this.healthevent.entitiesimpacted.0.entityvalue", "healthevent.errorcode.0" = "31", "healthevent.nodename" = "this.healthevent.nodename" }
-  errorCount = 1
-
-  [[rules]]
-  name = "Rule2"
-  description = "Detect occurrence of XID13 3 times within 30 minutes"
-  time_window = "30m"
+  # The node condition for this rule needs to be removed manually because health-events-analyzer does not publish healthy events to clear it.
+  # Please run the command below to remove the node condition:
+  # kubectl get node <NODE_NAME> -o json | jq '.status.conditions |= map(select(.type != "MultipleRemediations"))' | kubectl replace -f - --subresource=status
+  name = "MultipleRemediations"
+  description = "Detect if multiple remediations are performed within 7 days on a node"
+  time_window = "168h"
   recommended_action = "CONTACT_SUPPORT"
 
   [[rules.sequence]]
-  criteria = { "healthevent.entitiesimpacted.0.entitytype" = "GPU", "healthevent.entitiesimpacted.0.entityvalue" = "this.healthevent.entitiesimpacted.0.entityvalue", "healthevent.errorcode.0" = "13", "healthevent.nodename" = "this.healthevent.nodename" }
-  errorCount = 3 
+  criteria = {"healtheventstatus.faultremediated" = true, "healthevent.nodename" = "this.healthevent.nodename", "healthevent.isfatal" = "this.healthevent.isfatal"}
+  errorCount = 5
