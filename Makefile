@@ -438,9 +438,8 @@ lint-test-commons:
 
 .PHONY: lint-test-metadata-collector
 lint-test-metadata-collector:
-	@echo "Building and testing metadata-collector ..."
-	$(MAKE) -C metadata-collector build
-	$(MAKE) -C metadata-collector test
+	@echo "Linting and testing metadata-collector..."
+	$(MAKE) -C metadata-collector lint-test
 
 # Python module lint-test targets (non-health-monitors)
 # Currently no non-health-monitor Python modules

@@ -137,6 +137,7 @@ jobs:
           - health-events-analyzer
           - fault-quarantine
           - labeler
+          - metadata-collector
           - node-drainer
           - fault-remediation
           - janitor

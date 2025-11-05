@@ -1,42 +1,41 @@
-# Metadata Collector Makefile (Bootstrap)
+# metadata-collector Makefile
+
 # Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 
-GO := go
+# =============================================================================
+# MODULE-SPECIFIC CONFIGURATION
+# =============================================================================
+
+IS_GO_MODULE := 1
+HAS_DOCKER := 1
+
+# Override CGO setting for NVML
+export CGO_ENABLED := 1
+
+# =============================================================================
+# INCLUDE SHARED DEFINITIONS
+# =============================================================================
+
+include ../make/common.mk
+include ../make/go.mk
+include ../make/docker.mk
+
+# =============================================================================
+# DEFAULT TARGET
+# =============================================================================
 
 .PHONY: all
-all: build
+all: lint-test
 
-.PHONY: build
-build:
-	@echo "Building metadata-collector with CGO..."
-	CGO_ENABLED=1 $(GO) build .
-
-.PHONY: test
-test:
-	@echo "Running tests..."
-	$(GO) test -v ./...
-
-.PHONY: clean
-clean:
-	@echo "Cleaning..."
-	$(GO) clean
-	rm -f metadata-collector
-
-DOCKER_IMAGE := ghcr.io/nvidia/nvsentinel/metadata-collector
-DOCKER_TAG := latest
-
-.PHONY: docker-build
-docker-build:
-	@echo "Building Docker image $(DOCKER_IMAGE):$(DOCKER_TAG)..."
-	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
-
-.PHONY: docker-publish
-docker-publish:
-	@echo "Building and publishing Docker image $(DOCKER_IMAGE):$(DOCKER_TAG)..."
-	docker buildx build --platform linux/amd64,linux/arm64 --push -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+# =============================================================================
+# MODULE HELP
+# =============================================================================
 
 .PHONY: help
 help:
-	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+	@echo "metadata-collector Makefile - Using nvsentinel make/*.mk standards"
+	@echo ""
+	@echo "Main targets: all, lint-test, ci-test, build, test, lint, clean"
+	@echo "Docker targets: docker, docker-build, docker-publish"
 
 
