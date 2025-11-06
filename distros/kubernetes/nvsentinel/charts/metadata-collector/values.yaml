@@ -23,10 +23,6 @@ pauseImage:
 
 podAnnotations: {}
 
-# Specify a runtimeClassName to use (e.g., nvidia, runc, kata-vm-isolation)
-# Leave empty to use cluster default
-runtimeClassName: ""
-
 resources: 
   limits:
     cpu: 500m
