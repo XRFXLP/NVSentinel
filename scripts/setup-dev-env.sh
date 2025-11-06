@@ -180,7 +180,7 @@ if ! command_exists yq; then
             exit 1
         fi
     elif [[ "${OS}" == "linux" ]]; then
-        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${ARCH}
+        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_"${ARCH}"
         sudo chmod +x /usr/local/bin/yq
     fi
     
@@ -300,10 +300,10 @@ if [[ "${SKIP_PYTHON}" == "false" ]]; then
         
         if prompt_continue; then
             if [[ "${OS}" == "darwin" ]]; then
-                pip3 install poetry==${POETRY_VERSION}
+                pip3 install poetry=="${POETRY_VERSION}"
             elif [[ "${OS}" == "linux" ]]; then
-                python3 -m pip install --break-system-packages poetry==${POETRY_VERSION} || \
-                    python3 -m pip install --user poetry==${POETRY_VERSION}
+                python3 -m pip install --break-system-packages poetry=="${POETRY_VERSION}" || \
+                    python3 -m pip install --user poetry=="${POETRY_VERSION}"
             fi
             log_success "Poetry installed"
         fi
@@ -316,7 +316,7 @@ if [[ "${SKIP_PYTHON}" == "false" ]]; then
 
         if [[ "${BLACK_INSTALLED}" != "${BLACK_VERSION}"* ]]; then
             log_warning "Black version mismatch (current: ${BLACK_INSTALLED}, target: ${BLACK_VERSION})"
-            log_info "Consider updating: pip install --upgrade black==${PBLACK_VERSION}"
+            log_info "Consider updating: pip install --upgrade black==${BLACK_VERSION}"
         fi
     else
         log_warning "Black not found"
@@ -324,10 +324,10 @@ if [[ "${SKIP_PYTHON}" == "false" ]]; then
 
         if prompt_continue; then
             if [[ "${OS}" == "darwin" ]]; then
-                pip3 install black==${BLACK_VERSION}
+                pip3 install black=="${BLACK_VERSION}"
             elif [[ "${OS}" == "linux" ]]; then
-                python3 -m pip install --break-system-packages black==${BLACK_VERSION} || \
-                    python3 -m pip install --user black==${BLACK_VERSION}
+                python3 -m pip install --break-system-packages black=="${BLACK_VERSION}" || \
+                    python3 -m pip install --user black=="${BLACK_VERSION}"
             fi
             log_success "Black installed"
         fi
@@ -399,7 +399,7 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
         fi
     fi
     
-    # shellcheck
+    # Install shellcheck
     if command_exists shellcheck; then
         log_success "shellcheck already installed: $(shellcheck --version | head -2 | tail -1)"
     else
@@ -464,7 +464,7 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
             if [[ "${OS}" == "darwin" ]]; then
                 brew install tilt-dev/tap/ctlptl
             elif [[ "${OS}" == "linux" ]]; then
-                go install github.com/tilt-dev/ctlptl/cmd/ctlptl@v${CTLPTL_VERSION}
+                go install github.com/tilt-dev/ctlptl/cmd/ctlptl@v"${CTLPTL_VERSION}"
                 sudo cp "$(go env GOPATH)/bin/ctlptl" /usr/local/bin/
             fi
             log_success "ctlptl installed"
@@ -497,8 +497,8 @@ if [[ "${SKIP_TOOLS}" == "false" ]] && command_exists go; then
     log_info "  protoc-gen-go-grpc: ${PROTOC_GEN_GO_GRPC_VERSION}"
     
     if prompt_continue; then
-        go install google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION}
-        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}
+        go install google.golang.org/protobuf/cmd/protoc-gen-go@"${PROTOC_GEN_GO_VERSION}"
+        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@"${PROTOC_GEN_GO_GRPC_VERSION}"
         log_success "Go protobuf/gRPC tools installed"
     fi
     
