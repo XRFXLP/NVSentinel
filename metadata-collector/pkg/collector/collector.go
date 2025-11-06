@@ -22,8 +22,8 @@ import (
 	"time"
 
 	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/types"
 )
 
 type Collector struct {
@@ -36,7 +36,7 @@ func NewCollector(nvmlWrapper *nvml.NVMLWrapper) *Collector {
 	}
 }
 
-func (c *Collector) Collect() (*types.GPUMetadata, error) {
+func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
 	count, err := c.nvml.GetDeviceCount()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GPU device count: %w", err)
@@ -47,26 +47,28 @@ func (c *Collector) Collect() (*types.GPUMetadata, error) {
 		return nil, fmt.Errorf("failed to get hostname: %w", err)
 	}
 
-	deviceMap, parsedTopology, err := c.prepareTopologyData()
+	deviceMap, parsedTopology, err := c.prepareTopologyData(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to prepare topology data: %w", err)
 	}
 
-	metadata := &types.GPUMetadata{
+	metadata := &model.GPUMetadata{
 		Version:   "1.0",
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		NodeName:  nodeName,
-		GPUs:      make([]types.GPUInfo, 0, count),
+		GPUs:      make([]model.GPUInfo, 0, count),
 	}
 
 	if err := c.collectGPUData(count, metadata, deviceMap, parsedTopology); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to collect GPU data: %w", err)
 	}
 
 	return metadata, nil
 }
 
-func (c *Collector) prepareTopologyData() (map[string]gonvml.Device, map[int]nvml.GPUNVLinkTopology, error) {
+func (c *Collector) prepareTopologyData(
+	ctx context.Context,
+) (map[string]gonvml.Device, map[int]nvml.GPUNVLinkTopology, error) {
 	slog.Info("Building device map for NVLink topology discovery")
 
 	deviceMap, err := c.nvml.BuildDeviceMap()
@@ -76,7 +78,7 @@ func (c *Collector) prepareTopologyData() (map[string]gonvml.Device, map[int]nvm
 
 	slog.Info("Parsing NVLink topology from nvidia-smi")
 
-	parsedTopology, err := c.nvml.ParseNVLinkTopologyWithContext(context.Background())
+	parsedTopology, err := c.nvml.ParseNVLinkTopologyWithContext(ctx)
 	if err != nil {
 		slog.Warn("Failed to parse nvidia-smi topology, remote link IDs will be -1", "error", err)
 
@@ -88,7 +90,7 @@ func (c *Collector) prepareTopologyData() (map[string]gonvml.Device, map[int]nvm
 
 func (c *Collector) collectGPUData(
 	count int,
-	metadata *types.GPUMetadata,
+	metadata *model.GPUMetadata,
 	deviceMap map[string]gonvml.Device,
 	parsedTopology map[int]nvml.GPUNVLinkTopology,
 ) error {

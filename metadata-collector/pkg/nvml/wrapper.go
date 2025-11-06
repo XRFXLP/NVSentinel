@@ -21,47 +21,10 @@ import (
 	"strings"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/types"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 )
 
 type NVMLWrapper struct{}
-
-func (w *NVMLWrapper) BuildDeviceMap() (map[string]nvml.Device, error) {
-	count, err := w.GetDeviceCount()
-	if err != nil {
-		return nil, err
-	}
-
-	deviceMap := make(map[string]nvml.Device)
-
-	for i := range count {
-		device, ret := nvml.DeviceGetHandleByIndex(i)
-		if ret != nvml.SUCCESS {
-			slog.Warn("Failed to get device handle", "index", i, "error", nvml.ErrorString(ret))
-			continue
-		}
-
-		pciInfo, ret := device.GetPciInfo()
-		if ret != nvml.SUCCESS {
-			slog.Warn("Failed to get PCI info for device", "index", i, "error", nvml.ErrorString(ret))
-			continue
-		}
-
-		pciStr := convertNVMLCString(pciInfo.BusIdLegacy)
-		normalizedPCI := normalizePCIAddress(pciStr)
-		deviceMap[normalizedPCI] = device
-
-		slog.Debug("Added device to map", "index", i, "pci", normalizedPCI)
-	}
-
-	slog.Info("Built device map", "device_count", len(deviceMap))
-
-	return deviceMap, nil
-}
-
-func (w *NVMLWrapper) ParseNVLinkTopologyWithContext(ctx context.Context) (map[int]GPUNVLinkTopology, error) {
-	return ParseNVLinkTopology(ctx)
-}
 
 func (w *NVMLWrapper) Init() error {
 	ret := nvml.Init()
@@ -90,15 +53,15 @@ func (w *NVMLWrapper) GetDeviceCount() (int, error) {
 	return count, nil
 }
 
-func (w *NVMLWrapper) GetGPUInfo(index int) (*types.GPUInfo, error) {
+func (w *NVMLWrapper) GetGPUInfo(index int) (*model.GPUInfo, error) {
 	device, ret := nvml.DeviceGetHandleByIndex(index)
 	if ret != nvml.SUCCESS {
 		return nil, fmt.Errorf("failed to get device handle for GPU %d: %v", index, nvml.ErrorString(ret))
 	}
 
-	gpuInfo := &types.GPUInfo{
+	gpuInfo := &model.GPUInfo{
 		GPUID:   index,
-		NVLinks: make([]types.NVLink, 0),
+		NVLinks: make([]model.NVLink, 0),
 	}
 
 	uuid, ret := device.GetUUID()
@@ -152,6 +115,43 @@ func (w *NVMLWrapper) GetChassisSerial(index int) *string {
 	}
 
 	return &chassisSerial
+}
+
+func (w *NVMLWrapper) BuildDeviceMap() (map[string]nvml.Device, error) {
+	count, err := w.GetDeviceCount()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get device count: %w", err)
+	}
+
+	deviceMap := make(map[string]nvml.Device)
+
+	for i := range count {
+		device, ret := nvml.DeviceGetHandleByIndex(i)
+		if ret != nvml.SUCCESS {
+			slog.Warn("Failed to get device handle", "index", i, "error", nvml.ErrorString(ret))
+			continue
+		}
+
+		pciInfo, ret := device.GetPciInfo()
+		if ret != nvml.SUCCESS {
+			slog.Warn("Failed to get PCI info for device", "index", i, "error", nvml.ErrorString(ret))
+			continue
+		}
+
+		pciStr := convertNVMLCString(pciInfo.BusIdLegacy)
+		normalizedPCI := normalizePCIAddress(pciStr)
+		deviceMap[normalizedPCI] = device
+
+		slog.Debug("Added device to map", "index", i, "pci", normalizedPCI)
+	}
+
+	slog.Info("Built device map", "device_count", len(deviceMap))
+
+	return deviceMap, nil
+}
+
+func (w *NVMLWrapper) ParseNVLinkTopologyWithContext(ctx context.Context) (map[int]GPUNVLinkTopology, error) {
+	return DetectNVLinkTopology(ctx)
 }
 
 func convertNVMLCString(busID [16]uint8) string {

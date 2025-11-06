@@ -20,7 +20,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/types"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWriterAtomicWrite(t *testing.T) {
@@ -28,44 +29,34 @@ func TestWriterAtomicWrite(t *testing.T) {
 	outputPath := filepath.Join(tmpDir, "metadata.json")
 
 	w, err := NewWriter(outputPath)
-	if err != nil {
-		t.Fatalf("Failed to create writer: %v", err)
-	}
+	require.NoError(t, err, "Failed to create writer")
 
-	metadata := &types.GPUMetadata{
+	metadata := &model.GPUMetadata{
 		Version:    "1.0",
 		Timestamp:  "2025-11-05T12:00:00Z",
 		NodeName:   "test-node",
-		GPUs:       []types.GPUInfo{},
+		GPUs:       []model.GPUInfo{},
 		NVSwitches: []string{},
 	}
 
-	if err := w.Write(metadata); err != nil {
-		t.Fatalf("Failed to write metadata: %v", err)
-	}
+	err = w.Write(metadata)
+	require.NoError(t, err, "Failed to write metadata")
 
-	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-		t.Fatalf("Output file was not created")
-	}
+	_, err = os.Stat(outputPath)
+	require.NoError(t, err, "Output file was not created")
 
 	tmpPath := outputPath + ".tmp"
-	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
-		t.Errorf("Temporary file was not cleaned up")
-	}
+	_, err = os.Stat(tmpPath)
+	require.True(t, os.IsNotExist(err), "Temporary file was not cleaned up")
 
 	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("Failed to read output file: %v", err)
-	}
+	require.NoError(t, err, "Failed to read output file")
 
-	var readMetadata types.GPUMetadata
-	if err := json.Unmarshal(data, &readMetadata); err != nil {
-		t.Fatalf("Failed to unmarshal metadata: %v", err)
-	}
+	var readMetadata model.GPUMetadata
+	err = json.Unmarshal(data, &readMetadata)
+	require.NoError(t, err, "Failed to unmarshal metadata")
 
-	if readMetadata.Version != metadata.Version {
-		t.Errorf("Version mismatch: got %s, want %s", readMetadata.Version, metadata.Version)
-	}
+	require.Equal(t, metadata.Version, readMetadata.Version, "Version mismatch")
 }
 
 func TestWriterCreateDirectory(t *testing.T) {
@@ -73,23 +64,19 @@ func TestWriterCreateDirectory(t *testing.T) {
 	outputPath := filepath.Join(tmpDir, "subdir", "metadata.json")
 
 	w, err := NewWriter(outputPath)
-	if err != nil {
-		t.Fatalf("Failed to create writer: %v", err)
-	}
+	require.NoError(t, err, "Failed to create writer")
 
-	metadata := &types.GPUMetadata{
+	metadata := &model.GPUMetadata{
 		Version:    "1.0",
 		Timestamp:  "2025-11-05T12:00:00Z",
 		NodeName:   "test-node",
-		GPUs:       []types.GPUInfo{},
+		GPUs:       []model.GPUInfo{},
 		NVSwitches: []string{},
 	}
 
-	if err := w.Write(metadata); err != nil {
-		t.Fatalf("Failed to write metadata: %v", err)
-	}
+	err = w.Write(metadata)
+	require.NoError(t, err, "Failed to write metadata")
 
-	if _, err := os.Stat(filepath.Join(tmpDir, "subdir")); os.IsNotExist(err) {
-		t.Errorf("Output directory was not created")
-	}
+	_, err = os.Stat(filepath.Join(tmpDir, "subdir"))
+	require.NoError(t, err, "Output directory was not created")
 }

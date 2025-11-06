@@ -24,12 +24,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/types"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 )
 
 type GPUNVLinkTopology struct {
 	GPUID       int
-	Connections []types.NVLink
+	Connections []model.NVLink
 }
 
 var (
@@ -37,8 +37,8 @@ var (
 	linkPattern      = regexp.MustCompile(`^\s*Link (\d+):\s+Remote Device\s+([0-9a-fA-F:\.]+):\s+Link\s+(\d+)`)
 )
 
-func ParseNVLinkTopology(ctx context.Context) (map[int]GPUNVLinkTopology, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+func DetectNVLinkTopology(ctx context.Context) (map[int]GPUNVLinkTopology, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "nvidia-smi", "nvlink", "-R")
@@ -55,33 +55,32 @@ func parseNVLinkOutput(output string) (map[int]GPUNVLinkTopology, error) {
 	topology := make(map[int]GPUNVLinkTopology)
 	lines := strings.Split(output, "\n")
 
-	var currentGPUID int
+	currentGPUID := -1
 
-	var currentConnections []types.NVLink
-
-	gpuFound := false
+	var currentConnections []model.NVLink
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 
-		if gpuID, isGPUHeader := parseGPUHeader(line); isGPUHeader {
-			if gpuFound {
+		// GPU 3: NVIDIA A100-SXM4-80GB (UUID: GPU-0df17138-4661-76d1-a4ef-9aa0857f7941)
+		if gpuID, ok := parseGPUHeader(line); ok {
+			if currentGPUID != -1 {
 				saveGPUTopology(topology, currentGPUID, currentConnections)
 			}
 
 			currentGPUID = gpuID
-			currentConnections = make([]types.NVLink, 0)
-			gpuFound = true
+			currentConnections = make([]model.NVLink, 0)
 
 			continue
 		}
 
-		if connection, isLink := parseLinkLine(line); isLink && gpuFound {
+		// Link 0: Remote Device 00000008:00:00.0: Link 34
+		if connection, ok := parseLinkLine(line); ok && currentGPUID != -1 {
 			currentConnections = append(currentConnections, connection)
 		}
 	}
 
-	if gpuFound {
+	if currentGPUID != -1 {
 		saveGPUTopology(topology, currentGPUID, currentConnections)
 	}
 
@@ -107,16 +106,16 @@ func parseGPUHeader(line string) (int, bool) {
 	return gpuID, true
 }
 
-func parseLinkLine(line string) (types.NVLink, bool) {
+func parseLinkLine(line string) (model.NVLink, bool) {
 	matches := linkPattern.FindStringSubmatch(line)
 	if matches == nil {
-		return types.NVLink{}, false
+		return model.NVLink{}, false
 	}
 
 	localLink, err := strconv.Atoi(matches[1])
 	if err != nil {
 		slog.Warn("Invalid local link ID", "link_id_str", matches[1])
-		return types.NVLink{}, false
+		return model.NVLink{}, false
 	}
 
 	remotePCI := normalizePCIAddress(matches[2])
@@ -124,17 +123,17 @@ func parseLinkLine(line string) (types.NVLink, bool) {
 	remoteLink, err := strconv.Atoi(matches[3])
 	if err != nil {
 		slog.Warn("Invalid remote link ID", "link_id_str", matches[3])
-		return types.NVLink{}, false
+		return model.NVLink{}, false
 	}
 
-	return types.NVLink{
+	return model.NVLink{
 		LinkID:           localLink,
 		RemotePCIAddress: remotePCI,
 		RemoteLinkID:     remoteLink,
 	}, true
 }
 
-func saveGPUTopology(topology map[int]GPUNVLinkTopology, gpuID int, connections []types.NVLink) {
+func saveGPUTopology(topology map[int]GPUNVLinkTopology, gpuID int, connections []model.NVLink) {
 	topology[gpuID] = GPUNVLinkTopology{
 		GPUID:       gpuID,
 		Connections: connections,

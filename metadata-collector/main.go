@@ -15,9 +15,13 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/collector"
@@ -44,20 +48,24 @@ func main() {
 	logger.SetDefaultStructuredLogger(defaultAgentName, version)
 	slog.Info("Starting metadata-collector", "version", version, "commit", commit, "date", date)
 
-	if err := run(); err != nil {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
+	if err := run(ctx); err != nil {
 		slog.Error("Metadata collector failed", "error", err)
+		cancel()
 		os.Exit(1)
 	}
 
+	cancel()
 	slog.Info("Metadata collector completed successfully")
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	slog.Info("Initializing NVML")
 
 	nvmlWrapper := &nvml.NVMLWrapper{}
 	if err := nvmlWrapper.Init(); err != nil {
-		return err
+		return fmt.Errorf("failed to initialize NVML: %w", err)
 	}
 
 	defer func() {
@@ -70,9 +78,9 @@ func run() error {
 
 	metadataCollector := collector.NewCollector(nvmlWrapper)
 
-	metadata, err := metadataCollector.Collect()
+	metadata, err := metadataCollector.Collect(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to collect GPU metadata: %w", err)
 	}
 
 	slog.Info("GPU metadata collected",
@@ -85,11 +93,11 @@ func run() error {
 
 	metadataWriter, err := writer.NewWriter(*outputPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create metadata writer: %w", err)
 	}
 
 	if err := metadataWriter.Write(metadata); err != nil {
-		return err
+		return fmt.Errorf("failed to write metadata: %w", err)
 	}
 
 	slog.Info("Successfully wrote GPU metadata", "output_path", *outputPath)

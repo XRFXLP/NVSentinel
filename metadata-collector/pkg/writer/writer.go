@@ -20,7 +20,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/types"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 )
 
 type Writer struct {
@@ -38,7 +38,7 @@ func NewWriter(outputPath string) (*Writer, error) {
 	}, nil
 }
 
-func (w *Writer) Write(metadata *types.GPUMetadata) error {
+func (w *Writer) Write(metadata *model.GPUMetadata) error {
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata to JSON: %w", err)

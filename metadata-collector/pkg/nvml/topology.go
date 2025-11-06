@@ -19,11 +19,11 @@ import (
 	"log/slog"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
-	"github.com/nvidia/nvsentinel/metadata-collector/pkg/types"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 )
 
 func (w *NVMLWrapper) CollectNVLinkTopology(
-	gpuInfo *types.GPUInfo,
+	gpuInfo *model.GPUInfo,
 	index int,
 	deviceMap map[string]nvml.Device,
 	parsedTopology map[int]GPUNVLinkTopology,
@@ -82,7 +82,7 @@ func (w *NVMLWrapper) CollectNVLinkTopology(
 
 		remoteLinkID := getRemoteLinkID(index, linkID, remotePCI, parsedTopology, deviceMap, gpuInfo.PCIAddress)
 
-		gpuInfo.NVLinks = append(gpuInfo.NVLinks, types.NVLink{
+		gpuInfo.NVLinks = append(gpuInfo.NVLinks, model.NVLink{
 			LinkID:           linkID,
 			RemotePCIAddress: remotePCI,
 			RemoteLinkID:     remoteLinkID,

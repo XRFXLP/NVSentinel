@@ -17,7 +17,7 @@ FROM golang:1.25-bookworm AS builder
 WORKDIR /workspace
 
 COPY commons/ commons/
-
+COPY data-models/ data-models/
 
 COPY metadata-collector/go.mod metadata-collector/go.sum metadata-collector/
 WORKDIR /workspace/metadata-collector
