@@ -18,8 +18,8 @@ image:
   tag: ""
 
 pauseImage:
-  repository: gcr.io/google-containers/pause
-  tag: "3.0"
+  repository: registry.k8s.io/pause
+  tag: "3.10"
 
 podAnnotations: {}
 

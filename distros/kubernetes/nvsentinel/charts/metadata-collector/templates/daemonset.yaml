@@ -47,9 +47,6 @@ spec:
             runAsUser: 0
             runAsGroup: 0
             privileged: true
-            capabilities:
-              add:
-                - SYS_ADMIN
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
@@ -60,10 +57,6 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
-            - name: NVIDIA_VISIBLE_DEVICES
-              value: all
-            - name: NVIDIA_DRIVER_CAPABILITIES
-              value: utility
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
