@@ -242,6 +242,9 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "%s condition should be cleared", clearCmd.condition)
 		}
 
+		t.Logf("Cleaning up metadata from node %s", nodeName)
+		helpers.DeleteMetadata(t, ctx, client, helpers.NVSentinelNamespace, nodeName)
+
 		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
 		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)
 		if err != nil {
