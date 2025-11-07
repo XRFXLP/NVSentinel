@@ -108,22 +108,17 @@ func CreateTestMetadata(nodeName string) *GPUMetadata {
 }
 
 func InjectMetadata(t *testing.T, ctx context.Context,
-	client klient.Client, namespace, podName, containerName string, metadata *GPUMetadata) {
+	client klient.Client, namespace, nodeName string, metadata *GPUMetadata) {
 	t.Helper()
 
 	metadataJSON, err := json.Marshal(metadata)
 	require.NoError(t, err, "failed to marshal metadata")
 
-	var pod corev1.Pod
-	err = client.Resources().Get(ctx, podName, namespace, &pod)
-	require.NoError(t, err, "failed to get pod %s", podName)
-
-	nodeName := pod.Spec.NodeName
-
 	yamlFile, err := os.ReadFile("data/metadata-injector-pod.yaml")
 	require.NoError(t, err, "failed to read metadata-injector-pod.yaml")
 
 	var debugPod corev1.Pod
+
 	err = yaml.Unmarshal(yamlFile, &debugPod)
 	require.NoError(t, err, "failed to parse metadata-injector-pod.yaml")
 

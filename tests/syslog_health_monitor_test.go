@@ -55,7 +55,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		t.Logf("Using syslog health monitor pod: %s on node: %s", syslogPod.Name, testNodeName)
 
 		metadata := helpers.CreateTestMetadata(testNodeName)
-		helpers.InjectMetadata(t, ctx, client, syslogPod.Namespace, syslogPod.Name, "syslog-health-monitor", metadata)
+		helpers.InjectMetadata(t, ctx, client, syslogPod.Namespace, testNodeName, metadata)
 
 		t.Logf("Setting up port-forward to pod %s on port %d", syslogPod.Name, stubJournalHTTPPort)
 		stopChan, readyChan := helpers.PortForwardPod(
@@ -202,7 +202,7 @@ func TestSyslogHealthMonitorSXIDDetection(t *testing.T) {
 		t.Logf("Using syslog health monitor pod: %s on node: %s", syslogPod.Name, testNodeName)
 
 		metadata := helpers.CreateTestMetadata(testNodeName)
-		helpers.InjectMetadata(t, ctx, client, syslogPod.Namespace, syslogPod.Name, "syslog-health-monitor", metadata)
+		helpers.InjectMetadata(t, ctx, client, syslogPod.Namespace, testNodeName, metadata)
 
 		t.Logf("Setting up port-forward to pod %s on port %d", syslogPod.Name, stubJournalHTTPPort)
 		stopChan, readyChan := helpers.PortForwardPod(
