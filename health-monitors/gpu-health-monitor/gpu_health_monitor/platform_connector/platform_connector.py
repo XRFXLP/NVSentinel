@@ -96,6 +96,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
             log.info(f"Updated cache for key {key} with connectivity failure")
 
+            event_metadata = {}
+            chassis_serial = self._metadata_reader.get_chassis_serial()
+            if chassis_serial:
+                event_metadata["chassis_serial"] = chassis_serial
+
             health_event = platformconnector_pb2.HealthEvent(
                 version=self._version,
                 agent=self._agent,
@@ -109,7 +114,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 message="DCGM connectivity reported no errors",
                 recommendedAction=platformconnector_pb2.NONE,
                 nodeName=self._node_name,
-                metadata={"chassis_serial": ""},
+                metadata=event_metadata,
             )
             health_events.append(health_event)
 
@@ -348,6 +353,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 self.entity_cache[key] = CachedEntityState(isFatal=True, isHealthy=False)
                 log.info(f"Updated cache for key {key} with connectivity failure")
 
+                event_metadata = {}
+                chassis_serial = self._metadata_reader.get_chassis_serial()
+                if chassis_serial:
+                    event_metadata["chassis_serial"] = chassis_serial
+
                 health_event = platformconnector_pb2.HealthEvent(
                     version=self._version,
                     agent=self._agent,
@@ -361,7 +371,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     message=message,
                     recommendedAction=platformconnector_pb2.CONTACT_SUPPORT,
                     nodeName=self._node_name,
-                    metadata={"chassis_serial": ""},
+                    metadata=event_metadata,
                 )
                 health_events.append(health_event)
                 metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", severity="fatal").set(1)
