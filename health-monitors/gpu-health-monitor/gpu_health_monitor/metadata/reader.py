@@ -64,12 +64,9 @@ class MetadataReader:
                 log.warning(f"Metadata file not found: {self._path}, continuing without metadata enrichment")
                 self._metadata = {}
                 self._loaded = True
-            except json.JSONDecodeError as e:
-                log.error(f"Failed to parse metadata JSON from {self._path}: {e}")
-                self._metadata = {}
-                self._loaded = True
             except Exception as e:
-                log.error(f"Unexpected error loading metadata from {self._path}: {e}")
+                # Handles JSON decode errors, permission errors, etc.
+                log.error(f"Error loading metadata from {self._path}: {e}")
                 self._metadata = {}
                 self._loaded = True
 

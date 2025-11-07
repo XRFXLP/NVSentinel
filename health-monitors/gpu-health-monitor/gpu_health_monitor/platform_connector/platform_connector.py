@@ -109,7 +109,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 message="DCGM connectivity reported no errors",
                 recommendedAction=platformconnector_pb2.NONE,
                 nodeName=self._node_name,
-                metadata={"SerialNumber": ""},
+                metadata={"chassis_serial": ""},
             )
             health_events.append(health_event)
 
@@ -190,7 +190,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             log.info(f"Updated cache for key {key} with value {self.entity_cache[key]}")
                             recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
 
-                            event_metadata = {"SerialNumber": serials[gpu_id]}
+                            event_metadata = {}
                             chassis_serial = self._metadata_reader.get_chassis_serial()
                             if chassis_serial:
                                 event_metadata["chassis_serial"] = chassis_serial
@@ -253,7 +253,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal":
                                 log.debug(f"Skipping non-fatal health event for watch {watch_name}")
                             else:
-                                event_metadata = {"SerialNumber": serials[gpu_id]}
+                                event_metadata = {}
                                 chassis_serial = self._metadata_reader.get_chassis_serial()
                                 if chassis_serial:
                                     event_metadata["chassis_serial"] = chassis_serial
@@ -361,7 +361,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     message=message,
                     recommendedAction=platformconnector_pb2.CONTACT_SUPPORT,
                     nodeName=self._node_name,
-                    metadata={"SerialNumber": ""},
+                    metadata={"chassis_serial": ""},
                 )
                 health_events.append(health_event)
                 metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", severity="fatal").set(1)
