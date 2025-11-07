@@ -103,6 +103,7 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_errors_info_dict,
             "statefile",
             dcgm_health_conditions_categorization_mapping_config,
+            "/tmp/test_metadata.json",
         )
         dcgm_health_events = watcher._get_health_status_dict()
         dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
@@ -236,6 +237,7 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_errors_info_dict,
             "statefile",
             dcgm_health_conditions_categorization_mapping_config,
+            "/tmp/test_metadata.json",
         )
 
         # Simulate multiple NvLink failures for GPU 0 (4 links down: 8, 9, 14, 15)
@@ -350,6 +352,7 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_errors_info_dict,
             "statefile",
             dcgm_health_conditions_categorization_mapping_config,
+            "/tmp/test_metadata.json",
         )
 
         # Simulate multiple NvLink failures for GPU 0 and GPU 1
@@ -462,6 +465,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 dcgm_errors_info_dict=dcgm_errors_info_dict,
                 state_file_path=state_file_path,
                 dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
+                metadata_path="/tmp/test_metadata.json",
             )
 
             # Trigger connectivity failure
@@ -510,6 +514,7 @@ class TestPlatformConnectors(unittest.TestCase):
             dcgm_errors_info_dict=dcgm_errors_info_dict,
             state_file_path="statefile",
             dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
+            metadata_path="/tmp/test_metadata.json",
         )
 
         timestamp = Timestamp()
@@ -587,6 +592,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 dcgm_errors_info_dict=dcgm_errors_info_dict,
                 state_file_path=state_file_path,
                 dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
+                metadata_path="/tmp/test_metadata.json",
             )
 
             # Verify cache is empty initially
