@@ -256,13 +256,14 @@ def test_load_called_once(metadata_file):
 
     # Temporarily replace open to count file loads
     import builtins
+
     builtins.open = counting_open
 
     try:
-        reader.get_gpu_uuid(0)     # Should load file
-        reader.get_gpu_uuid(1)     # Should NOT load (already loaded)
-        reader.get_chassis_serial() # Should NOT load (already loaded)
-        reader.get_gpu_uuid(0)     # Should NOT load (already loaded)
+        reader.get_gpu_uuid(0)  # Should load file
+        reader.get_gpu_uuid(1)  # Should NOT load (already loaded)
+        reader.get_chassis_serial()  # Should NOT load (already loaded)
+        reader.get_gpu_uuid(0)  # Should NOT load (already loaded)
     finally:
         builtins.open = original_open
 
