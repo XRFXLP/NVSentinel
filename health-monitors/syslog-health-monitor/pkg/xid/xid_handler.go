@@ -115,6 +115,9 @@ func (xidHandler *XIDHandler) determineFatality(recommendedAction pb.Recommended
 func (xidHandler *XIDHandler) getGPUUUID(normPCI string) string {
 	if gpuInfo, err := xidHandler.metadataReader.GetGPUByPCI(normPCI); err == nil && gpuInfo != nil {
 		return gpuInfo.UUID
+	} else if err != nil {
+		slog.Error("Error getting GPU UUID", "pci", normPCI, "error", err)
+		return ""
 	}
 
 	if uuid, ok := xidHandler.pciToGPUUUID[normPCI]; ok {

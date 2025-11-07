@@ -17,13 +17,13 @@ package helpers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/e2e-framework/klient"
 )
@@ -114,34 +114,116 @@ func InjectMetadata(t *testing.T, ctx context.Context,
 	metadataJSON, err := json.Marshal(metadata)
 	require.NoError(t, err, "failed to marshal metadata")
 
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "gpu-metadata-",
+			Namespace:    namespace,
+		},
+		Data: map[string]string{
+			"gpu_metadata.json": string(metadataJSON),
+		},
+	}
+
+	err = client.Resources().Create(ctx, configMap)
+	require.NoError(t, err, "failed to create metadata ConfigMap")
+
+	configMapName := configMap.Name
+
+	defer func() {
+		_ = client.Resources().Delete(ctx, configMap)
+	}()
+
 	yamlFile, err := os.ReadFile("data/metadata-injector-pod.yaml")
 	require.NoError(t, err, "failed to read metadata-injector-pod.yaml")
 
-	var debugPod corev1.Pod
+	var pod corev1.Pod
 
-	err = yaml.Unmarshal(yamlFile, &debugPod)
+	err = yaml.Unmarshal(yamlFile, &pod)
 	require.NoError(t, err, "failed to parse metadata-injector-pod.yaml")
 
-	debugPod.Name = ""
-	debugPod.GenerateName = "metadata-injector-"
-	debugPod.Namespace = namespace
-	debugPod.Spec.NodeName = nodeName
+	pod.Namespace = namespace
+	pod.Spec.NodeName = nodeName
+	pod.Spec.Volumes[0].ConfigMap.Name = configMapName
 
-	err = client.Resources().Create(ctx, &debugPod)
-	require.NoError(t, err, "failed to create debug pod")
+	err = client.Resources().Create(ctx, &pod)
+	require.NoError(t, err, "failed to create metadata injector pod")
 
-	debugPodName := debugPod.Name
+	podName := pod.Name
 
 	defer func() {
-		_ = client.Resources().Delete(ctx, &debugPod)
+		_ = client.Resources().Delete(ctx, &pod)
 	}()
 
-	WaitForPodsRunning(ctx, t, client, namespace, []string{debugPodName})
+	require.Eventually(t, func() bool {
+		var currentPod corev1.Pod
 
-	cmd := []string{"sh", "-c",
-		fmt.Sprintf("mkdir -p /var/lib/nvsentinel && cat > %s <<'EOF'\n%s\nEOF", MetadataFilePath, string(metadataJSON))}
-	stdout, stderr, err := ExecInPod(ctx, client.RESTConfig(), namespace, debugPodName, "writer", cmd)
-	require.NoError(t, err, "failed to write metadata file: stdout=%s, stderr=%s", stdout, stderr)
+		err := client.Resources().Get(ctx, podName, namespace, &currentPod)
+		if err != nil {
+			t.Logf("failed to check pod %s status: %v", podName, err)
+			return false
+		}
 
-	t.Logf("Injected metadata file to %s on node %s via debug pod %s", MetadataFilePath, nodeName, debugPodName)
+		if currentPod.Status.Phase == corev1.PodSucceeded {
+			t.Logf("Metadata injector pod %s completed successfully", podName)
+			return true
+		}
+
+		if currentPod.Status.Phase == corev1.PodFailed {
+			t.Errorf("Metadata injector pod %s failed", podName)
+			return false
+		}
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval, "metadata injector pod should complete")
+
+	t.Logf("Injected metadata file to %s on node %s via ConfigMap %s and pod %s",
+		MetadataFilePath, nodeName, configMapName, podName)
+}
+
+func DeleteMetadata(t *testing.T, ctx context.Context, client klient.Client, namespace, nodeName string) {
+	t.Helper()
+
+	yamlFile, err := os.ReadFile("data/metadata-deleter-pod.yaml")
+	require.NoError(t, err, "failed to read metadata-deleter-pod.yaml")
+
+	var pod corev1.Pod
+
+	err = yaml.Unmarshal(yamlFile, &pod)
+	require.NoError(t, err, "failed to parse metadata-deleter-pod.yaml")
+
+	pod.Namespace = namespace
+	pod.Spec.NodeName = nodeName
+
+	err = client.Resources().Create(ctx, &pod)
+	require.NoError(t, err, "failed to create metadata deleter pod")
+
+	podName := pod.Name
+
+	defer func() {
+		_ = client.Resources().Delete(ctx, &pod)
+	}()
+
+	require.Eventually(t, func() bool {
+		var currentPod corev1.Pod
+
+		err := client.Resources().Get(ctx, podName, namespace, &currentPod)
+		if err != nil {
+			t.Logf("failed to check pod %s status: %v", podName, err)
+			return false
+		}
+
+		if currentPod.Status.Phase == corev1.PodSucceeded {
+			t.Logf("Metadata deleter pod %s completed successfully", podName)
+			return true
+		}
+
+		if currentPod.Status.Phase == corev1.PodFailed {
+			t.Errorf("Metadata deleter pod %s failed", podName)
+			return false
+		}
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval, "metadata deleter pod should complete")
+
+	t.Logf("Deleted metadata file from %s on node %s via pod %s", MetadataFilePath, nodeName, podName)
 }

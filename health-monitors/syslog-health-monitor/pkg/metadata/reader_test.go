@@ -269,6 +269,7 @@ func TestReaderFileNotFound(t *testing.T) {
 	reader := NewReader("/nonexistent/file.json")
 	_, err := reader.GetGPUByPCI("0000:17:00.0")
 	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to load metadata for PCI lookup")
 	require.Contains(t, err.Error(), "failed to read metadata file")
 }
 
@@ -280,6 +281,7 @@ func TestReaderMalformedJSON(t *testing.T) {
 	reader := NewReader(metadataFile)
 	_, err := reader.GetGPUByPCI("0000:17:00.0")
 	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to load metadata for PCI lookup")
 	require.Contains(t, err.Error(), "failed to parse metadata JSON")
 }
 
@@ -291,7 +293,20 @@ func TestReaderErrorCaching(t *testing.T) {
 
 	require.Error(t, err1)
 	require.Error(t, err2)
-	require.Equal(t, err1, err2)
+	require.Contains(t, err1.Error(), "failed to load metadata for PCI lookup 0000:17:00.0")
+	require.Contains(t, err2.Error(), "failed to load metadata for PCI lookup 0000:65:00.0")
+	require.Contains(t, err1.Error(), "failed to read metadata file")
+	require.Contains(t, err2.Error(), "failed to read metadata file")
+}
+
+func TestGetGPUByNVSwitchLinkErrorWrapping(t *testing.T) {
+	reader := NewReader("/nonexistent/file.json")
+	_, _, err := reader.GetGPUByNVSwitchLink("0008:00:00.0", 29)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to load metadata for NVSwitch lookup")
+	require.Contains(t, err.Error(), "0008:00:00.0")
+	require.Contains(t, err.Error(), "link 29")
+	require.Contains(t, err.Error(), "failed to read metadata file")
 }
 
 func TestNormalizePCI(t *testing.T) {
