@@ -240,25 +240,34 @@ def test_concurrent_access(metadata_file):
 
 
 def test_load_called_once(metadata_file):
-    """Test that metadata is loaded only once even with multiple accesses."""
+    """Test that metadata file is loaded only once even with multiple accesses."""
     reader = MetadataReader(metadata_file)
 
+    # Count how many times we actually acquire the lock and load
     load_count = 0
-    original_load = reader._ensure_loaded
+    original_open = open
 
-    def counting_load():
+    def counting_open(*args, **kwargs):
         nonlocal load_count
-        load_count += 1
-        original_load()
+        # Only count opens of the metadata file
+        if args and args[0] == metadata_file:
+            load_count += 1
+        return original_open(*args, **kwargs)
 
-    reader._ensure_loaded = counting_load
+    # Temporarily replace open to count file loads
+    import builtins
+    builtins.open = counting_open
 
-    reader.get_gpu_uuid(0)
-    reader.get_gpu_uuid(1)
-    reader.get_chassis_serial()
-    reader.get_gpu_uuid(0)
+    try:
+        reader.get_gpu_uuid(0)     # Should load file
+        reader.get_gpu_uuid(1)     # Should NOT load (already loaded)
+        reader.get_chassis_serial() # Should NOT load (already loaded)
+        reader.get_gpu_uuid(0)     # Should NOT load (already loaded)
+    finally:
+        builtins.open = original_open
 
-    assert load_count == 4
+    # File should only be opened once despite 4 method calls
+    assert load_count == 1, f"Expected 1 file load, got {load_count}"
 
 
 def test_concurrent_initial_load(metadata_file):
