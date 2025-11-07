@@ -31,5 +31,7 @@ resources:
     cpu: 100m
     memory: 128Mi
 
-outputPath: /var/lib/nvsentinel/gpu_metadata.json
+# Output path for GPU metadata JSON file
+# Defaults to global.metadataPath if not specified
+outputPath: ""
 

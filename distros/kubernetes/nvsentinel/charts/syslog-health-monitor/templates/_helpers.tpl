@@ -99,7 +99,7 @@ spec:
             - "--checks"
             - "{{ join "," $root.Values.enabledChecks }}"
             - "--metadata-path"
-            - "/var/lib/nvsentinel/gpu_metadata.json"
+            - "{{ $root.Values.global.metadataPath }}"
           resources:
             {{- toYaml $root.Values.resources | nindent 12 }}
           ports:
