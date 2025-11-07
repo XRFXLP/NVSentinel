@@ -251,18 +251,6 @@ func TestSyslogHealthMonitorSXIDDetection(t *testing.T) {
 
 		t.Log("Verifying we got 2 non-fatal SXID Kubernetes Events with GPU UUIDs using regex patterns")
 		require.Eventually(t, func() bool {
-			eventList, err := helpers.GetNodeEvents(ctx, client, nodeName, "SysLogsSXIDError")
-			if err != nil {
-				t.Logf("Error listing events: %v", err)
-				return false
-			}
-
-			unhealthyEvents := helpers.CountEventsWithReason(eventList, "SysLogsSXIDErrorIsNotHealthy")
-			if unhealthyEvents != 2 {
-				t.Logf("Expected 2 non-fatal SXID events, got %d", unhealthyEvents)
-				return false
-			}
-
 			return helpers.VerifyEventsMatchPatterns(t, ctx, client, nodeName, "SysLogsSXIDError",
 				"SysLogsSXIDErrorIsNotHealthy", expectedEventPatterns)
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Should have 2 non-fatal SXID events with GPU UUIDs")

@@ -55,6 +55,7 @@ type NVLink struct {
 
 func CreateTestMetadata(nodeName string) *GPUMetadata {
 	chassisSerial := "TEST-CHASSIS-12345"
+
 	return &GPUMetadata{
 		Version:       "1.0",
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
@@ -103,11 +104,15 @@ func CreateTestMetadata(nodeName string) *GPUMetadata {
 	}
 }
 
-func InjectMetadata(t *testing.T, ctx context.Context, restConfig *rest.Config, namespace, podName, containerName string, metadata *GPUMetadata) {
+func InjectMetadata(t *testing.T, ctx context.Context,
+	restConfig *rest.Config, namespace, podName, containerName string, metadata *GPUMetadata) {
+	t.Helper()
+
 	metadataJSON, err := json.Marshal(metadata)
 	require.NoError(t, err, "failed to marshal metadata")
 
-	cmd := []string{"sh", "-c", fmt.Sprintf("mkdir -p /var/lib/nvsentinel && cat > %s <<'EOF'\n%s\nEOF", MetadataFilePath, string(metadataJSON))}
+	cmd := []string{"sh", "-c",
+		fmt.Sprintf("mkdir -p /var/lib/nvsentinel && cat > %s <<'EOF'\n%s\nEOF", MetadataFilePath, string(metadataJSON))}
 	stdout, stderr, err := ExecInPod(ctx, restConfig, namespace, podName, containerName, cmd)
 	require.NoError(t, err, "failed to inject metadata file: stdout=%s, stderr=%s", stdout, stderr)
 
