@@ -230,7 +230,6 @@ func TestSyslogHealthMonitorXIDWithoutMetadata(t *testing.T) {
 
 		nodeName := ctx.Value(keyNodeName).(string)
 
-		// Inject a single fatal XID error
 		xidMessage := "kernel: [16450076.435595] NVRM: Xid (PCI:0000:17:00): 79, pid=123456, name=test, GPU has fallen off the bus."
 
 		helpers.InjectSyslogMessages(t, stubJournalHTTPPort, []string{xidMessage})
