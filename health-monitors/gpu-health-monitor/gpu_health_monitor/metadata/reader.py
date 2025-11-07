@@ -20,7 +20,7 @@ from typing import Optional
 
 class MetadataReader:
     """Lazy-loading, thread-safe GPU metadata reader.
-    
+
     This class reads GPU metadata from a JSON file and provides
     thread-safe access to GPU UUID and chassis serial information.
     The metadata is loaded lazily on first access.
@@ -28,7 +28,7 @@ class MetadataReader:
 
     def __init__(self, metadata_path: str):
         """Initialize the metadata reader.
-        
+
         Args:
             metadata_path: Path to the GPU metadata JSON file.
         """
@@ -39,7 +39,7 @@ class MetadataReader:
 
     def _ensure_loaded(self):
         """Load metadata on first use (lazy loading).
-        
+
         This method uses double-checked locking to ensure thread-safe
         lazy initialization of the metadata.
         """
@@ -75,10 +75,10 @@ class MetadataReader:
 
     def get_gpu_uuid(self, gpu_id: int) -> Optional[str]:
         """Get GPU UUID by DCGM GPU ID.
-        
+
         Args:
             gpu_id: The DCGM GPU ID (0, 1, 2, ...).
-            
+
         Returns:
             The GPU UUID string if found, None otherwise.
         """
@@ -101,9 +101,37 @@ class MetadataReader:
         log.debug(f"GPU {gpu_id} not found in metadata")
         return None
 
+    def get_pci_address(self, gpu_id: int) -> Optional[str]:
+        """Get PCI address by DCGM GPU ID.
+
+        Args:
+            gpu_id: The DCGM GPU ID (0, 1, 2, ...).
+
+        Returns:
+            The PCI address string if found, None otherwise.
+        """
+        self._ensure_loaded()
+
+        if not self._metadata:
+            return None
+
+        gpus = self._metadata.get("gpus", [])
+        for gpu in gpus:
+            if gpu.get("gpu_id") == gpu_id:
+                pci_address = gpu.get("pci_address")
+                if pci_address:
+                    log.debug(f"Found PCI address for GPU {gpu_id}: {pci_address}")
+                    return pci_address
+                else:
+                    log.warning(f"GPU {gpu_id} found in metadata but has no PCI address")
+                    return None
+
+        log.debug(f"GPU {gpu_id} not found in metadata")
+        return None
+
     def get_chassis_serial(self) -> Optional[str]:
         """Get chassis serial number.
-        
+
         Returns:
             The chassis serial number if available, None otherwise.
         """
@@ -119,4 +147,3 @@ class MetadataReader:
             log.debug("No chassis serial in metadata")
 
         return chassis_serial
-

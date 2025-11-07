@@ -155,13 +155,19 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         entities_impacted = []
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
                         entities_impacted.append(entity)
-                        
+
+                        pci_address = self._metadata_reader.get_pci_address(gpu_id)
+                        if pci_address:
+                            entities_impacted.append(
+                                platformconnector_pb2.Entity(entityType="PCI", entityValue=pci_address)
+                            )
+
                         gpu_uuid = self._metadata_reader.get_gpu_uuid(gpu_id)
                         if gpu_uuid:
                             entities_impacted.append(
                                 platformconnector_pb2.Entity(entityType="GPU_UUID", entityValue=gpu_uuid)
                             )
-                        
+
                         key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
                         isFatal = False
                         isHealthy = True
@@ -219,13 +225,19 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
                         entities_impacted = []
                         entities_impacted.append(entity)
-                        
+
+                        pci_address = self._metadata_reader.get_pci_address(gpu_id)
+                        if pci_address:
+                            entities_impacted.append(
+                                platformconnector_pb2.Entity(entityType="PCI", entityValue=pci_address)
+                            )
+
                         gpu_uuid = self._metadata_reader.get_gpu_uuid(gpu_id)
                         if gpu_uuid:
                             entities_impacted.append(
                                 platformconnector_pb2.Entity(entityType="GPU_UUID", entityValue=gpu_uuid)
                             )
-                        
+
                         key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
                         if (
                             key not in self.entity_cache

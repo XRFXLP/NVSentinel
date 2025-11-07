@@ -63,12 +63,12 @@ def metadata_file(sample_metadata):
 def test_lazy_loading(metadata_file):
     """Test that metadata is not loaded until first access."""
     reader = MetadataReader(metadata_file)
-    
+
     assert not reader._loaded
     assert reader._metadata is None
-    
+
     uuid = reader.get_gpu_uuid(0)
-    
+
     assert reader._loaded
     assert reader._metadata is not None
     assert uuid == "GPU-00000000-0000-0000-0000-000000000000"
@@ -77,10 +77,10 @@ def test_lazy_loading(metadata_file):
 def test_get_gpu_uuid_found(metadata_file):
     """Test successful GPU UUID lookup."""
     reader = MetadataReader(metadata_file)
-    
+
     uuid0 = reader.get_gpu_uuid(0)
     assert uuid0 == "GPU-00000000-0000-0000-0000-000000000000"
-    
+
     uuid1 = reader.get_gpu_uuid(1)
     assert uuid1 == "GPU-11111111-1111-1111-1111-111111111111"
 
@@ -88,15 +88,34 @@ def test_get_gpu_uuid_found(metadata_file):
 def test_get_gpu_uuid_not_found(metadata_file):
     """Test GPU UUID lookup for non-existent GPU ID."""
     reader = MetadataReader(metadata_file)
-    
+
     uuid = reader.get_gpu_uuid(99)
     assert uuid is None
+
+
+def test_get_pci_address_found(metadata_file):
+    """Test successful PCI address lookup."""
+    reader = MetadataReader(metadata_file)
+
+    pci0 = reader.get_pci_address(0)
+    assert pci0 == "0000:17:00.0"
+
+    pci1 = reader.get_pci_address(1)
+    assert pci1 == "0001:00:00.0"
+
+
+def test_get_pci_address_not_found(metadata_file):
+    """Test PCI address lookup for non-existent GPU ID."""
+    reader = MetadataReader(metadata_file)
+
+    pci = reader.get_pci_address(99)
+    assert pci is None
 
 
 def test_get_chassis_serial(metadata_file):
     """Test chassis serial retrieval."""
     reader = MetadataReader(metadata_file)
-    
+
     serial = reader.get_chassis_serial()
     assert serial == "CHASSIS-12345"
 
@@ -104,11 +123,11 @@ def test_get_chassis_serial(metadata_file):
 def test_get_chassis_serial_missing(sample_metadata):
     """Test chassis serial retrieval when not present."""
     del sample_metadata["chassis_serial"]
-    
+
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
         json.dump(sample_metadata, f)
         temp_path = f.name
-    
+
     try:
         reader = MetadataReader(temp_path)
         serial = reader.get_chassis_serial()
@@ -120,10 +139,13 @@ def test_get_chassis_serial_missing(sample_metadata):
 def test_file_not_found():
     """Test graceful handling of missing metadata file."""
     reader = MetadataReader("/nonexistent/file.json")
-    
+
     uuid = reader.get_gpu_uuid(0)
     assert uuid is None
-    
+
+    pci = reader.get_pci_address(0)
+    assert pci is None
+
     serial = reader.get_chassis_serial()
     assert serial is None
 
@@ -131,15 +153,15 @@ def test_file_not_found():
 def test_malformed_json():
     """Test graceful handling of malformed JSON."""
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-        f.write("{\"version\": \"1.0\", \"gpus\": [}")
+        f.write('{"version": "1.0", "gpus": [}')
         temp_path = f.name
-    
+
     try:
         reader = MetadataReader(temp_path)
-        
+
         uuid = reader.get_gpu_uuid(0)
         assert uuid is None
-        
+
         serial = reader.get_chassis_serial()
         assert serial is None
     finally:
@@ -151,13 +173,13 @@ def test_empty_metadata():
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
         json.dump({}, f)
         temp_path = f.name
-    
+
     try:
         reader = MetadataReader(temp_path)
-        
+
         uuid = reader.get_gpu_uuid(0)
         assert uuid is None
-        
+
         serial = reader.get_chassis_serial()
         assert serial is None
     finally:
@@ -167,17 +189,17 @@ def test_empty_metadata():
 def test_gpu_without_uuid(sample_metadata):
     """Test handling of GPU entry without UUID field."""
     del sample_metadata["gpus"][0]["uuid"]
-    
+
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
         json.dump(sample_metadata, f)
         temp_path = f.name
-    
+
     try:
         reader = MetadataReader(temp_path)
-        
+
         uuid = reader.get_gpu_uuid(0)
         assert uuid is None
-        
+
         uuid = reader.get_gpu_uuid(1)
         assert uuid == "GPU-11111111-1111-1111-1111-111111111111"
     finally:
@@ -189,30 +211,30 @@ def test_concurrent_access(metadata_file):
     reader = MetadataReader(metadata_file)
     results = []
     errors = []
-    
+
     def read_uuid(gpu_id):
         try:
             uuid = reader.get_gpu_uuid(gpu_id)
             results.append((gpu_id, uuid))
         except Exception as e:
             errors.append(e)
-    
+
     threads = []
     for _ in range(10):
         for gpu_id in [0, 1]:
             t = threading.Thread(target=read_uuid, args=(gpu_id,))
             threads.append(t)
             t.start()
-    
+
     for t in threads:
         t.join()
-    
+
     assert len(errors) == 0
     assert len(results) == 20
-    
+
     gpu0_results = [uuid for gid, uuid in results if gid == 0]
     gpu1_results = [uuid for gid, uuid in results if gid == 1]
-    
+
     assert all(uuid == "GPU-00000000-0000-0000-0000-000000000000" for uuid in gpu0_results)
     assert all(uuid == "GPU-11111111-1111-1111-1111-111111111111" for uuid in gpu1_results)
 
@@ -220,22 +242,22 @@ def test_concurrent_access(metadata_file):
 def test_load_called_once(metadata_file):
     """Test that metadata is loaded only once even with multiple accesses."""
     reader = MetadataReader(metadata_file)
-    
+
     load_count = 0
     original_load = reader._ensure_loaded
-    
+
     def counting_load():
         nonlocal load_count
         load_count += 1
         original_load()
-    
+
     reader._ensure_loaded = counting_load
-    
+
     reader.get_gpu_uuid(0)
     reader.get_gpu_uuid(1)
     reader.get_chassis_serial()
     reader.get_gpu_uuid(0)
-    
+
     assert load_count == 4
 
 
@@ -243,20 +265,19 @@ def test_concurrent_initial_load(metadata_file):
     """Test that concurrent initial loads don't cause race conditions."""
     reader = MetadataReader(metadata_file)
     results = []
-    
+
     def load_and_read():
         uuid = reader.get_gpu_uuid(0)
         results.append(uuid)
-    
+
     threads = [threading.Thread(target=load_and_read) for _ in range(50)]
-    
+
     for t in threads:
         t.start()
-    
+
     for t in threads:
         t.join()
-    
+
     assert len(results) == 50
     assert all(uuid == "GPU-00000000-0000-0000-0000-000000000000" for uuid in results)
     assert reader._loaded
-
