@@ -27,7 +27,7 @@ COPY metadata-collector/ .
 
 RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w" -o metadata-collector main.go
 
-FROM nvidia/cuda:12.3.0-base-ubuntu22.04
+FROM nvcr.io/nvidia/cuda:12.3.0-base-ubuntu22.04
 
 RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
 
