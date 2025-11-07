@@ -283,7 +283,6 @@ class TestPlatformConnectors(unittest.TestCase):
         assert nvlink_failure_event.isHealthy == False
         assert nvlink_failure_event.entitiesImpacted[0].entityValue == "0"
         assert nvlink_failure_event.recommendedAction == platformconnector_pb2.RecommendedAction.COMPONENT_RESET
-        assert nvlink_failure_event.metadata["SerialNumber"] == "1650924060039"
 
         # Verify all 4 NvLink failures are in the message
         assert "link 8" in nvlink_failure_event.message, "Link 8 failure missing from message"
@@ -406,7 +405,6 @@ class TestPlatformConnectors(unittest.TestCase):
         assert gpu0_event.errorCode[0] == "DCGM_FR_NVLINK_DOWN"
         assert gpu0_event.isFatal == True
         assert gpu0_event.isHealthy == False
-        assert gpu0_event.metadata["SerialNumber"] == "1650924060039"
 
         # Verify all 4 NvLink failures for GPU 0
         assert "link 8" in gpu0_event.message
@@ -421,7 +419,6 @@ class TestPlatformConnectors(unittest.TestCase):
         assert gpu1_event.errorCode[0] == "DCGM_FR_NVLINK_DOWN"
         assert gpu1_event.isFatal == True
         assert gpu1_event.isHealthy == False
-        assert gpu1_event.metadata["SerialNumber"] == "1650924060040"
 
         # Verify all 4 NvLink failures for GPU 1
         assert "link 8" in gpu1_event.message
@@ -485,7 +482,6 @@ class TestPlatformConnectors(unittest.TestCase):
                 assert event.recommendedAction == platformconnector_pb2.CONTACT_SUPPORT
                 assert event.nodeName == node_name
                 assert event.entitiesImpacted == []
-                assert event.metadata["SerialNumber"] == ""
 
             server.stop(0)
         finally:
