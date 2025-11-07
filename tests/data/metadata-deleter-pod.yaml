@@ -12,33 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Pod that copies GPU metadata from ConfigMap to host filesystem
-# This mimics what metadata-collector does but for testing purposes
+# Pod that deletes GPU metadata from host filesystem
+# Used for testing graceful degradation when metadata is unavailable
 apiVersion: v1
 kind: Pod
 metadata:
-  generateName: metadata-injector-
+  generateName: metadata-deleter-
   namespace: default
 spec:
   restartPolicy: Never
   containers:
-    - name: copier
+    - name: deleter
       image: busybox:latest
       command:
         - sh
         - -c
-        - mkdir -p /host/var/lib/nvsentinel && cp /metadata/gpu_metadata.json /host/var/lib/nvsentinel/gpu_metadata.json
+        - rm -f /host/var/lib/nvsentinel/gpu_metadata.json
       volumeMounts:
-        - name: metadata
-          mountPath: /metadata
-          readOnly: true
         - name: host-metadata
           mountPath: /host/var/lib/nvsentinel
   volumes:
-    - name: metadata
-      configMap:
-        name: "" # Will be set dynamically
     - name: host-metadata
       hostPath:
         path: /var/lib/nvsentinel
         type: DirectoryOrCreate
+

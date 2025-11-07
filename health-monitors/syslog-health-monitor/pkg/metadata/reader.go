@@ -104,7 +104,7 @@ func (r *Reader) buildMaps() {
 
 func (r *Reader) GetGPUByPCI(pci string) (*model.GPUInfo, error) {
 	if err := r.ensureLoaded(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load metadata for PCI lookup %s: %w", pci, err)
 	}
 
 	normPCI := normalizePCI(pci)
@@ -119,7 +119,7 @@ func (r *Reader) GetGPUByPCI(pci string) (*model.GPUInfo, error) {
 
 func (r *Reader) GetGPUByNVSwitchLink(nvswitchPCI string, linkID int) (*model.GPUInfo, int, error) {
 	if err := r.ensureLoaded(); err != nil {
-		return nil, -1, err
+		return nil, -1, fmt.Errorf("failed to load metadata for NVSwitch lookup %s link %d: %w", nvswitchPCI, linkID, err)
 	}
 
 	normPCI := normalizePCI(nvswitchPCI)

@@ -46,7 +46,7 @@ RUN cd health-monitors/syslog-health-monitor && \
     CGO_ENABLED=1 go build -tags "${BUILD_TAGS}" -ldflags="-s -w" -o syslog-health-monitor main.go
 
 # Runtime stage - using Debian slim for systemd journal support
-FROM debian:bookworm-slim AS runtime
+FROM public.ecr.aws/docker/library/debian:bookworm-slim AS runtime
 
 # Install required system libraries for systemd journal
 RUN apt-get update && apt-get install -y --no-install-recommends \

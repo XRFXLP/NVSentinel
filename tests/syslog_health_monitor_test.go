@@ -16,6 +16,7 @@ package tests
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -168,6 +169,121 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 				}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "SysLogsXIDError condition should be cleared")
 			}
 		}
+
+		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
+		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)
+		if err != nil {
+			t.Logf("Warning: failed to remove ManagedByNVSentinel label: %v", err)
+		}
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestSyslogHealthMonitorXIDWithoutMetadata tests XID detection works without metadata file
+func TestSyslogHealthMonitorXIDWithoutMetadata(t *testing.T) {
+	feature := features.New("Syslog Health Monitor - XID Without Metadata").
+		WithLabel("suite", "syslog-health-monitor").
+		WithLabel("component", "xid-graceful-degradation")
+
+	var testNodeName string
+	var syslogPod *v1.Pod
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		syslogPod, err = helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "syslog-health-monitor")
+		require.NoError(t, err, "failed to find syslog health monitor pod")
+		require.NotNil(t, syslogPod, "syslog health monitor pod should exist")
+
+		testNodeName = syslogPod.Spec.NodeName
+		t.Logf("Using syslog health monitor pod: %s on node: %s", syslogPod.Name, testNodeName)
+
+		t.Logf("Setting up port-forward to pod %s on port %d", syslogPod.Name, stubJournalHTTPPort)
+		stopChan, readyChan := helpers.PortForwardPod(
+			ctx,
+			client.RESTConfig(),
+			syslogPod.Namespace,
+			syslogPod.Name,
+			stubJournalHTTPPort,
+			stubJournalHTTPPort,
+		)
+		<-readyChan
+		t.Log("Port-forward ready")
+
+		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
+		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
+		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
+
+		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
+		ctx = context.WithValue(ctx, keyStopChan, stopChan)
+		return ctx
+	})
+
+	feature.Assess("Verify XID detection works without metadata", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keyNodeName).(string)
+
+		// Inject a single fatal XID error
+		xidMessage := "kernel: [16450076.435595] NVRM: Xid (PCI:0000:17:00): 79, pid=123456, name=test, GPU has fallen off the bus."
+
+		helpers.InjectSyslogMessages(t, stubJournalHTTPPort, []string{xidMessage})
+
+		t.Log("Verifying node condition is created without GPU UUID (metadata not available)")
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy")
+			if err != nil || condition == nil {
+				t.Logf("Condition not found yet: %v", err)
+				return false
+			}
+
+			if !strings.Contains(condition.Message, "ErrorCode:79") {
+				t.Logf("Condition found but missing error code 79: %s", condition.Message)
+				return false
+			}
+
+			if !strings.Contains(condition.Message, "PCI:0000:17:00") {
+				t.Logf("Condition found but missing PCI address: %s", condition.Message)
+				return false
+			}
+
+			if strings.Contains(condition.Message, "GPU-") {
+				t.Logf("Condition should NOT contain GPU UUID but does: %s", condition.Message)
+				return false
+			}
+
+			t.Logf("Found condition without GPU UUID (expected): %s", condition.Message)
+			return true
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Node condition should be created without GPU UUID")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		if stopChanVal := ctx.Value(keyStopChan); stopChanVal != nil {
+			t.Log("Stopping port-forward")
+			close(stopChanVal.(chan struct{}))
+		}
+
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("Warning: failed to create client for teardown: %v", err)
+			return ctx
+		}
+
+		nodeNameVal := ctx.Value(keyNodeName)
+		if nodeNameVal == nil {
+			t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
+			return ctx
+		}
+		nodeName := nodeNameVal.(string)
 
 		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
 		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)
