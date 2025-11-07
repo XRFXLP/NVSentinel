@@ -18,11 +18,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"k8s.io/client-go/rest"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/yaml"
+	"sigs.k8s.io/e2e-framework/klient"
 )
 
 const (
@@ -105,16 +108,45 @@ func CreateTestMetadata(nodeName string) *GPUMetadata {
 }
 
 func InjectMetadata(t *testing.T, ctx context.Context,
-	restConfig *rest.Config, namespace, podName, containerName string, metadata *GPUMetadata) {
+	client klient.Client, namespace, podName, containerName string, metadata *GPUMetadata) {
 	t.Helper()
 
 	metadataJSON, err := json.Marshal(metadata)
 	require.NoError(t, err, "failed to marshal metadata")
 
+	var pod corev1.Pod
+	err = client.Resources().Get(ctx, podName, namespace, &pod)
+	require.NoError(t, err, "failed to get pod %s", podName)
+
+	nodeName := pod.Spec.NodeName
+
+	yamlFile, err := os.ReadFile("data/metadata-injector-pod.yaml")
+	require.NoError(t, err, "failed to read metadata-injector-pod.yaml")
+
+	var debugPod corev1.Pod
+	err = yaml.Unmarshal(yamlFile, &debugPod)
+	require.NoError(t, err, "failed to parse metadata-injector-pod.yaml")
+
+	debugPod.Name = ""
+	debugPod.GenerateName = "metadata-injector-"
+	debugPod.Namespace = namespace
+	debugPod.Spec.NodeName = nodeName
+
+	err = client.Resources().Create(ctx, &debugPod)
+	require.NoError(t, err, "failed to create debug pod")
+
+	debugPodName := debugPod.Name
+
+	defer func() {
+		_ = client.Resources().Delete(ctx, &debugPod)
+	}()
+
+	WaitForPodsRunning(ctx, t, client, namespace, []string{debugPodName})
+
 	cmd := []string{"sh", "-c",
 		fmt.Sprintf("mkdir -p /var/lib/nvsentinel && cat > %s <<'EOF'\n%s\nEOF", MetadataFilePath, string(metadataJSON))}
-	stdout, stderr, err := ExecInPod(ctx, restConfig, namespace, podName, containerName, cmd)
-	require.NoError(t, err, "failed to inject metadata file: stdout=%s, stderr=%s", stdout, stderr)
+	stdout, stderr, err := ExecInPod(ctx, client.RESTConfig(), namespace, debugPodName, "writer", cmd)
+	require.NoError(t, err, "failed to write metadata file: stdout=%s, stderr=%s", stdout, stderr)
 
-	t.Logf("Injected metadata file to %s in pod %s", MetadataFilePath, podName)
+	t.Logf("Injected metadata file to %s on node %s via debug pod %s", MetadataFilePath, nodeName, debugPodName)
 }
