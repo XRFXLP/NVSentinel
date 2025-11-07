@@ -17,6 +17,7 @@ package tests
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -56,6 +57,9 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 		testNodeName = gpuHealthMonitorPod.Spec.NodeName
 		t.Logf("Using GPU health monitor pod: %s on node: %s", gpuHealthMonitorPod.Name, testNodeName)
 
+		metadata := helpers.CreateTestMetadata(testNodeName)
+		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, metadata)
+
 		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
 		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
 		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
@@ -73,6 +77,9 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 		nodeName := nodeNameVal.(string)
 
 		restConfig := client.RESTConfig()
+
+		// GPU 0 has UUID "GPU-00000000-0000-0000-0000-000000000000" according to test metadata
+		expectedGPUUUID := "GPU-00000000-0000-0000-0000-000000000000"
 
 		errors := []struct {
 			name      string
@@ -96,7 +103,7 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			require.Contains(t, stdout, "Successfully injected", "%s error injection failed", dcgmError.name)
 		}
 
-		t.Logf("Waiting for node conditions to appear")
+		t.Logf("Waiting for node conditions to appear with GPU UUIDs")
 		require.Eventually(t, func() bool {
 			foundConditions := make(map[string]bool)
 			for _, dcgmError := range errors {
@@ -107,11 +114,21 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 					foundConditions[dcgmError.condition] = false
 					continue
 				}
-				found := condition != nil
-				foundConditions[dcgmError.condition] = found
-				if found {
-					t.Logf("Found %s condition: %s", dcgmError.condition, condition.Message)
+				if condition == nil {
+					foundConditions[dcgmError.condition] = false
+					continue
 				}
+
+				if !strings.Contains(condition.Message, expectedGPUUUID) {
+					t.Logf("Condition %s found but missing expected GPU UUID %s: %s",
+						dcgmError.condition, expectedGPUUUID, condition.Message)
+					foundConditions[dcgmError.condition] = false
+					continue
+				}
+
+				t.Logf("Found %s condition with expected GPU UUID %s: %s",
+					dcgmError.condition, expectedGPUUUID, condition.Message)
+				foundConditions[dcgmError.condition] = true
 			}
 
 			allFound := true
@@ -123,7 +140,8 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			}
 
 			return allFound
-		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "all injected error conditions should appear")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "all injected error conditions should appear with GPU UUIDs")
+
 
 		return ctx
 	})
