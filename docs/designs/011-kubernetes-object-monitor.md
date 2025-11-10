@@ -59,19 +59,17 @@ data:
           recommendedAction: "REBOOT_NODE"
 ```
 
-### Design
-
-#### Architecture Overview
+### Architecture Overview
 
 The Kubernetes Object Monitor is implemented as a **Deployment** that uses **Kubernetes informers** with a **work-queue** for efficient cluster-wide monitoring. It evaluates CEL-based policies against Kubernetes objects (Nodes, Events) and publishes HealthEvents when policies match.
 
-**Key Components:**
+#### Key Components
 - **Informer-based watch**: Efficiently monitors Nodes and Events using Kubernetes client-go informers
 - **Work-queue**: Provides retry logic, rate-limiting, and deduplication
 - **CEL Policy Engine**: Evaluates user-defined predicates against Kubernetes objects
 
 
-**Watched Resources:**
+#### Watched Resources
 - **Nodes**: Primary resource for condition, taint, label, and annotation checks
 - **Events**: Kubernetes events (Node, Pod, etc.) for detecting specific conditions
 
@@ -88,7 +86,7 @@ Policies consist of three key components:
 If no time threshold is specified, events are sent immediately when the predicate matches.
 
 
-**CEL Variables:**
+#### CEL Variables:
 - `node` - Available in Node-type policies (corev1.Node object)
 - `event` - Available in Event-type policies (corev1.Event object)
 - `now` - Current timestamp (time.Time)
@@ -99,23 +97,23 @@ Each **Node condition-based policy** (with time thresholds) transitions through 
 
 **Note:** Label, taint, annotation, and event-based policies skip Stage 2 and go directly from Stage 1 → Stage 3 (immediate evaluation).
 
-**Stage 1: Unmatched**
+##### Stage 1: Unmatched
 - Predicate evaluates to `false`
 - No state tracking required
 - If transitioning from Stage 3 (Matched), send a healthy/recovery event
 
-**Stage 2: Matched but Waiting**
+##### Stage 2: Matched but Waiting
 - Predicate evaluates to `true` but time threshold not yet met
 - Controller tracks when predicate first became true
 - Reconciliation is requeued to check again when threshold will be reached
 - If predicate becomes false, transition back to Stage 1
 
-**Stage 3: Matched**
+##### Stage 3: Matched
 - Predicate evaluates to `true` AND time threshold met (or no threshold configured)
 - HealthEvent is published (once per condition instance)
 - State remains in Stage 3 until predicate becomes false
 
-```
+```text
 ┌─────────────┐
 │  Unmatched  │
 │  (Stage 1)  │
@@ -197,13 +195,10 @@ The controller reconciles when:
 
 
 
-**Time evaluation strategy:**
-- Prefer built-in timestamps (NodeCondition.LastTransitionTime) over tracked timestamps
-- For Events, use event.firstTimestamp and event.count for frequency analysis
 
 #### State Tracking
 
-**State Persistence:**
+##### State Persistence
 
 State is written to disk as JSON at `/var/run/nvsentinel/k8s-monitor-state.json`. State tracks:
 - Current stage for each node-policy combination (Stage 1, 2, or 3) - for Node condition policies
@@ -247,7 +242,7 @@ State is written to disk as JSON at `/var/run/nvsentinel/k8s-monitor-state.json`
 - Label/taint/annotation policies don't support time thresholds (immediate evaluation)
 
 
-**Recovery Event Handling:**
+#### Recovery Event Handling:
 
 Recovery events depend on the **resource type being watched**:
 
