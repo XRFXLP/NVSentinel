@@ -10,253 +10,274 @@ Develop a policy-driven Kubernetes health monitor that is configurable via CEL p
 
 
 An example of such configuration would be:
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: kubernetes-health-monitor
-  namespace: nvsentinel
-data:
-  policies.yaml: |
-    policies:
-      # Node condition-based policy
-      # Node not ready for more than 2 hours
-      - name: GPUNodeNotReady
-        enabled: true
-        resourceType: Node
-        predicate: |
-          has(node.metadata.labels['nvidia.com/gpu.present']) &&
-          node.metadata.labels['nvidia.com/gpu.present'] == 'true' &&
-          node.status.conditions.exists(c, 
-            c.type == 'Ready' && 
-            (c.status == 'Unknown' || c.status == 'False')
-          )
-        timeThreshold: 2h
-        healthEvent:
-          componentClass: "Node"
-          isFatal: true
-          message: "GPU node has been NotReady for more than 2 hours"
-          recommendedAction: "REBOOT_NODE"
-      
-      # Event-based policy (GPU container creation failures from Pods)
-      # Note: These are Pod events, but indicate Node-level GPU issues
-      # Events don't support timeThreshold - immediate evaluation
-      - name: NVMLError
-        enabled: true
-        resourceType: Event
-        predicate: |
-          event.type == 'Warning' &&
-          event.reason == 'Failed' &&
-          event.involvedObject.kind == 'Pod' &&
-          event.source.component == 'kubelet' &&
-          event.message.contains('nvidia-container-cli') &&
-          event.message.contains('nvml error') &&
-          event.count > 2
-        healthEvent:
-          componentClass: "GPU"
-          isFatal: true
-          message: "GPU container runtime failures detected - likely node GPU driver issue"
-          recommendedAction: "REBOOT_NODE"
+```toml
+# ConfigMap: kubernetes-health-monitor-config
+# policies.toml
+
+# Node condition-based policy - GPU node not ready for more than 2 hours
+[[policies]]
+name = "GPUNodeNotReady"
+enabled = true
+
+[policies.resource]
+group = ""           # Core API group
+version = "v1"
+kind = "Node"
+
+[policies.predicate]
+expression = '''
+has(resource.metadata.labels['nvidia.com/gpu.present']) &&
+resource.metadata.labels['nvidia.com/gpu.present'] == 'true' &&
+resource.status.conditions.exists(c, 
+  c.type == 'Ready' && 
+  (c.status == 'Unknown' || c.status == 'False') &&
+  (now - timestamp(c.lastTransitionTime)) > duration('2h')
+)
+'''
+
+[policies.healthEvent]
+componentClass = "Node"
+isFatal = true
+message = "GPU node has been NotReady for more than 2 hours"
+recommendedAction = "REBOOT_NODE"
+
+# Event-based policy - GPU container runtime failures
+# Note: These are Pod events but indicate Node-level GPU issues
+# Time-based check ensures recovery when events stop appearing
+[[policies]]
+name = "NVMLError"
+enabled = true
+
+[policies.resource]
+group = "events.k8s.io"  # Event API group (v1 Events)
+version = "v1"
+kind = "Event"
+
+[policies.predicate]
+expression = '''
+resource.type == 'Warning' &&
+resource.reason == 'Failed' &&
+resource.regarding.kind == 'Pod' &&
+resource.reportingController == 'kubelet' &&
+resource.note.contains('nvidia-container-cli') &&
+resource.note.contains('nvml error') &&
+(now - timestamp(resource.eventTime)) < duration('10m')
+'''
+
+[policies.healthEvent]
+componentClass = "GPU"
+isFatal = true
+message = "GPU container runtime failures detected - likely node GPU driver issue"
+recommendedAction = "REBOOT_NODE"
 ```
 
 ### Architecture Overview
 
-The Kubernetes Object Monitor is implemented as a **Deployment** that uses **Kubernetes informers** with a **work-queue** for efficient cluster-wide monitoring. It evaluates CEL-based policies against Kubernetes objects (Nodes, Events) and publishes HealthEvents when policies match.
+The Kubernetes Object Monitor is implemented as a **Deployment** that uses **Kubernetes informers** with a **work-queue** for efficient cluster-wide monitoring. It evaluates CEL-based policies against Kubernetes objects and publishes HealthEvents when policies match.
 
-#### Key Components
-- **Informer-based watch**: Efficiently monitors Nodes and Events using Kubernetes client-go informers
+#### Integration with NVSentinel Breakfix Pipeline
+
+```mermaid
+graph TB
+    subgraph "Detection Layer"
+        GPU[GPU Health Monitor<br/>DCGM]
+        SYSLOG[Syslog Health Monitor<br/>Journalctl]
+        K8S[Kubernetes Object Monitor<br/>CEL Policies]
+    end
+    
+    subgraph "Policy Configuration"
+        CM[ConfigMap<br/>policies.toml]
+        CM -.->|loads| K8S
+    end
+    
+    subgraph "Kubernetes Cluster"
+        NODES[Nodes]
+        EVENTS[Events API]
+        NODES -->|watch| K8S
+        EVENTS -->|watch| K8S
+    end
+    
+    subgraph "Ingestion Layer"
+        PC[Platform Connector<br/>gRPC Server]
+    end
+    
+    subgraph "Storage"
+        MONGO[(MongoDB<br/>Health Events)]
+    end
+    
+    subgraph "Response Layer"
+        FQ[Fault Quarantine<br/>Cordon]
+        ND[Node Drainer<br/>Evict Pods]
+        FR[Fault Remediation<br/>Reboot/Terminate]
+    end
+    
+    GPU -->|gRPC| PC
+    SYSLOG -->|gRPC| PC
+    K8S -->|gRPC| PC
+    
+    PC -->|persist| MONGO
+    PC -->|update conditions| NODES
+    
+    MONGO -.->|watch| FQ
+    MONGO -.->|watch| ND
+    MONGO -.->|watch| FR
+    
+    FQ -->|cordon| NODES
+    ND -->|drain| NODES
+    FR -->|terminate/reboot| NODES
+    
+    style K8S fill:#52c41a,stroke:#389e0d,stroke-width:2px,color:#fff
+    style CM fill:#fa8c16,stroke:#d46b08,stroke-width:2px,color:#fff
+    style PC fill:#1890ff,stroke:#096dd9,stroke-width:2px,color:#fff
+    style MONGO fill:#13c2c2,stroke:#08979c,stroke-width:2px,color:#fff
+```
+
+### Key Integration Points
+
+1. **Kubernetes Object Monitor** watches Kubernetes API resources (based on policy GVKs) via informers
+2. Evaluates user-defined CEL policies from ConfigMap (TOML format)
+3. Publishes HealthEvents to Platform Connector via gRPC (same interface as other monitors)
+4. Platform Connector persists events to MongoDB
+5. Downstream modules (Quarantine, Drainer, Remediation) react to events
+
+### Key Components
+
+- **Informer-based watch**: Efficiently monitors Kubernetes resources using client-go informers (dynamically created based on policy GVKs)
 - **Work-queue**: Provides retry logic, rate-limiting, and deduplication
-- **CEL Policy Engine**: Evaluates user-defined predicates against Kubernetes objects
+- **CEL Policy Engine**: Evaluates user-defined predicates against Kubernetes objects using the `resource` variable
 
 
-#### Watched Resources
-- **Nodes**: Primary resource for condition, taint, label, and annotation checks
-- **Events**: Kubernetes events (Node, Pod, etc.) for detecting specific conditions
+### Watched Resources
 
-#### Policy Structure
+Dynamically configured based on policies' GVK specifications:
+- **Nodes** (`core/v1/Node`): For condition, taint, label, and annotation checks
+- **Events** (`events.k8s.io/v1/Event`): For detecting event-based issues (Pod failures, kubelet errors, etc.)
+- Extensible to other resources: Pods, Deployments, StatefulSets, etc.
 
-Policies consist of three key components:
+### Policy Structure
 
-1. **Resource Type**: The Kubernetes resource to watch (`Node` or `Event`)
+Policies consist of two key components:
+
+1. **Resource (GVK)**: Group/Version/Kind of the Kubernetes resource to watch
+   - `group`: API group (empty string `""` for core resources)
+   - `version`: API version (e.g., `"v1"`)
+   - `kind`: Resource kind (e.g., `"Node"`, `"Event"`)
+   
 2. **Predicate** (CEL expression): Boolean condition evaluated against the resource object
-3. **Time Threshold** (optional): Duration the predicate must remain true before triggering an event
-   - **Only supported for Node condition-based predicates** (Node conditions with `LastTransitionTime`)
-   - Not supported for labels, taints, annotations, or events
+   - Uses generic `resource` variable that represents the specified GVK object
+   - When predicate evaluates to `true` → **unhealthy event sent**
+   - When predicate evaluates to `false` → **healthy/recovery event sent**
 
-If no time threshold is specified, events are sent immediately when the predicate matches.
+#### Supported Resource Types
+
+- **Nodes**: `group=""`, `version="v1"`, `kind="Node"`
+- **Events (v1)**: `group="events.k8s.io"`, `version="v1"`, `kind="Event"`
+- Future: Extensible to other Kubernetes resources (Pods, Deployments, etc.)
+
+#### Time-based Conditions
+
+Time-based conditions can be expressed directly in CEL using built-in timestamps:
+- Node conditions: `(now - timestamp(resource.status.conditions[0].lastTransitionTime)) > duration('2h')`
+- Event timestamps: `(now - timestamp(resource.eventTime)) < duration('5m')` (for recent events only)
 
 
-#### CEL Variables:
-- `node` - Available in Node-type policies (corev1.Node object)
-- `event` - Available in Event-type policies (corev1.Event object)
+#### CEL Variables
+
+- `resource` - The Kubernetes resource object being evaluated (type depends on policy's GVK)
+  - For Node policies: `resource` is `corev1.Node`
+  - For Event policies: `resource` is `eventsv1.Event`
 - `now` - Current timestamp (time.Time)
 
-#### Three-Stage State Machine
+### State Machine
 
-Each **Node condition-based policy** (with time thresholds) transitions through three stages:
-
-**Note:** Label, taint, annotation, and event-based policies skip Stage 2 and go directly from Stage 1 → Stage 3 (immediate evaluation).
-
-##### Stage 1: Unmatched
-- Predicate evaluates to `false`
-- No state tracking required
-- If transitioning from Stage 3 (Matched), send a healthy/recovery event
-
-##### Stage 2: Matched but Waiting
-- Predicate evaluates to `true` but time threshold not yet met
-- Controller tracks when predicate first became true
-- Reconciliation is requeued to check again when threshold will be reached
-- If predicate becomes false, transition back to Stage 1
-
-##### Stage 3: Matched
-- Predicate evaluates to `true` AND time threshold met (or no threshold configured)
-- HealthEvent is published (once per condition instance)
-- State remains in Stage 3 until predicate becomes false
+Uniform two-state machine for all resources:
 
 ```text
 ┌─────────────┐
 │  Unmatched  │
-│  (Stage 1)  │
 └──────┬──────┘
-       │ Predicate becomes true
-       ↓
-┌─────────────────────┐
-│  Matched but        │
-│  Waiting (Stage 2)  │◄────┐ Requeue while waiting
-│                     │     │
-└──────┬──────────────┘─────┘
-       │ Time threshold met (or no threshold)
+       │ Predicate evaluates to true
        ↓
 ┌─────────────┐
-│   Matched   │──→ Send HealthEvent (once)
-│  (Stage 3)  │
+│   Matched   │──→ Send Unhealthy Event
 └──────┬──────┘
-       │ Predicate becomes false
+       │ Predicate evaluates to false
        ↓
 ┌─────────────┐
-│  Unmatched  │──→ Send recovery event
-│  (Stage 1)  │
+│  Unmatched  │──→ Send Healthy Event
 └─────────────┘
 ```
 
-**Event-based policies** use a simplified flow with recovery:
-- When event matches predicate, publish unhealthy event immediately (no time threshold support)
-- Track when last matching event was seen and requeue after grace period (10 minutes)
-- **Recovery detection**: If requeue triggers and no new matching events, publish recovery event
-- State tracking: Last event timestamp per node-policy combination
+#### Key Characteristics
+
+- Predicate evaluates to `true` → Send unhealthy health event
+- Predicate evaluates to `false` → Send healthy/recovery health event
+- Time conditions expressed directly in CEL (e.g., `now - lastTransitionTime > 2h`)
+- No state persistence needed - all logic in CEL predicates
 
 
-#### Reconciliation Triggers
+### Reconciliation Triggers
 
-The controller reconciles when:
+The controller reconciles on two triggers:
 
-**1. Resource changes (event-driven):**
-- **Node changes**: Node informer detects Node create/update/delete
-  - Triggers reconciliation for all Node-based policies for that specific Node
-- **Event changes**: Event informer detects Event create/update
-  - Triggers reconciliation for all Event-based policies for that specific Event
+#### 1. Resource Changes (Event-Driven)
 
-**2. Time-based requeue (waiting for thresholds):**
-- **Node condition policies**: When in Stage 2 (Matched but Waiting)
-  - Controller calculates when time threshold will be met
-  - Requeues at that exact time: `ctrl.Result{RequeueAfter: duration}`
-- **Event-based policies**: When event matches
-  - Records last seen timestamp
-  - Requeues after grace period (10 minutes): `ctrl.Result{RequeueAfter: 10m}`
-  - If another matching event arrives before requeue, timestamp updates and requeue is rescheduled
-  - If requeue happens with no new events, publishes recovery event
+- Informers watch configured GVK resources (e.g., Nodes, Events)
+- When a watched resource changes (create/update/delete), triggers reconciliation
+- For each policy matching the resource's GVK, evaluate the CEL predicate
 
-#### Reconciliation Logic
+#### 2. Periodic Reconciliation
 
-**For Node-based policies:**
-1. Retrieve the Node object (from informer cache)
-2. For each Node policy, evaluate the CEL predicate
-3. If condition-based with timeThreshold:
-   - Use 3-stage state machine (check `LastTransitionTime` against threshold)
-   - Requeue if in "Matched but Waiting" stage
-4. If label/taint/annotation-based:
-   - Immediate evaluation (Stage 1 → Stage 3 directly)
-5. Multiple reconciliations run concurrently in separate goroutines
+- Required for time-based predicates (e.g., "NotReady for more than 2 hours")
+- When a Node condition transitions to NotReady, the predicate evaluates to `false` initially
+- After 2 hours, periodic reconciliation re-evaluates and detects the threshold crossing
+- Configured via controller's resync period (e.g., every 5 minutes)
 
-**For Event-based policies:**
-1. Evaluate Event policies against the event (from informer)
-2. CEL predicate determines which events to act on
-3. If predicate matches:
-   - Immediately publish unhealthy event (or update if already sent)
-   - Record last seen timestamp for this node-policy combination
-   - Requeue reconciliation after grace period (10 minutes)
-4. On requeue (after grace period):
-   - Check if new matching events arrived (updated timestamp)
-   - If yes: Reschedule requeue for another grace period
-   - If no: Publish recovery event, clear state
-5. For Pod events indicating Node issues:
-   - Look up the Pod to determine which Node it's scheduled on
-   - Associate the health event with that Node
+#### Evaluation Result
+
+- Predicate evaluates to `true` → Send unhealthy event
+- Predicate evaluates to `false` → Send healthy event
+
+### Reconciliation Logic
+
+Uniform reconciliation for all resources:
+
+1. Retrieve the resource object (from informer cache)
+2. For each policy matching the resource's GVK, evaluate the CEL predicate
+3. If predicate evaluates to `true`:
+   - Publish unhealthy HealthEvent via gRPC
+4. If predicate evaluates to `false`:
+   - Publish healthy/recovery HealthEvent via gRPC
+5. Multiple reconciliations run concurrently (configured via `MaxConcurrentReconciles`)
+
+#### Special Handling for Pod Events
+
+For Event resources where `resource.regarding.kind == 'Pod'`:
+- Look up the Pod to determine which Node it's scheduled on
+- Associate the health event with that Node in the HealthEvent payload
 
 
 
 
-#### State Tracking
+### Recovery Event Handling
 
-##### State Persistence
+Recovery is handled uniformly for all resource types:
 
-State is written to disk as JSON at `/var/run/nvsentinel/k8s-monitor-state.json`. State tracks:
-- Current stage for each node-policy combination (Stage 1, 2, or 3) - for Node condition policies
-- Whether events have been sent (to prevent duplicates)
-- **For Event-based policies**: Last seen timestamp per node-policy combination
+- When CEL predicate evaluates to `false`, a healthy/recovery HealthEvent is published
+- Works for all resources: Nodes, Events, Pods, Deployments, etc.
 
-**Example state file:**
-```json
-{
-  "version": 1,
-  "nodeStates": {
-    "worker-gpu-01": {
-      "GPUNodeNotReady": {
-        "stage": 3,
-        "eventSent": true,
-        "lastEvaluated": "2025-11-10T14:30:00Z"
-      }
-    },
-    "worker-gpu-02": {
-      "GPUNodeNotReady": {
-        "stage": 2,
-        "eventSent": false,
-        "lastEvaluated": "2025-11-10T14:25:00Z"
-      }
-    }
-  },
-  "eventStates": {
-    "worker-gpu-01": {
-      "NVMLError": {
-        "lastSeenTimestamp": "2025-11-10T14:28:00Z",
-        "eventSent": true
-      }
-    }
-  }
-}
+#### Examples
+
+- Node condition `Ready=False` → `Ready=True` (predicate becomes false → healthy event)
+- Event disappears or becomes stale (predicate with time check becomes false → healthy event)
+- Pod status changes from `Failed` → `Running` (predicate becomes false → healthy event)
+
+#### Event Recovery Pattern
+
+For Events to support recovery, the CEL predicate should include time-based checks:
+```cel
+resource.type == 'Warning' && 
+resource.reason == 'Failed' &&
+(now - timestamp(resource.eventTime)) < duration('5m')  // Only match recent events
 ```
-
-**Note on timestamps:**
-- Node condition-based policies use built-in Kubernetes timestamps (`LastTransitionTime` from API)
-- Event-based policies track last seen event timestamp in state (for recovery detection)
-- Label/taint/annotation policies don't support time thresholds (immediate evaluation)
-
-
-#### Recovery Event Handling:
-
-Recovery events depend on the **resource type being watched**:
-
-**1. Node-based policies** (watch Node objects):
-- ✅ **Full lifecycle support** - can detect recovery
-- Condition changes: `Ready=False` → `Ready=True`
-- Taints: Taint removed
-- Labels: Label removed or changed
-- Uses 3-stage state machine (or immediate for labels/taints)
-
-**2. Event-based policies** (watch Event objects):
-- ✅ **Automatic recovery detection** based on event absence
-- When matching events appear: Publish unhealthy event, requeue after grace period
-- When requeue triggers with no new events: Publish recovery event
-- Grace period configurable (default: 10 minutes)
-- Example: Container failures stop → automatic recovery after 10 minutes
-- Uses time-based requeue mechanism (same as Node condition waiting)
+When the event becomes older than 5 minutes, the predicate returns false → healthy event sent automatically.
