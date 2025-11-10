@@ -17,59 +17,90 @@ package parser
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
-	"go.mongodb.org/mongo-driver/bson"
 )
 
-// parseSequenceString converts a criteria map into a BSON document for MongoDB queries
-func ParseSequenceString(criteria map[string]any, event datamodels.HealthEventWithStatus) (bson.D, error) {
-	doc := bson.D{}
-	allowedStringPattern := regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
+// ParseSequenceStage parses a pipeline stage and replaces "this." references
+func ParseSequenceStage(stage string, event datamodels.HealthEventWithStatus) (map[string]interface{}, error) {
+	var stageMap map[string]interface{}
+	if err := json.Unmarshal([]byte(stage), &stageMap); err != nil {
+		slog.Error("Failed to unmarshal stage", "stage", stage, "error", err)
+		return nil, fmt.Errorf("failed to unmarshal stage '%s': %w", stage, err)
+	}
 
-	for key, value := range criteria {
-		strVal, isString := value.(string)
-
-		if !isString {
-			doc = append(doc, bson.E{Key: key, Value: value})
-			continue
+	for key, value := range stageMap {
+		processedValue, err := processValue(value, event)
+		if err != nil {
+			return nil, err
 		}
 
-		// "this." reference → resolve from current event
-		if strings.HasPrefix(strVal, "this.") {
-			fieldPath := strings.TrimPrefix(strVal, "this.")
+		stageMap[key] = processedValue
+	}
+
+	return stageMap, nil
+}
+
+// processValue recursively processes any value type and replaces "this." references with actual event values
+func processValue(value interface{},
+	event datamodels.HealthEventWithStatus) (interface{}, error) {
+	switch v := value.(type) {
+	case string:
+		if strings.HasPrefix(v, "this.") {
+			fieldPath := strings.TrimPrefix(v, "this.")
 
 			resolvedValue, err := getValueFromPath(fieldPath, event)
 			if err != nil {
-				return nil, fmt.Errorf("error in getting value from path: %w", err)
+				return nil, fmt.Errorf("error in getting value from path '%s': %w", fieldPath, err)
 			}
 
-			doc = append(doc, bson.E{Key: key, Value: resolvedValue})
-
-			continue
+			return resolvedValue, nil
 		}
 
-		// JSON object string representing MongoDB operator (e.g. '{"$ne":"x"}')
-		var operatorMap map[string]any
-		if err := json.Unmarshal([]byte(strVal), &operatorMap); err == nil {
-			doc = append(doc, bson.E{Key: key, Value: operatorMap})
-			continue
+		return v, nil
+	case map[string]interface{}:
+		return processMapValue(v, event)
+	case []interface{}:
+		return processArrayValue(v, event)
+	default:
+		return v, nil
+	}
+}
+
+func processMapValue(v map[string]interface{},
+	event datamodels.HealthEventWithStatus) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+
+	for key, val := range v {
+		processedVal, err := processValue(val, event)
+		if err != nil {
+			return nil, err
 		}
 
-		// String with only allowed characters (alphanumeric, dot, and hyphen)
-		if allowedStringPattern.MatchString(strVal) {
-			doc = append(doc, bson.E{Key: key, Value: strVal})
-			continue
-		}
-
-		return nil, fmt.Errorf("failed to parse criteria '%s'", strVal)
+		result[key] = processedVal
 	}
 
-	return doc, nil
+	return result, nil
+}
+
+func processArrayValue(v []interface{},
+	event datamodels.HealthEventWithStatus) ([]interface{}, error) {
+	result := make([]interface{}, len(v))
+
+	for i, val := range v {
+		processedVal, err := processValue(val, event)
+		if err != nil {
+			return nil, err
+		}
+
+		result[i] = processedVal
+	}
+
+	return result, nil
 }
 
 func getValueFromPath(path string, event datamodels.HealthEventWithStatus) (any, error) {

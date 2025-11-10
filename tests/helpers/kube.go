@@ -1411,11 +1411,15 @@ func WaitForNodeConditionWithCheckName(
 
 		for _, condition := range node.Status.Conditions {
 			if condition.Status == v1.ConditionTrue &&
-				condition.Reason == checkName+"IsNotHealthy" && message == condition.Message {
-				t.Logf("Found node condition: Type=%s, Reason=%s, Status=%s, Message=%s",
-					condition.Type, condition.Reason, condition.Status, condition.Message)
+				condition.Reason == checkName+"IsNotHealthy" {
+				t.Logf("Checking if message matches: expected message=%s, actual message=%s", message, condition.Message)
 
-				return true
+				if message == condition.Message {
+					t.Logf("Found node condition: Type=%s, Reason=%s, Status=%s, Message=%s",
+						condition.Type, condition.Reason, condition.Status, condition.Message)
+
+					return true
+				}
 			}
 		}
 

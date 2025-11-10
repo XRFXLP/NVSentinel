@@ -108,6 +108,23 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_remediation_log_collector_job_duration_seconds` | Histogram | `node_name`, `status` | Duration of log collector jobs in seconds |
 | `fault_remediation_log_collector_errors_total` | Counter | `error_type`, `node_name` | Total number of errors encountered in log collector operations |
 
+### File Server Metrics
+
+#### HTTP Request Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `http_response_count_total` | Counter | `method`, `status`, `app` | Total HTTP responses by method and status code |
+| `http_request_duration_seconds` | Histogram | `method`, `status` | HTTP request duration in seconds |
+
+#### Log Rotation Metrics
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `fileserver_log_rotation_successful_total` | Counter | - | Total successful log cleanup operations |
+| `fileserver_log_rotation_failed_total` | Counter | - | Total failed log cleanup operations |
+| `fileserver_disk_space_free_bytes` | Gauge | - | Free disk space in bytes |
+
 ---
 
 ## Labeler Module

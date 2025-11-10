@@ -29,6 +29,9 @@ const (
 	ERRORCODE_13                 = "13"
 	ERRORCODE_48                 = "48"
 	ERRORCODE_31                 = "31"
+	ERRORCODE_119                = "119"
+	ERRORCODE_120                = "120"
+	ERRORCODE_79                 = "79"
 	HEALTH_EVENTS_ANALYZER_AGENT = "health-events-analyzer"
 )
 
@@ -66,8 +69,16 @@ func SetupHealthEventsAnalyzerTest(ctx context.Context,
 		WithFatal(false).
 		WithMessage("No health failures").
 		WithComponentClass("GPU").
-		WithCheckName("MultipleRemediations").
-		WithErrorCode(ERRORCODE_31)
+		WithCheckName("MultipleRemediations")
+	SendHealthEvent(ctx, t, event)
+
+	event = NewHealthEvent(testCtx.NodeName).
+		WithAgent(HEALTH_EVENTS_ANALYZER_AGENT).
+		WithHealthy(true).
+		WithFatal(false).
+		WithMessage("No health failures").
+		WithComponentClass("GPU").
+		WithCheckName("RepeatedXidError")
 	SendHealthEvent(ctx, t, event)
 
 	t.Log("Backing up current health-events-analyzer configmap")
@@ -156,7 +167,7 @@ func waitForRemediationToComplete(ctx context.Context, t *testing.T, client klie
 }
 
 func TeardownHealthEventsAnalyzer(ctx context.Context, t *testing.T,
-	c *envconf.Config, nodeName string, configMapBackup []byte) context.Context {
+	c *envconf.Config, nodeName string, configMapBackup []byte, xid string) context.Context {
 	t.Logf("Starting cleanup for node %s", nodeName)
 
 	event := NewHealthEvent(nodeName).
@@ -165,9 +176,18 @@ func TeardownHealthEventsAnalyzer(ctx context.Context, t *testing.T,
 		WithFatal(false).
 		WithMessage("No health failures").
 		WithCheckName("MultipleRemediations").
-		WithErrorCode(ERRORCODE_31)
+		WithErrorCode(xid)
 
 	SendHealthEvent(ctx, t, event)
+
+	event = NewHealthEvent(nodeName).
+		WithAgent(HEALTH_EVENTS_ANALYZER_AGENT).
+		WithHealthy(true).
+		WithFatal(false).
+		WithMessage("No health failures").
+		WithCheckName("RepeatedXidError")
+	SendHealthEvent(ctx, t, event)
+
 	SendHealthyEvent(ctx, t, nodeName)
 
 	restoreHealthEventsAnalyzerConfig(ctx, t, c, configMapBackup)
@@ -175,6 +195,7 @@ func TeardownHealthEventsAnalyzer(ctx context.Context, t *testing.T,
 	return ctx
 }
 
+// restoreHealthEventsAnalyzerConfig restores the health-events-analyzer config from backup and restarts the deployment.
 func restoreHealthEventsAnalyzerConfig(ctx context.Context, t *testing.T, c *envconf.Config, configMapBackup []byte) {
 	t.Helper()
 

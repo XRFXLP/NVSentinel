@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"time"
 
 	multierror "github.com/hashicorp/go-multierror"
@@ -173,11 +172,9 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 	return publishedNewEvent, nil
 }
 
-// processRule handles the processing of a single rule against an event
 func (r *Reconciler) processRule(ctx context.Context,
 	rule config.HealthEventsAnalyzerRule,
 	event *datamodels.HealthEventWithStatus) (bool, error) {
-	// Validate all sequences from DB docs
 	matchedSequences, err := r.validateAllSequenceCriteria(ctx, rule, *event)
 	if err != nil {
 		slog.Error("Error in validating all sequence criteria", "error", err)
@@ -197,7 +194,6 @@ func (r *Reconciler) processRule(ctx context.Context,
 	return true, nil
 }
 
-// publishMatchedEvent publishes an event when a rule matches
 func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 	rule config.HealthEventsAnalyzerRule,
 	event *datamodels.HealthEventWithStatus) error {
@@ -237,47 +233,26 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 	healthEventWithStatus datamodels.HealthEventWithStatus) (bool, error) {
 	slog.Debug("Evaluating rule for event", "rule_name", rule.Name, "event", healthEventWithStatus)
 
-	timeWindow, err := time.ParseDuration(rule.TimeWindow)
+	pipelineStages, err := getPipelineStages(rule, healthEventWithStatus)
 	if err != nil {
-		slog.Error("Failed to parse time window", "error", err)
-		totalEventProcessingError.WithLabelValues("parse_time_window_error").Inc()
-
-		return false, fmt.Errorf("failed to parse time window: %w", err)
+		slog.Error("Failed to generate pipeline", "error", err)
+		return false, fmt.Errorf("failed to generate pipeline: %w", err)
 	}
 
-	facets := bson.D{}
+	slog.Debug("Generated pipeline", "pipeline_stages", pipelineStages)
 
-	for i, seq := range rule.Sequence {
-		slog.Debug("Evaluating sequence", "sequence", seq)
-
-		facetName := "sequence_" + strconv.Itoa(i)
-
-		matchCriteria, err := parser.ParseSequenceString(seq.Criteria, healthEventWithStatus)
-		if err != nil {
-			slog.Error("Failed to parse sequence criteria", "error", err)
-
-			totalEventProcessingError.WithLabelValues("parse_criteria_error").Inc()
-
-			continue
-		}
-
-		facets = append(facets, getFacet(facetName, timeWindow, matchCriteria))
-	}
-
-	if len(facets) == 0 {
-		slog.Debug("No facets created for rule", "rule_name", rule.Name)
-		totalEventProcessingError.WithLabelValues("no_facets_found_error").Inc()
+	if len(pipelineStages) == 0 {
+		slog.Debug("No pipeline stages created for rule", "rule_name", rule.Name)
+		totalEventProcessingError.WithLabelValues("no_pipeline_stages_error").Inc()
 
 		return false, nil
 	}
-
-	pipeline := getPipeline(facets, rule)
 
 	var result []bson.M
 
 	startTime := time.Now()
 
-	cursor, err := r.config.CollectionClient.Aggregate(ctx, pipeline)
+	cursor, err := r.config.CollectionClient.Aggregate(ctx, pipelineStages)
 	if err != nil {
 		slog.Error("Failed to execute aggregation pipeline", "error", err)
 		totalEventProcessingError.WithLabelValues("execute_pipeline_error").Inc()
@@ -298,54 +273,34 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 	}
 
 	if len(result) > 0 {
-		// Check if all criteria are met
-		slog.Debug("Query result", "result", result)
-
-		if matched, ok := result[0]["ruleMatched"].(bool); ok && matched {
-			slog.Debug("All sequence conditions met for rule", "rule_name", rule.Name)
-			return true, nil
-		}
+		slog.Debug("All sequence conditions met for rule", "rule_name", rule.Name, "result", result)
+		return true, nil
 	}
 
 	return false, nil
 }
 
-func getFacet(facetName string, timeWindow time.Duration, matchCriteria bson.D) bson.E {
-	return bson.E{
-		Key: facetName,
-		Value: bson.A{
-			bson.D{{Key: "$match", Value: bson.D{
-				{Key: "healthevent.generatedtimestamp.seconds", Value: bson.D{
-					{Key: "$gte", Value: time.Now().UTC().Add(-timeWindow).Unix()},
-				}},
-				{Key: "healthevent.agent", Value: bson.D{{Key: "$ne", Value: "health-events-analyzer"}}},
-			}}},
-			bson.D{{Key: "$match", Value: matchCriteria}},
-			bson.D{{Key: "$count", Value: "count"}},
-		},
+func getPipelineStages(rule config.HealthEventsAnalyzerRule,
+	healthEventWithStatus datamodels.HealthEventWithStatus) ([]map[string]interface{}, error) {
+	pipelineStages := []map[string]interface{}{
+		{"$match": map[string]interface{}{
+			"healthevent.agent": map[string]interface{}{"$ne": "health-events-analyzer"},
+		}},
 	}
-}
 
-func getPipeline(facets bson.D, rule config.HealthEventsAnalyzerRule) mongo.Pipeline {
-	return mongo.Pipeline{
-		{{Key: "$facet", Value: facets}},
-		{{Key: "$project", Value: bson.D{
-			{Key: "ruleMatched", Value: bson.D{
-				{Key: "$and", Value: func() bson.A {
-					conditions := make(bson.A, len(rule.Sequence))
-					for i, seq := range rule.Sequence {
-						facetName := "sequence_" + strconv.Itoa(i)
-						conditions[i] = bson.D{
-							{Key: "$gte", Value: bson.A{
-								bson.D{{Key: "$arrayElemAt", Value: bson.A{"$" + facetName + ".count", 0}}},
-								seq.ErrorCount,
-							}},
-						}
-					}
+	if len(rule.Stage) > 0 {
+		for _, stage := range rule.Stage {
+			processedStage, err := parser.ParseSequenceStage(stage, healthEventWithStatus)
+			if err != nil {
+				slog.Error("Failed to parse sequence stage", "error", err)
+				totalEventProcessingError.WithLabelValues("build_pipeline_error").Inc()
 
-					return conditions
-				}()},
-			}},
-		}}},
+				return nil, fmt.Errorf("failed to parse stage: %w", err)
+			}
+
+			pipelineStages = append(pipelineStages, processedStage)
+		}
 	}
+
+	return pipelineStages, nil
 }

@@ -34,7 +34,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Mock Publisher
 type mockPublisher struct {
 	mock.Mock
 }
@@ -44,7 +43,6 @@ func (m *mockPublisher) HealthEventOccurredV1(ctx context.Context, events *proto
 	return args.Get(0).(*emptypb.Empty), args.Error(1)
 }
 
-// Mock CollectionClient
 type mockCollectionClient struct {
 	mock.Mock
 }
@@ -58,10 +56,8 @@ func (m *mockCollectionClient) Aggregate(ctx context.Context, pipeline interface
 }
 
 func createMockCursor(docs []bson.M) (*mongo.Cursor, error) {
-	// Create raw BSON documents to avoid DocumentSequenceStyle issues
 	var rawDocs []interface{}
 	for _, doc := range docs {
-		// Marshal to BSON and then unmarshal to ensure proper format
 		data, err := bson.Marshal(doc)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal document: %w", err)
@@ -80,55 +76,36 @@ var (
 		{
 			Name:        "rule1",
 			Description: "check multiple remediations are completed within 2 minutes",
-			TimeWindow:  "2m",
-			Sequence: []config.SequenceStep{{
-				Criteria: map[string]interface{}{
-					"healtheventstatus.faultremediated": "true",
-					"healthevent.nodename":              "this.healthevent.nodename",
-				},
-				ErrorCount: 5,
-			}},
+			Stage: []string{
+				`{"$match" : {"healthevent.generatedtimestamp.seconds": {"$gte": "Math.floor(Date.now() / 1000) - (2 * 60)" }, "healtheventstatus.faultremediated": true, "healthevent.nodename": "this.healthevent.nodename", "healthevent.isfatal": "this.healthevent.isfatal"}}`,
+				`{"$count": "count"}`,
+				`{"$match": {"count": {"$gte": 5}}}`,
+			},
 			RecommendedAction: "CONTACT_SUPPORT",
 		},
 		{
 			Name:        "rule2",
 			Description: "check the occurrence of XID error 13",
-			TimeWindow:  "2m",
-			Sequence: []config.SequenceStep{{
-				Criteria: map[string]interface{}{
-					"healthevent.entitiesimpacted.0.entitytype":  "GPU",
-					"healthevent.entitiesimpacted.0.entityvalue": "this.healthevent.entitiesimpacted.0.entityvalue",
-					"healthevent.errorcode.0":                    "13",
-					"healthevent.nodename":                       "this.healthevent.nodename",
-					"healthevent.checkname":                      "{\"$ne\": \"HealthEventsAnalyzer\"}",
-				},
-				ErrorCount: 3,
-			}},
+			Stage: []string{
+				`{"$match" : {"healthevent.generatedtimestamp.seconds": {"$gte": "Math.floor(Date.now() / 1000) - (2 * 60)" }, "healthevent.entitiesimpacted.0.entitytype" : "GPU", "healthevent.entitiesimpacted.0.entityvalue" : "this.healthevent.entitiesimpacted.0.entityvalue", "healthevent.errorcode.0" : "13", "healthevent.nodename" : "this.healthevent.nodename"}}`,
+				`{"$count": "count"}`,
+				`{"$match": {"count": {"$gte": 3}}}`,
+			},
 			RecommendedAction: "CONTACT_SUPPORT",
 		},
 		{
 			Name:        "rule3",
-			Description: "check the occurrence of XID error 13 and XID error 31",
-			TimeWindow:  "3m",
-			Sequence: []config.SequenceStep{
-				{
-					Criteria: map[string]interface{}{
-						"healthevent.entitiesimpacted.0.entitytype":  "GPU",
-						"healthevent.entitiesimpacted.0.entityvalue": "this.healthevent.entitiesimpacted.0.entityvalue",
-						"healthevent.errorcode.0":                    "13",
-						"healthevent.nodename":                       "this.healthevent.nodename",
-					},
-					ErrorCount: 1,
-				},
-				{
-					Criteria: map[string]interface{}{
-						"healthevent.entitiesimpacted.0.entitytype":  "GPU",
-						"healthevent.entitiesimpacted.0.entityvalue": "this.healthevent.entitiesimpacted.0.entityvalue",
-						"healthevent.errorcode.0":                    "31",
-						"healthevent.nodename":                       "this.healthevent.nodename",
-					},
-					ErrorCount: 1,
-				}},
+			Description: "check the occurrence of XID error 13 ",
+			Stage: []string{
+				`{"$match" : {"healthevent.generatedtimestamp.seconds": {"$gte": "Math.floor(Date.now() / 1000) - (3 * 60)" }, "healthevent.ishealthy": false, "healthevent.entitiesimpacted.0.entitytype": "GPU", "healthevent.entitiesimpacted.0.entityvalue": "this.healthevent.entitiesimpacted.0.entityvalue", "healthevent.nodename": "this.healthevent.nodename"}}`,
+				`{"$setWindowFields": {"sortBy": {"healthevent.generatedtimestamp.seconds": 1}, "output": {"prevTimestamp": {"$shift": {"output": "$healthevent.generatedtimestamp.seconds", "by": -1}}}}}`,
+				`{"$setWindowFields": {"sortBy": {"healthevent.generatedtimestamp.seconds": 1}, "output": {"burstId": {"$sum": {"$cond": {"if": {"$eq": ["$prevTimestamp", null]}, "then": 1, "else": {"$cond": {"if": {"$gt": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$prevTimestamp"]}, 180]}, "then": 1, "else": 0}}}}, "window": {"documents": ["unbounded", "current"]}}}}}`,
+				`{"$group": {"_id": {"burstId": "$burstId"}, "uniqueXidsInBurst": {"$addToSet": {"$arrayElemAt": ["$healthevent.errorcode", 0]}}, "targetXidCount": {"$sum": {"$cond": [{"$eq": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "this.healthevent.errorcode.0"]}, 1, 0]}}}}`,
+				`{"$setWindowFields": {"sortBy": {"_id.burstId": 1}, "output": {"maxBurstId": {"$max": "$_id.burstId"}}}}`,
+				`{"$match": {"$expr": {"$and": [{"$in": ["this.healthevent.errorcode.0", "$uniqueXidsInBurst"]}, {"$or": [{"$ne": ["$_id.burstId", "$maxBurstId"]}, {"$eq": ["$targetXidCount", 1]}]}]}}}`,
+				`{"$group": {"_id": null, "count": {"$sum": 1}, "bursts": {"$push": {"burstId": "$_id.burstId", "uniqueXids": "$uniqueXidsInBurst"}}}}`,
+				`{"$match": {"count": {"$gte": 1}}}`,
+			},
 			RecommendedAction: "CONTACT_SUPPORT",
 		},
 	}
@@ -224,7 +201,7 @@ func TestHandleEvent(t *testing.T) {
 
 		mockPublisher.On("HealthEventOccurredV1", ctx, expectedHealthEvents).Return(&emptypb.Empty{}, nil)
 
-		mockCursor, _ := createMockCursor([]bson.M{{"ruleMatched": true}})
+		mockCursor, _ := createMockCursor([]bson.M{{"count": 5}})
 		mockClient.On("Aggregate", ctx, mock.Anything, mock.Anything).Return(mockCursor, nil)
 
 		published, _ := reconciler.handleEvent(ctx, &healthEvent_13)
@@ -266,7 +243,7 @@ func TestHandleEvent(t *testing.T) {
 		}
 
 		mockPublisher.On("HealthEventOccurredV1", ctx, expectedHealthEvents).Return(&emptypb.Empty{}, nil)
-		mockCursor, _ := createMockCursor([]bson.M{{"ruleMatched": true}})
+		mockCursor, _ := createMockCursor([]bson.M{{"count": 5}})
 		mockClient.On("Aggregate", ctx, mock.Anything, mock.Anything).Return(mockCursor, nil)
 
 		published, _ := reconciler.handleEvent(ctx, &healthEvent_13)
@@ -285,7 +262,7 @@ func TestHandleEvent(t *testing.T) {
 		}
 		reconciler := NewReconciler(cfg)
 
-		mockCursor, _ := createMockCursor([]bson.M{{"ruleMatched": false}})
+		mockCursor, _ := createMockCursor([]bson.M{})
 		mockClient.On("Aggregate", ctx, mock.Anything, mock.Anything).Return(mockCursor, nil)
 
 		published, _ := reconciler.handleEvent(ctx, &healthEvent_48)
@@ -304,7 +281,7 @@ func TestHandleEvent(t *testing.T) {
 		reconciler := NewReconciler(cfg)
 		healthEvent_13.HealthEvent.ErrorCode = []string{"31"}
 
-		mockCursor, _ := createMockCursor([]bson.M{{"ruleMatched": false}})
+		mockCursor, _ := createMockCursor([]bson.M{})
 		mockClient.On("Aggregate", ctx, mock.Anything, mock.Anything).Return(mockCursor, nil)
 
 		published, _ := reconciler.handleEvent(ctx, &healthEvent_13)

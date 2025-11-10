@@ -20,25 +20,22 @@ import (
 
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"go.mongodb.org/mongo-driver/bson"
 )
 
 func TestParseSequenceString(t *testing.T) {
 	remediated := true
 
 	tests := []struct {
-		name     string
-		criteria map[string]any
-		event    datamodels.HealthEventWithStatus
-		want     bson.D
-		wantErr  bool
+		name    string
+		stage   []string
+		event   datamodels.HealthEventWithStatus
+		want    map[string]interface{}
+		wantErr bool
 	}{
 		{
 			name: "criteria with fault remediation check and .this reference",
-			criteria: map[string]any{
-				"healtheventstatus.faultremediated": true,
-				"healthevent.nodename":              "this.healthevent.nodename",
-				"healthevent.isfatal":               "this.healthevent.isfatal",
+			stage: []string{
+				`{"$match" : {"healtheventstatus.faultremediated": true, "healthevent.nodename": "this.healthevent.nodename", "healthevent.isfatal": "this.healthevent.isfatal"}}`,
 			},
 			event: datamodels.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
@@ -49,18 +46,19 @@ func TestParseSequenceString(t *testing.T) {
 					FaultRemediated: &remediated,
 				},
 			},
-			want: bson.D{
-				{Key: "healtheventstatus.faultremediated", Value: true},
-				{Key: "healthevent.nodename", Value: "gpu-node-1"},
-				{Key: "healthevent.isfatal", Value: true},
+			want: map[string]interface{}{
+				"$match": map[string]interface{}{
+					"healtheventstatus.faultremediated": true,
+					"healthevent.nodename":              "gpu-node-1",
+					"healthevent.isfatal":               true,
+				},
 			},
 			wantErr: false,
 		},
 		{
 			name: "criteria with MongoDB $ne operator",
-			criteria: map[string]any{
-				"healthevent.nodename": "this.healthevent.nodename",
-				"healthevent.agent":    `{"$ne":"health-events-analyzer"}`,
+			stage: []string{
+				`{"$match" : {"healthevent.nodename": "this.healthevent.nodename", "healthevent.agent": {"$ne":"health-events-analyzer"}}}`,
 			},
 			event: datamodels.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
@@ -68,17 +66,18 @@ func TestParseSequenceString(t *testing.T) {
 					Agent:    "health-events-analyzer",
 				},
 			},
-			want: bson.D{
-				{Key: "healthevent.nodename", Value: "test-node"},
-				{Key: "healthevent.agent", Value: map[string]any{"$ne": "health-events-analyzer"}},
+			want: map[string]interface{}{
+				"$match": map[string]interface{}{
+					"healthevent.nodename": "test-node",
+					"healthevent.agent":    map[string]interface{}{"$ne": "health-events-analyzer"},
+				},
 			},
 			wantErr: false,
 		},
 		{
 			name: "criteria with errorcode array access",
-			criteria: map[string]any{
-				"healthevent.errorcode.0": "this.healthevent.errorcode.0",
-				"healthevent.nodename":    "this.healthevent.nodename",
+			stage: []string{
+				`{"$match" : {"healthevent.errorcode.0": "this.healthevent.errorcode.0", "healthevent.nodename": "this.healthevent.nodename"}}`,
 			},
 			event: datamodels.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
@@ -86,21 +85,18 @@ func TestParseSequenceString(t *testing.T) {
 					ErrorCode: []string{"48"},
 				},
 			},
-			want: bson.D{
-				{Key: "healthevent.errorcode.0", Value: "48"},
-				{Key: "healthevent.nodename", Value: "node2"},
+			want: map[string]interface{}{
+				"$match": map[string]interface{}{
+					"healthevent.errorcode.0": "48",
+					"healthevent.nodename":    "node2",
+				},
 			},
 			wantErr: false,
 		},
 		{
 			name: "criteria with mixed types - booleans, strings, and references",
-			criteria: map[string]any{
-				"healthevent.isfatal":                             true,
-				"healthevent.ishealthy":                           false,
-				"healthevent.checkname":                           "this.healthevent.checkname",
-				"healthevent.nodename":                            "this.healthevent.nodename",
-				"healthevent.agent":                               "gpu-health-monitor",
-				"healtheventstatus.userpodsevictionstatus.status": "this.healtheventstatus.userpodsevictionstatus.status",
+			stage: []string{
+				`{"$match" : {"healthevent.isfatal": true, "healthevent.ishealthy": false, "healthevent.checkname": "this.healthevent.checkname", "healthevent.nodename": "this.healthevent.nodename", "healthevent.agent": "gpu-health-monitor", "healtheventstatus.userpodsevictionstatus.status": "this.healtheventstatus.userpodsevictionstatus.status"}}`,
 			},
 			event: datamodels.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
@@ -117,21 +113,22 @@ func TestParseSequenceString(t *testing.T) {
 					},
 				},
 			},
-			want: bson.D{
-				{Key: "healthevent.isfatal", Value: true},
-				{Key: "healthevent.ishealthy", Value: false},
-				{Key: "healthevent.checkname", Value: "GpuXidError"},
-				{Key: "healthevent.nodename", Value: "node2"},
-				{Key: "healthevent.agent", Value: "gpu-health-monitor"},
-				{Key: "healtheventstatus.userpodsevictionstatus.status", Value: datamodels.StatusInProgress},
+			want: map[string]interface{}{
+				"$match": map[string]interface{}{
+					"healthevent.isfatal":                             true,
+					"healthevent.ishealthy":                           false,
+					"healthevent.checkname":                           "GpuXidError",
+					"healthevent.nodename":                            "node2",
+					"healthevent.agent":                               "gpu-health-monitor",
+					"healtheventstatus.userpodsevictionstatus.status": datamodels.StatusInProgress,
+				},
 			},
 			wantErr: false,
 		},
 		{
 			name: "criteria with complex $in operator",
-			criteria: map[string]any{
-				"healthevent.checkname": `{"$in":["GpuXidError","GpuMemWatch","GpuNvswitchFatalWatch"]}`,
-				"healthevent.nodename":  "this.healthevent.nodename",
+			stage: []string{
+				`{"$match" : {"healthevent.checkname": {"$in":["GpuXidError","GpuMemWatch","GpuNvswitchFatalWatch"]}, "healthevent.nodename": "this.healthevent.nodename"}}`,
 			},
 			event: datamodels.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
@@ -139,9 +136,11 @@ func TestParseSequenceString(t *testing.T) {
 					CheckName: "XID_ERROR",
 				},
 			},
-			want: bson.D{
-				{Key: "healthevent.checkname", Value: map[string]any{"$in": []any{"GpuXidError", "GpuMemWatch", "GpuNvswitchFatalWatch"}}},
-				{Key: "healthevent.nodename", Value: "check-node"},
+			want: map[string]interface{}{
+				"$match": map[string]interface{}{
+					"healthevent.checkname": map[string]interface{}{"$in": []interface{}{"GpuXidError", "GpuMemWatch", "GpuNvswitchFatalWatch"}},
+					"healthevent.nodename":  "check-node",
+				},
 			},
 			wantErr: false,
 		},
@@ -149,34 +148,16 @@ func TestParseSequenceString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseSequenceString(tt.criteria, tt.event)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseSequenceString() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && !bsonDEqual(got, tt.want) {
-				t.Errorf("ParseSequenceString() = %v, want %v", got, tt.want)
+			for _, st := range tt.stage {
+				got, err := ParseSequenceStage(st, tt.event)
+				if (err != nil) != tt.wantErr {
+					t.Errorf("ParseSequenceString() error = %v, wantErr %v", err, tt.wantErr)
+					return
+				}
+				if !tt.wantErr && !reflect.DeepEqual(got, tt.want) {
+					t.Errorf("ParseSequenceString() = %v, want %v", got, tt.want)
+				}
 			}
 		})
 	}
-}
-
-// Helper function to compare bson.D values
-func bsonDEqual(a, b bson.D) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	aMap := make(map[string]any)
-	bMap := make(map[string]any)
-
-	for _, elem := range a {
-		aMap[elem.Key] = elem.Value
-	}
-	for _, elem := range b {
-		bMap[elem.Key] = elem.Value
-	}
-
-	// Compare maps
-	return reflect.DeepEqual(aMap, bMap)
 }

@@ -20,17 +20,11 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 )
 
-type SequenceStep struct {
-	Criteria   map[string]interface{} `toml:"criteria"`
-	ErrorCount int                    `toml:"errorCount"`
-}
-
 type HealthEventsAnalyzerRule struct {
-	Name              string         `toml:"name"`
-	Description       string         `toml:"description"`
-	TimeWindow        string         `toml:"time_window"`
-	Sequence          []SequenceStep `toml:"sequence"`
-	RecommendedAction string         `toml:"recommended_action"`
+	Name              string   `toml:"name"`
+	Description       string   `toml:"description"`
+	RecommendedAction string   `toml:"recommended_action"`
+	Stage             []string `toml:"stage"`
 }
 
 type TomlConfig struct {
