@@ -143,44 +143,59 @@ Each **Node condition-based policy** (with time thresholds) transitions through 
 
 **Event-based policies** use a simplified flow with recovery:
 - When event matches predicate, publish unhealthy event immediately (no time threshold support)
-- Track when last matching event was seen
-- **Recovery detection**: If no matching events seen for grace period (e.g., 10 minutes), publish recovery event
+- Track when last matching event was seen and requeue after grace period (10 minutes)
+- **Recovery detection**: If requeue triggers and no new matching events, publish recovery event
 - State tracking: Last event timestamp per node-policy combination
 
+
+#### Reconciliation Triggers
+
+The controller reconciles when:
+
+**1. Resource changes (event-driven):**
+- **Node changes**: Node informer detects Node create/update/delete
+  - Triggers reconciliation for all Node-based policies for that specific Node
+- **Event changes**: Event informer detects Event create/update
+  - Triggers reconciliation for all Event-based policies for that specific Event
+
+**2. Time-based requeue (waiting for thresholds):**
+- **Node condition policies**: When in Stage 2 (Matched but Waiting)
+  - Controller calculates when time threshold will be met
+  - Requeues at that exact time: `ctrl.Result{RequeueAfter: duration}`
+- **Event-based policies**: When event matches
+  - Records last seen timestamp
+  - Requeues after grace period (10 minutes): `ctrl.Result{RequeueAfter: 10m}`
+  - If another matching event arrives before requeue, timestamp updates and requeue is rescheduled
+  - If requeue happens with no new events, publishes recovery event
 
 #### Reconciliation Logic
 
 **For Node-based policies:**
-1. Node informer triggers reconciliation on node changes
-2. Retrieve the Node object
-3. For each Node policy, evaluate the CEL predicate
-4. If condition-based with timeThreshold:
+1. Retrieve the Node object (from informer cache)
+2. For each Node policy, evaluate the CEL predicate
+3. If condition-based with timeThreshold:
    - Use 3-stage state machine (check `LastTransitionTime` against threshold)
    - Requeue if in "Matched but Waiting" stage
-5. If label/taint/annotation-based:
+4. If label/taint/annotation-based:
    - Immediate evaluation (Stage 1 → Stage 3 directly)
-6. Multiple reconciliations run concurrently in separate goroutines
+5. Multiple reconciliations run concurrently in separate goroutines
 
 **For Event-based policies:**
-1. Event informer triggers reconciliation on event changes
-2. Evaluate Event policies against the event
-3. CEL predicate determines which events to act on (filter by `involvedObject.kind`, `reason`, `message`, etc.)
-4. If predicate matches:
+1. Evaluate Event policies against the event (from informer)
+2. CEL predicate determines which events to act on
+3. If predicate matches:
    - Immediately publish unhealthy event (or update if already sent)
    - Record last seen timestamp for this node-policy combination
+   - Requeue reconciliation after grace period (10 minutes)
+4. On requeue (after grace period):
+   - Check if new matching events arrived (updated timestamp)
+   - If yes: Reschedule requeue for another grace period
+   - If no: Publish recovery event, clear state
 5. For Pod events indicating Node issues:
    - Look up the Pod to determine which Node it's scheduled on
    - Associate the health event with that Node
-6. **Recovery detection via periodic check:**
-   - Every N minutes (e.g., 5 minutes), check all active event-based policies
-   - For each policy that previously matched:
-     - If no matching events seen for grace period (e.g., 10 minutes), publish recovery event
-     - Clear state for that node-policy combination
 
-**Concurrency:**
-- Set `MaxConcurrentReconciles` to 5-10 for parallel processing
-- Work queue ensures no duplicate processing of same node
-- State tracker uses mutex for thread-safe updates
+
 
 **Time evaluation strategy:**
 - Prefer built-in timestamps (NodeCondition.LastTransitionTime) over tracked timestamps
@@ -194,6 +209,37 @@ State is written to disk as JSON at `/var/run/nvsentinel/k8s-monitor-state.json`
 - Current stage for each node-policy combination (Stage 1, 2, or 3) - for Node condition policies
 - Whether events have been sent (to prevent duplicates)
 - **For Event-based policies**: Last seen timestamp per node-policy combination
+
+**Example state file:**
+```json
+{
+  "version": 1,
+  "nodeStates": {
+    "worker-gpu-01": {
+      "GPUNodeNotReady": {
+        "stage": 3,
+        "eventSent": true,
+        "lastEvaluated": "2025-11-10T14:30:00Z"
+      }
+    },
+    "worker-gpu-02": {
+      "GPUNodeNotReady": {
+        "stage": 2,
+        "eventSent": false,
+        "lastEvaluated": "2025-11-10T14:25:00Z"
+      }
+    }
+  },
+  "eventStates": {
+    "worker-gpu-01": {
+      "NVMLError": {
+        "lastSeenTimestamp": "2025-11-10T14:28:00Z",
+        "eventSent": true
+      }
+    }
+  }
+}
+```
 
 **Note on timestamps:**
 - Node condition-based policies use built-in Kubernetes timestamps (`LastTransitionTime` from API)
@@ -214,8 +260,8 @@ Recovery events depend on the **resource type being watched**:
 
 **2. Event-based policies** (watch Event objects):
 - ✅ **Automatic recovery detection** based on event absence
-- When matching events appear: Publish unhealthy event
-- When matching events stop appearing for grace period: Publish recovery event
+- When matching events appear: Publish unhealthy event, requeue after grace period
+- When requeue triggers with no new events: Publish recovery event
 - Grace period configurable (default: 10 minutes)
 - Example: Container failures stop → automatic recovery after 10 minutes
-- **Note:** Recovery detection requires periodic reconciliation (runs every 5 minutes)
+- Uses time-based requeue mechanism (same as Node condition waiting)
