@@ -134,7 +134,7 @@ graph TB
 
 ### Key Integration Points
 
-1. **Kubernetes Object Monitor** watches Kubernetes API resources (based on policy GVKs) via informers
+1. Kubernetes Object Monitor watches Kubernetes API resources (based on policy GVKs) via informers
 2. Evaluates user-defined CEL policies from ConfigMap (TOML format)
 3. Publishes HealthEvents to Platform Connector via gRPC (same interface as other monitors)
 4. Platform Connector persists events to MongoDB
