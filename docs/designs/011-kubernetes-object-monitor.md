@@ -64,6 +64,12 @@ resource.note.contains('nvml error') &&
 (now - timestamp(resource.eventTime)) < duration('10m')
 '''
 
+# Associate this Event with the Node where the Pod is running
+[policies.nodeAssociation]
+expression = '''
+lookup('v1', 'Pod', resource.regarding.namespace, resource.regarding.name).spec.nodeName
+'''
+
 [policies.healthEvent]
 componentClass = "GPU"
 isFatal = true
@@ -156,7 +162,7 @@ Dynamically configured based on policies' GVK specifications:
 
 ### Policy Structure
 
-Policies consist of two key components:
+Policies consist of three key components:
 
 1. **Resource (GVK)**: Group/Version/Kind of the Kubernetes resource to watch
    - `group`: API group (empty string `""` for core resources)
@@ -167,6 +173,12 @@ Policies consist of two key components:
    - Uses generic `resource` variable that represents the specified GVK object
    - When predicate evaluates to `true` → **unhealthy event sent**
    - When predicate evaluates to `false` → **healthy/recovery event sent**
+
+3. **Node Association** (optional, CEL expression): Associates the health event with a specific Node
+   - Required for non-Node resources (Events, Pods, etc.) that should be associated with a Node
+   - For Node resources, this is implicit (uses the Node name itself)
+   - Expression must return a string (the Node name)
+   - Can use `lookup()` function to query related objects
 
 #### Supported Resource Types
 
@@ -181,12 +193,24 @@ Time-based conditions can be expressed directly in CEL using built-in timestamps
 - Event timestamps: `(now - timestamp(resource.eventTime)) < duration('5m')` (for recent events only)
 
 
-#### CEL Variables
+#### CEL Variables and Functions
 
+**Variables:**
 - `resource` - The Kubernetes resource object being evaluated (type depends on policy's GVK)
   - For Node policies: `resource` is `corev1.Node`
   - For Event policies: `resource` is `eventsv1.Event`
 - `now` - Current timestamp (time.Time)
+
+**Custom Functions:**
+- `lookup(version, kind, namespace, name)` - Queries the informer cache for a related object
+  - **Parameters:**
+    - `version`: API version (e.g., `"v1"`, `"apps/v1"`)
+    - `kind`: Resource kind (e.g., `"Pod"`, `"Deployment"`)
+    - `namespace`: Namespace name (string)
+    - `name`: Resource name (string)
+  - **Returns:** The Kubernetes object (or null if not found)
+  - **Performance:** Uses in-memory informer cache (no API calls)
+  - **Example:** `lookup('v1', 'Pod', 'default', 'my-pod').spec.nodeName`
 
 ### State Machine
 
@@ -231,7 +255,7 @@ The controller reconciles on two triggers:
 - Required for time-based predicates (e.g., "NotReady for more than 2 hours")
 - When a Node condition transitions to NotReady, the predicate evaluates to `false` initially
 - After 2 hours, periodic reconciliation re-evaluates and detects the threshold crossing
-- Configured via controller's resync period (e.g., every 5 minutes)
+- Configured via `--resync-period` flag in Deployment container args (e.g., `5m`)
 
 #### Evaluation Result
 
@@ -248,15 +272,77 @@ Uniform reconciliation for all resources:
    - Publish unhealthy HealthEvent via gRPC
 4. If predicate evaluates to `false`:
    - Publish healthy/recovery HealthEvent via gRPC
-5. Multiple reconciliations run concurrently (configured via `MaxConcurrentReconciles`)
+5. Multiple **resource instances** can be reconciled concurrently (configured via `MaxConcurrentReconciles`)
+   - Example: With `MaxConcurrentReconciles: 10`, up to 10 different resources can be processed simultaneously
+   - Resources can be of any type: Nodes, Events, Pods, or any other configured GVK
+   - Each reconciliation evaluates all applicable policies for that specific resource instance
+   - This is per-resource parallelism, not per-policy parallelism
 
-#### Special Handling for Pod Events
+### Node Association Patterns
 
-For Event resources where `resource.regarding.kind == 'Pod'`:
-- Look up the Pod to determine which Node it's scheduled on
-- Associate the health event with that Node in the HealthEvent payload
+The `nodeAssociation` field allows flexible mapping of resources to Nodes using CEL expressions.
 
+#### Pattern 1: Direct Node Name (from current resource)
 
+For resources that directly contain a node reference:
+
+```toml
+# Pod policy - node name is directly in the Pod spec
+[policies.nodeAssociation]
+expression = "resource.spec.nodeName"
+```
+
+#### Pattern 2: Lookup Related Object
+
+For Events or other resources that reference another object:
+
+```toml
+# Pod Event → lookup Pod → get node name
+[policies.nodeAssociation]
+expression = '''
+lookup('v1', 'Pod', resource.regarding.namespace, resource.regarding.name).spec.nodeName
+'''
+```
+
+**Note:** For Node resources, `nodeAssociation` is not required - the Node name is automatically used.
+
+#### Implementation: Custom CEL Function
+
+The `lookup()` function is implemented as a custom CEL function in the Kubernetes Object Monitor:
+
+```go
+// Pseudo-code for implementation
+func CreateCELEnvironment(informerCache cache.Cache) (*cel.Env, error) {
+    return cel.NewEnv(
+        cel.Variable("resource", cel.DynType),
+        cel.Variable("now", cel.TimestampType),
+        cel.Function("lookup",
+            cel.Overload("lookup_string_string_string_string",
+                []*cel.Type{cel.StringType, cel.StringType, cel.StringType, cel.StringType},
+                cel.DynType,
+                cel.FunctionBinding(func(args ...ref.Val) ref.Val {
+                    version := args[0].Value().(string)
+                    kind := args[1].Value().(string)
+                    namespace := args[2].Value().(string)
+                    name := args[3].Value().(string)
+                    
+                    // Query informer cache (no API call)
+                    obj, err := informerCache.Get(version, kind, namespace, name)
+                    if err != nil || obj == nil {
+                        return types.NullValue
+                    }
+                    return types.NewDynamicMap(types.DefaultTypeAdapter, obj)
+                }),
+            ),
+        ),
+    )
+}
+```
+
+**Key characteristics:**
+- Queries in-memory informer cache (fast, no API overhead)
+- Type-safe at CEL compilation time
+- Standard practice in Kubernetes CEL usage
 
 
 ### Recovery Event Handling
@@ -281,3 +367,29 @@ resource.reason == 'Failed' &&
 (now - timestamp(resource.eventTime)) < duration('5m')  // Only match recent events
 ```
 When the event becomes older than 5 minutes, the predicate returns false → healthy event sent automatically.
+
+
+### Operational Configuration (Container Args/Env Vars)
+
+Controller-level settings are configured via command-line flags in the Deployment:
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--resync-period` | duration | `5m` | Periodic reconciliation interval for all watched resources |
+| `--max-concurrent-reconciles` | int | `10` | Maximum number of resources to reconcile concurrently |
+| `--policy-config-path` | string | `/etc/nvsentinel/config/policies.toml` | Path to policy configuration file |
+| `--metrics-bind-address` | string | `:8080` | Address to bind Prometheus metrics endpoint |
+| `--health-probe-bind-address` | string | `:8081` | Address to bind health probe endpoints |
+| `--log-level` | string | `info` | Log level (debug, info, warn, error) |
+
+## Metrics
+
+The Kubernetes Object Monitor exposes Prometheus metrics for observability and debugging.
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `k8s_object_monitor_policy_matches_total` | Counter | `policy_name`, `node`, `resource_kind` | Total number of times a policy matched (predicate=true), indicating detected issues by node |
+| `k8s_object_monitor_active_unhealthy_conditions` | Gauge | `policy_name`, `node`, `resource_kind` | Current number of resources with active unhealthy conditions |
+| `k8s_object_monitor_policy_evaluation_errors_total` | Counter | `policy_name`, `error_type` | Policy evaluation errors. `error_type`: `cel_error`, `lookup_error`, `node_association_error` |
+| `k8s_object_monitor_health_events_publish_errors_total` | Counter | `policy_name`, `error_type` | Errors publishing health events to Platform Connector via gRPC |
+| `k8s_object_monitor_reconciliation_errors_total` | Counter | `resource_kind`, `error_type` | Controller reconciliation errors |
