@@ -32,10 +32,6 @@ RUN cd health-monitors/kubernetes-object-monitor && \
 
 FROM public.ecr.aws/docker/library/debian:bookworm-slim AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY --from=builder /go/src/nvsentinel/health-monitors/kubernetes-object-monitor/kubernetes-object-monitor /app/kubernetes-object-monitor
 
 ENTRYPOINT ["/app/kubernetes-object-monitor"]
