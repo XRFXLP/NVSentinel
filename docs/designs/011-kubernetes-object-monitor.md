@@ -255,7 +255,7 @@ The controller reconciles on two triggers:
 - Required for time-based predicates (e.g., "NotReady for more than 2 hours")
 - When a Node condition transitions to NotReady, the predicate evaluates to `false` initially
 - After 2 hours, periodic reconciliation re-evaluates and detects the threshold crossing
-- Configured via `--resync-period` flag in Deployment container args (e.g., `5m`)
+- Configured via `--resync-period` flag (e.g., `5m`)
 
 #### Evaluation Result
 
@@ -369,9 +369,11 @@ resource.reason == 'Failed' &&
 When the event becomes older than 5 minutes, the predicate returns false → healthy event sent automatically.
 
 
-### Operational Configuration (Container Args/Env Vars)
+### Operational Configuration (Container Args & Environment Variables)
 
-Controller-level settings are configured via command-line flags in the Deployment:
+Controller-level settings are configured via command-line flags and environment variables:
+
+**Command-line Flags:**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
@@ -380,7 +382,12 @@ Controller-level settings are configured via command-line flags in the Deploymen
 | `--policy-config-path` | string | `/etc/nvsentinel/config/policies.toml` | Path to policy configuration file |
 | `--metrics-bind-address` | string | `:8080` | Address to bind Prometheus metrics endpoint |
 | `--health-probe-bind-address` | string | `:8081` | Address to bind health probe endpoints |
-| `--log-level` | string | `info` | Log level (debug, info, warn, error) |
+
+**Environment Variables:**
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `LOG_LEVEL` | string | `info` | Log level (debug, info, warn, error) |
 
 ## Metrics
 
@@ -389,7 +396,6 @@ The Kubernetes Object Monitor exposes Prometheus metrics for observability and d
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
 | `k8s_object_monitor_policy_matches_total` | Counter | `policy_name`, `node`, `resource_kind` | Total number of times a policy matched (predicate=true), indicating detected issues by node |
-| `k8s_object_monitor_active_unhealthy_conditions` | Gauge | `policy_name`, `node`, `resource_kind` | Current number of resources with active unhealthy conditions |
 | `k8s_object_monitor_policy_evaluation_errors_total` | Counter | `policy_name`, `error_type` | Policy evaluation errors. `error_type`: `cel_error`, `lookup_error`, `node_association_error` |
 | `k8s_object_monitor_health_events_publish_errors_total` | Counter | `policy_name`, `error_type` | Errors publishing health events to Platform Connector via gRPC |
 | `k8s_object_monitor_reconciliation_errors_total` | Counter | `resource_kind`, `error_type` | Controller reconciliation errors |
