@@ -40,7 +40,8 @@ func main() {
 	}
 
 	logger.SetDefaultStructuredLogger(defaultAgentName, version)
-	slog.Info("Starting kubernetes-object-monitor", "version", version, "commit", commit, "date", date, "log_level", logLevel)
+	slog.Info("Starting kubernetes-object-monitor", "version",
+		version, "commit", commit, "date", date, "log_level", logLevel)
 
 	if err := run(); err != nil {
 		slog.Error("Fatal error", "error", err)
@@ -58,5 +59,6 @@ func run() error {
 	<-ctx.Done()
 
 	slog.Info("Shutdown signal received, exiting gracefully")
+
 	return nil
 }
