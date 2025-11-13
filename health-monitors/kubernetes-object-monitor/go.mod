@@ -5,7 +5,7 @@ go 1.25.4
 require (
 	github.com/google/cel-go v0.26.1
 	github.com/nvidia/nvsentinel/commons v0.0.0
-	github.com/nvidia/nvsentinel/data-models v0.0.0-20251111124318-ba740daea463
+	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -85,3 +85,4 @@ require (
 )
 
 replace github.com/nvidia/nvsentinel/commons => ../../commons
+replace github.com/nvidia/nvsentinel/data-models => ../../data-models
