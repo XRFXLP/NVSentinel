@@ -1,0 +1,379 @@
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package controller_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/controller"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+)
+
+// To run these tests, you need to install and setup envtest:
+//   go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+//   source <(setup-envtest use -p env)
+//
+// Then run the tests:
+//   go test -v ./pkg/controller/...
+
+func TestReconciler_NodeHealthyToUnhealthy(t *testing.T) {
+	setup := setupTest(t)
+	nodeName := "test-node-1"
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: nodeName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	updateNodeStatus(t, setup, nodeName, v1.ConditionFalse)
+
+	beforeMatches := getCounterVecValue(t, metrics.PolicyMatches, "node-not-ready", nodeName, "Node")
+
+	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: nodeName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	afterMatches := getCounterVecValue(t, metrics.PolicyMatches, "node-not-ready", nodeName, "Node")
+	assert.Equal(t, beforeMatches+1, afterMatches)
+
+	require.Eventually(t, func() bool {
+		return len(setup.publisher.publishedEvents) == 1 &&
+			setup.publisher.publishedEvents[0].nodeName == nodeName &&
+			!setup.publisher.publishedEvents[0].isHealthy
+	}, time.Second, 50*time.Millisecond)
+}
+
+func TestReconciler_NodeUnhealthyToHealthy(t *testing.T) {
+	setup := setupTest(t)
+	nodeName := "test-node-2"
+
+	createNode(t, setup, nodeName, v1.ConditionFalse)
+
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: nodeName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Eventually(t, func() bool {
+		return len(setup.publisher.publishedEvents) > 0 &&
+			!setup.publisher.publishedEvents[0].isHealthy
+	}, time.Second, 50*time.Millisecond)
+
+	updateNodeStatus(t, setup, nodeName, v1.ConditionTrue)
+	setup.publisher.publishedEvents = []mockPublishedEvent{}
+
+	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: nodeName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Eventually(t, func() bool {
+		return len(setup.publisher.publishedEvents) > 0 &&
+			setup.publisher.publishedEvents[0].isHealthy
+	}, time.Second, 50*time.Millisecond)
+}
+
+func TestReconciler_NodeDeleted(t *testing.T) {
+	setup := setupTest(t)
+	nodeName := "test-node-3"
+
+	node := createNode(t, setup, nodeName, v1.ConditionFalse)
+
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: nodeName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Eventually(t, func() bool {
+		return len(setup.publisher.publishedEvents) > 0
+	}, time.Second, 50*time.Millisecond)
+
+	require.NoError(t, setup.k8sClient.Delete(setup.ctx, node))
+
+	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: nodeName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+}
+
+func TestReconciler_MultipleNodes(t *testing.T) {
+	setup := setupTest(t)
+	nodeNames := []string{"node-1", "node-2", "node-3"}
+
+	for _, nodeName := range nodeNames {
+		createNode(t, setup, nodeName, v1.ConditionFalse)
+	}
+
+	for _, nodeName := range nodeNames {
+		result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: nodeName},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, ctrl.Result{}, result)
+	}
+
+	require.Eventually(t, func() bool {
+		if len(setup.publisher.publishedEvents) < len(nodeNames) {
+			return false
+		}
+		nodeEvents := make(map[string]bool)
+		for _, event := range setup.publisher.publishedEvents {
+			nodeEvents[event.nodeName] = true
+		}
+		for _, nodeName := range nodeNames {
+			if !nodeEvents[nodeName] {
+				return false
+			}
+		}
+		return true
+	}, 2*time.Second, 50*time.Millisecond)
+}
+
+func TestReconciler_ResourceNotFound(t *testing.T) {
+	setup := setupTest(t)
+	nodeName := "non-existent-node"
+
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: nodeName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Never(t, func() bool {
+		return len(setup.publisher.publishedEvents) > 0
+	}, 500*time.Millisecond, 50*time.Millisecond)
+}
+
+func TestReconciler_DisabledPolicy(t *testing.T) {
+	disabledPolicies := []config.Policy{
+		{
+			Name:    "disabled-policy",
+			Enabled: false,
+			Resource: config.ResourceSpec{
+				Group:   "",
+				Version: "v1",
+				Kind:    "Node",
+			},
+			Predicate: config.PredicateSpec{
+				Expression: `status.conditions.filter(c, c.type == "Ready" && c.status == "False").size() > 0`,
+			},
+			HealthEvent: config.HealthEventSpec{
+				ComponentClass: "Node",
+				Message:        "Disabled policy test",
+			},
+		},
+	}
+
+	setup := setupTestWithPolicies(t, disabledPolicies)
+	nodeName := "test-node-5"
+
+	createNode(t, setup, nodeName, v1.ConditionFalse)
+
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: nodeName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Never(t, func() bool {
+		return len(setup.publisher.publishedEvents) > 0
+	}, 500*time.Millisecond, 50*time.Millisecond)
+}
+
+type testSetup struct {
+	ctx        context.Context
+	k8sClient  client.Client
+	reconciler *controller.ResourceReconciler
+	publisher  *mockPublisher
+	evaluator  *policy.Evaluator
+	testEnv    *envtest.Environment
+}
+
+func setupTest(t *testing.T) *testSetup {
+	t.Helper()
+
+	policies := []config.Policy{
+		{
+			Name:    "node-not-ready",
+			Enabled: true,
+			Resource: config.ResourceSpec{
+				Group:   "",
+				Version: "v1",
+				Kind:    "Node",
+			},
+			Predicate: config.PredicateSpec{
+				Expression: `resource.status.conditions.filter(c, c.type == "Ready" && c.status == "False").size() > 0`,
+			},
+			HealthEvent: config.HealthEventSpec{
+				ComponentClass:    "Node",
+				IsFatal:           true,
+				Message:           "Node is not ready",
+				RecommendedAction: "CONTACT_SUPPORT",
+			},
+		},
+	}
+
+	return setupTestWithPolicies(t, policies)
+}
+
+func setupTestWithPolicies(t *testing.T, policies []config.Policy) *testSetup {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	testEnv := &envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		assert.NoError(t, testEnv.Stop())
+	})
+
+	k8sClient, err := client.New(cfg, client.Options{})
+	require.NoError(t, err)
+
+	mockPub := &mockPublisher{
+		publishedEvents: []mockPublishedEvent{},
+	}
+
+	celEnvironment, err := celenv.NewEnvironment(k8sClient)
+	require.NoError(t, err)
+
+	evaluator, err := policy.NewEvaluator(celEnvironment, policies)
+	require.NoError(t, err)
+
+	gvk := schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Node",
+	}
+
+	reconciler := controller.NewResourceReconciler(
+		k8sClient,
+		evaluator,
+		mockPub,
+		policies,
+		gvk,
+	)
+
+	return &testSetup{
+		ctx:        ctx,
+		k8sClient:  k8sClient,
+		reconciler: reconciler,
+		publisher:  mockPub,
+		evaluator:  evaluator,
+		testEnv:    testEnv,
+	}
+}
+
+type mockPublishedEvent struct {
+	policy    *config.Policy
+	nodeName  string
+	isHealthy bool
+}
+
+type mockPublisher struct {
+	publishedEvents []mockPublishedEvent
+}
+
+func (m *mockPublisher) PublishHealthEvent(policy *config.Policy, nodeName string, isHealthy bool) error {
+	m.publishedEvents = append(m.publishedEvents, mockPublishedEvent{
+		policy:    policy,
+		nodeName:  nodeName,
+		isHealthy: isHealthy,
+	})
+	return nil
+}
+
+func createNode(t *testing.T, setup *testSetup, name string, readyStatus v1.ConditionStatus) *v1.Node {
+	t.Helper()
+
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{
+				{Type: v1.NodeReady, Status: readyStatus},
+			},
+		},
+	}
+	require.NoError(t, setup.k8sClient.Create(setup.ctx, node))
+
+	require.Eventually(t, func() bool {
+		err := setup.k8sClient.Get(setup.ctx, types.NamespacedName{Name: name}, node)
+		return err == nil
+	}, time.Second, 50*time.Millisecond)
+
+	return node
+}
+
+func updateNodeStatus(t *testing.T, setup *testSetup, name string, readyStatus v1.ConditionStatus) {
+	t.Helper()
+
+	node := &v1.Node{}
+	require.NoError(t, setup.k8sClient.Get(setup.ctx, types.NamespacedName{Name: name}, node))
+
+	node.Status.Conditions = []v1.NodeCondition{
+		{Type: v1.NodeReady, Status: readyStatus},
+	}
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, node))
+
+	require.Eventually(t, func() bool {
+		updatedNode := &v1.Node{}
+		if err := setup.k8sClient.Get(setup.ctx, types.NamespacedName{Name: name}, updatedNode); err != nil {
+			return false
+		}
+		for _, cond := range updatedNode.Status.Conditions {
+			if cond.Type == v1.NodeReady && cond.Status == readyStatus {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 50*time.Millisecond)
+}
+
+func getCounterVecValue(t *testing.T, counterVec *prometheus.CounterVec, labelValues ...string) float64 {
+	t.Helper()
+	counter, err := counterVec.GetMetricWithLabelValues(labelValues...)
+	require.NoError(t, err)
+	metric := &dto.Metric{}
+	err = counter.Write(metric)
+	require.NoError(t, err)
+	return metric.Counter.GetValue()
+}
