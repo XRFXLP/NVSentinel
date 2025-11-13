@@ -30,7 +30,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -241,6 +243,83 @@ func TestReconciler_ErrorCodePropagation(t *testing.T) {
 	}, time.Second, 50*time.Millisecond)
 }
 
+func TestReconciler_CustomResource(t *testing.T) {
+	crPolicy := config.Policy{
+		Name:    "gpu-job-failed",
+		Enabled: true,
+		Resource: config.ResourceSpec{
+			Group:   "batch.nvidia.com",
+			Version: "v1alpha1",
+			Kind:    "GPUJob",
+		},
+		Predicate: config.PredicateSpec{
+			Expression: `has(resource.status.state) && resource.status.state == "Failed"`,
+		},
+		NodeAssociation: &config.AssociationSpec{
+			Expression: `resource.spec.nodeName`,
+		},
+		HealthEvent: config.HealthEventSpec{
+			ComponentClass:    "GPU",
+			IsFatal:           false,
+			Message:           "GPU job failed",
+			RecommendedAction: "CONTACT_SUPPORT",
+			ErrorCode:         []string{"GPU_JOB_FAILED"},
+		},
+	}
+
+	setup := setupTestWithCRD(t, []config.Policy{crPolicy}, gpuJobCRD())
+	nodeName := "gpu-test-node"
+	jobName := "test-gpu-job"
+	namespace := "default"
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+
+	gpuJob := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "batch.nvidia.com/v1alpha1",
+			"kind":       "GPUJob",
+			"metadata": map[string]any{
+				"name":      jobName,
+				"namespace": namespace,
+			},
+			"spec": map[string]any{
+				"nodeName": nodeName,
+			},
+		},
+	}
+
+	require.NoError(t, setup.k8sClient.Create(setup.ctx, gpuJob))
+
+	require.Eventually(t, func() bool {
+		err := setup.k8sClient.Get(setup.ctx, types.NamespacedName{
+			Name:      jobName,
+			Namespace: namespace,
+		}, gpuJob)
+		return err == nil
+	}, time.Second, 50*time.Millisecond)
+
+	gpuJob.Object["status"] = map[string]any{
+		"state": "Failed",
+	}
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, gpuJob))
+
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: jobName, Namespace: namespace},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Eventually(t, func() bool {
+		if len(setup.publisher.publishedEvents) != 1 {
+			return false
+		}
+		event := setup.publisher.publishedEvents[0]
+		return event.nodeName == nodeName &&
+			!event.isHealthy &&
+			event.policy.Name == "gpu-job-failed"
+	}, time.Second, 50*time.Millisecond)
+}
+
 func TestReconciler_ColdStart(t *testing.T) {
 	tests := []struct {
 		name              string
@@ -401,6 +480,58 @@ func setupTestWithPolicies(t *testing.T, policies []config.Policy) *testSetup {
 	}
 }
 
+func setupTestWithCRD(t *testing.T, policies []config.Policy, crd *apiextensionsv1.CustomResourceDefinition) *testSetup {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	testEnv := &envtest.Environment{
+		CRDs: []*apiextensionsv1.CustomResourceDefinition{crd},
+	}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		assert.NoError(t, testEnv.Stop())
+	})
+
+	k8sClient, err := client.New(cfg, client.Options{})
+	require.NoError(t, err)
+
+	mockPub := &mockPublisher{
+		publishedEvents: []mockPublishedEvent{},
+	}
+
+	celEnvironment, err := celenv.NewEnvironment(k8sClient)
+	require.NoError(t, err)
+
+	evaluator, err := policy.NewEvaluator(celEnvironment, policies)
+	require.NoError(t, err)
+
+	gvk := schema.GroupVersionKind{
+		Group:   crd.Spec.Group,
+		Version: crd.Spec.Versions[0].Name,
+		Kind:    crd.Spec.Names.Kind,
+	}
+
+	reconciler := controller.NewResourceReconciler(
+		k8sClient,
+		evaluator,
+		mockPub,
+		policies,
+		gvk,
+	)
+
+	return &testSetup{
+		ctx:        ctx,
+		k8sClient:  k8sClient,
+		reconciler: reconciler,
+		publisher:  mockPub,
+		evaluator:  evaluator,
+		testEnv:    testEnv,
+	}
+}
+
 type mockPublishedEvent struct {
 	ctx       context.Context
 	policy    *config.Policy
@@ -514,4 +645,51 @@ func getCounterVecValue(t *testing.T, counterVec *prometheus.CounterVec, labelVa
 	err = counter.Write(metric)
 	require.NoError(t, err)
 	return metric.Counter.GetValue()
+}
+
+func gpuJobCRD() *apiextensionsv1.CustomResourceDefinition {
+	return &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "gpujobs.batch.nvidia.com",
+		},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "batch.nvidia.com",
+			Names: apiextensionsv1.CustomResourceDefinitionNames{
+				Plural:   "gpujobs",
+				Singular: "gpujob",
+				Kind:     "GPUJob",
+				ListKind: "GPUJobList",
+			},
+			Scope: apiextensionsv1.NamespaceScoped,
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+				{
+					Name:    "v1alpha1",
+					Served:  true,
+					Storage: true,
+					Schema: &apiextensionsv1.CustomResourceValidation{
+						OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+							Type: "object",
+							Properties: map[string]apiextensionsv1.JSONSchemaProps{
+								"spec": {
+									Type: "object",
+									Properties: map[string]apiextensionsv1.JSONSchemaProps{
+										"nodeName": {Type: "string"},
+									},
+								},
+								"status": {
+									Type: "object",
+									Properties: map[string]apiextensionsv1.JSONSchemaProps{
+										"state": {Type: "string"},
+									},
+								},
+							},
+						},
+					},
+					Subresources: &apiextensionsv1.CustomResourceSubresources{
+						Status: &apiextensionsv1.CustomResourceSubresourceStatus{},
+					},
+				},
+			},
+		},
+	}
 }
