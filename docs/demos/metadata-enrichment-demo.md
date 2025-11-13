@@ -1,531 +1,484 @@
-# Metadata Enrichment: Enhancing GPU Infrastructure Observability
+# Metadata Enrichment: From Identifier Chaos to Surgical Precision
 
-## Why Metadata Enrichment?
+## Overview
 
-Modern GPU infrastructure faces three critical challenges:
+NVSentinel's metadata enrichment transforms fragmented GPU error detection into precise, fleet-scale observability.
 
-1. **Debuggability**: When errors occur, operators need to quickly identify *which specific hardware* is failing
-2. **Visibility**: Infrastructure spans multiple clusters, clouds, and physical locations - correlation is manual and time-consuming  
-3. **Remediation Efficiency**: Without precise identification, remediation is overly broad (draining entire nodes instead of specific GPUs)
-
-**The Problem**: Health monitors detect failures using disparate identifiers - PCI addresses, device indexes, node names, IP addresses. These identifiers:
-- Don't map to each other without external lookups
-- Aren't unique across clusters
-- Don't provide hardware lifecycle context
-
-**The Solution**: Metadata enrichment bridges these gaps through two complementary approaches:
-
-| Enrichment Type | Purpose | Enables |
-|----------------|---------|---------|
-| **Entity-Level** | Hardware identification | GPU UUID, chassis serial, PCI mapping |
-| **Node-Level** | Infrastructure context | Cloud provider ID, cluster, rack, topology |
-
-Together, these create a complete identification and correlation framework from error detection → remediation → lifecycle tracking.
+**Journey**: Raw kernel logs → Isolated events → Enriched hardware context → Complete infrastructure visibility
 
 ---
 
-## Architecture Overview
+## Part 1: The Baseline (Before Enrichment)
+
+### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Metadata Sources                                               │
-│                                                                 │
-│  ┌──────────────────────┐        ┌──────────────────────────┐   │
-│  │ GPU Metadata         │        │ Node Metadata            │   │
-│  │ Collector            │        │ (Kubernetes API)         │   │
-│  │                      │        │                          │   │
-│  │ Source: go-nvml      │        │ Source: K8s API Server   │   │
-│  │ Runs: Init container │        │ Accessed by: Platform    │   │
-│  │       per node       │        │              Connector   │   │
-│  │                      │        │                          │   │
-│  │ Provides:            │        │ Provides:                │   │
-│  │ • GPU UUID           │        │ • Provider ID            │   │
-│  │ • PCI address        │        │ • Node labels            │   │
-│  │ • Chassis serial     │        │ • Topology info          │   │
-│  │ • Device index       │        │ • Instance type          │   │
-│  └──────────────────────┘        └──────────────────────────┘   │
-│           │                                   │                 │
-│           │                                   │                 │
-└───────────┼───────────────────────────────────┼─────────────────┘
-            │                                   │
-            ▼                                   ▼
-┌─────────────────────┐            ┌─────────────────────────────┐
-│ Health Monitors     │            │ Platform Connector          │
-│                     │            │                             │
-│ Enrich with:        │   gRPC     │ Further enriches with:      │
-│ • GPU UUID          │───────────▶│ • Provider ID               │
-│ • Chassis serial    │            │ • Cluster name              │
-│                     │            │ • Rack ID                   │
-└─────────────────────┘            │ • Topology labels           │
-                                   └─────────────────────────────┘
-                                                │
-                                                ▼
-                                   ┌─────────────────────────────┐
-                                   │ MongoDB (events)            │
-                                   │                             │
-                                   │ Complete enriched events:   │
-                                   │ • gpu_uuid (entity)         │
-                                   │ • chassis_serial (entity)   │
-                                   │ • provider_id (node)        │
-                                   │ • cluster/rack (node)       │
-                                   └─────────────────────────────┘
-                                                │
-                                                ▼
-                                   ┌─────────────────────────────┐
-                                   │ Fault Management            │
-                                   │                             │
-                                   │ • Correlate by gpu_uuid     │
-                                   │ • Query by cluster/rack     │
-                                   │ • Precise GPU-level actions │
-                                   └─────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│ GPU Node                                                       │
+└────────────────────────────────────────────────────────────────┘
+
+    ┌──────────────────────────────────────────────────────────┐
+    │ Kernel                                                   │
+    │                                                          │
+    │ NVRM: Xid (PCI:0000:17:00): 79, pid='<unknown>',         │
+    │       name=<unknown>, GPU has fallen off the bus.        │
+    └────────────────────────┬─────────────────────────────────┘
+                             │ syslog/dmesg
+                             ▼
+    ┌──────────────────────────────────────────────────────────┐
+    │ Syslog Health Monitor                                    │
+    │ (DaemonSet container)                                    │
+    │                                                          │
+    │ • Parses XID from kernel log                             │
+    │ • Extracts PCI address                                   │
+    │ • Creates HealthEvent                                    │
+    │                                                          │
+    │ ❌ No GPU UUID (can't correlate with other monitors)     │
+    │ ❌ No chassis serial (can't track RMA)                   │
+    └────────────────────────┬─────────────────────────────────┘
+                             │
+                             │ gRPC
+                             │
+                ┌────────────▼────────────────┐
+                │ Event Structure:            │
+                │                             │
+                │ {                           │
+                │   "agent": "syslog-...",    │
+                │   "checkName": "SysLogs...",│
+                │   "isFatal": true,          │
+                │   "entitiesImpacted": [     │
+                │     {                       │
+                │       "entityType": "PCI",  │
+                │       "entityValue":        │
+                │         "0000:17:00.0"      │
+                │     }                       │
+                │   ],                        │
+                │   "metadata": {},           │
+                │   "nodeName": "gpu-node-42" │
+                │ }                           │
+                └────────────┬────────────────┘
+                             │
+────────────────────────────────────────────────────────────────
+
+┌────────────────────────────────────────────────────────────────┐
+│ Platform Connector                                             │
+└────────────────────────────────────────────────────────────────┘
+
+    ┌──────────────────────────────────────────────────────────┐
+    │ Event Receiver                                           │
+    │                                                          │
+    │ • Validates event schema                                 │
+    │ • Queues for MongoDB insertion                           │
+    │                                                          │
+    │ ❌ No K8s API query                                      │
+    │ ❌ No node metadata enrichment                           │
+    └────────────────────────┬─────────────────────────────────┘
+                             │
+                             │ Insert
+                             │
+                ┌────────────▼────────────────┐
+                │ Event (unchanged):          │
+                │                             │
+                │ {                           │
+                │   "entitiesImpacted": [     │
+                │     { "entityType": "PCI",  │
+                │       "entityValue":        │
+                │         "0000:17:00.0" }    │
+                │   ],                        │
+                │   "metadata": {},           │
+                │   "nodeName": "gpu-node-42" │
+                │ }                           │
+                └────────────┬────────────────┘
+                             │
+────────────────────────────────────────────────────────────────
+
+┌────────────────────────────────────────────────────────────────┐
+│ MongoDB                                                        │
+└────────────────────────────────────────────────────────────────┘
+
+    ┌──────────────────────────────────────────────────────────┐
+    │ health_events collection                                 │
+    │                                                          │
+    │ {                                                        │
+    │   "_id": ObjectId("..."),                                │
+    │   "createdAt": ISODate("..."),                           │
+    │   "healthevent": {                                       │
+    │     "agent": "syslog-health-monitor",                    │
+    │     "checkName": "SysLogsXIDError",                      │
+    │     "isFatal": true,                                     │
+    │     "entitiesImpacted": [                                │
+    │       { "entityType": "PCI",                             │
+    │         "entityValue": "0000:17:00.0" }                  │
+    │     ],                                                   │
+    │     "metadata": {},  ← Empty!                            │
+    │     "nodeName": "gpu-node-42"                            │
+    │   }                                                      │
+    │ }                                                        │
+    │                                                          │
+    │ ❌ Cannot correlate events across monitors               │
+    │ ❌ Cannot distinguish clusters                           │
+    │ ❌ Cannot detect rack patterns                           │
+    │ ❌ Cannot track hardware lifecycle                       │
+    └──────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Part 1: Entity-Level Metadata (GPU Hardware)
+## Part 2: The Problems
 
-### Problem: Identifier Fragmentation
+### Problem 1: Identifier Fragmentation
 
-Different health monitors use different identifiers for the same GPU:
+Same GPU fails, detected by two monitors:
+
+```javascript
+// Syslog: Uses PCI address
+{ "entitiesImpacted": [{ "entityType": "PCI", "entityValue": "0000:17:00.0" }] }
+
+// DCGM: Uses GPU index
+{ "entitiesImpacted": [{ "entityType": "GPU", "entityValue": "0" }] }
+
+// Question: Same GPU? Answer: Can't tell! PCI ≠ GPU index
+```
+
+**Impact**: Cannot correlate → Must drain entire node (8 GPUs) instead of 1 GPU
+
+### Problem 2: Node Name Collisions
+
+```javascript
+// Cluster A
+{ "nodeName": "10.0.1.5" }
+
+// Cluster B
+{ "nodeName": "10.0.1.5" }  // ← Collision!
+
+// Query: db.events.find({ nodeName: "10.0.1.5" })
+// Result: Events from BOTH clusters mixed ❌
+```
+
+### Problem 3: Missing Infrastructure Context
+
+```javascript
+{ "nodeName": "gpu-node-42" }
+
+// Questions: Which cluster? 🤷 Which rack? 🤷 Which datacenter? 🤷
+// Answer: Manual lookup → 15-30 minutes
+```
+
+### Problem 4: No Hardware Lifecycle Tracking
+
+```javascript
+{ "entitiesImpacted": [{ "entityType": "PCI", "entityValue": "0000:17:00.0" }] }
+
+// For RMA: What's the chassis serial? 🤷
+// Cannot track through RMA process or warranty records
+```
+
+---
+
+## Part 3: The Solution
+
+### New Architecture
 
 ```
-Syslog Monitor:  "XID on PCI 0000:17:00.0"
-DCGM Monitor:    "Error on GPU device 0"
-Operator:        "Which GPU UUID is this?"
+┌────────────────────────────────────────────────────────────────┐
+│ GPU Node                                                       │
+└────────────────────────────────────────────────────────────────┘
+
+    ┌──────────────────────────────────────────────────────────┐
+    │ GPU Metadata Collector                                   │
+    │ (DaemonSet init container)                               │
+    │                                                          │
+    │ • Uses go-nvml to query GPU info                         │
+    │ • Collects: UUID, PCI address, chassis serial            │
+    └────────────────────────┬─────────────────────────────────┘
+                             │
+                             │ Writes to disk
+                             ▼
+    ┌──────────────────────────────────────────────────────────┐
+    │ /var/lib/nvsentinel/gpu_metadata.json                    │
+    │                                                          │
+    │ {                                                        │
+    │   "chassis_serial": "DGX-A100-SN123456",                 │
+    │   "gpus": [                                              │
+    │     {                                                    │
+    │       "gpu_id": 0,                                       │
+    │       "uuid": "GPU-abc123-def456-789012-345678",         │
+    │       "pci_address": "0000:17:00.0"                      │
+    │     }                                                    │
+    │   ]                                                      │
+    │ }                                                        │
+    └────────────────────────┬─────────────────────────────────┘
+                             │
+                             │ Read by
+                             ▼
+    ┌──────────────────────────────────────────────────────────┐
+    │ Syslog Health Monitor                                    │
+    │ (DaemonSet container)                                    │
+    │                                                          │
+    │ 1. Parses kernel XID from syslog                         │
+    │ 2. Reads metadata file                                   │
+    │ 3. Maps PCI address → GPU UUID                           │
+    │ 4. Enriches event with GPU UUID + chassis serial         │
+    └────────────────────────┬─────────────────────────────────┘
+                             │
+                             │ gRPC
+                             │
+                ┌────────────▼─────────────────┐
+                │ Event (entity-enriched):     │
+                │                              │
+                │ {                            │
+                │   "entitiesImpacted": [      │
+                │     { "entityType": "PCI",   │
+                │       "entityValue":         │
+                │         "0000:17:00.0" },    │
+                │     { "entityType":          │
+                │         "GPU_UUID",          │
+                │       "entityValue":         │
+                │         "GPU-abc123..." } ✅ │
+                │   ],                         │
+                │   "metadata": {              │
+                │     "chassis_serial":        │
+                │       "DGX-A100-SN..." ✅    │
+                │   },                         │
+                │   "nodeName": "gpu-node-42"  │
+                │ }                            │
+                └────────────┬─────────────────┘
+                             │
+────────────────────────────────────────────────────────────────
+
+┌────────────────────────────────────────────────────────────────┐
+│ Platform Connector                                             │
+└────────────────────────────────────────────────────────────────┘
+
+    ┌──────────────────────────────────────────────────────────┐
+    │ Node Metadata Processor                                  │
+    │                                                          │
+    │ 1. Receives entity-enriched event from monitor           │
+    └────────────────────────┬─────────────────────────────────┘
+                             │
+                             │ Query for node metadata
+                             ▼
+            ┌────────────────────────────────────────┐
+            │ Kubernetes API Server                  │
+            │                                        │
+            │ GET /api/v1/nodes/{nodeName}           │
+            │                                        │
+            │ Returns:                               │
+            │   • node.Spec.ProviderID               │
+            │   • node.Labels (cluster, rack, zone)  │
+            └────────────────┬───────────────────────┘
+                             │
+                             │ Node metadata response
+                             ▼
+    ┌──────────────────────────────────────────────────────────┐
+    │ Node Metadata Processor                                  │
+    │                                                          │
+    │ 2. Extracts providerID from node.Spec                    │
+    │ 3. Extracts allowed labels (cluster, rack, zone)         │
+    │ 4. Enriches event.metadata with node context             │
+    └────────────────────────┬─────────────────────────────────┘
+                             │
+                             │ Insert
+                             │
+                ┌────────────▼─────────────────┐
+                │ Event (fully enriched):      │
+                │                              │
+                │ {                            │
+                │   "entitiesImpacted": [      │
+                │     { "entityType": "PCI",   │
+                │       "..." },               │
+                │     { "entityType":          │
+                │       "GPU_UUID", "..." }    │
+                │   ],                         │
+                │   "metadata": {              │
+                │     "chassis_serial": "...", │
+                │     "providerID":            │
+                │       "aws:///.../i-..." ✅  │
+                │     "cluster-name":          │
+                │       "prod-ml-01", ✅       │
+                │     "rack-id":               │
+                │       "rack-12", ✅          │
+                │     "topology...zone":       │
+                │       "us-west-2a" ✅        │
+                │   }                          │
+                │ }                            │
+                └────────────┬─────────────────┘
+                             │
+────────────────────────────────────────────────────────────────
+
+┌────────────────────────────────────────────────────────────────┐
+│ MongoDB                                                        │
+└────────────────────────────────────────────────────────────────┘
+
+    ┌──────────────────────────────────────────────────────────┐
+    │ health_events collection                                 │
+    │                                                          │
+    │ {                                                        │
+    │   "_id": ObjectId("..."),                                │
+    │   "healthevent": {                                       │
+    │     "agent": "syslog-health-monitor",                    │
+    │     "checkName": "SysLogsXIDError",                      │
+    │     "isFatal": true,                                     │
+    │     "entitiesImpacted": [                                │
+    │       { "entityType": "PCI",                             │
+    │         "entityValue": "0000:17:00.0" },                 │
+    │       { "entityType": "GPU_UUID",                        │
+    │         "entityValue": "GPU-abc123..." } ✅              │
+    │     ],                                                   │
+    │     "metadata": {                                        │
+    │       "chassis_serial": "DGX-A100-SN123456", ✅          │
+    │       "providerID": "aws:///.../i-0abc123...", ✅        │
+    │       "cluster-name": "prod-ml-01", ✅                   │
+    │       "rack-id": "rack-12", ✅                           │
+    │       "topology.kubernetes.io/zone": "us-west-2a" ✅     │
+    │     },                                                   │
+    │     "nodeName": "gpu-node-42"                            │
+    │   }                                                      │
+    │ }                                                        │
+    │                                                          │
+    │ ✅ Can correlate events across monitors (GPU UUID)       │
+    │ ✅ Can distinguish clusters (providerID)                 │
+    │ ✅ Can detect rack patterns (rack-id)                    │
+    │ ✅ Can track hardware lifecycle (chassis_serial)         │
+    └──────────────────────────────────────────────────────────┘
 ```
 
-**Impact**: Cannot correlate events across monitors → Cannot confirm if it's the same GPU failing
+---
 
-### Solution: GPU Metadata Collector
+## Part 4: Entity-Level Enrichment (GPU Hardware)
 
-A DaemonSet init container collects and maps all GPU identifiers:
+### Metadata Collector Output
+
+**File**: `/var/lib/nvsentinel/gpu_metadata.json`
 
 ```json
-// /var/lib/nvsentinel/gpu_metadata.json
 {
   "chassis_serial": "DGX-A100-SN123456",
   "gpus": [
     {
+      "gpu_id": 0,
       "uuid": "GPU-abc123-def456-789012-345678",
-      "pci_address": "0000:17:00.0",
-      "device_index": 0,
-      "model": "A100-SXM4-40GB"
+      "pci_address": "0000:17:00.0"
     }
   ]
 }
 ```
 
-Health monitors read this file and enrich events with GPU UUID as the universal correlation key.
+### How It Works
 
-### Benefits
-
-| Before | After |
-|--------|-------|
-| XID on PCI `0000:17:00.0` | XID on GPU `GPU-abc123...` |
-| DCGM error on device `0` | DCGM error on GPU `GPU-abc123...` |
-| Manual correlation needed | Automatic: both events share `gpu_uuid` |
-| Drain entire node (8 GPUs) | Quarantine specific GPU |
-| No RMA tracking | Chassis serial enables lifecycle tracking |
-
----
-
-## Part 2: Node-Level Metadata (Infrastructure Context)
-
-> **Related**: [GitHub Issue #119](https://github.com/NVIDIA/NVSentinel/issues/119)
-
-### Problem: Infrastructure Correlation
-
-As fleets grow, node names alone are insufficient:
-
-**Challenge 1: Node uniqueness across clusters**
-```
-Cluster A: node-name = "10.0.1.5"
-Cluster B: node-name = "10.0.1.5"  ← Collision!
-
-Query: db.events.find({ node_name: "10.0.1.5" })
-Result: Events from BOTH clusters mixed ❌
-```
-
-**Challenge 2: Physical topology visibility**
-```
-Event: { node_name: "node-05" }
-Question: Which rack? Which datacenter? Which cluster?
-Answer: Requires manual lookup 😓
-```
-
-### Solution: Node Metadata Enrichment
-
-Platform Connector queries Kubernetes API and enriches events:
+Syslog monitor reads metadata file and enriches events:
 
 ```go
-// Platform Connector enrichment
-node, _ := k8s.Nodes().Get(event.NodeName)
+// Maps PCI → GPU UUID
+uuid := metadataReader.GetGPUByPCI("0000:17:00.0").UUID
 
-event.Metadata["provider_id"] = node.Spec.ProviderID
-// Examples:
-//   "aws:///us-west-2a/i-abc123..."        (globally unique)
-//   "azure:///subscriptions/.../..."        (globally unique)
+// Adds GPU_UUID to entities
+entities = append(entities, &pb.Entity{
+    EntityType: "GPU_UUID", 
+    EntityValue: uuid,
+})
 
-// Add allow-listed node labels
-for _, label := range allowList {
-    event.Metadata[label] = node.Labels[label]
-}
+// Adds chassis serial to metadata
+metadata["chassis_serial"] = metadataReader.GetChassisSerial()
 ```
 
-**Configuration** (platform-connector):
+**Result**: Events now have GPU UUID for correlation and chassis serial for RMA tracking.
+
+---
+
+## Part 5: Node-Level Enrichment (Infrastructure Context)
+
+### Configuration
+
+Platform connector queries Kubernetes API and enriches with allowed labels:
+
 ```yaml
-node_metadata:
-  allowed_labels:
+nodeMetadata:
+  enabled: true
+  allowedLabels:
     - topology.kubernetes.io/region
     - topology.kubernetes.io/zone
-    - cluster-name           # Custom label
-    - rack-id                # Custom label
-    - datacenter             # Custom label
+    - cluster-name
+    - rack-id
+    - datacenter
 ```
 
-### Benefits
-
-| Before | After |
-|--------|-------|
-| Node name only (may collide) | Provider ID (globally unique) |
-| Unknown cluster | `metadata.cluster-name` |
-| Unknown rack | `metadata.rack-id` |
-| Manual topology lookup | Automatic via labels |
-| 30 min manual correlation | < 1 sec MongoDB query |
+**Result**: Events enriched with providerID (globally unique) and organizational labels (cluster, rack, zone).
 
 ---
 
-## Complete Event Structure
+## Part 6: Use Cases Enabled
 
-With both entity and node enrichment, events contain full context:
-
-```json
-{
-  "_id": ObjectId("..."),
-  "timestamp": "2025-11-13T10:30:00Z",
-  "agent": "syslog-health-monitor",
-  "check_name": "xid_critical",
-  "is_healthy": false,
-  
-  // Entity-level (from GPU Metadata Collector)
-  "gpu_uuid": "GPU-abc123...",           // ← Correlation key
-  "pci_address": "0000:17:00.0",
-  "chassis_serial": "DGX-A100-SN123456",
-  "device_index": 0,
-  
-  // Node-level (from Platform Connector)
-  "node_name": "10.0.1.5",
-  "provider_id": "aws:///us-west-2a/i-abc123...",  // ← Globally unique
-  "metadata": {
-    "cluster-name": "prod-ml-01",
-    "rack-id": "rack-12",
-    "datacenter": "aws-us-west-2",
-    "topology.kubernetes.io/zone": "us-west-2a"
-  }
-}
-```
-
----
-
-## Use Cases
-
-### 1. Cross-Monitor Correlation (Entity-Level)
-
-**Scenario**: Same GPU fails, detected by two monitors
+### 1. Cross-Monitor Correlation
 
 ```javascript
-// Query: Events for specific GPU in 5-minute window
+// Find all events for specific GPU
 db.events.find({
-  gpu_uuid: "GPU-abc123...",
-  timestamp: { $gte: ISODate("2025-11-13T10:30:00Z") }
+  "healthevent.entitiesImpacted.entityValue": "GPU-abc123..."
 })
 
-// Result: Correlated events
+// Result: Correlated events from different monitors
 [
-  {
-    agent: "syslog-health-monitor",
-    timestamp: "10:30:00Z",
-    message: "XID 63 detected"
-  },
-  {
-    agent: "gpu-health-monitor", 
-    timestamp: "10:30:05Z",      // 5 seconds later
-    message: "Memory error count: 1024"
-  }
+  { "agent": "syslog-health-monitor", "message": "XID 79" },
+  { "agent": "gpu-health-monitor", "message": "Memory error" }
 ]
-
-// Insight: Memory failure caused XID → Confirmed hardware issue
+// Insight: Memory failure caused XID → Same GPU confirmed
 ```
 
-### 2. Fleet-Wide Analytics (Node-Level)
-
-**Scenario**: Which clusters have the most issues?
+### 2. Cluster-Wide Health
 
 ```javascript
-// Cross-cluster GPU health summary
+// Failures by cluster
 db.events.aggregate([
-  {
-    $match: {
-      component_class: "GPU",
-      is_healthy: false,
-      timestamp: { $gte: ISODate("2025-11-01T00:00:00Z") }
-    }
-  },
-  {
-    $group: {
-      _id: {
-        cluster: "$metadata.cluster-name",
-        zone: "$metadata.topology.kubernetes.io/zone"
-      },
-      failure_count: { $sum: 1 },
-      unique_gpus: { $addToSet: "$gpu_uuid" }
-    }
-  }
+  { $match: { "healthevent.isHealthy": false } },
+  { $group: {
+      _id: "$healthevent.metadata.cluster-name",
+      count: { $sum: 1 }
+  }}
 ])
 
 // Output:
-[
-  { cluster: "prod-ml-01", zone: "us-west-2a", failures: 156, gpus: 32 },
-  { cluster: "prod-training-02", zone: "us-east-1b", failures: 89, gpus: 18 }
-]
+// prod-ml-01: 156 failures
+// prod-training-02: 89 failures
 ```
 
-### 3. Rack-Level Pattern Detection (Node-Level)
-
-**Scenario**: Detect systemic issues in a rack
+### 3. Rack-Level Pattern Detection
 
 ```javascript
-// Events per rack in last 24h
+// Events by rack
 db.events.aggregate([
-  {
-    $match: {
-      "metadata.datacenter": "aws-us-west-2",
-      is_healthy: false,
-      timestamp: { $gte: ISODate("2025-11-13T00:00:00Z") }
-    }
-  },
-  {
-    $group: {
-      _id: "$metadata.rack-id",
-      event_count: { $sum: 1 },
-      affected_nodes: { $addToSet: "$node_name" },
-      error_types: { $addToSet: "$check_name" }
-    }
-  }
+  { $match: { "healthevent.isHealthy": false } },
+  { $group: {
+      _id: "$healthevent.metadata.rack-id",
+      count: { $sum: 1 },
+      nodes: { $addToSet: "$healthevent.nodeName" }
+  }}
 ])
 
 // Output:
-[
-  {
-    rack_id: "rack-12",
-    event_count: 47,              // High event count
-    affected_nodes: 6,            // Multiple nodes
-    error_types: ["xid_critical", "thermal_threshold"]
-    // ⚠️ Likely cooling issue in rack-12
-  }
-]
-```
-
-### 4. Surgical Remediation (Entity-Level)
-
-**Scenario**: Quarantine only the failing GPU
-
-```javascript
-// Node Drainer watches MongoDB
-db.events.watch([
-  { $match: { "fullDocument.is_fatal": true } }
-])
-
-// Receives event:
-{
-  gpu_uuid: "GPU-abc123...",
-  node_name: "dgx-node-03",
-  pci_address: "0000:17:00.0"
-}
-
-// Action: Taint node with GPU-specific key
-// → Evicts ONLY pods using GPU-abc123
-// → Other 7 GPUs remain in service ✅
+// rack-12: 47 events across 6 nodes (likely cooling issue)
 ```
 
 ---
 
-## Data Flow
-
-### End-to-End: Error → Remediation
+## Part 7: Complete Flow
 
 ```
-T+0s:  Kernel XID on PCI 0000:17:00.0
-
-T+1s:  Syslog Monitor
-       ├─ Reads /var/lib/nvsentinel/gpu_metadata.json
-       ├─ Maps PCI → GPU-abc123...
-       └─ Publishes enriched event (entity metadata)
-
-T+2s:  Platform Connector
-       ├─ Receives event via gRPC
-       ├─ Queries K8s API for node metadata
-       ├─ Enriches with provider_id, cluster, rack
-       └─ Stores to MongoDB (entity + node metadata)
-
-T+3s:  Health Events Analyzer
-       ├─ Queries: gpu_uuid = GPU-abc123...
-       ├─ Finds correlated DCGM event (same UUID)
-       └─ Confirms: hardware failure
-
-T+10s: Node Drainer
-       ├─ Detects fatal event
-       ├─ Taints node: gpu-xid=GPU-abc123...
-       └─ Drains ONLY affected GPU
+T+0s:   Kernel XID
+T+1s:   Syslog Monitor
+        ├─ Maps PCI → GPU UUID (entity enrichment)
+        └─ Adds chassis serial
+T+2s:   Platform Connector
+        ├─ Queries K8s API (node enrichment)
+        └─ Adds providerID, cluster, rack, zone
+T+3s:   MongoDB (complete enriched event)
+T+10s:  Node Drainer
+        └─ Drains only affected GPU
 
 Result:
-✅ 1 GPU quarantined
-✅ 7 GPUs remain in service (87.5% capacity preserved)
-✅ Full audit trail in MongoDB
-✅ RMA tracking enabled via chassis serial
+✅ 1 GPU quarantined, 7 remain (87.5% capacity preserved)
+✅ Full context: GPU-abc123, cluster prod-ml-01, rack-12
+✅ RMA tracking via chassis DGX-A100-SN123456
 ```
 
 ---
-
-## MongoDB Indexes
-
-Optimized for both entity and node queries:
-
-```javascript
-// Entity-level queries
-db.events.createIndex({ gpu_uuid: 1, timestamp: -1 })
-db.events.createIndex({ chassis_serial: 1 })
-
-// Node-level queries  
-db.events.createIndex({ provider_id: 1, timestamp: -1 })
-db.events.createIndex({ "metadata.cluster-name": 1, timestamp: -1 })
-db.events.createIndex({ "metadata.rack-id": 1, is_healthy: 1 })
-
-// Combined
-db.events.createIndex({ 
-  gpu_uuid: 1, 
-  "metadata.cluster-name": 1,
-  timestamp: -1 
-})
-```
-
----
-
-## Configuration Examples
-
-### GPU Metadata Collector (Entity-Level)
-
-```yaml
-# DaemonSet init container
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: gpu-metadata-collector
-spec:
-  template:
-    spec:
-      initContainers:
-      - name: collect-metadata
-        image: gpu-metadata-collector:latest
-        volumeMounts:
-        - name: metadata
-          mountPath: /var/lib/nvsentinel
-        - name: nvidia
-          mountPath: /usr/local/nvidia
-      
-      containers:
-      - name: pause
-        image: gcr.io/google_containers/pause:latest
-      
-      volumes:
-      - name: metadata
-        hostPath:
-          path: /var/lib/nvsentinel
-      - name: nvidia
-        hostPath:
-          path: /usr/local/nvidia
-```
-
-### Platform Connector (Node-Level)
-
-```yaml
-# ConfigMap
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: platform-connector-config
-data:
-  config.yaml: |
-    node_metadata:
-      enabled: true
-      include_provider_id: true
-      
-      allowed_labels:
-        # Kubernetes standard
-        - topology.kubernetes.io/region
-        - topology.kubernetes.io/zone
-        - node.kubernetes.io/instance-type
-        
-        # GPU-specific
-        - nvidia.com/gpu.product
-        - nvidia.com/gpu.count
-        
-        # Custom organizational
-        - cluster-name
-        - datacenter
-        - rack-id
-        - environment
-      
-      cache:
-        ttl: 5m
-        max_size: 10000
-```
-
----
-
-## Impact Summary
-
-### Debuggability
-
-| Metric | Before | After |
-|--------|--------|-------|
-| Identify failing GPU | Manual PCI → UUID lookup | Automatic in event |
-| Correlate across monitors | Manual log analysis | Query by `gpu_uuid` |
-| Find cluster/rack | Manual lookup | In event metadata |
-| Time to root cause | 15-30 minutes | < 1 minute |
-
-### Visibility
-
-| Metric | Before | After |
-|--------|--------|-------|
-| Cross-cluster queries | Not possible | By `cluster-name` |
-| Fleet-wide health | Manual aggregation | MongoDB analytics |
-| Rack pattern detection | Not possible | Automatic via `rack-id` |
-| Provider comparison | Not tracked | By `provider_id` |
-
-### Remediation Efficiency
-
-| Metric | Before | After |
-|--------|--------|-------|
-| GPUs affected per failure | 8 (entire node) | 1 (specific GPU) |
-| Capacity preserved | 0% | 87.5% |
-| Action granularity | Node-level | GPU-level |
-| False positive cost | High | Minimal |
-
----
-
-## Key Takeaways
-
-1. **Two-Tier Enrichment**:
-   - Entity-level (GPU UUID, chassis) enables precise hardware identification
-   - Node-level (provider ID, labels) enables infrastructure correlation
-
-2. **Universal Correlation Key**: GPU UUID connects events across health monitors
-
-3. **Fleet-Scale Visibility**: Provider ID and labels enable multi-cluster analytics
-
-4. **Surgical Remediation**: Precise identification allows GPU-level actions, not node-level
-
-5. **Complete Audit Trail**: MongoDB stores enriched events for debugging, RMA tracking, and compliance
-
-The metadata enrichment system transforms GPU infrastructure from opaque black boxes into fully observable, precisely remediable, fleet-scale intelligent systems.
