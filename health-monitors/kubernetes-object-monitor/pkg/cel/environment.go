@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/cel-go/cel"
@@ -29,6 +30,7 @@ import (
 type Environment struct {
 	env    *cel.Env
 	client client.Client
+	evalMu sync.Mutex
 	ctx    context.Context
 }
 
@@ -71,6 +73,9 @@ func (e *Environment) Compile(expression string) (*cel.Ast, error) {
 }
 
 func (e *Environment) Evaluate(ast *cel.Ast, resource any, ctx context.Context) (ref.Val, error) {
+	e.evalMu.Lock()
+	defer e.evalMu.Unlock()
+
 	e.ctx = ctx
 
 	prg, err := e.env.Program(ast)
@@ -123,6 +128,8 @@ func (e *Environment) lookup(args ...ref.Val) ref.Val {
 		return types.NewErr("lookup arg[3] (name) must be string")
 	}
 
+	ctx := e.ctx
+
 	obj := &unstructured.Unstructured{}
 
 	obj.SetAPIVersion(string(version))
@@ -133,7 +140,7 @@ func (e *Environment) lookup(args ...ref.Val) ref.Val {
 		Name:      string(name),
 	}
 
-	if err := e.client.Get(e.ctx, key, obj); err != nil {
+	if err := e.client.Get(ctx, key, obj); err != nil {
 		slog.Error("Failed to get object from informer cache", "error", err)
 		return types.NullValue
 	}

@@ -42,7 +42,8 @@ func New(client pb.PlatformConnectorClient) *Publisher {
 	}
 }
 
-func (p *Publisher) PublishHealthEvent(policy *config.Policy, nodeName string, isHealthy bool) error {
+func (p *Publisher) PublishHealthEvent(ctx context.Context,
+	policy *config.Policy, nodeName string, isHealthy bool) error {
 	event := &pb.HealthEvent{
 		Version:            1,
 		Agent:              agentName,
@@ -63,10 +64,10 @@ func (p *Publisher) PublishHealthEvent(policy *config.Policy, nodeName string, i
 
 	slog.Info("Publishing health event", "event", event)
 
-	return p.sendWithRetry(healthEvents)
+	return p.sendWithRetry(ctx, healthEvents)
 }
 
-func (p *Publisher) sendWithRetry(events *pb.HealthEvents) error {
+func (p *Publisher) sendWithRetry(ctx context.Context, events *pb.HealthEvents) error {
 	backoff := wait.Backoff{
 		Steps:    5,
 		Duration: 2 * time.Second,
@@ -75,7 +76,7 @@ func (p *Publisher) sendWithRetry(events *pb.HealthEvents) error {
 	}
 
 	return wait.ExponentialBackoff(backoff, func() (bool, error) {
-		_, err := p.pcClient.HealthEventOccurredV1(context.Background(), events)
+		_, err := p.pcClient.HealthEventOccurredV1(ctx, events)
 		if err == nil {
 			slog.Info("Successfully sent health event", "events", events)
 			return true, nil

@@ -85,4 +85,5 @@ require (
 )
 
 replace github.com/nvidia/nvsentinel/commons => ../../commons
+
 replace github.com/nvidia/nvsentinel/data-models => ../../data-models

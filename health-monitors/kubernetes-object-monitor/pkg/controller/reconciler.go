@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
@@ -28,16 +29,17 @@ import (
 )
 
 type HealthEventPublisher interface {
-	PublishHealthEvent(policy *config.Policy, nodeName string, isHealthy bool) error
+	PublishHealthEvent(ctx context.Context, policy *config.Policy, nodeName string, isHealthy bool) error
 }
 
 type ResourceReconciler struct {
 	client.Client
-	evaluator   *policy.Evaluator
-	publisher   HealthEventPublisher
-	policies    []config.Policy
-	gvk         schema.GroupVersionKind
-	matchStates map[string]bool
+	evaluator     *policy.Evaluator
+	publisher     HealthEventPublisher
+	policies      []config.Policy
+	gvk           schema.GroupVersionKind
+	matchStates   map[string]bool
+	matchStatesMu sync.RWMutex
 }
 
 func NewResourceReconciler(
@@ -81,7 +83,7 @@ func (r *ResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 func (r *ResourceReconciler) handleGetError(err error, req ctrl.Request) (ctrl.Result, error) {
 	if client.IgnoreNotFound(err) == nil {
-		r.cleanupDeletedResource(req.Name)
+		r.cleanupDeletedResource(req)
 		return ctrl.Result{}, nil
 	}
 
@@ -90,13 +92,21 @@ func (r *ResourceReconciler) handleGetError(err error, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, err
 }
 
-func (r *ResourceReconciler) cleanupDeletedResource(resourceName string) {
+func (r *ResourceReconciler) cleanupDeletedResource(req ctrl.Request) {
+	r.matchStatesMu.Lock()
+	defer r.matchStatesMu.Unlock()
+
 	for _, p := range r.policies {
 		if !p.Enabled {
 			continue
 		}
 
-		stateKey := r.getStateKey(&p, resourceName)
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(r.gvk)
+		obj.SetNamespace(req.Namespace)
+		obj.SetName(req.Name)
+
+		stateKey := r.getStateKey(&p, obj)
 		if r.matchStates[stateKey] {
 			delete(r.matchStates, stateKey)
 		}
@@ -124,51 +134,65 @@ func (r *ResourceReconciler) reconcilePolicy(
 		nodeName = obj.GetName()
 	}
 
-	stateKey := r.getStateKey(p, obj.GetName())
+	stateKey := r.getStateKey(p, obj)
+
+	r.matchStatesMu.RLock()
 	wasMatched := r.matchStates[stateKey]
+	r.matchStatesMu.RUnlock()
 
 	if matched && !wasMatched {
-		return r.handleUnhealthyTransition(p, nodeName, stateKey)
+		return r.handleUnhealthyTransition(ctx, p, nodeName, stateKey)
 	}
 
 	if !matched && wasMatched {
-		return r.handleHealthyTransition(p, nodeName, stateKey)
+		return r.handleHealthyTransition(ctx, p, nodeName, stateKey)
 	}
 
 	return nil
 }
 
 func (r *ResourceReconciler) handleUnhealthyTransition(
+	ctx context.Context,
 	p *config.Policy,
 	nodeName string,
 	stateKey string,
 ) error {
-	if err := r.publisher.PublishHealthEvent(p, nodeName, false); err != nil {
+	if err := r.publisher.PublishHealthEvent(ctx, p, nodeName, false); err != nil {
 		metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
 		return fmt.Errorf("failed to publish unhealthy event: %w", err)
 	}
 
+	r.matchStatesMu.Lock()
 	r.matchStates[stateKey] = true
+	r.matchStatesMu.Unlock()
+
 	metrics.PolicyMatches.WithLabelValues(p.Name, nodeName, r.gvk.Kind).Inc()
 
 	return nil
 }
 
 func (r *ResourceReconciler) handleHealthyTransition(
+	ctx context.Context,
 	p *config.Policy,
 	nodeName string,
 	stateKey string,
 ) error {
-	if err := r.publisher.PublishHealthEvent(p, nodeName, true); err != nil {
+	if err := r.publisher.PublishHealthEvent(ctx, p, nodeName, true); err != nil {
 		metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
 		return fmt.Errorf("failed to publish healthy event: %w", err)
 	}
 
+	r.matchStatesMu.Lock()
 	delete(r.matchStates, stateKey)
+	r.matchStatesMu.Unlock()
 
 	return nil
 }
 
-func (r *ResourceReconciler) getStateKey(p *config.Policy, resourceName string) string {
-	return fmt.Sprintf("%s/%s", p.Name, resourceName)
+func (r *ResourceReconciler) getStateKey(p *config.Policy, obj *unstructured.Unstructured) string {
+	if obj.GetNamespace() != "" {
+		return fmt.Sprintf("%s/%s/%s", p.Name, obj.GetNamespace(), obj.GetName())
+	}
+
+	return fmt.Sprintf("%s/%s", p.Name, obj.GetName())
 }
