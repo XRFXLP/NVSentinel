@@ -304,7 +304,7 @@ func setupTestWithPolicies(t *testing.T, policies []config.Policy) *testSetup {
 }
 
 type mockPublishedEvent struct {
-	ctx        context.Context
+	ctx       context.Context
 	policy    *config.Policy
 	nodeName  string
 	isHealthy bool
@@ -314,12 +314,17 @@ type mockPublisher struct {
 	publishedEvents []mockPublishedEvent
 }
 
-func (m *mockPublisher) PublishHealthEvent(ctx context.Context, policy *config.Policy, nodeName string, isHealthy bool) error {
+func (m *mockPublisher) PublishHealthEvent(
+	ctx context.Context,
+	policy *config.Policy,
+	nodeName string,
+	isHealthy bool,
+) error {
 	m.publishedEvents = append(m.publishedEvents, mockPublishedEvent{
-		ctx:        ctx,
-		policy:     policy,
-		nodeName:   nodeName,
-		isHealthy:  isHealthy,
+		ctx:       ctx,
+		policy:    policy,
+		nodeName:  nodeName,
+		isHealthy: isHealthy,
 	})
 	return nil
 }

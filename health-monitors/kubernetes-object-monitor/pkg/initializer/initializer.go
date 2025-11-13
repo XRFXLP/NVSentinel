@@ -125,7 +125,7 @@ func createManager(params Params) (ctrl.Manager, error) {
 
 	mgr, err := ctrl.NewManager(config, mgrOpts)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create manager: %w", err)
 	}
 
 	return mgr, nil
