@@ -60,7 +60,7 @@ var (
 	)
 	maxConcurrentReconciles = flag.Int(
 		"max-concurrent-reconciles",
-		10,
+		1,
 		"Maximum number of resources to reconcile concurrently",
 	)
 	platformConnectorSocket = flag.String(

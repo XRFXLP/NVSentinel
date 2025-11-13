@@ -15,20 +15,14 @@ package config
 
 import (
 	"fmt"
-	"os"
 
-	"github.com/pelletier/go-toml/v2"
+	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 )
 
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
-	}
-
 	var cfg Config
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse TOML config: %w", err)
+	if err := configmanager.LoadTOMLConfig(path, &cfg); err != nil {
+		return nil, err
 	}
 
 	if err := validate(&cfg); err != nil {

@@ -55,6 +55,7 @@ func (p *Publisher) PublishHealthEvent(ctx context.Context,
 		IsHealthy:          isHealthy,
 		NodeName:           nodeName,
 		RecommendedAction:  mapRecommendedAction(policy.HealthEvent.RecommendedAction),
+		ErrorCode:          policy.HealthEvent.ErrorCode,
 	}
 
 	healthEvents := &pb.HealthEvents{

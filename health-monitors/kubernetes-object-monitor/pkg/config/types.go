@@ -41,10 +41,11 @@ type AssociationSpec struct {
 }
 
 type HealthEventSpec struct {
-	ComponentClass    string `toml:"componentClass"`
-	IsFatal           bool   `toml:"isFatal"`
-	Message           string `toml:"message"`
-	RecommendedAction string `toml:"recommendedAction"`
+	ComponentClass    string   `toml:"componentClass"`
+	IsFatal           bool     `toml:"isFatal"`
+	Message           string   `toml:"message"`
+	RecommendedAction string   `toml:"recommendedAction"`
+	ErrorCode         []string `toml:"errorCode"`
 }
 
 func (r *ResourceSpec) GVK() string {

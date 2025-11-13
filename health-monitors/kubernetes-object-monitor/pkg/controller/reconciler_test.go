@@ -16,6 +16,7 @@ package controller_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,6 +218,103 @@ func TestReconciler_DisabledPolicy(t *testing.T) {
 	}, 500*time.Millisecond, 50*time.Millisecond)
 }
 
+func TestReconciler_ErrorCodePropagation(t *testing.T) {
+	setup := setupTest(t)
+	nodeName := "test-node-error-code"
+
+	createNode(t, setup, nodeName, v1.ConditionFalse)
+
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: nodeName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Eventually(t, func() bool {
+		if len(setup.publisher.publishedEvents) != 1 {
+			return false
+		}
+		event := setup.publisher.publishedEvents[0]
+		return len(event.policy.HealthEvent.ErrorCode) == 2 &&
+			event.policy.HealthEvent.ErrorCode[0] == "NODE_NOT_READY" &&
+			event.policy.HealthEvent.ErrorCode[1] == "CONDITION_FAILED"
+	}, time.Second, 50*time.Millisecond)
+}
+
+func TestReconciler_ColdStart(t *testing.T) {
+	tests := []struct {
+		name              string
+		postRestartAction func(*testing.T, *testSetup, string, *v1.Node)
+		expectEvent       bool
+		expectHealthy     bool
+	}{
+		{
+			name: "unhealthy resource",
+			postRestartAction: func(t *testing.T, s *testSetup, nodeName string, _ *v1.Node) {
+				updateNodeStatus(t, s, nodeName, v1.ConditionFalse)
+			},
+			expectEvent:   true,
+			expectHealthy: false,
+		},
+		{
+			name: "healthy resource",
+			postRestartAction: func(t *testing.T, s *testSetup, nodeName string, _ *v1.Node) {
+				updateNodeStatus(t, s, nodeName, v1.ConditionTrue)
+			},
+			expectEvent: false,
+		},
+		{
+			name: "deleted resource",
+			postRestartAction: func(t *testing.T, s *testSetup, _ string, node *v1.Node) {
+				require.NoError(t, s.k8sClient.Delete(s.ctx, node))
+			},
+			expectEvent: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setup := setupTest(t)
+			nodeName := "cold-start-" + strings.ReplaceAll(tt.name, " ", "-")
+
+			node := createNode(t, setup, nodeName, v1.ConditionFalse)
+
+			result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: nodeName},
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, ctrl.Result{}, result)
+
+			require.Eventually(t, func() bool {
+				return len(setup.publisher.publishedEvents) == 1
+			}, time.Second, 50*time.Millisecond)
+
+			coldStartSetup := restartReconciler(t, setup)
+
+			tt.postRestartAction(t, coldStartSetup, nodeName, node)
+
+			result, err = coldStartSetup.reconciler.Reconcile(coldStartSetup.ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: nodeName},
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, ctrl.Result{}, result)
+
+			if tt.expectEvent {
+				require.Eventually(t, func() bool {
+					if len(coldStartSetup.publisher.publishedEvents) != 1 {
+						return false
+					}
+					return coldStartSetup.publisher.publishedEvents[0].isHealthy == tt.expectHealthy
+				}, time.Second, 50*time.Millisecond)
+			} else {
+				require.Never(t, func() bool {
+					return len(coldStartSetup.publisher.publishedEvents) > 0
+				}, 500*time.Millisecond, 50*time.Millisecond)
+			}
+		})
+	}
+}
+
 type testSetup struct {
 	ctx        context.Context
 	k8sClient  client.Client
@@ -226,31 +324,31 @@ type testSetup struct {
 	testEnv    *envtest.Environment
 }
 
-func setupTest(t *testing.T) *testSetup {
-	t.Helper()
-
-	policies := []config.Policy{
-		{
-			Name:    "node-not-ready",
-			Enabled: true,
-			Resource: config.ResourceSpec{
-				Group:   "",
-				Version: "v1",
-				Kind:    "Node",
-			},
-			Predicate: config.PredicateSpec{
-				Expression: `resource.status.conditions.filter(c, c.type == "Ready" && c.status == "False").size() > 0`,
-			},
-			HealthEvent: config.HealthEventSpec{
-				ComponentClass:    "Node",
-				IsFatal:           true,
-				Message:           "Node is not ready",
-				RecommendedAction: "CONTACT_SUPPORT",
-			},
+func defaultNodeNotReadyPolicy() config.Policy {
+	return config.Policy{
+		Name:    "node-not-ready",
+		Enabled: true,
+		Resource: config.ResourceSpec{
+			Group:   "",
+			Version: "v1",
+			Kind:    "Node",
+		},
+		Predicate: config.PredicateSpec{
+			Expression: `resource.status.conditions.filter(c, c.type == "Ready" && c.status == "False").size() > 0`,
+		},
+		HealthEvent: config.HealthEventSpec{
+			ComponentClass:    "Node",
+			IsFatal:           true,
+			Message:           "Node is not ready",
+			RecommendedAction: "CONTACT_SUPPORT",
+			ErrorCode:         []string{"NODE_NOT_READY", "CONDITION_FAILED"},
 		},
 	}
+}
 
-	return setupTestWithPolicies(t, policies)
+func setupTest(t *testing.T) *testSetup {
+	t.Helper()
+	return setupTestWithPolicies(t, []config.Policy{defaultNodeNotReadyPolicy()})
 }
 
 func setupTestWithPolicies(t *testing.T, policies []config.Policy) *testSetup {
@@ -373,6 +471,39 @@ func updateNodeStatus(t *testing.T, setup *testSetup, name string, readyStatus v
 		}
 		return false
 	}, time.Second, 50*time.Millisecond)
+}
+
+func restartReconciler(t *testing.T, setup *testSetup) *testSetup {
+	t.Helper()
+
+	gvk := schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Node",
+	}
+
+	mockPub := &mockPublisher{
+		publishedEvents: []mockPublishedEvent{},
+	}
+
+	policies := []config.Policy{defaultNodeNotReadyPolicy()}
+
+	reconciler := controller.NewResourceReconciler(
+		setup.k8sClient,
+		setup.evaluator,
+		mockPub,
+		policies,
+		gvk,
+	)
+
+	return &testSetup{
+		ctx:        setup.ctx,
+		k8sClient:  setup.k8sClient,
+		reconciler: reconciler,
+		publisher:  mockPub,
+		evaluator:  setup.evaluator,
+		testEnv:    setup.testEnv,
+	}
 }
 
 func getCounterVecValue(t *testing.T, counterVec *prometheus.CounterVec, labelValues ...string) float64 {

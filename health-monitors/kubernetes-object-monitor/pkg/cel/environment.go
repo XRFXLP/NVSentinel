@@ -141,11 +141,11 @@ func (e *Environment) lookup(args ...ref.Val) ref.Val {
 	}
 
 	if err := e.client.Get(ctx, key, obj); err != nil {
-		slog.Error("Failed to get object from informer cache", "error", err)
+		slog.Error("Failed to get object using cached client", "error", err)
 		return types.NullValue
 	}
 
-	slog.Info("Successfully got object from informer cache", "object", obj.Object)
+	slog.Info("Successfully got object using cached client", "object", obj.Object)
 
 	return types.DefaultTypeAdapter.NativeToValue(obj.Object)
 }

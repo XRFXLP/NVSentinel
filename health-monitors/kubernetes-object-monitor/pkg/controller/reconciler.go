@@ -64,7 +64,7 @@ func (r *ResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	obj.SetGroupVersionKind(r.gvk)
 
 	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
-		return r.handleGetError(err, req)
+		return r.handleGetError(ctx, err, req)
 	}
 
 	for _, p := range r.policies {
@@ -81,21 +81,18 @@ func (r *ResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{}, nil
 }
 
-func (r *ResourceReconciler) handleGetError(err error, req ctrl.Request) (ctrl.Result, error) {
+func (r *ResourceReconciler) handleGetError(ctx context.Context, err error, req ctrl.Request) (ctrl.Result, error) {
 	if client.IgnoreNotFound(err) == nil {
-		r.cleanupDeletedResource(req)
+		r.cleanupDeletedResource(ctx, req)
 		return ctrl.Result{}, nil
 	}
 
-	metrics.ReconciliationErrors.WithLabelValues(r.gvk.Kind, "get_error").Inc()
+	metrics.ReconciliationErrors.WithLabelValues(r.gvk.Kind, "get_resource_error").Inc()
 
-	return ctrl.Result{}, err
+	return ctrl.Result{}, fmt.Errorf("failed to get resource: %w", err)
 }
 
-func (r *ResourceReconciler) cleanupDeletedResource(req ctrl.Request) {
-	r.matchStatesMu.Lock()
-	defer r.matchStatesMu.Unlock()
-
+func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctrl.Request) {
 	for _, p := range r.policies {
 		if !p.Enabled {
 			continue
@@ -107,8 +104,25 @@ func (r *ResourceReconciler) cleanupDeletedResource(req ctrl.Request) {
 		obj.SetName(req.Name)
 
 		stateKey := r.getStateKey(&p, obj)
-		if r.matchStates[stateKey] {
+
+		r.matchStatesMu.RLock()
+		wasMatched := r.matchStates[stateKey]
+		r.matchStatesMu.RUnlock()
+
+		if wasMatched {
+			nodeName := obj.GetName()
+
+			if err := r.publisher.PublishHealthEvent(ctx, &p, nodeName, true); err != nil {
+				slog.Error("Failed to publish healthy event for deleted resource",
+					"policy", p.Name,
+					"resource", req.NamespacedName,
+					"error", err)
+				metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
+			}
+
+			r.matchStatesMu.Lock()
 			delete(r.matchStates, stateKey)
+			r.matchStatesMu.Unlock()
 		}
 	}
 }
