@@ -38,7 +38,7 @@ type ResourceReconciler struct {
 	publisher     HealthEventPublisher
 	policies      []config.Policy
 	gvk           schema.GroupVersionKind
-	matchStates   map[string]bool
+	matchStates   map[string]string
 	matchStatesMu sync.RWMutex
 }
 
@@ -55,7 +55,7 @@ func NewResourceReconciler(
 		publisher:   pub,
 		policies:    policies,
 		gvk:         gvk,
-		matchStates: make(map[string]bool),
+		matchStates: make(map[string]string),
 	}
 }
 
@@ -106,16 +106,15 @@ func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctr
 		stateKey := r.getStateKey(&p, obj)
 
 		r.matchStatesMu.RLock()
-		wasMatched := r.matchStates[stateKey]
+		nodeName, wasMatched := r.matchStates[stateKey]
 		r.matchStatesMu.RUnlock()
 
 		if wasMatched {
-			nodeName := obj.GetName()
-
 			if err := r.publisher.PublishHealthEvent(ctx, &p, nodeName, true); err != nil {
 				slog.Error("Failed to publish healthy event for deleted resource",
 					"policy", p.Name,
 					"resource", req.NamespacedName,
+					"node", nodeName,
 					"error", err)
 				metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
 			}
@@ -151,7 +150,7 @@ func (r *ResourceReconciler) reconcilePolicy(
 	stateKey := r.getStateKey(p, obj)
 
 	r.matchStatesMu.RLock()
-	wasMatched := r.matchStates[stateKey]
+	_, wasMatched := r.matchStates[stateKey]
 	r.matchStatesMu.RUnlock()
 
 	if matched && !wasMatched {
@@ -177,7 +176,7 @@ func (r *ResourceReconciler) handleUnhealthyTransition(
 	}
 
 	r.matchStatesMu.Lock()
-	r.matchStates[stateKey] = true
+	r.matchStates[stateKey] = nodeName
 	r.matchStatesMu.Unlock()
 
 	metrics.PolicyMatches.WithLabelValues(p.Name, nodeName, r.gvk.Kind).Inc()
