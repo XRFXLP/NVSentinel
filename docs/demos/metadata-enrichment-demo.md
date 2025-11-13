@@ -188,7 +188,7 @@ Same GPU fails, detected by two monitors:
     │ (DaemonSet init container)                               │
     │                                                          │
     │ • Uses go-nvml to query GPU info                         │
-    │ • Collects: UUID, PCI address, chassis serial            │
+    │ • Collects: UUID, PCI, chassis serial, NVLink topology   │
     └────────────────────────┬─────────────────────────────────┘
                              │
                              │ Writes to disk
@@ -198,13 +198,16 @@ Same GPU fails, detected by two monitors:
     │                                                          │
     │ {                                                        │
     │   "chassis_serial": "DGX-A100-SN123456",                 │
-    │   "gpus": [                                              │
-    │     {                                                    │
-    │       "gpu_id": 0,                                       │
-    │       "uuid": "GPU-abc123-def456-789012-345678",         │
-    │       "pci_address": "0000:17:00.0"                      │
-    │     }                                                    │
-    │   ]                                                      │
+    │   "gpus": [{                                             │
+    │     "gpu_id": 0,                                         │
+    │     "uuid": "GPU-abc123...",                             │
+    │     "pci_address": "0000:17:00.0",                       │
+    │     "nvlinks": [                                         │
+    │       { "link_id": 0,                                    │
+    │         "remote_pci_address": "0000:ca:00.0" }           │
+    │     ]                                                    │
+    │   }],                                                    │
+    │   "nvswitches": ["0000:00:00.0"]                         │
     │ }                                                        │
     └────────────────────────┬─────────────────────────────────┘
                              │
@@ -352,16 +355,40 @@ Same GPU fails, detected by two monitors:
 
 ```json
 {
+  "version": "1.0",
+  "node_name": "gpu-node-42",
   "chassis_serial": "DGX-A100-SN123456",
   "gpus": [
     {
       "gpu_id": 0,
       "uuid": "GPU-abc123-def456-789012-345678",
-      "pci_address": "0000:17:00.0"
+      "pci_address": "0000:17:00.0",
+      "serial_number": "1322522078091",
+      "device_name": "NVIDIA A100-SXM4-40GB",
+      "nvlinks": [
+        {
+          "link_id": 0,
+          "remote_pci_address": "0000:ca:00.0",
+          "remote_link_id": 0
+        },
+        {
+          "link_id": 1,
+          "remote_pci_address": "0000:bd:00.0",
+          "remote_link_id": 1
+        }
+      ]
     }
-  ]
+  ],
+  "nvswitches": ["0000:00:00.0", "0000:01:00.0"]
 }
 ```
+
+**What's collected:**
+- **GPU UUID**: Universal identifier across all monitors
+- **PCI address**: Maps to kernel error messages
+- **Chassis serial**: Hardware lifecycle tracking (RMA, warranty)
+- **NVLink topology**: GPU-to-GPU and GPU-to-NVSwitch connections
+- **NVSwitch PCI addresses**: Interconnect fabric identification
 
 ### How It Works
 
