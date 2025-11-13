@@ -328,6 +328,26 @@ func TestReconciler_CustomResource(t *testing.T) {
 			!event.isHealthy &&
 			event.policy.Name == "gpu-job-failed"
 	}, time.Second, 50*time.Millisecond)
+
+	setup.publisher.publishedEvents = []mockPublishedEvent{}
+
+	require.NoError(t, setup.k8sClient.Delete(setup.ctx, gpuJob))
+
+	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: jobName, Namespace: namespace},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Eventually(t, func() bool {
+		if len(setup.publisher.publishedEvents) != 1 {
+			return false
+		}
+		event := setup.publisher.publishedEvents[0]
+		return event.nodeName == nodeName &&
+			event.isHealthy &&
+			event.policy.Name == "gpu-job-failed"
+	}, time.Second, 50*time.Millisecond)
 }
 
 func TestReconciler_ColdStart(t *testing.T) {

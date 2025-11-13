@@ -150,7 +150,7 @@ func (r *ResourceReconciler) reconcilePolicy(
 	stateKey := r.getStateKey(p, obj)
 
 	r.matchStatesMu.RLock()
-	_, wasMatched := r.matchStates[stateKey]
+	storedNodeName, wasMatched := r.matchStates[stateKey]
 	r.matchStatesMu.RUnlock()
 
 	if matched && !wasMatched {
@@ -158,7 +158,7 @@ func (r *ResourceReconciler) reconcilePolicy(
 	}
 
 	if !matched && wasMatched {
-		return r.handleHealthyTransition(ctx, p, nodeName, stateKey)
+		return r.handleHealthyTransition(ctx, p, storedNodeName, stateKey)
 	}
 
 	return nil
