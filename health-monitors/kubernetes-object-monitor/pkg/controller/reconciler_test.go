@@ -124,8 +124,10 @@ func TestReconciler_NodeDeleted(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 
 	require.Eventually(t, func() bool {
-		return len(setup.publisher.publishedEvents) > 0
+		return len(setup.publisher.publishedEvents) == 1 && !setup.publisher.publishedEvents[0].isHealthy
 	}, time.Second, 50*time.Millisecond)
+
+	setup.publisher.publishedEvents = []mockPublishedEvent{}
 
 	require.NoError(t, setup.k8sClient.Delete(setup.ctx, node))
 
@@ -134,6 +136,14 @@ func TestReconciler_NodeDeleted(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Eventually(t, func() bool {
+		if len(setup.publisher.publishedEvents) != 1 {
+			return false
+		}
+		event := setup.publisher.publishedEvents[0]
+		return event.nodeName == nodeName && event.isHealthy
+	}, time.Second, 50*time.Millisecond)
 }
 
 func TestReconciler_MultipleNodes(t *testing.T) {
