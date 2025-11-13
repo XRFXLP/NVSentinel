@@ -1,4 +1,4 @@
-# Metadata Enrichment: From Identifier Chaos to Surgical Precision
+# Metadata Enrichment
 
 ## Overview
 
@@ -151,7 +151,6 @@ Same GPU fails, detected by two monitors:
 // Cluster B
 { "nodeName": "10.0.1.5" }  // ← Collision!
 
-// Query: db.events.find({ nodeName: "10.0.1.5" })
 // Result: Events from BOTH clusters mixed ❌
 ```
 
@@ -161,7 +160,7 @@ Same GPU fails, detected by two monitors:
 { "nodeName": "gpu-node-42" }
 
 // Questions: Which cluster? 🤷 Which rack? 🤷 Which datacenter? 🤷
-// Answer: Manual lookup → 15-30 minutes
+// Answer: Manual lookup
 ```
 
 ### Problem 4: No Hardware Lifecycle Tracking
@@ -170,7 +169,7 @@ Same GPU fails, detected by two monitors:
 { "entitiesImpacted": [{ "entityType": "PCI", "entityValue": "0000:17:00.0" }] }
 
 // For RMA: What's the chassis serial? 🤷
-// Cannot track through RMA process or warranty records
+// Cannot track through RMA process
 ```
 
 ---
