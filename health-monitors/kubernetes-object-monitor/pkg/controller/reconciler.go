@@ -17,8 +17,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
@@ -36,6 +38,7 @@ type ResourceReconciler struct {
 	client.Client
 	evaluator     *policy.Evaluator
 	publisher     HealthEventPublisher
+	annotationMgr *annotations.Manager
 	policies      []config.Policy
 	gvk           schema.GroupVersionKind
 	matchStates   map[string]string
@@ -46,17 +49,35 @@ func NewResourceReconciler(
 	c client.Client,
 	evaluator *policy.Evaluator,
 	pub HealthEventPublisher,
+	annotationMgr *annotations.Manager,
 	policies []config.Policy,
 	gvk schema.GroupVersionKind,
 ) *ResourceReconciler {
 	return &ResourceReconciler{
-		Client:      c,
-		evaluator:   evaluator,
-		publisher:   pub,
-		policies:    policies,
-		gvk:         gvk,
-		matchStates: make(map[string]string),
+		Client:        c,
+		evaluator:     evaluator,
+		publisher:     pub,
+		annotationMgr: annotationMgr,
+		policies:      policies,
+		gvk:           gvk,
+		matchStates:   make(map[string]string),
 	}
+}
+
+func (r *ResourceReconciler) LoadState(ctx context.Context) error {
+	allMatches, err := r.annotationMgr.LoadAllMatches(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load match state: %w", err)
+	}
+
+	r.matchStatesMu.Lock()
+	defer r.matchStatesMu.Unlock()
+
+	maps.Copy(r.matchStates, allMatches)
+
+	slog.Info("Loaded policy match state from annotations", "gvk", r.gvk.String(), "matches", len(allMatches))
+
+	return nil
 }
 
 func (r *ResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -93,6 +114,8 @@ func (r *ResourceReconciler) handleGetError(ctx context.Context, err error, req 
 }
 
 func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctrl.Request) {
+	slog.Info("Cleaning up deleted resource", "resource", req.NamespacedName)
+
 	for _, p := range r.policies {
 		if !p.Enabled {
 			continue
@@ -119,9 +142,19 @@ func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctr
 				metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
 			}
 
+			slog.Debug("Removing match state for deleted resource",
+				"resource", req.NamespacedName,
+				"node", nodeName,
+				"policy", p.Name,
+				"stateKey", stateKey)
+
 			r.matchStatesMu.Lock()
 			delete(r.matchStates, stateKey)
 			r.matchStatesMu.Unlock()
+
+			if err := r.annotationMgr.RemoveMatch(ctx, nodeName, stateKey); err != nil {
+				slog.Error("Failed to remove match state from annotation", "node", nodeName, "stateKey", stateKey, "error", err)
+			}
 		}
 	}
 }
@@ -179,6 +212,10 @@ func (r *ResourceReconciler) handleUnhealthyTransition(
 	r.matchStates[stateKey] = nodeName
 	r.matchStatesMu.Unlock()
 
+	if err := r.annotationMgr.AddMatch(ctx, nodeName, stateKey, nodeName); err != nil {
+		slog.Error("Failed to persist match state to annotation", "node", nodeName, "stateKey", stateKey, "error", err)
+	}
+
 	metrics.PolicyMatches.WithLabelValues(p.Name, nodeName, r.gvk.Kind).Inc()
 
 	return nil
@@ -198,6 +235,10 @@ func (r *ResourceReconciler) handleHealthyTransition(
 	r.matchStatesMu.Lock()
 	delete(r.matchStates, stateKey)
 	r.matchStatesMu.Unlock()
+
+	if err := r.annotationMgr.RemoveMatch(ctx, nodeName, stateKey); err != nil {
+		slog.Error("Failed to remove match state from annotation", "node", nodeName, "stateKey", stateKey, "error", err)
+	}
 
 	return nil
 }

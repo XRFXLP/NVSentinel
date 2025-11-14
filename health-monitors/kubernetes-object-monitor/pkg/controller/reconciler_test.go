@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/controller"
@@ -362,22 +363,23 @@ func TestReconciler_ColdStart(t *testing.T) {
 			postRestartAction: func(t *testing.T, s *testSetup, nodeName string, _ *v1.Node) {
 				updateNodeStatus(t, s, nodeName, v1.ConditionFalse)
 			},
-			expectEvent:   true,
-			expectHealthy: false,
+			expectEvent: false,
 		},
 		{
 			name: "healthy resource",
 			postRestartAction: func(t *testing.T, s *testSetup, nodeName string, _ *v1.Node) {
 				updateNodeStatus(t, s, nodeName, v1.ConditionTrue)
 			},
-			expectEvent: false,
+			expectEvent:   true,
+			expectHealthy: true,
 		},
 		{
 			name: "deleted resource",
 			postRestartAction: func(t *testing.T, s *testSetup, _ string, node *v1.Node) {
 				require.NoError(t, s.k8sClient.Delete(s.ctx, node))
 			},
-			expectEvent: false,
+			expectEvent:   true,
+			expectHealthy: true,
 		},
 	}
 
@@ -492,10 +494,13 @@ func setupTestWithPolicies(t *testing.T, policies []config.Policy) *testSetup {
 		Kind:    "Node",
 	}
 
+	annotationMgr := annotations.NewManager(k8sClient)
+
 	reconciler := controller.NewResourceReconciler(
 		k8sClient,
 		evaluator,
 		mockPub,
+		annotationMgr,
 		policies,
 		gvk,
 	)
@@ -544,10 +549,13 @@ func setupTestWithCRD(t *testing.T, policies []config.Policy, crd *apiextensions
 		Kind:    crd.Spec.Names.Kind,
 	}
 
+	annotationMgr := annotations.NewManager(k8sClient)
+
 	reconciler := controller.NewResourceReconciler(
 		k8sClient,
 		evaluator,
 		mockPub,
+		annotationMgr,
 		policies,
 		gvk,
 	)
@@ -649,13 +657,20 @@ func restartReconciler(t *testing.T, setup *testSetup) *testSetup {
 
 	policies := []config.Policy{defaultNodeNotReadyPolicy()}
 
+	annotationMgr := annotations.NewManager(setup.k8sClient)
+
 	reconciler := controller.NewResourceReconciler(
 		setup.k8sClient,
 		setup.evaluator,
 		mockPub,
+		annotationMgr,
 		policies,
 		gvk,
 	)
+
+	if err := reconciler.LoadState(setup.ctx); err != nil {
+		t.Fatalf("Failed to load state after restart: %v", err)
+	}
 
 	return &testSetup{
 		ctx:        setup.ctx,

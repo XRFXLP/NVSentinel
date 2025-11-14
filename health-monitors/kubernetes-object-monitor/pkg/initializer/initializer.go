@@ -24,6 +24,7 @@ import (
 	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/controller"
@@ -150,10 +151,15 @@ func registerControllers(
 	policies []config.Policy,
 	maxConcurrentReconciles int,
 ) error {
+	annotationMgr := annotations.NewManager(mgr.GetClient())
 	gvkPolicies := groupPoliciesByGVK(policies)
 
 	for gvk, policies := range gvkPolicies {
-		reconciler := controller.NewResourceReconciler(mgr.GetClient(), evaluator, pub, policies, gvk)
+		reconciler := controller.NewResourceReconciler(mgr.GetClient(), evaluator, pub, annotationMgr, policies, gvk)
+
+		if err := reconciler.LoadState(context.Background()); err != nil {
+			slog.Warn("Failed to load state for controller, starting fresh", "gvk", gvk.String(), "error", err)
+		}
 
 		if err := ctrl.NewControllerManagedBy(mgr).
 			For(newUnstructuredForGVK(gvk)).
