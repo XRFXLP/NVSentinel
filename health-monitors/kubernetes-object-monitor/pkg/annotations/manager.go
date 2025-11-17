@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	AnnotationKey = "k8s-object-monitor.nvsentinel.nvidia.com/policy-matches"
+	AnnotationKey = "nvsentinel.nvidia.com/k8s-object-monitor-policy-matches"
 )
 
 type PolicyMatchState map[string]string
