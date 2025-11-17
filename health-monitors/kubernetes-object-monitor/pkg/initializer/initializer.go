@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
@@ -38,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
@@ -59,6 +61,10 @@ type Components struct {
 }
 
 func InitializeAll(ctx context.Context, params Params) (*Components, error) {
+	slogHandler := slog.Default().Handler()
+	logrLogger := logr.FromSlogHandler(slogHandler)
+	ctrllog.SetLogger(logrLogger)
+
 	cfg, err := config.Load(params.PolicyConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load policy config: %w", err)

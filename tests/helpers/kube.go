@@ -1594,10 +1594,13 @@ func SetNodeConditionStatus(
 				return err
 			}
 
+			found := false
 			modified := false
 
 			for i := range node.Status.Conditions {
 				if node.Status.Conditions[i].Type == conditionType {
+					found = true
+
 					if node.Status.Conditions[i].Status != status {
 						node.Status.Conditions[i].Status = status
 						node.Status.Conditions[i].LastTransitionTime = metav1.Now()
@@ -1607,6 +1610,19 @@ func SetNodeConditionStatus(
 
 					break
 				}
+			}
+
+			if !found {
+				now := metav1.Now()
+				node.Status.Conditions = append(node.Status.Conditions, v1.NodeCondition{
+					Type:               conditionType,
+					Status:             status,
+					LastTransitionTime: now,
+					LastHeartbeatTime:  now,
+					Reason:             "TestCondition",
+					Message:            "Set by test",
+				})
+				modified = true
 			}
 
 			if !modified {

@@ -28,9 +28,7 @@ image:
 podAnnotations: {}
 
 maxConcurrentReconciles: 1
-
-platformConnector:
-  socket: "unix:///var/run/platform-connector/platform-connector.sock"
+resyncPeriod: 5m
 
 policies:
   - name: node-not-ready
@@ -59,8 +57,8 @@ resources:
     memory: 256Mi
 
 volumes:
-  - name: platform-connector-socket
+  - name: socket
     hostPath:
-      path: /var/run/platform-connector
+      path: /var/run/nvsentinel
       type: DirectoryOrCreate
 

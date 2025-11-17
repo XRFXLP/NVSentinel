@@ -30,6 +30,9 @@ type k8sObjectMonitorContextKey int
 
 const (
 	k8sMonitorKeyNodeName k8sObjectMonitorContextKey = iota
+
+	annotationKey     = "nvsentinel.nvidia.com/k8s-object-monitor-policy-matches"
+	testConditionType = "TestCondition"
 )
 
 func TestKubernetesObjectMonitor(t *testing.T) {
@@ -41,12 +44,19 @@ func TestKubernetesObjectMonitor(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		pod, err := helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "kubernetes-object-monitor")
+		nodeList := &v1.NodeList{}
+		err = client.Resources().List(ctx, nodeList)
 		require.NoError(t, err)
-		require.NotNil(t, pod)
 
-		testNodeName := pod.Spec.NodeName
-		t.Logf("Using kubernetes-object-monitor pod: %s on node: %s", pod.Name, testNodeName)
+		var testNodeName string
+		for _, node := range nodeList.Items {
+			if node.Labels["type"] != "kwok" {
+				testNodeName = node.Name
+				break
+			}
+		}
+		require.NotEmpty(t, testNodeName, "no real (non-KWOK) nodes found in cluster")
+		t.Logf("Using test node: %s", testNodeName)
 
 		return context.WithValue(ctx, k8sMonitorKeyNodeName, testNodeName)
 	})
@@ -56,9 +66,9 @@ func TestKubernetesObjectMonitor(t *testing.T) {
 		require.NoError(t, err)
 
 		nodeName := ctx.Value(k8sMonitorKeyNodeName).(string)
-		t.Logf("Marking node %s as NotReady", nodeName)
+		t.Logf("Setting TestCondition to False on node %s", nodeName)
 
-		helpers.SetNodeConditionStatus(ctx, t, client, nodeName, v1.NodeReady, v1.ConditionFalse)
+		helpers.SetNodeConditionStatus(ctx, t, client, nodeName, v1.NodeConditionType(testConditionType), v1.ConditionFalse)
 
 		t.Log("Waiting for policy match annotation on node")
 		require.Eventually(t, func() bool {
@@ -68,7 +78,7 @@ func TestKubernetesObjectMonitor(t *testing.T) {
 				return false
 			}
 
-			annotation, exists := node.Annotations["nvsentinel.nvidia.com/k8s-object-monitor-policy-matches"]
+			annotation, exists := node.Annotations[annotationKey]
 			if !exists {
 				return false
 			}
@@ -85,9 +95,9 @@ func TestKubernetesObjectMonitor(t *testing.T) {
 		require.NoError(t, err)
 
 		nodeName := ctx.Value(k8sMonitorKeyNodeName).(string)
-		t.Logf("Marking node %s as Ready", nodeName)
+		t.Logf("Setting TestCondition to True on node %s", nodeName)
 
-		helpers.SetNodeConditionStatus(ctx, t, client, nodeName, v1.NodeReady, v1.ConditionTrue)
+		helpers.SetNodeConditionStatus(ctx, t, client, nodeName, v1.NodeConditionType(testConditionType), v1.ConditionTrue)
 
 		t.Log("Waiting for policy match annotation to be cleared")
 		require.Eventually(t, func() bool {
@@ -97,7 +107,7 @@ func TestKubernetesObjectMonitor(t *testing.T) {
 				return false
 			}
 
-			annotation, exists := node.Annotations["nvsentinel.nvidia.com/k8s-object-monitor-policy-matches"]
+			annotation, exists := node.Annotations[annotationKey]
 			if exists && annotation != "" {
 				t.Logf("Annotation still exists: %s", annotation)
 				return false
