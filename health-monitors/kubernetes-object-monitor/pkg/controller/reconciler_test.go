@@ -255,30 +255,7 @@ func TestReconciler_ErrorCodePropagation(t *testing.T) {
 }
 
 func TestReconciler_CustomResource(t *testing.T) {
-	crPolicy := config.Policy{
-		Name:    "gpu-job-failed",
-		Enabled: true,
-		Resource: config.ResourceSpec{
-			Group:   "batch.nvidia.com",
-			Version: "v1alpha1",
-			Kind:    "GPUJob",
-		},
-		Predicate: config.PredicateSpec{
-			Expression: `has(resource.status.state) && resource.status.state == "Failed"`,
-		},
-		NodeAssociation: &config.AssociationSpec{
-			Expression: `resource.spec.nodeName`,
-		},
-		HealthEvent: config.HealthEventSpec{
-			ComponentClass:    "GPU",
-			IsFatal:           false,
-			Message:           "GPU job failed",
-			RecommendedAction: "CONTACT_SUPPORT",
-			ErrorCode:         []string{"GPU_JOB_FAILED"},
-		},
-	}
-
-	setup := setupTestWithCRD(t, []config.Policy{crPolicy}, gpuJobCRD())
+	setup := setupTestWithCRD(t, []config.Policy{defaultGPUJobFailedPolicy()}, gpuJobCRD())
 	nodeName := "gpu-test-node"
 	jobName := "test-gpu-job"
 	namespace := "default"
@@ -345,6 +322,81 @@ func TestReconciler_CustomResource(t *testing.T) {
 			return false
 		}
 		event := setup.publisher.publishedEvents[0]
+		return event.nodeName == nodeName &&
+			event.isHealthy &&
+			event.policy.Name == "gpu-job-failed"
+	}, time.Second, 50*time.Millisecond)
+}
+
+func TestReconciler_CustomResourceColdStart(t *testing.T) {
+	crPolicy := defaultGPUJobFailedPolicy()
+	setup := setupTestWithCRD(t, []config.Policy{crPolicy}, gpuJobCRD())
+	nodeName := "gpu-test-node-cold"
+	jobName := "test-gpu-job-cold"
+	namespace := "default"
+
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+
+	gpuJob := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "batch.nvidia.com/v1alpha1",
+			"kind":       "GPUJob",
+			"metadata": map[string]any{
+				"name":      jobName,
+				"namespace": namespace,
+			},
+			"spec": map[string]any{
+				"nodeName": nodeName,
+			},
+		},
+	}
+
+	require.NoError(t, setup.k8sClient.Create(setup.ctx, gpuJob))
+
+	require.Eventually(t, func() bool {
+		err := setup.k8sClient.Get(setup.ctx, types.NamespacedName{
+			Name:      jobName,
+			Namespace: namespace,
+		}, gpuJob)
+		return err == nil
+	}, time.Second, 50*time.Millisecond)
+
+	gpuJob.Object["status"] = map[string]any{
+		"state": "Failed",
+	}
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, gpuJob))
+
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: jobName, Namespace: namespace},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Eventually(t, func() bool {
+		if len(setup.publisher.publishedEvents) != 1 {
+			return false
+		}
+		event := setup.publisher.publishedEvents[0]
+		return event.nodeName == nodeName &&
+			!event.isHealthy &&
+			event.policy.Name == "gpu-job-failed"
+	}, time.Second, 50*time.Millisecond)
+
+	coldStartSetup := restartReconcilerWithCRD(t, setup, []config.Policy{crPolicy}, gpuJobCRD())
+
+	require.NoError(t, coldStartSetup.k8sClient.Delete(coldStartSetup.ctx, gpuJob))
+
+	result, err = coldStartSetup.reconciler.Reconcile(coldStartSetup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: jobName, Namespace: namespace},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Eventually(t, func() bool {
+		if len(coldStartSetup.publisher.publishedEvents) != 1 {
+			return false
+		}
+		event := coldStartSetup.publisher.publishedEvents[0]
 		return event.nodeName == nodeName &&
 			event.isHealthy &&
 			event.policy.Name == "gpu-job-failed"
@@ -453,6 +505,31 @@ func defaultNodeNotReadyPolicy() config.Policy {
 			Message:           "Node is not ready",
 			RecommendedAction: "CONTACT_SUPPORT",
 			ErrorCode:         []string{"NODE_NOT_READY", "CONDITION_FAILED"},
+		},
+	}
+}
+
+func defaultGPUJobFailedPolicy() config.Policy {
+	return config.Policy{
+		Name:    "gpu-job-failed",
+		Enabled: true,
+		Resource: config.ResourceSpec{
+			Group:   "batch.nvidia.com",
+			Version: "v1alpha1",
+			Kind:    "GPUJob",
+		},
+		Predicate: config.PredicateSpec{
+			Expression: `has(resource.status.state) && resource.status.state == "Failed"`,
+		},
+		NodeAssociation: &config.AssociationSpec{
+			Expression: `resource.spec.nodeName`,
+		},
+		HealthEvent: config.HealthEventSpec{
+			ComponentClass:    "GPU",
+			IsFatal:           false,
+			Message:           "GPU job failed",
+			RecommendedAction: "CONTACT_SUPPORT",
+			ErrorCode:         []string{"GPU_JOB_FAILED"},
 		},
 	}
 }
@@ -656,6 +733,44 @@ func restartReconciler(t *testing.T, setup *testSetup) *testSetup {
 	}
 
 	policies := []config.Policy{defaultNodeNotReadyPolicy()}
+
+	annotationMgr := annotations.NewManager(setup.k8sClient)
+
+	reconciler := controller.NewResourceReconciler(
+		setup.k8sClient,
+		setup.evaluator,
+		mockPub,
+		annotationMgr,
+		policies,
+		gvk,
+	)
+
+	if err := reconciler.LoadState(setup.ctx); err != nil {
+		t.Fatalf("Failed to load state after restart: %v", err)
+	}
+
+	return &testSetup{
+		ctx:        setup.ctx,
+		k8sClient:  setup.k8sClient,
+		reconciler: reconciler,
+		publisher:  mockPub,
+		evaluator:  setup.evaluator,
+		testEnv:    setup.testEnv,
+	}
+}
+
+func restartReconcilerWithCRD(t *testing.T, setup *testSetup, policies []config.Policy, crd *apiextensionsv1.CustomResourceDefinition) *testSetup {
+	t.Helper()
+
+	gvk := schema.GroupVersionKind{
+		Group:   crd.Spec.Group,
+		Version: crd.Spec.Versions[0].Name,
+		Kind:    crd.Spec.Names.Kind,
+	}
+
+	mockPub := &mockPublisher{
+		publishedEvents: []mockPublishedEvent{},
+	}
 
 	annotationMgr := annotations.NewManager(setup.k8sClient)
 
