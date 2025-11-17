@@ -12,6 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+{{- $resourcesByGroup := dict -}}
+{{- range .Values.policies -}}
+  {{- $group := .resource.group | default "" -}}
+  {{- $kind := .resource.kind | lower -}}
+  {{- $resource := printf "%ss" $kind -}}
+  {{- $existing := index $resourcesByGroup $group | default list -}}
+  {{- if not (has $resource $existing) -}}
+    {{- $updated := append $existing $resource -}}
+    {{- $_ := set $resourcesByGroup $group $updated -}}
+  {{- end -}}
+{{- end -}}
+
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -29,3 +41,18 @@ rules:
       - watch
       - patch
       - update
+
+  {{- range $group, $resources := $resourcesByGroup }}
+  {{- if ne $group "" }}
+  - apiGroups:
+      - {{ $group | quote }}
+    resources:
+      {{- range $resources }}
+      - {{ . }}
+      {{- end }}
+    verbs:
+      - get
+      - list
+      - watch
+  {{- end }}
+  {{- end }}
