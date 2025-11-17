@@ -1576,3 +1576,50 @@ func VerifyEventsMatchPatterns(t *testing.T, ctx context.Context,
 
 	return true
 }
+
+func SetNodeConditionStatus(
+	ctx context.Context,
+	t *testing.T,
+	client klient.Client,
+	nodeName string,
+	conditionType v1.NodeConditionType,
+	status v1.ConditionStatus,
+) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			node, err := GetNodeByName(ctx, client, nodeName)
+			if err != nil {
+				return err
+			}
+
+			modified := false
+
+			for i := range node.Status.Conditions {
+				if node.Status.Conditions[i].Type == conditionType {
+					if node.Status.Conditions[i].Status != status {
+						node.Status.Conditions[i].Status = status
+						node.Status.Conditions[i].LastTransitionTime = metav1.Now()
+						node.Status.Conditions[i].LastHeartbeatTime = metav1.Now()
+						modified = true
+					}
+
+					break
+				}
+			}
+
+			if !modified {
+				return nil
+			}
+
+			return client.Resources().UpdateStatus(ctx, node)
+		})
+		if err != nil {
+			t.Logf("Failed to update node status: %v", err)
+			return false
+		}
+
+		return true
+	}, EventuallyWaitTimeout, WaitInterval)
+}

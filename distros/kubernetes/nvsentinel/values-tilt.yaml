@@ -67,6 +67,9 @@ global:
   metadataCollector:
     enabled: false
 
+  kubernetesObjectMonitor:
+    enabled: true
+
 mongodb-store:
   mongodb:
     replicaCount: 1
@@ -177,3 +180,17 @@ csp-health-monitor:
 platformConnector:
   nodeMetadata:
     enabled: true
+
+kubernetes-object-monitor:
+  logLevel: debug
+
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname

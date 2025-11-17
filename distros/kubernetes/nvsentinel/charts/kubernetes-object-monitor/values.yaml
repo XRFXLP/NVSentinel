@@ -1,0 +1,66 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Default values for kubernetes-object-monitor.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+logLevel: info
+
+image:
+  repository: ghcr.io/nvidia/nvsentinel/kubernetes-object-monitor
+  pullPolicy: IfNotPresent
+  tag: ""
+
+podAnnotations: {}
+
+maxConcurrentReconciles: 1
+
+platformConnector:
+  socket: "unix:///var/run/platform-connector/platform-connector.sock"
+
+policies:
+  - name: node-not-ready
+    enabled: true
+    resource:
+      group: ""
+      version: v1
+      kind: Node
+    predicate:
+      expression: |
+        resource.status.conditions.filter(c, c.type == "Ready" && c.status == "False").size() > 0
+    healthEvent:
+      componentClass: Node
+      isFatal: true
+      message: "Node is not ready"
+      recommendedAction: CONTACT_SUPPORT
+      errorCode:
+        - NODE_NOT_READY
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+volumes:
+  - name: platform-connector-socket
+    hostPath:
+      path: /var/run/platform-connector
+      type: DirectoryOrCreate
+
