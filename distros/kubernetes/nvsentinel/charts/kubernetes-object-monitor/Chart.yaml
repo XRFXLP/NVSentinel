@@ -15,13 +15,7 @@
 apiVersion: v2
 name: kubernetes-object-monitor
 description: Monitors Kubernetes objects and publishes health events based on CEL policy predicates
-
-# Application chart for deployment
 type: application
-
-# Chart version - increment for chart changes
 version: 0.1.0
-
-# Application version
 appVersion: "1.16.0"
 
