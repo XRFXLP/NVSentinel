@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"sync"
 	"time"
 
@@ -521,6 +522,8 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 	for _, pod := range remainingPods {
 		podNames = append(podNames, pod.Name)
 	}
+
+	sort.Strings(podNames)
 
 	message := fmt.Sprintf(
 		"Waiting for following pods to finish: %v in namespace: %v or they will be force deleted on: %s",

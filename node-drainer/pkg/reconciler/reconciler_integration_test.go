@@ -153,6 +153,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 		mongoFindOneResponse map[string]interface{}
 		expectError          bool
 		expectedNodeLabel    *string
+		numReconciles        int
 		validateFunc         func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error)
 	}{
 		{
@@ -254,39 +255,58 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			},
 		},
 		{
-			name:            "AllowCompletion mode waits for pods to complete",
+			name:            "AllowCompletion mode waits for pods to complete and verifies consistent pod ordering",
 			nodeName:        "completion-node",
 			namespaces:      []string{"completion-test"},
 			nodeQuarantined: model.Quarantined,
 			pods: []*v1.Pod{
 				{
-					ObjectMeta: metav1.ObjectMeta{Name: "running-pod", Namespace: "completion-test"},
+					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-3", Namespace: "completion-test"},
+					Spec:       v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status:     v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-1", Namespace: "completion-test"},
+					Spec:       v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status:     v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-2", Namespace: "completion-test"},
 					Spec:       v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
 					Status:     v1.PodStatus{Phase: v1.PodRunning},
 				},
 			},
 			expectError:       true,
 			expectedNodeLabel: ptr.To(string(statemanager.DrainingLabelValue)),
+			numReconciles:     5,
 			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "waiting for pods to complete")
 
 				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)})
 				require.NoError(t, err)
-				require.Len(t, nodeEvents.Items, 1)
+				require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
 				require.Equal(t, nodeEvents.Items[0].Reason, "AwaitingPodCompletion")
-				require.Equal(t, nodeEvents.Items[0].Message, "Waiting for following pods to finish: [completion-test/running-pod]")
+				expectedMessage := "Waiting for following pods to finish: [completion-test/running-pod-1 completion-test/running-pod-2 completion-test/running-pod-3]"
+				require.Equal(t, expectedMessage, nodeEvents.Items[0].Message, "pod list should be in sorted order")
 
-				pod, err := client.CoreV1().Pods("completion-test").Get(ctx, "running-pod", metav1.GetOptions{})
-				require.NoError(t, err)
-				pod.Status.Phase = v1.PodSucceeded
-				_, err = client.CoreV1().Pods("completion-test").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-				require.NoError(t, err)
+				for _, podName := range []string{"running-pod-1", "running-pod-2", "running-pod-3"} {
+					pod, err := client.CoreV1().Pods("completion-test").Get(ctx, podName, metav1.GetOptions{})
+					require.NoError(t, err)
+					pod.Status.Phase = v1.PodSucceeded
+					_, err = client.CoreV1().Pods("completion-test").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+					require.NoError(t, err)
+				}
 
 				require.Eventually(t, func() bool {
-					updatedPod, err := client.CoreV1().Pods("completion-test").Get(ctx, "running-pod", metav1.GetOptions{})
-					return err == nil && updatedPod.Status.Phase == v1.PodSucceeded
-				}, 30*time.Second, 1*time.Second, "pod status should be updated to succeeded")
+					for _, podName := range []string{"running-pod-1", "running-pod-2", "running-pod-3"} {
+						updatedPod, err := client.CoreV1().Pods("completion-test").Get(ctx, podName, metav1.GetOptions{})
+						if err != nil || updatedPod.Status.Phase != v1.PodSucceeded {
+							return false
+						}
+					}
+					return true
+				}, 30*time.Second, 1*time.Second, "all pod statuses should be updated to succeeded")
 			},
 		},
 		{
@@ -420,11 +440,19 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			beforeReceived := getCounterValue(t, metrics.TotalEventsReceived)
 			beforeDuration := getHistogramCount(t, metrics.EventHandlingDuration)
 
-			err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, healthEventOptions{
-				nodeName:        tt.nodeName,
-				nodeQuarantined: tt.nodeQuarantined,
-				drainForce:      tt.drainForce,
-			})
+			numReconciles := tt.numReconciles
+			if numReconciles == 0 {
+				numReconciles = 1
+			}
+
+			var err error
+			for i := 0; i < numReconciles; i++ {
+				err = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, healthEventOptions{
+					nodeName:        tt.nodeName,
+					nodeQuarantined: tt.nodeQuarantined,
+					drainForce:      tt.drainForce,
+				})
+			}
 
 			afterReceived := getCounterValue(t, metrics.TotalEventsReceived)
 			afterDuration := getHistogramCount(t, metrics.EventHandlingDuration)
@@ -1197,3 +1225,4 @@ func TestReconciler_MultipleEventsOnNodeCancelledByUnQuarantine(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, pod2.DeletionTimestamp, "pod-2 should not be deleted")
 }
+
