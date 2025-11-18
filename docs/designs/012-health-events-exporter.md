@@ -85,7 +85,6 @@ This design focuses on exporting **Health Events** - hardware and cluster health
 │  │                 (Pluggable Destinations)                       │     │
 │  │                                                                │     │
 │  │    Publish(event) error                                        │     │
-│  │    PublishBatch(events) error                                  │     │
 │  └────────────────────────────────────────────────────────────────┘     │
 │           │                      │                      │               │
 │           ↓                      ↓                      ↓               │
@@ -169,9 +168,6 @@ type Event interface {
 type EventSink interface {
     // Publish sends a single event to the sink
     Publish(ctx context.Context, event *CloudEvent) error
-    
-    // PublishBatch sends multiple events atomically (optional)
-    PublishBatch(ctx context.Context, events []*CloudEvent) error
     
     // Close flushes pending events and releases resources
     Close(ctx context.Context) error
@@ -350,7 +346,6 @@ func transformEntities(entities []*pb.Entity) []map[string]string {
 }
 ```
 
-**Note:** Platform connector already enriches metadata (chassis_serial, providerID, topology labels); exporter passes through without modification.
 
 ### 3. Event Stream Pipeline
 
@@ -380,9 +375,6 @@ type HTTPPublisher interface {
     // Publish single event
     Publish(ctx context.Context, event CloudEvent) error
     
-    // Publish batch of events
-    PublishBatch(ctx context.Context, events []CloudEvent) error
-    
     // Close publisher and flush pending events
     Close(ctx context.Context) error
 }
@@ -393,10 +385,6 @@ type HTTPPublisherConfig struct {
     MaxRetries          int           // Number of retries on failure
     RetryBackoff        time.Duration // Initial backoff duration
     Timeout             time.Duration // Request timeout
-    
-    // Batching configuration
-    BatchSize           int           // Events per batch
-    BatchTimeout        time.Duration // Max time to wait for batch
     
     // Authentication
     OIDCTokenProvider   TokenProvider // OIDC token provider
@@ -426,7 +414,6 @@ On first deployment (when no resume token exists), the exporter automatically ex
 type BackfillConfig struct {
     MaxAge         time.Duration // How far back to backfill (e.g., 24h, 7d, 30d)
     MaxEvents      int           // Optional: safety limit
-    BatchSize      int           // Events per batch
     RateLimit      int           // Events per second
 }
 ```
@@ -461,7 +448,6 @@ scopes = ["events:write"]
 # Optional: limit how far back to backfill
 # max_age = "720h"      # Uncomment to limit backfill window (24h, 168h=7d, 720h=30d)
 # max_events = 1000000  # Optional: safety limit
-batch_size = 500
 rate_limit = 1000       # events per second, don't overwhelm sink
 
 [datastore]
