@@ -126,7 +126,7 @@ Both are needed for complete observability!
 
 ### Decision
 
-The Health Events Exporter is a new NVSentinel component that continuously exports health events from the in-cluster MongoDB data store to external event stores for centralized analytics and detailed querying. The exporter transforms MongoDB documents into standardized [CloudEvents](https://cloudevents.io/) format and publishes them to HTTP-based sinks with OIDC authentication support.
+Implement a new component - health event exporter that continuously exports health events from the in-cluster MongoDB data store to external event stores for centralized analytics and detailed querying. The exporter transforms MongoDB documents into standardized [CloudEvents](https://cloudevents.io/) format and publishes them to HTTP-based sinks with OIDC authentication support.
 
 **Note:** This exporter **complements** the existing Prometheus metrics export. Prometheus remains the primary solution for aggregate metrics, real-time dashboards, and alerting. The event exporter addresses the need for detailed event-level querying that would cause cardinality explosion in Prometheus (e.g., searching by GPU serial number, analyzing event sequences, complex filtering on metadata fields).
 
@@ -167,7 +167,8 @@ This design focuses on exporting **Health Events** - hardware and cluster health
 │           │                      │                      │               │
 │           ↓                      ↓                      ↓               │
 │  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐           │
-│  │   MongoDB    │      │  PostgreSQL  │      │    Kafka     │           |│  │ ChangeStream │      │    NOTIFY    │      │   Consumer   │           │
+│  │   MongoDB    │      │  PostgreSQL  │      │    Kafka     │           |
+│  │ ChangeStream │      │    NOTIFY    │      │   Consumer   │           │
 │  │ (resumable)  │      │ (resumable)  │      │  (offsets)   │           │
 │  └──────────────┘      └──────────────┘      └──────────────┘           │
 │                                                                         │
