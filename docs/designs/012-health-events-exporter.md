@@ -2,107 +2,19 @@
 
 ## Context
 
-NVSentinel currently stores all health events within its in-cluster MongoDB. While this works well for per-cluster operations (fault quarantine, node draining, remediation), it creates challenges for fleet-wide event visibility:
-
-- **Data Isolation:** Each cluster's MongoDB is isolated; health event data cannot be queried across clusters
-- **Wrong Tool for Events:** While Prometheus + Grafana provide centralized metrics visibility, Prometheus is designed for time series data, not events
-- **Cardinality Explosion:** Attempting to export high-cardinality event data (550 XID codes × 6,000 nodes × 8 GPUs × metadata fields) as Prometheus metrics creates 198+ billion time series, which is unsustainable
-- **Limited Event Queries:** Prometheus/PromQL cannot efficiently answer event-oriented queries like "Show me all XID-48 errors with GPU serial X123 across the fleet" or "Timeline of events for node gpu-node-42"
-- **Missing Event Store:** No centralized platform for detailed event search, analysis, and long-term retention
+NVSentinel stores health events in per-cluster MongoDB. This works well for local operations (fault quarantine, node draining) but creates fleet-wide visibility challenges: isolated data cannot be queried across clusters; Prometheus handles aggregate metrics but not high-cardinality event data (198B+ time series); no centralized event store for detailed search and analysis.
 
 ---
 
 ## Problem Statement
 
-### Current State
+Health events are trapped in per-cluster MongoDB instances (150+ clusters). Operations teams need centralized access for fleet-wide analytics: querying events by GPU serial number, analyzing failure patterns across clusters, investigating timelines before node failures.
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│ Cluster 1 (us-west-1)                                            │
-│                                                                  │
-│ MongoDB: 10,000 health events                                    │
-│ ├─ Detailed event data (XID codes, GPU serials, metadata)        │
-│ └─ ❌ Isolated, not queryable across clusters                    │
-│                                                                  │
-│ Prometheus: Aggregate metrics                                    │
-│ ├─ ✅ nvsentinel_total_xid_errors{cluster="us-west-1"}           │
-│ ├─ ✅ nvsentinel_nodes_cordoned_total{cluster="us-west-1"}       │
-│ └─ ❌ CANNOT export per-GPU events (cardinality explosion)       │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
+**Current:** Each cluster's MongoDB is isolated → no cross-cluster visibility
 
-... (150 clusters total)
+**Needed:** Export events to centralized event store → enable fleet-wide search and analysis
 
-┌──────────────────────────────────────────────────────────────────┐
-│ Centralized Prometheus + Grafana                                 │
-│                                                                  │
-│ ✅ Works well for: Aggregate metrics across fleet                │
-│ ❌ Cannot handle: Individual event queries                       │
-│                                                                  │
-│ Example queries that DON'T work:                                 │
-│ • "Show me all events for GPU serial 1234567890"                 │
-│ • "Timeline of events leading to node-42 failure"                │
-│ • "All XID-48 errors with temperature > 80°C"                    │
-│ • "Events with specific metadata field values"                   │
-│                                                                  │
-│ Cardinality problem:                                             │
-│ 550 XIDs × 6,000 nodes × 8 GPUs × metadata = 198B time series    │
-└──────────────────────────────────────────────────────────────────┘
-
-Operations Team Needs:
-❌ Cannot query detailed event data across fleet
-❌ Cannot search by GPU serial number, error metadata, etc.
-❌ Cannot perform event-based analysis (event sequences, patterns)
-✅ Can view aggregate metrics (but not individual events)
-```
-
-### Target State: Complementary Observability
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│ NVSentinel Clusters (150 clusters)                               │
-│                                                                  │
-│ MongoDB → Event Exporter ──┬──→ Prometheus (metrics)             │
-│                             │    ✅ Aggregate counters/gauges    │
-│                             │    ✅ Alerting on thresholds       │
-│                             │    ✅ Real-time dashboards         │
-│                             │                                    │
-│                             └──→ Event Store (events)            │
-│                                  ✅ Detailed event data          │
-│                                  ✅ Search by any field          │
-│                                  ✅ Event sequences/patterns     │
-│                                  ✅ Long-term retention          │
-└──────────────────────────────────────────────────────────────────┘
-
-Use Case Split:
-┌────────────────────────────────────────────────────────────────┐
-│ Prometheus + Grafana (Time Series Metrics)                     │
-├────────────────────────────────────────────────────────────────┤
-│ • How many XID errors per cluster? (counters)                  │
-│ • What's the error rate trend? (rate over time)                │
-│ • Which clusters have highest error rates? (top-k)             │
-│ • Alert when errors > threshold (alerting)                     │
-└────────────────────────────────────────────────────────────────┘
-
-┌────────────────────────────────────────────────────────────────┐
-│ Event Store + Kibana/etc (Detailed Events)                     │
-├────────────────────────────────────────────────────────────────┤
-│ • Show all events for GPU serial X123 (search)                 │
-│ • Timeline of events before node-42 failed (event sequence)    │
-│ • All XID-48 with temp > 80°C (complex filtering)              │
-│ • Pattern: XID-48 → XID-31 → node reboot (analytics)           │
-└────────────────────────────────────────────────────────────────┘
-
-Both are needed for complete observability!
-```
-
-### Requirements (from [Issue #128](https://github.com/NVIDIA/NVSentinel/issues/128))
-
-1. **Continuous Export:** Stream data from MongoDB as events occur
-2. **CloudEvents Format:** Use standardized event schema
-3. **HTTP Sink Support:** Push to HTTP-based endpoints
-4. **OIDC Authentication:** Secure communication with OAuth2/OIDC
-5. **Fleet-Wide Analytics:** Enable event-based querying and analysis across multiple clusters
+**Note:** Existing Prometheus/Grafana handle aggregate metrics and alerting. This exporter addresses a different use case: detailed event-level queries that would cause cardinality explosion in Prometheus.
 
 ---
 
@@ -128,21 +40,11 @@ Both are needed for complete observability!
 
 Implement a new component - health event exporter that continuously exports health events from the in-cluster MongoDB data store to external event stores for centralized analytics and detailed querying. The exporter transforms MongoDB documents into standardized [CloudEvents](https://cloudevents.io/) format and publishes them to HTTP-based sinks with OIDC authentication support.
 
-**Note:** This exporter **complements** the existing Prometheus metrics export. Prometheus remains the primary solution for aggregate metrics, real-time dashboards, and alerting. The event exporter addresses the need for detailed event-level querying that would cause cardinality explosion in Prometheus (e.g., searching by GPU serial number, analyzing event sequences, complex filtering on metadata fields).
+The exporter is deployed as a single-replica Deployment in the `nvsentinel` namespace, using the existing NVSentinel service account. Configuration is loaded from ConfigMap; sensitive values come from Secrets.
 
 ### Health Events
 
-This design focuses on exporting **Health Events** - hardware and cluster health status changes detected by NVSentinel's health monitors.
-
-**Health Event Characteristics:**
-
-- **CloudEvents type:** `"health-event"`
-- **Delivery Guarantee:** At-least-once
-- **Source:** NVSentinel Health Monitors
-- **Stored in:** MongoDB `healthevents` collection
-- **Volume:** High (thousands of events per day per cluster)
-- **Examples:** GPU XID-48 errors, ECC errors, scheduled maintenance events, pod evictions
-- **Use Case:** Centralized analytics, dashboarding, ML-based pattern detection
+This design focuses on exporting **Health Events** - hardware and cluster health status changes from NVSentinel's health monitors (GPU, Syslog, CSP, K8s Object monitors). Events stored in MongoDB `healthevents` collection; delivery guarantee is at-least-once; use case is centralized analytics and pattern detection.
 
 ### Architecture Overview
 
@@ -166,11 +68,11 @@ This design focuses on exporting **Health Events** - hardware and cluster health
 │  └────────────────────────────────────────────────────────────────┘     │
 │           │                      │                      │               │
 │           ↓                      ↓                      ↓               │
-│  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐           │
-│  │   MongoDB    │      │  PostgreSQL  │      │    Kafka     │           |
-│  │ ChangeStream │      │    NOTIFY    │      │   Consumer   │           │
-│  │ (resumable)  │      │ (resumable)  │      │  (offsets)   │           │
-│  └──────────────┘      └──────────────┘      └──────────────┘           │
+│  ┌──────────────┐      ╔══════════════╗      ╔══════════════╗           │
+│  │   MongoDB    │      ║  PostgreSQL  ║      ║    Kafka     ║           |
+│  │ ChangeStream │      ║    NOTIFY    ║      ║   Consumer   ║           │
+│  │ (IMPLEMENTED)│      ║ (extensible) ║      ║ (extensible) ║           │
+│  └──────────────┘      ╚══════════════╝      ╚══════════════╝           │
 │                                                                         │
 │  ┌────────────────────────────────────────────────────────────────┐     │
 │  │          EventTransformer (CloudEvents 1.0)                    │     │
@@ -187,10 +89,11 @@ This design focuses on exporting **Health Events** - hardware and cluster health
 │  └────────────────────────────────────────────────────────────────┘     │
 │           │                      │                      │               │
 │           ↓                      ↓                      ↓               │
-│  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐           │
-│  │  HTTP Sink   │      │  Kafka Sink  │      │  gRPC Sink   │           │
-│  │  + OIDC      │      │  + ACLs      │      │  + mTLS      │           │
-│  └──────────────┘      └──────────────┘      └──────────────┘           │
+│  ┌──────────────┐      ╔══════════════╗      ╔══════════════╗           │
+│  │  HTTP Sink   │      ║  Kafka Sink  ║      ║  gRPC Sink   ║           │
+│  │  + OIDC      │      ║  + ACLs      ║      ║  + mTLS      ║           │
+│  │(IMPLEMENTED) │      ║ (extensible) ║      ║ (extensible) ║           │
+│  └──────────────┘      ╚══════════════╝      ╚══════════════╝           │
 │           │                      │                      │               │
 │           └──────────────────────┴──────────────────────┘               │
 │                                  │                                      │
@@ -198,63 +101,21 @@ This design focuses on exporting **Health Events** - hardware and cluster health
                                    │
                                    ↓
          ┌─────────────────────────────────────────────────┐
-         │       External Destinations (Examples)          │
-         │                                                 │
-         │  • Elasticsearch (HTTP API)                     │
-         │  • Kafka Topics (via Kafka Sink or REST Proxy)  │
-         │  • Cloud Storage (S3/GCS via HTTP)              │
-         │  • SIEM platforms (Datadog, Splunk)             │
-         │  • Custom services (your API)                   │
+         │       External Destinations                     │
+         │  (Elasticsearch, Kafka, SIEM, Custom APIs, ...) │
          └─────────────────────────────────────────────────┘
 
-Key Design Principles:
-  ✓ Database agnostic: Swap MongoDB → PostgreSQL with import change
-  ✓ Sink agnostic: Add new sinks by implementing EventSink interface
-  ✓ Automatic bootstrap: Backfill historical data on first start, then stream
-  ✓ Clean separation: Source → Transform → Sink
-  ✓ Resumable: All sources support position tracking
+Legend:
+  Solid boxes (─) = Implemented in this design
+  Double boxes (═) = Extensible via interfaces (not implemented)
 ```
 
 ### Component Responsibilities
 
-#### 1. ChangeStream Watcher
-**Purpose:** Monitor MongoDB for new health events
-
-- Reuses existing `store-client/pkg/datastore/providers/mongodb/watcher` infrastructure
-- Watches `healthevents` collection using MongoDB change streams
-- Manages resume tokens for reliable delivery
-
-#### 2. CloudEvents Transformer
-**Purpose:** Convert MongoDB documents to CloudEvents format
-
-- Transforms health event documents to CloudEvents 1.0 specification
-- Adds cluster context (cluster ID, region, environment)
-- Supports both structured (JSON) and binary content modes
-- Extensible for custom attributes
-
-#### 3. HTTP Publisher
-**Purpose:** Publish events to HTTP sink
-
-- HTTP/HTTPS client with connection pooling
-- Retry logic with exponential backoff
-- Batch support (configurable)
-- Circuit breaker for sink failures
-
-#### 4. OIDC Token Provider
-**Purpose:** Manage authentication tokens
-
-- OAuth2 client credentials flow
-- Automatic token refresh before expiry
-- Thread-safe token caching
-- Support for multiple OIDC providers
-
-#### 5. Resume Token Manager
-**Purpose:** Ensure reliable delivery
-
-- Stores last processed position in MongoDB
-- Enables restart without data loss
-- At-least-once delivery semantics
-- Same pattern as fault-quarantine module
+- **ChangeStream Watcher:** Watches MongoDB `healthevents` collection; reuses existing `store-client` infrastructure and resume token pattern from fault-quarantine
+- **CloudEvents Transformer:** Converts health events to CloudEvents 1.0 format; uses cluster name as `source` field
+- **HTTP Publisher:** Publishes to HTTP sink with retry logic and OIDC authentication
+- **Resume Token Manager:** Tracks last processed position for at-least-once delivery
 
 ---
 
@@ -374,21 +235,33 @@ Following the [CloudEvents 1.0 specification](https://github.com/cloudevents/spe
     "isHealthy": false,
     "message": "GPU 3 reported XID 48: Double Bit ECC Error",
     "recommendedAction": "REPLACE_GPU",
-    "errorCode": "XID_48",
-    "entity": {
-      "type": "GPU",
-      "value": "3",
-      "serialNumber": "1234567890"
-    },
+    "errorCode": ["XID_48"],
+    "entitiesImpacted": [
+      {
+        "entityType": "PCI",
+        "entityValue": "0000:17:00.0"
+      },
+      {
+        "entityType": "GPU_UUID",
+        "entityValue": "GPU-a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      }
+    ],
     "metadata": {
-      "env": "prod",
-      "csp": "aws",
-      "region": "us-west-1"
+      "chassis_serial": "SN123456789",
+      "providerID": "aws:///us-west-2a/i-1234567890abcdef0",
+      "topology.kubernetes.io/zone": "us-west-2a",
+      "topology.kubernetes.io/region": "us-west-2"
     },
-    "timestamp": "2024-11-18T10:30:00.123456Z",
+    "generatedTimestamp": "2024-11-18T10:30:00.123456Z",
     "nodeName": "gpu-node-42",
-    "forceDrain": false,
-    "forceQuarantine": true
+    "quarantineOverrides": {
+      "force": true,
+      "skip": false
+    },
+    "drainOverrides": {
+      "force": false,
+      "skip": false
+    }
   }
 }
 ```
@@ -407,65 +280,77 @@ Following the [CloudEvents 1.0 specification](https://github.com/cloudevents/spe
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `version` | String | Yes | Schema version |
+| `version` | Number | Yes | Schema version |
 | `agent` | String | Yes | NVSentinel health monitor that generated the event (`gpu-health-monitor`, `syslog-health-monitor`, `csp-health-monitor`, `kubernetes-object-monitor`) |
 | `componentClass` | String | Yes | Component type (GPU, CPU, Memory, CSP, etc.) |
-| `checkName` | String | Yes | Name of the health check |
+| `checkName` | String | Yes | Name of the health check (e.g., `XID_ERROR_48`, `SXID_ERROR_12`) |
 | `isFatal` | Boolean | Yes | Whether error is fatal |
 | `isHealthy` | Boolean | Yes | Overall health status |
 | `message` | String | No | Human-readable description |
-| `recommendedAction` | String | No | Suggested remediation |
-| `errorCode` | String | No | Specific error code (e.g., XID codes) |
-| `entity.type` | String | Yes | Entity type |
-| `entity.value` | String | Yes | Entity identifier (GPU index, etc.) |
-| `entity.serialNumber` | String | No | Hardware serial number |
-| `metadata.env` | String | Yes | Environment (prod, non-prod) |
-| `metadata.csp` | String | Yes | Cloud service provider |
-| `metadata.region` | String | Yes | Geographic region |
-| `timestamp` | Timestamp (RFC3339) | Yes | Original event timestamp |
+| `recommendedAction` | String | Yes | Suggested remediation (`NONE`, `COMPONENT_RESET`, `CONTACT_SUPPORT`, `RESTART_VM`, `RESTART_BM`, `REPLACE_VM`) |
+| `errorCode` | Array[String] | No | Specific error codes (e.g., `["XID_48"]`) |
+| `entitiesImpacted` | Array[Entity] | Yes | Affected entities (e.g., GPU, PCI, NVSWITCH) |
+| `entitiesImpacted[].entityType` | String | Yes | Entity type (`GPU`, `PCI`, `GPU_UUID`, `NVSWITCH`, `NVLINK`, etc.) |
+| `entitiesImpacted[].entityValue` | String | Yes | Entity identifier (GPU index, PCI address, UUID, etc.) |
+| `metadata` | Map[String, String] | No | Key-value metadata (enriched by platform connector); common keys: `chassis_serial`, `providerID`, `topology.kubernetes.io/zone`, `topology.kubernetes.io/region` |
+| `generatedTimestamp` | Timestamp (RFC3339) | Yes | Event generation timestamp |
 | `nodeName` | String | Yes | Kubernetes node name |
-| `forceDrain` | Boolean | Yes | Force pod eviction |
-| `forceQuarantine` | Boolean | Yes | Force node cordoning |
+| `quarantineOverrides.force` | Boolean | No | Force node cordoning regardless of rules |
+| `quarantineOverrides.skip` | Boolean | No | Skip node cordoning |
+| `drainOverrides.force` | Boolean | No | Force pod eviction regardless of rules |
+| `drainOverrides.skip` | Boolean | No | Skip pod eviction |
 
 **Field Mapping from Datastore:**
 
-The exporter transforms NVSentinel's `HealthEventWithStatus` documents to this schema:
+The exporter transforms NVSentinel's `HealthEvent` protobuf (already enriched by platform connector) to CloudEvents format:
 
 ```go
-// Mapping from datastore event to CloudEvents
+// Mapping from protobuf HealthEvent to CloudEvents
 CloudEvent := map[string]interface{}{
     "specversion": "1.0",
-    "id":          event.ID,  // Event ID
+    "id":          uuid.New().String(),  // Generate new UUID for CloudEvents ID
     "time":        time.Now().Format(time.RFC3339Nano),
-    "source":      clusterID,
+    "source":      config.ClusterName,  // Kubernetes cluster name (from kubeconfig context or env var)
     "type":        "health-event",
     "data": map[string]interface{}{
-        "version":          "1",
-        "agent":            healthEvent.Agent,
-        "componentClass":   healthEvent.ComponentClass,
-        "checkName":        healthEvent.CheckName,
-        "isFatal":          healthEvent.IsFatal,
-        "isHealthy":        healthEvent.IsHealthy,
-        "message":          healthEvent.Message,
-        "recommendedAction": healthEvent.RecommendedAction,
-        "errorCode":        healthEvent.ErrorCode,
-        "entity": map[string]interface{}{
-            "type":         healthEvent.Entity.Type,
-            "value":        healthEvent.Entity.Value,
-            "serialNumber": healthEvent.Entity.SerialNumber,
+        "version":           healthEvent.Version,
+        "agent":             healthEvent.Agent,
+        "componentClass":    healthEvent.ComponentClass,
+        "checkName":         healthEvent.CheckName,
+        "isFatal":           healthEvent.IsFatal,
+        "isHealthy":         healthEvent.IsHealthy,
+        "message":           healthEvent.Message,
+        "recommendedAction": healthEvent.RecommendedAction.String(),
+        "errorCode":         healthEvent.ErrorCode,  // Already an array
+        "entitiesImpacted":  transformEntities(healthEvent.EntitiesImpacted),
+        "metadata":          healthEvent.Metadata,  // Already enriched by platform connector (providerID, topology labels, chassis_serial)
+        "generatedTimestamp": healthEvent.GeneratedTimestamp.AsTime().Format(time.RFC3339Nano),
+        "nodeName":          healthEvent.NodeName,
+        "quarantineOverrides": map[string]interface{}{
+            "force": healthEvent.QuarantineOverrides.Force,
+            "skip":  healthEvent.QuarantineOverrides.Skip,
         },
-        "metadata": map[string]interface{}{
-            "env":    config.Environment,
-            "csp":    config.CSP,
-            "region": config.Region,
+        "drainOverrides": map[string]interface{}{
+            "force": healthEvent.DrainOverrides.Force,
+            "skip":  healthEvent.DrainOverrides.Skip,
         },
-        "timestamp":        healthEvent.Timestamp,
-        "nodeName":         healthEvent.NodeName,
-        "forceDrain":       healthEvent.ForceDrain,
-        "forceQuarantine":  healthEvent.ForceQuarantine,
     },
 }
+
+// transformEntities converts protobuf entities to JSON-friendly format
+func transformEntities(entities []*pb.Entity) []map[string]string {
+    result := make([]map[string]string, len(entities))
+    for i, entity := range entities {
+        result[i] = map[string]string{
+            "entityType":  entity.EntityType,
+            "entityValue": entity.EntityValue,
+        }
+    }
+    return result
+}
 ```
+
+**Note:** Platform connector already enriches metadata (chassis_serial, providerID, topology labels); exporter passes through without modification.
 
 ### 3. Event Stream Pipeline
 
@@ -525,52 +410,17 @@ type HTTPPublisherConfig struct {
 
 #### Authentication
 
-HTTP sink uses **OAuth2 Client Credentials Flow** (OIDC) for authentication:
-
-- Client ID and secret configured via environment variables
-- Access tokens cached and automatically refreshed before expiry
-- Tokens included in HTTP requests: `Authorization: Bearer <token>`
+HTTP sink uses **OAuth2 Client Credentials Flow** (OIDC): client credentials configured via secrets, tokens auto-refreshed and cached, included in requests as `Authorization: Bearer <token>`.
 
 ### 5. Event Processing Flow
 
-The exporter follows a simple pipeline:
+Pipeline: Receive → Transform → Publish → Update resume token → Repeat
 
-1. **Receive** events from source (via change stream channel)
-2. **Transform** each event to CloudEvents format
-3. **Publish** to sink (HTTP endpoint)
-4. **Update** resume token after successful publish
-5. **Repeat** continuously
-
-**Error Handling:**
-- Transform errors: Log and skip event
-- Publish errors: Log and skip event (with retry in HTTP client)
-- Resume token errors: Fatal - restart exporter to maintain consistency
+Errors: Transform/publish failures logged and skipped (with HTTP retry); resume token failures trigger restart to maintain consistency.
 
 ### 6. Automatic Backfill (Bootstrap Phase)
 
-The exporter automatically exports historical events on first deployment.
-
-#### How It Works
-
-When the exporter starts:
-
-1. **Check for resume token**
-   - If exists → Resume streaming from last position
-   - If doesn't exist → **Bootstrap phase**: Export all historical events
-
-2. **Bootstrap/Backfill**
-   - Query all events from earliest (or MaxAge) to "now"
-   - Export in batches with rate limiting
-   - Track progress with checkpoint
-
-3. **Transition to streaming**
-   - After bootstrap completes, save resume token
-   - Start change stream from current position
-   - Continue with real-time events
-
-**Note:** This is not a separate "mode" - it's an automatic initialization step that happens once on first deployment.
-
-#### Configuration
+On first deployment (when no resume token exists), the exporter automatically exports historical events before streaming real-time events. Subsequent startups resume from the last checkpoint.
 
 ```go
 type BackfillConfig struct {
@@ -580,20 +430,6 @@ type BackfillConfig struct {
     RateLimit      int           // Events per second
 }
 ```
-
-#### Startup Flow
-
-1. **Check for resume token** - if exists, resume from last position; if not, enter bootstrap phase
-2. **Bootstrap (first deployment only)**
-   - Query historical events within `MaxAge` window (or all history if unset)
-   - Export in batches with rate limiting
-   - Save resume token after completion
-3. **Stream real-time events** - start change stream and process continuously
-
-**Behavior:**
-- **First deployment**: Bootstrap (export historical) → Stream (real-time)
-- **Restart**: Resume streaming from last position (no bootstrap)
-- **After downtime**: Change streams automatically handle gaps
 
 ---
 
@@ -606,10 +442,7 @@ Configuration is managed via **ConfigMap** (structured TOML) and **Secrets** (se
 ```toml
 [exporter]
 enabled = true
-cluster_id = "us-west-1-prod-cluster"
-csp = "aws"
-region = "us-west-1"
-environment = "prod"
+cluster_name = "nvsentinel-prod"  # Optional: auto-detected from kubeconfig context if not set
 
 [exporter.sink]
 endpoint = "https://events.example.com/api/v1/events"
@@ -656,103 +489,31 @@ stringData:
   oidc-client-secret: "<your-secret-here>"
 ```
 
-### Deployment
-
-The exporter is deployed as a single-replica Deployment in the `nvsentinel` namespace, using the existing NVSentinel service account. Configuration is loaded from ConfigMap; sensitive values come from Secrets.
-
 ---
 
 ## Rationale
 
 ### Why Build a Custom Exporter?
 
-**Existing Open-Source Alternatives:**
+**Existing tools evaluated:**
+- **Debezium/MongoDB Kafka Connector:** Requires Kafka infrastructure; no direct HTTP sink or CloudEvents support
+- **MongoDB Realm Triggers:** Atlas-only (not self-hosted); vendor lock-in; limited control over retry/auth
+- **Generic event exporters:** Don't support MongoDB change streams
 
-1. **Debezium MongoDB Connector**
-   - Industry-standard CDC tool
-   - Exports MongoDB change streams → Kafka topics
-   - **Why not suitable:**
-     - Requires Kafka infrastructure (many users don't have it)
-     - No direct HTTP sink support (would need Kafka Connect HTTP Sink separately)
-     - No CloudEvents format out-of-box
-     - Heavier operational overhead (Kafka cluster, Zookeeper/KRaft, Debezium connector management)
+**Why custom solution:** HTTP-first (Issue #128 requirement), CloudEvents native, OIDC auth, automatic backfill, lightweight (single binary), reuses NVSentinel infrastructure (store-client SDK, resume tokens, metadata enrichment).
 
-2. **MongoDB Kafka Connector (Official)**
-   - MongoDB's official Kafka connector
-   - Tight integration with MongoDB Atlas
-   - **Why not suitable:**
-     - Same Kafka dependency as Debezium
-     - Proprietary to MongoDB ecosystem
-     - No CloudEvents transformation
-     - GitHub Issue #128 explicitly requests HTTP sink, not Kafka
+### Key Design Decisions
 
-3. **MongoDB Realm Triggers / Atlas App Services**
-   - Cloud-native MongoDB serverless functions
-   - Can trigger HTTP webhooks on data changes
-   - **Why not suitable:**
-     - Only available in MongoDB Atlas (not self-hosted)
-     - Vendor lock-in
-     - Limited control over retry logic, batching, authentication
-     - Not suitable for open-source, on-prem deployments
-
-4. **Generic Webhook/Event Exporters (e.g., Kubernetes Event Exporter)**
-   - Export Kubernetes events, not MongoDB data
-   - **Why not suitable:**
-     - Don't support MongoDB change streams
-     - NVSentinel events are stored in MongoDB, not Kubernetes events
-
-**Why Custom Solution:**
-
-- **HTTP-First Design:** Direct HTTP sink support without Kafka dependency (GitHub Issue #128 requirement)
-- **CloudEvents Native:** Built-in CloudEvents transformation, not a bolt-on
-- **NVSentinel-Specific:** Tailored to `HealthEventWithStatus` schema, cluster context injection
-- **OIDC Support:** OAuth2 Client Credentials Flow for enterprise auth (Debezium connectors typically use SASL/TLS)
-- **Automatic Backfill:** Zero-config historical export on first deployment (not standard in CDC tools)
-- **Lightweight:** Single binary, no Kafka/Zookeeper overhead
-- **Reuses Existing Infrastructure:** Leverages NVSentinel's `store-client` SDK, resume token management from fault-quarantine module
-
-### Design Rationale
-
-1. **CloudEvents Format**
-   - **Why:** Industry standard (CNCF spec), widely supported by event stores and SIEM platforms
-   - **Alternative:** Custom JSON format → Rejected: reinventing the wheel, poor interoperability
-
-2. **HTTP Sink (Not Kafka)**
-   - **Why:** Universal protocol, no infrastructure dependency, aligns with Issue #128
-   - **Trade-off:** Lower throughput than Kafka, but health events are ~550 events across 150 clusters (manageable)
-   - **Future:** Can add Kafka sink later for high-volume users
-
-3. **At-Least-Once Delivery**
-   - **Why:** Simpler than exactly-once, idempotent sinks (Elasticsearch) handle duplicates naturally
-   - **Trade-off:** Potential duplicate events on failures
-   - **Acceptable because:** Health events are naturally idempotent (same event ID, sink deduplicates)
-
-4. **Database-Agnostic Interfaces**
-   - **Why:** Future-proof migration to PostgreSQL/CockroachDB without rewriting exporter
-   - **Cost:** Additional abstraction layer
-   - **Benefit:** NVSentinel's datastore strategy is not finalized; exporter remains independent
-
-5. **ConfigMap > Environment Variables**
-   - **Why:** Structured config easier to review, version control, and validate
-   - **Alternative:** 20+ env vars → Rejected: verbose, error-prone, hard to review in PRs
-   - **Follows:** Existing NVSentinel pattern (other components use ConfigMaps)
-
-6. **Single HTTP Sink (Not Multi-Sink)**
-   - **Why:** Simplifies configuration and error handling
-   - **User workaround:** Deploy multiple exporter instances with different configs, or use sink-side routing (e.g., Elasticsearch ingest pipeline)
-   - **Future:** Can add multi-sink if requested
-
-7. **No Event Filtering in Exporter**
-   - **Why:** Filtering logic belongs in downstream analytics tools (Elasticsearch queries, Kibana filters)
-   - **Alternative:** CEL expressions in exporter → Rejected: adds complexity, duplicates functionality available in event stores
-   - **User benefit:** All events available in sink for ad-hoc analysis; filtering at query time is more flexible
-
-### Operational Rationale
-
-- **Complement Prometheus (Don't Replace):** Prometheus excels at aggregate metrics and alerting; exporter addresses orthogonal need for event-level queries
-- **Zero-Config Backfill:** Automatic historical export on first deployment reduces operational friction
-- **Resume Tokens:** Proven pattern from fault-quarantine module ensures reliability
-- **Single Replica:** Health events are idempotent; no need for leader election or distributed coordination
+- **CloudEvents format:** Industry standard (CNCF), widely supported
+- **HTTP sink:** Universal, no infrastructure dependency (Issue #128)
+- **At-least-once delivery:** Simpler than exactly-once; idempotent sinks handle duplicates
+- **Database-agnostic:** Interfaces enable future PostgreSQL/CockroachDB migration
+- **ConfigMap config:** Structured, reviewable (follows NVSentinel pattern)
+- **Reuse metadata enrichment:** Platform connector already adds providerID, topology labels, chassis_serial
+- **Single sink:** Simplifies config; multi-sink achievable via multiple instances
+- **No event filtering:** Defer to downstream tools (Elasticsearch, Kibana)
+- **Complement Prometheus:** Exporter handles detailed events; Prometheus handles aggregate metrics
+- **Single replica:** Events are idempotent; no coordination needed
 
 ---
 
@@ -762,64 +523,29 @@ The exporter is deployed as a single-replica Deployment in the `nvsentinel` name
 
 ```go
 // Events processed
-health_events_exporter_events_received_total{cluster_id="..."}
-health_events_exporter_events_published_total{cluster_id="...",status="success|failure"}
+health_events_exporter_events_received_total{cluster="..."}
+health_events_exporter_events_published_total{cluster="...",status="success|failure"}
 
 // Latency
-health_events_exporter_publish_duration_seconds{cluster_id="...",quantile="0.5|0.9|0.99"}
+health_events_exporter_publish_duration_seconds{cluster="...",quantile="0.5|0.9|0.99"}
 
 // Errors
-health_events_exporter_transform_errors_total{cluster_id="..."}
-health_events_exporter_publish_errors_total{cluster_id="...",error_type="..."}
-health_events_exporter_token_refresh_errors_total{cluster_id="..."}
+health_events_exporter_transform_errors_total{cluster="..."}
+health_events_exporter_publish_errors_total{cluster="...",error_type="..."}
+health_events_exporter_token_refresh_errors_total{cluster="..."}
 
 // Queue/Backlog
-health_events_exporter_event_backlog_size{cluster_id="..."}
-health_events_exporter_batch_size{cluster_id="..."}
+health_events_exporter_event_backlog_size{cluster="..."}
+health_events_exporter_batch_size{cluster="..."}
 
 // Resume token
-health_events_exporter_resume_token_update_timestamp{cluster_id="..."}
+health_events_exporter_resume_token_update_timestamp{cluster="..."}
 
 // Backfill
-health_events_exporter_backfill_in_progress{cluster_id="..."}
-health_events_exporter_backfill_events_processed_total{cluster_id="..."}
-health_events_exporter_backfill_duration_seconds{cluster_id="..."}
+health_events_exporter_backfill_in_progress{cluster="..."}
+health_events_exporter_backfill_events_processed_total{cluster="..."}
+health_events_exporter_backfill_duration_seconds{cluster="..."}
 ```
-
----
-
-## Future Enhancements
-
-### Additional Sink Types
-
-- **Kafka Native:** Direct Kafka producer as alternative to HTTP
-- **Cloud Storage:** S3, GCS, Azure Blob for archival
-- **gRPC:** For lower latency streaming
-
-### Performance Optimizations
-
-- **HTTP/2 Batching:** Batch multiple events per HTTP request
-  - *When needed:* If sink latency becomes bottleneck (e.g., >100ms per request) and event rate exceeds ~100/sec per cluster
-  - *Trade-off:* Adds complexity to resume token management and error handling
-  - *Current approach:* Not needed for typical health event volumes (~550 events across 150 clusters)
-
-- **Parallel Backfill:** Multi-threaded backfill for faster initial bootstrap
-  - *When needed:* If initial backfill takes >10 minutes (e.g., millions of historical events)
-  - *Current approach:* Sequential backfill sufficient for typical deployments
-
-### Reliability Improvements
-
-- **Dead Letter Queue:** Failed events sent to separate storage for manual inspection
-  - *When needed:* If sink has frequent failures and manual investigation is required
-  - *Current approach:* Skip failed events with logging; retry handled by HTTP client
-
-### Advanced Observability
-
-- **Distributed Tracing:** OpenTelemetry spans for end-to-end visibility
-  - *When needed:* If debugging complex latency issues across multiple systems
-  - *Current approach:* Structured logging and Prometheus metrics sufficient for troubleshooting
-
----
 
 ## References
 
