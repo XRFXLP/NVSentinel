@@ -289,7 +289,7 @@ Following the [CloudEvents 1.0 specification](https://github.com/cloudevents/spe
 | `entitiesImpacted[].entityType` | String | Yes | Entity type (`GPU`, `PCI`, `GPU_UUID`, `NVSWITCH`, `NVLINK`, etc.) |
 | `entitiesImpacted[].entityValue` | String | Yes | Entity identifier (GPU index, PCI address, UUID, etc.) |
 | `metadata` | Map[String, String] | No | Key-value metadata (enriched by platform connector); common keys: `chassis_serial`, `providerID`, `topology.kubernetes.io/zone`, `topology.kubernetes.io/region` |
-| `generatedTimestamp` | Timestamp (RFC3339) | Yes | Event generation timestamp |
+| `generatedTimestamp` | Timestamp (RFC3339) | Yes | Event generation timestamp in UTC |
 | `nodeName` | String | Yes | Kubernetes node name |
 | `quarantineOverrides.force` | Boolean | No | Force node cordoning regardless of rules |
 | `quarantineOverrides.skip` | Boolean | No | Skip node cordoning |
