@@ -462,7 +462,7 @@ token_collection = "resumetokens"
 client_name = "health-events-exporter"
 ```
 
-### Secret: `health-events-exporter-secret`
+### Secret: health-events-exporter-secret
 
 ```yaml
 apiVersion: v1
