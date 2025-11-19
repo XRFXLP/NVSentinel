@@ -60,11 +60,13 @@ This design focuses on exporting **Health Events** - hardware and cluster health
 │  └────────────────────────────────────────────────────────────────┘     │
 │                                                                         │
 │  ┌────────────────────────────────────────────────────────────────┐     │
-│  │              EventSource Interface                             │     │
+│  │              ChangeStreamWatcher                               │     │
 │  │              (Database Agnostic)                               │     │
 │  │                                                                │     │
+│  │    Start(ctx)                                                  │     │
 │  │    Events() <-chan Event                                       │     │
-│  │    MarkProcessed(token) error                                  │     │
+│  │    MarkProcessed(ctx, token) error                             │     │
+│  │    Close(ctx) error                                            │     │
 │  └────────────────────────────────────────────────────────────────┘     │
 │           │                      │                      │               │
 │           ↓                      ↓                      ↓               │
@@ -122,40 +124,24 @@ Legend:
 
 ### 1. Core Interfaces
 
-The exporter uses database-agnostic interfaces from the `store-client` SDK, enabling future migration to different datastores (PostgreSQL, CockroachDB, etc.) without code changes.
+The exporter uses database-agnostic interfaces, enabling future migration to different datastores (PostgreSQL, CockroachDB, etc.) without code changes.
 
-#### Event Source Interface
+#### ChangeStreamWatcher
+
+Database-agnostic interface for streaming events. Currently implemented for MongoDB; extensible to PostgreSQL LISTEN/NOTIFY, Kafka, etc.
 
 ```go
-// ChangeStreamWatcher provides database-agnostic event streaming
-// Currently implemented by MongoDB, but can be backed by PostgreSQL LISTEN/NOTIFY,
-// Kafka, or any other change data capture mechanism
 type ChangeStreamWatcher interface {
-    // Start begins watching for events
     Start(ctx context.Context)
-    
-    // Events returns a channel of database change events
     Events() <-chan Event
-    
-    // MarkProcessed updates the resume token after successful processing
     MarkProcessed(ctx context.Context, token []byte) error
-    
-    // Close shuts down the watcher
     Close(ctx context.Context) error
 }
 
-// Event represents a generic database change event
 type Event interface {
-    // GetDocumentID returns the unique document identifier
     GetDocumentID() (string, error)
-    
-    // GetNodeName extracts the node name from the event
     GetNodeName() (string, error)
-    
-    // GetResumeToken returns the position for resumable streaming
     GetResumeToken() []byte
-    
-    // UnmarshalDocument deserializes the event data into a struct
     UnmarshalDocument(v interface{}) error
 }
 ```
@@ -220,43 +206,49 @@ Following the [CloudEvents 1.0 specification](https://github.com/cloudevents/spe
   "specversion": "1.0",
   "id": "fe5302cf-1887-48a9-8e6e-117d366a7344",
   "time": "2024-11-18T10:30:00.123456Z",
-  "source": "us-west-1-prod-cluster",
-  "type": "health-event",
+  "source": "nvsentinel://us-west-1-prod-cluster/healthevents",
+  "type": "com.nvidia.nvsentinel.health.v1",
   "data": {
-    "version": "1",
-    "agent": "syslog-health-monitor",
-    "componentClass": "GPU",
-    "checkName": "XID_ERROR_48",
-    "isFatal": true,
-    "isHealthy": false,
-    "message": "GPU 3 reported XID 48: Double Bit ECC Error",
-    "recommendedAction": "REPLACE_GPU",
-    "errorCode": ["XID_48"],
-    "entitiesImpacted": [
-      {
-        "entityType": "PCI",
-        "entityValue": "0000:17:00.0"
-      },
-      {
-        "entityType": "GPU_UUID",
-        "entityValue": "GPU-a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-      }
-    ],
     "metadata": {
-      "chassis_serial": "SN123456789",
-      "providerID": "aws:///us-west-2a/i-1234567890abcdef0",
-      "topology.kubernetes.io/zone": "us-west-2a",
-      "topology.kubernetes.io/region": "us-west-2"
+      "cluster": "us-west-1-prod-cluster",
+      "environment": "production"
     },
-    "generatedTimestamp": "2024-11-18T10:30:00.123456Z",
-    "nodeName": "gpu-node-42",
-    "quarantineOverrides": {
-      "force": true,
-      "skip": false
-    },
-    "drainOverrides": {
-      "force": false,
-      "skip": false
+    "healthEvent": {
+      "version": "1",
+      "agent": "syslog-health-monitor",
+      "componentClass": "GPU",
+      "checkName": "XID_ERROR_48",
+      "isFatal": true,
+      "isHealthy": false,
+      "message": "GPU 3 reported XID 48: Double Bit ECC Error",
+      "recommendedAction": "REPLACE_GPU",
+      "errorCode": ["XID_48"],
+      "entitiesImpacted": [
+        {
+          "entityType": "PCI",
+          "entityValue": "0000:17:00.0"
+        },
+        {
+          "entityType": "GPU_UUID",
+          "entityValue": "GPU-a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        }
+      ],
+      "metadata": {
+        "chassis_serial": "SN123456789",
+        "providerID": "aws:///us-west-2a/i-1234567890abcdef0",
+        "topology.kubernetes.io/zone": "us-west-2a",
+        "topology.kubernetes.io/region": "us-west-2"
+      },
+      "generatedTimestamp": "2024-11-18T10:30:00.123456Z",
+      "nodeName": "gpu-node-42",
+      "quarantineOverrides": {
+        "force": true,
+        "skip": false
+      },
+      "drainOverrides": {
+        "force": false,
+        "skip": false
+      }
     }
   }
 }
@@ -269,10 +261,18 @@ Following the [CloudEvents 1.0 specification](https://github.com/cloudevents/spe
 | `specversion` | String | Yes | CloudEvents version (always "1.0") |
 | `id` | String (UUID) | Yes | Unique event ID; from MongoDB `_id` |
 | `time` | Timestamp (RFC3339) | Yes | Event generation time |
-| `source` | String | Yes | Cluster identifier |
-| `type` | String | Yes | Event type (always "health-event") |
+| `source` | URI | Yes | Event source in format `nvsentinel://<cluster>/healthevents` |
+| `type` | String | Yes | Event type: `com.nvidia.nvsentinel.health.v1` |
 
-**Data Payload Fields:**
+**Data Payload Structure:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `metadata.cluster` | String | Yes | Kubernetes cluster name |
+| `metadata.environment` | String | Yes | Environment label (production, staging, dev, etc.) |
+| `healthEvent` | Object | Yes | Complete health event from NVSentinel (see fields below) |
+
+**Health Event Fields (`data.healthEvent`):**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -305,30 +305,40 @@ The exporter transforms NVSentinel's `HealthEvent` protobuf (already enriched by
 CloudEvent := map[string]interface{}{
     "specversion": "1.0",
     "id":          uuid.New().String(),  // Generate new UUID for CloudEvents ID
-    "time":        time.Now().Format(time.RFC3339Nano),
-    "source":      config.ClusterName,  // Kubernetes cluster name (from kubeconfig context or env var)
-    "type":        "health-event",
+    "time":        healthEvent.GeneratedTimestamp.AsTime().Format(time.RFC3339Nano),
+    "source":      fmt.Sprintf("nvsentinel://%s/healthevents", config.Metadata.Cluster),
+    "type":        "com.nvidia.nvsentinel.health.v1",
+    
     "data": map[string]interface{}{
-        "version":           healthEvent.Version,
-        "agent":             healthEvent.Agent,
-        "componentClass":    healthEvent.ComponentClass,
-        "checkName":         healthEvent.CheckName,
-        "isFatal":           healthEvent.IsFatal,
-        "isHealthy":         healthEvent.IsHealthy,
-        "message":           healthEvent.Message,
-        "recommendedAction": healthEvent.RecommendedAction.String(),
-        "errorCode":         healthEvent.ErrorCode,  // Already an array
-        "entitiesImpacted":  transformEntities(healthEvent.EntitiesImpacted),
-        "metadata":          healthEvent.Metadata,  // Already enriched by platform connector (providerID, topology labels, chassis_serial)
-        "generatedTimestamp": healthEvent.GeneratedTimestamp.AsTime().Format(time.RFC3339Nano),
-        "nodeName":          healthEvent.NodeName,
-        "quarantineOverrides": map[string]interface{}{
-            "force": healthEvent.QuarantineOverrides.Force,
-            "skip":  healthEvent.QuarantineOverrides.Skip,
+        // Operational metadata from config
+        "metadata": map[string]string{
+            "cluster":     config.Metadata.Cluster,
+            "environment": config.Metadata.Environment,
         },
-        "drainOverrides": map[string]interface{}{
-            "force": healthEvent.DrainOverrides.Force,
-            "skip":  healthEvent.DrainOverrides.Skip,
+        
+        // Health event from MongoDB
+        "healthEvent": map[string]interface{}{
+            "version":           healthEvent.Version,
+            "agent":             healthEvent.Agent,
+            "componentClass":    healthEvent.ComponentClass,
+            "checkName":         healthEvent.CheckName,
+            "isFatal":           healthEvent.IsFatal,
+            "isHealthy":         healthEvent.IsHealthy,
+            "message":           healthEvent.Message,
+            "recommendedAction": healthEvent.RecommendedAction.String(),
+            "errorCode":         healthEvent.ErrorCode,  // Already an array
+            "entitiesImpacted":  transformEntities(healthEvent.EntitiesImpacted),
+            "metadata":          healthEvent.Metadata,  // Already enriched by platform connector (providerID, topology labels, chassis_serial)
+            "generatedTimestamp": healthEvent.GeneratedTimestamp.AsTime().Format(time.RFC3339Nano),
+            "nodeName":          healthEvent.NodeName,
+            "quarantineOverrides": map[string]interface{}{
+                "force": healthEvent.QuarantineOverrides.Force,
+                "skip":  healthEvent.QuarantineOverrides.Skip,
+            },
+            "drainOverrides": map[string]interface{}{
+                "force": healthEvent.DrainOverrides.Force,
+                "skip":  healthEvent.DrainOverrides.Skip,
+            },
         },
     },
 }
@@ -383,11 +393,16 @@ type HTTPPublisherConfig struct {
     // Sink configuration
     Endpoint            string        // HTTP endpoint URL
     MaxRetries          int           // Number of retries on failure
-    RetryBackoff        time.Duration // Initial backoff duration
+    RetryBackoff        time.Duration // Initial backoff duration (exponential)
+    MaxRetryBackoff     time.Duration // Maximum backoff duration cap
     Timeout             time.Duration // Request timeout
     
     // Authentication
     OIDCTokenProvider   TokenProvider // OIDC token provider
+    
+    // TLS configuration
+    TLSCABundle         string        // Path to CA certificate bundle (optional)
+    TLSInsecureSkipVerify bool        // Skip TLS verification (dev/testing only)
     
     // HTTP client settings
     MaxIdleConns        int
@@ -396,25 +411,51 @@ type HTTPPublisherConfig struct {
 }
 ```
 
-#### Authentication
+#### Authentication & TLS
 
-HTTP sink uses **OAuth2 Client Credentials Flow** (OIDC): client credentials configured via secrets, tokens auto-refreshed and cached, included in requests as `Authorization: Bearer <token>`.
+**OAuth2 Client Credentials Flow (OIDC):** Client credentials configured via secrets, tokens auto-refreshed and cached, included in requests as `Authorization: Bearer <token>`.
+
+**TLS:** Custom CA bundle support; defaults to system CA bundle. Server certificate verification enforced in production.
+
+#### Failure Handling
+
+**Retry Policy:**
+- Per-request timeout: 30s
+- Exponential backoff: 1s → 2s → 4s → 8s → ... → 5m (capped)
+- Max retries: 17 (~30 minutes total)
+
+**Persistent Failures:**
+- After max retries exhausted → exporter exits
+- Kubernetes restarts the pod
+- Resumes from last checkpoint (resume token)
 
 ### 5. Event Processing Flow
 
 Pipeline: Receive → Transform → Publish → Update resume token → Repeat
 
-Errors: Transform/publish failures logged and skipped (with HTTP retry); resume token failures trigger restart to maintain consistency.
+**Error Handling:** Publish failures retried with exponential backoff; resume token update failures trigger restart.
 
 ### 6. Automatic Backfill (Bootstrap Phase)
 
-On first deployment (when no resume token exists), the exporter automatically exports historical events before streaming real-time events. Subsequent startups resume from the last checkpoint.
+**Trigger:** Backfill runs when **no resume token exists** in the `resumetokens` collection for this exporter's `client_name`. This occurs on:
+- First deployment (clean install)
+- After resume token is manually deleted
+- After datastore wipe/restore
+
+**Behavior:**
+1. Record timestamp T before backfill starts
+2. Query and export historical events (where `timestamp < T`)
+3. Start change stream from timestamp T
+4. Update resume token after each event; subsequent startups resume from last token
+
+To skip backfill and only export forward-looking events, set `enabled = false`.
 
 ```go
 type BackfillConfig struct {
-    MaxAge         time.Duration // How far back to backfill (e.g., 24h, 7d, 30d)
-    MaxEvents      int           // Optional: safety limit
-    RateLimit      int           // Events per second
+    Enabled        bool          // Enable/disable backfill (default: true)
+    MaxAge         time.Duration // How far back to backfill (e.g., 24h, 7d, 30d); empty = all history
+    MaxEvents      int           // Optional: safety limit to prevent overwhelming sink
+    RateLimit      int           // Events per second during backfill
 }
 ```
 
@@ -429,13 +470,21 @@ Configuration is managed via **ConfigMap** (structured TOML) and **Secrets** (se
 ```toml
 [exporter]
 enabled = true
-cluster_name = "nvsentinel-prod"  # Optional: auto-detected from kubeconfig context if not set
+
+[exporter.metadata]
+cluster = "nvsentinel-prod"      # Required: Kubernetes cluster name
+environment = "production"       # Required: Environment label (production, staging, dev, etc.)
 
 [exporter.sink]
 endpoint = "https://events.example.com/api/v1/events"
 timeout = "30s"
-max_retries = 3
-retry_backoff = "1s"
+max_retries = 17                 # Standard CDC pattern: ~30 minutes of retries
+retry_backoff = "1s"             # Exponential backoff base
+max_retry_backoff = "5m"         # Cap backoff at 5 minutes
+
+[exporter.sink.tls]
+# ca_bundle = "/etc/ssl/certs/ca-bundle.crt"  # Optional: Custom CA bundle for enterprise CAs
+# insecure_skip_verify = false                 # NEVER set to true in production
 
 [exporter.oidc]
 token_url = "https://auth.example.com/oauth2/token"
@@ -444,22 +493,17 @@ scopes = ["events:write"]
 # client_secret comes from Kubernetes Secret (not in ConfigMap)
 
 [exporter.backfill]
-# Backfill is automatic on first deployment (when no resume token exists)
-# Optional: limit how far back to backfill
-# max_age = "720h"      # Uncomment to limit backfill window (24h, 168h=7d, 720h=30d)
-# max_events = 1000000  # Optional: safety limit
-rate_limit = 1000       # events per second, don't overwhelm sink
-
-[datastore]
-# Reuse existing NVSentinel datastore config
-provider = "mongodb"
-uri = "mongodb://mongo1:27017,mongo2:27017,mongo3:27017/"
-database = "nvsentinel"
-collection = "healthevents"
-token_collection = "resumetokens"
+# Backfill runs automatically when no resume token exists (first deployment, token deleted, etc.)
+enabled = true           # Set to false to skip backfill and only export forward-looking events
+# max_age = "720h"       # Optional: limit how far back to backfill (24h, 168h=7d, 720h=30d); empty = all history
+# max_events = 1000000   # Optional: safety limit to prevent overwhelming sink
+rate_limit = 1000        # Events per second during backfill
 
 [exporter.resume_token]
 client_name = "health-events-exporter"
+
+# Note: Datastore configuration is reused from existing NVSentinel ConfigMap
+# The exporter mounts the same ConfigMap as other NVSentinel components
 ```
 
 ### Secret: health-events-exporter-secret
@@ -479,27 +523,16 @@ stringData:
 
 ## Rationale
 
-### Why Build a Custom Exporter?
-
-**Existing tools evaluated:**
-- **Debezium/MongoDB Kafka Connector:** Requires Kafka infrastructure; no direct HTTP sink or CloudEvents support
-- **MongoDB Realm Triggers:** Atlas-only (not self-hosted); vendor lock-in; limited control over retry/auth
-- **Generic event exporters:** Don't support MongoDB change streams
-
-**Why custom solution:** HTTP-first (Issue #128 requirement), CloudEvents native, OIDC auth, automatic backfill, lightweight (single binary), reuses NVSentinel infrastructure (store-client SDK, resume tokens, metadata enrichment).
-
 ### Key Design Decisions
 
-- **CloudEvents format:** Industry standard (CNCF), widely supported
-- **HTTP sink:** Universal, no infrastructure dependency (Issue #128)
-- **At-least-once delivery:** Simpler than exactly-once; idempotent sinks handle duplicates
-- **Database-agnostic:** Interfaces enable future PostgreSQL/CockroachDB migration
-- **ConfigMap config:** Structured, reviewable (follows NVSentinel pattern)
-- **Reuse metadata enrichment:** Platform connector already adds providerID, topology labels, chassis_serial
-- **Single sink:** Simplifies config; multi-sink achievable via multiple instances
-- **No event filtering:** Defer to downstream tools (Elasticsearch, Kibana)
-- **Complement Prometheus:** Exporter handles detailed events; Prometheus handles aggregate metrics
-- **Single replica:** Events are idempotent; no coordination needed
+- **CloudEvents format:** Industry standard
+- **HTTP sink:** Direct HTTP POST (Issue #128)
+- **At-least-once delivery:** Idempotent sinks handle duplicates
+- **Retry pattern:** Exponential backoff, fail-fast on persistent errors, resume from checkpoint
+- **Database-agnostic interfaces:** MongoDB, PostgreSQL, Kafka support
+- **ConfigMap configuration:** TOML-based, Secrets for credentials
+- **Operational metadata:** Cluster/environment labels in `data.metadata`
+- **Single sink per instance:** Multiple instances for multi-sink scenarios
 
 ---
 
@@ -522,13 +555,13 @@ health_events_exporter_token_refresh_errors_total{cluster="..."}
 
 // Queue/Backlog
 health_events_exporter_event_backlog_size{cluster="..."}
-health_events_exporter_batch_size{cluster="..."}
 
 // Resume token
 health_events_exporter_resume_token_update_timestamp{cluster="..."}
 
 // Backfill
-health_events_exporter_backfill_in_progress{cluster="..."}
+health_events_exporter_backfill_enabled{cluster="..."}              # Config: 1 if enabled, 0 if disabled
+health_events_exporter_backfill_in_progress{cluster="..."}          # 1 during backfill, 0 otherwise
 health_events_exporter_backfill_events_processed_total{cluster="..."}
 health_events_exporter_backfill_duration_seconds{cluster="..."}
 ```
@@ -539,8 +572,4 @@ health_events_exporter_backfill_duration_seconds{cluster="..."}
 - [CloudEvents HTTP Protocol Binding](https://github.com/cloudevents/spec/blob/v1.0/http-protocol-binding.md)
 - [OAuth 2.0 Client Credentials Grant](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4)
 - [GitHub Issue #128](https://github.com/NVIDIA/NVSentinel/issues/128)
-- NVSentinel: `store-client/pkg/datastore/interfaces.go` (database-agnostic interfaces)
-- NVSentinel: `store-client/pkg/client/interfaces.go` (change stream abstractions)
-- NVSentinel: `docs/DATA_FLOW.md`
-- NVSentinel: `fault-quarantine/pkg/eventwatcher/event_watcher.go` (reference implementation)
 
