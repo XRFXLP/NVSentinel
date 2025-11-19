@@ -9,7 +9,7 @@
 IS_GO_MODULE := 1
 HAS_DOCKER := 1
 
-export CGO_ENABLED := 0
+export CGO_ENABLED := 1
 
 # =============================================================================
 # INCLUDE SHARED DEFINITIONS
