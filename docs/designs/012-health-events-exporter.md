@@ -448,6 +448,8 @@ Pipeline: Receive → Transform → Publish → Update resume token → Repeat
 3. Start change stream from timestamp T
 4. Update resume token after each event; subsequent startups resume from last token
 
+Network failures during backfill or streaming are handled via retry mechanism and resume tokens (see Failure Handling above).
+
 To skip backfill and only export forward-looking events, set `enabled = false`.
 
 ```go
