@@ -8,7 +8,7 @@ NVSentinel stores health events in per-cluster MongoDB. This works well for loca
 
 ## Problem Statement
 
-Health events are trapped in per-cluster MongoDB instances (150+ clusters). Operations teams need centralized access for fleet-wide analytics: querying events by GPU serial number, analyzing failure patterns across clusters, investigating timelines before node failures.
+Health events are trapped in per-cluster MongoDB instances (100s clusters). Operations teams need centralized access for fleet-wide analytics: querying events by GPU serial number, analyzing failure patterns across clusters, investigating timelines before node failures.
 
 **Current:** Each cluster's MongoDB is isolated → no cross-cluster visibility
 
