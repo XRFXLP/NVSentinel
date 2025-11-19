@@ -267,7 +267,7 @@ Following the [CloudEvents 1.0 specification](https://github.com/cloudevents/spe
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `specversion` | String | Yes | CloudEvents version (always "1.0") |
-| `id` | String (UUID) | Yes | Unique event ID; generated or from MongoDB `_id` |
+| `id` | String (UUID) | Yes | Unique event ID; from MongoDB `_id` |
 | `time` | Timestamp (RFC3339) | Yes | Event generation time |
 | `source` | String | Yes | Cluster identifier |
 | `type` | String | Yes | Event type (always "health-event") |
