@@ -105,11 +105,4 @@ var (
 			Buckets: []float64{1, 5, 10, 30, 60, 300, 600, 1800, 3600},
 		},
 	)
-
-	PublishRetries = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "health_events_exporter_publish_retries_total",
-			Help: "Total number of publish retry attempts.",
-		},
-	)
 )

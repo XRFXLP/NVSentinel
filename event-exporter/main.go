@@ -3,110 +3,114 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
-	"github.com/nvidia/nvsentinel/event-exporter/pkg/auth"
-	"github.com/nvidia/nvsentinel/event-exporter/pkg/config"
-	"github.com/nvidia/nvsentinel/event-exporter/pkg/exporter"
-	"github.com/nvidia/nvsentinel/event-exporter/pkg/sink"
-	"github.com/nvidia/nvsentinel/event-exporter/pkg/transformer"
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/event-exporter/pkg/initializer"
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
-	"github.com/nvidia/nvsentinel/store-client/pkg/helper"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/sync/errgroup"
+)
+
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
 )
 
 func main() {
+	slog.Info("Health Events Exporter starting", "version", version, "commit", commit, "date", date)
+
+	if err := run(); err != nil {
+		slog.Error("Fatal error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	configPath := flag.String("config", "/etc/config/config.toml", "Path to configuration file")
+	metricsPort := flag.String("metrics-port", "2112", "Port to expose Prometheus metrics and health endpoints")
 	flag.Parse()
 
-	slog.Info("Health Events Exporter starting")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	cfg, err := config.Load(*configPath)
+	params := initializer.Params{
+		ConfigPath: *configPath,
+	}
+
+	components, err := initializer.InitializeAll(ctx, params)
 	if err != nil {
-		slog.Error("Failed to load config", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to initialize components: %w", err)
 	}
 
-	clientSecret := os.Getenv("OIDC_CLIENT_SECRET")
-	if clientSecret == "" {
-		slog.Error("OIDC_CLIENT_SECRET environment variable not set")
-		os.Exit(1)
-	}
-
-	scope := cfg.Exporter.OIDC.Scope
-	if scope == "" {
-		slog.Error("OIDC scope not set")
-		os.Exit(1)
-	}
-
-	tokenProvider := auth.NewTokenProvider(
-		cfg.Exporter.OIDC.TokenURL,
-		cfg.Exporter.OIDC.ClientID,
-		clientSecret,
-		scope,
-	)
-
-	httpSink := sink.NewHTTPSink(
-		cfg.Exporter.Sink.Endpoint,
-		cfg.Exporter.Sink.GetTimeout(),
-		tokenProvider,
-	)
-
-	cloudEventsTransformer := transformer.NewCloudEventsTransformer(cfg.Exporter.Metadata)
-
-	datastoreConfig, err := datastore.LoadDatastoreConfig()
+	httpServer, err := createMetricsServer(*metricsPort)
 	if err != nil {
-		slog.Error("Failed to load datastore config", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to create metrics server: %w", err)
 	}
 
-	pipeline := client.BuildAllHealthEventInsertsPipeline()
+	g, gCtx := errgroup.WithContext(ctx)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", *metricsPort)
 
-	bundle, err := helper.NewDatastoreClientFromConfig(ctx, "event-exporter", *datastoreConfig, pipeline)
-	if err != nil {
-		slog.Error("Failed to create datastore bundle", "error", err)
-		cancel()
-		os.Exit(1) //nolint:gocritic // cancel() called explicitly before exit
-	}
-	defer bundle.Close(ctx)
-
-	exp := exporter.New(cfg, bundle.DatabaseClient, bundle.ChangeStreamWatcher, cloudEventsTransformer, httpSink)
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigChan
-		slog.Info("Shutdown signal received")
-		cancel()
-	}()
-
-	slog.Info("Starting event export")
-
-	if err := exp.Run(ctx); err != nil {
-		if ctx.Err() == context.Canceled {
-			slog.Info("Exporter stopped gracefully")
-			slog.Info("Closing watcher to save resume token")
-
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer closeCancel()
-
-			if closeErr := bundle.Close(closeCtx); closeErr != nil {
-				slog.Error("Failed to close bundle", "error", closeErr)
-			}
-
-			return
+		if err := httpServer.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
 		}
 
-		slog.Error("Exporter failed", "error", err)
-		os.Exit(1)
+		return nil
+	})
+
+	g.Go(func() error {
+		slog.Info("Starting event export")
+
+		if err := components.Exporter.Run(gCtx); err != nil {
+			if gCtx.Err() == context.Canceled {
+				slog.Info("Exporter stopped gracefully")
+				return shutdownComponents(components)
+			}
+
+			return fmt.Errorf("exporter failed: %w", err)
+		}
+
+		return nil
+	})
+
+	return g.Wait()
+}
+
+func createMetricsServer(metricsPort string) (server.Server, error) {
+	portInt, err := strconv.Atoi(metricsPort)
+	if err != nil {
+		return nil, fmt.Errorf("invalid metrics port: %w", err)
 	}
+
+	srv := server.NewServer(
+		server.WithPort(portInt),
+		server.WithSimpleHealth(),
+		server.WithHandler("/metrics", promhttp.Handler()),
+	)
+
+	return srv, nil
+}
+
+func shutdownComponents(components *initializer.Components) error {
+	slog.Info("Closing datastore bundle to save resume token")
+
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer closeCancel()
+
+	if err := components.DatastoreBundle.Close(closeCtx); err != nil {
+		return fmt.Errorf("failed to close datastore bundle: %w", err)
+	}
+
+	slog.Info("Shutdown complete")
+
+	return nil
 }

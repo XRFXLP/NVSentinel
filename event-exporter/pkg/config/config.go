@@ -2,9 +2,17 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
+)
+
+const (
+	defaultSinkTimeout    = 30 * time.Second
+	defaultBackfillMaxAge = 720 * time.Hour
+	defaultInitialBackoff = 1 * time.Second
+	defaultMaxBackoff     = 60 * time.Second
 )
 
 type Config struct {
@@ -55,12 +63,14 @@ type FailureHandlingConfig struct {
 
 func (c *SinkConfig) GetTimeout() time.Duration {
 	if c.Timeout == "" {
-		return 30 * time.Second
+		slog.Error("Sink timeout not configured, using default 30 seconds")
+		return defaultSinkTimeout
 	}
 
 	d, err := time.ParseDuration(c.Timeout)
 	if err != nil {
-		return 30 * time.Second
+		slog.Error("Failed to parse sink timeout, using default 30 seconds", "error", err)
+		return defaultSinkTimeout
 	}
 
 	return d
@@ -68,12 +78,14 @@ func (c *SinkConfig) GetTimeout() time.Duration {
 
 func (c *BackfillConfig) GetMaxAge() time.Duration {
 	if c.MaxAge == "" {
-		return 720 * time.Hour
+		slog.Error("Backfill max age not configured, using default 720 hours")
+		return defaultBackfillMaxAge
 	}
 
 	d, err := time.ParseDuration(c.MaxAge)
 	if err != nil {
-		return 720 * time.Hour
+		slog.Error("Failed to parse backfill max age, using default 720 hours", "error", err)
+		return defaultBackfillMaxAge
 	}
 
 	return d
@@ -81,12 +93,14 @@ func (c *BackfillConfig) GetMaxAge() time.Duration {
 
 func (c *FailureHandlingConfig) GetInitialBackoff() time.Duration {
 	if c.InitialBackoff == "" {
-		return 1 * time.Second
+		slog.Error("Initial backoff not configured, using default 1 second")
+		return defaultInitialBackoff
 	}
 
 	d, err := time.ParseDuration(c.InitialBackoff)
 	if err != nil {
-		return 1 * time.Second
+		slog.Error("Failed to parse initial backoff, using default 1 second", "error", err)
+		return defaultInitialBackoff
 	}
 
 	return d
@@ -94,12 +108,14 @@ func (c *FailureHandlingConfig) GetInitialBackoff() time.Duration {
 
 func (c *FailureHandlingConfig) GetMaxBackoff() time.Duration {
 	if c.MaxBackoff == "" {
-		return 60 * time.Second
+		slog.Error("Max backoff not configured, using default 60 seconds")
+		return defaultMaxBackoff
 	}
 
 	d, err := time.ParseDuration(c.MaxBackoff)
 	if err != nil {
-		return 60 * time.Second
+		slog.Error("Failed to parse max backoff, using default 60 seconds", "error", err)
+		return defaultMaxBackoff
 	}
 
 	return d
@@ -109,6 +125,7 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 
 	if err := configmanager.LoadTOMLConfig(path, &cfg); err != nil {
+		slog.Error("Failed to load config", "error", err)
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 

@@ -50,6 +50,8 @@ func (e *HealthEventsExporter) Run(ctx context.Context) error {
 		}
 	}
 
+	slog.Info("Starting event stream")
+
 	e.source.Start(ctx)
 
 	return e.streamEvents(ctx)
@@ -98,6 +100,7 @@ func (e *HealthEventsExporter) queryBackfillEvents(ctx context.Context, start, e
 
 	cursor, err := e.dbClient.Find(ctx, filter, opts)
 	if err != nil {
+		slog.Error("Failed to query events", "error", err)
 		return nil, fmt.Errorf("query events: %w", err)
 	}
 
@@ -112,6 +115,7 @@ func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor
 
 	for cursor.Next(ctx) {
 		if ctx.Err() != nil {
+			slog.Error("Context done", "error", ctx.Err())
 			return count, ctx.Err()
 		}
 
@@ -160,11 +164,13 @@ func (e *HealthEventsExporter) streamEvents(ctx context.Context) error {
 			return ctx.Err()
 		case healthEvent, ok := <-e.source.Events():
 			if !ok {
+				slog.Error("Event channel closed")
 				return fmt.Errorf("event channel closed")
 			}
 
 			if err := e.processEvent(ctx, healthEvent); err != nil {
-				return err
+				slog.Error("Failed to process event", "error", err)
+				return fmt.Errorf("process event: %w", err)
 			}
 		}
 	}
@@ -226,7 +232,7 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 
 	err = wait.ExponentialBackoffWithContext(ctx, backoffConfig, func(ctx context.Context) (bool, error) {
 		if attempt > 0 {
-			metrics.PublishRetries.Inc()
+			slog.Info("Publish failed, retrying", "attempt", attempt)
 		}
 
 		publishErr := e.sink.Publish(ctx, cloudEvent)
@@ -253,6 +259,7 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 	if err != nil {
 		metrics.PublishErrors.WithLabelValues("max_retries_exceeded").Inc()
 		metrics.EventsPublished.WithLabelValues(metrics.StatusFailure).Inc()
+		slog.Error("Publish failed after max retries", "error", err)
 
 		return fmt.Errorf("publish failed after %d retries: %w", e.cfg.Exporter.FailureHandling.MaxRetries, err)
 	}
@@ -265,11 +272,6 @@ func unmarshalHealthEvent(event client.Event) (*pb.HealthEvent, error) {
 	if err := event.UnmarshalDocument(&healthEventWithStatus); err != nil {
 		slog.Error("Failed to unmarshal document", "error", err)
 		return nil, fmt.Errorf("unmarshal document: %w", err)
-	}
-
-	if healthEventWithStatus.HealthEvent == nil {
-		slog.Debug("Skipping nil health event")
-		return nil, nil
 	}
 
 	return healthEventWithStatus.HealthEvent, nil
