@@ -124,6 +124,7 @@ func (p *TokenProvider) createTokenRequest(ctx context.Context) (*http.Request, 
 
 func (p *TokenProvider) executeTokenRequest(req *http.Request) (*tokenResponse, error) {
 	client := &http.Client{
+		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				MinVersion: tls.VersionTLS12,
@@ -153,6 +154,11 @@ func (p *TokenProvider) executeTokenRequest(req *http.Request) (*tokenResponse, 
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		metrics.TokenRefreshErrors.Inc()
 		return nil, fmt.Errorf("parse response: %w", err)
+	}
+
+	if tokenResp.AccessToken == "" || tokenResp.ExpiresIn <= 0 {
+		metrics.TokenRefreshErrors.Inc()
+		return nil, fmt.Errorf("invalid token response: access_token or expires_in missing")
 	}
 
 	return &tokenResp, nil

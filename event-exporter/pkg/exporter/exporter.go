@@ -100,6 +100,11 @@ func (e *HealthEventsExporter) runBackfill(ctx context.Context) error {
 }
 
 func (e *HealthEventsExporter) queryBackfillEvents(ctx context.Context, start, end time.Time) (client.Cursor, error) {
+	if e.cfg.Exporter.Backfill.MaxEvents <= 0 {
+		return nil,
+			fmt.Errorf("invalid MaxEvents value %d: must be positive", e.cfg.Exporter.Backfill.MaxEvents)
+	}
+
 	filter := map[string]any{
 		"createdAt": map[string]any{
 			"$gte": start,
@@ -122,8 +127,16 @@ func (e *HealthEventsExporter) queryBackfillEvents(ctx context.Context, start, e
 }
 
 func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor client.Cursor) (int, error) {
-	rateLimiter := time.NewTicker(time.Second / time.Duration(e.cfg.Exporter.Backfill.RateLimit))
-	defer rateLimiter.Stop()
+	var rateLimiter *time.Ticker
+
+	useRateLimiting := e.cfg.Exporter.Backfill.RateLimit > 0
+
+	if useRateLimiting {
+		rateLimiter = time.NewTicker(time.Second / time.Duration(e.cfg.Exporter.Backfill.RateLimit))
+		defer rateLimiter.Stop()
+	} else {
+		slog.Info("Rate limiting disabled for backfill (RateLimit=0)")
+	}
 
 	count := 0
 
@@ -133,39 +146,83 @@ func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor
 			return count, ctx.Err()
 		}
 
-		var healthEventWithStatus model.HealthEventWithStatus
-		if err := cursor.Decode(&healthEventWithStatus); err != nil {
-			slog.Warn("Failed to decode event", "error", err)
+		healthEvent, err := e.decodeBackfillEvent(cursor)
+		if err != nil {
+			slog.Error("Failed to decode backfill event", "error", err)
 			continue
 		}
 
-		if healthEventWithStatus.HealthEvent == nil {
+		if healthEvent == nil {
 			slog.Debug("Skipping nil health event")
 			continue
 		}
 
-		slog.Debug("Publishing backfill event", "nodeName", healthEventWithStatus.HealthEvent.NodeName)
-
-		if err := e.publishWithRetry(ctx, healthEventWithStatus.HealthEvent); err != nil {
-			return count, fmt.Errorf("publish event: %w", err)
+		if err := e.publishBackfillEvent(ctx, healthEvent); err != nil {
+			slog.Error("Failed to publish backfill event", "error", err)
+			return count, err
 		}
 
 		count++
 
 		metrics.BackfillEventsProcessed.Inc()
 
-		select {
-		case <-ctx.Done():
-			return count, ctx.Err()
-		case <-rateLimiter.C:
+		if err := e.waitForRateLimit(ctx, useRateLimiting, rateLimiter); err != nil {
+			slog.Error("Failed to wait for rate limit", "error", err)
+			return count, fmt.Errorf("wait for rate limit: %w", err)
 		}
 	}
 
 	if err := cursor.Err(); err != nil {
+		slog.Error("Failed to get cursor error", "error", err)
 		return count, fmt.Errorf("cursor error: %w", err)
 	}
 
 	return count, nil
+}
+
+func (e *HealthEventsExporter) decodeBackfillEvent(cursor client.Cursor) (*pb.HealthEvent, error) {
+	var healthEventWithStatus model.HealthEventWithStatus
+	if err := cursor.Decode(&healthEventWithStatus); err != nil {
+		slog.Warn("Failed to decode event", "error", err)
+		return nil, err
+	}
+
+	if healthEventWithStatus.HealthEvent == nil {
+		slog.Debug("Skipping nil health event")
+		return nil, nil
+	}
+
+	return healthEventWithStatus.HealthEvent, nil
+}
+
+func (e *HealthEventsExporter) publishBackfillEvent(ctx context.Context, healthEvent *pb.HealthEvent) error {
+	slog.Debug("Publishing backfill event", "nodeName", healthEvent.NodeName)
+
+	if err := e.publishWithRetry(ctx, healthEvent); err != nil {
+		return fmt.Errorf("publish event: %w", err)
+	}
+
+	return nil
+}
+
+func (e *HealthEventsExporter) waitForRateLimit(
+	ctx context.Context,
+	useRateLimiting bool,
+	rateLimiter *time.Ticker,
+) error {
+	if useRateLimiting {
+		select {
+		case <-ctx.Done():
+			slog.Error("Context done", "error", ctx.Err())
+			return ctx.Err()
+		case <-rateLimiter.C:
+		}
+	} else if ctx.Err() != nil {
+		slog.Error("Context done", "error", ctx.Err())
+		return ctx.Err()
+	}
+
+	return nil
 }
 
 func (e *HealthEventsExporter) streamEvents(ctx context.Context) error {
@@ -230,6 +287,8 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 	cloudEvent, err := e.transformer.Transform(event)
 	if err != nil {
 		metrics.TransformErrors.Inc()
+		slog.Error("Failed to transform event", "error", err)
+
 		return fmt.Errorf("transform event: %w", err)
 	}
 

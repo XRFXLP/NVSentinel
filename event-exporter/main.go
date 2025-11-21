@@ -87,7 +87,8 @@ func run() error {
 		if err := components.Exporter.Run(gCtx); err != nil {
 			if gCtx.Err() == context.Canceled {
 				slog.Info("Exporter stopped gracefully")
-				return shutdownComponents(components)
+			} else {
+				slog.Error("Exporter failed", "error", err)
 			}
 
 			return fmt.Errorf("exporter failed: %w", err)
@@ -96,7 +97,17 @@ func run() error {
 		return nil
 	})
 
-	return g.Wait()
+	err = g.Wait()
+
+	if closeErr := shutdownComponents(components); closeErr != nil {
+		slog.Error("Failed to shutdown components", "error", closeErr)
+
+		if err == nil {
+			return closeErr
+		}
+	}
+
+	return err
 }
 
 func createMetricsServer(metricsPort string) (server.Server, error) {

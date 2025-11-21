@@ -135,12 +135,33 @@ func (c *FailureHandlingConfig) GetMaxBackoff() time.Duration {
 	return d
 }
 
+func (c *Config) Validate() error {
+	if c.Exporter.Sink.Endpoint == "" {
+		return fmt.Errorf("sink endpoint is required")
+	}
+
+	if c.Exporter.ResumeToken.Collection == "" {
+		return fmt.Errorf("resume_token collection is required")
+	}
+
+	if c.Exporter.ResumeToken.Database == "" {
+		return fmt.Errorf("resume_token database is required")
+	}
+
+	return nil
+}
+
 func Load(path string) (*Config, error) {
 	var cfg Config
 
 	if err := configmanager.LoadTOMLConfig(path, &cfg); err != nil {
 		slog.Error("Failed to load config", "error", err)
 		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		slog.Error("Config validation failed", "error", err)
+		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
 	return &cfg, nil
