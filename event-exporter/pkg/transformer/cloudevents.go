@@ -57,7 +57,7 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 		"isFatal":            event.IsFatal,
 		"isHealthy":          event.IsHealthy,
 		"message":            event.Message,
-		"recommendedAction":  event.RecommendedAction.String(),
+		"recommendedAction":  int32(event.RecommendedAction),
 		"errorCode":          errorCodes,
 		"entitiesImpacted":   entities,
 		"generatedTimestamp": timestamp,
@@ -82,10 +82,15 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 		}
 	}
 
+	clusterName, ok := metadata["cluster"]
+	if !ok || clusterName == "" {
+		return nil, fmt.Errorf("metadata must contain a non-empty 'cluster' key")
+	}
+
 	return &CloudEvent{
 		SpecVersion: "1.0",
 		Type:        "com.nvidia.nvsentinel.health.v1",
-		Source:      fmt.Sprintf("nvsentinel://%s/healthevents", metadata["cluster"]),
+		Source:      fmt.Sprintf("nvsentinel://%s/healthevents", clusterName),
 		ID:          uuid.New().String(),
 		Time:        timestamp,
 		Data: map[string]any{

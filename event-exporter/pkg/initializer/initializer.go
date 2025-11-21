@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/auth"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/config"
@@ -171,7 +172,13 @@ func checkResumeTokenExists(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to create token client: %w", err)
 	}
-	defer tokenClient.Close(ctx)
+
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		tokenClient.Close(closeCtx)
+	}()
 
 	filter := map[string]any{
 		"clientName": tokenConfig.ClientName,
@@ -187,7 +194,7 @@ func checkResumeTokenExists(ctx context.Context) (bool, error) {
 	}
 
 	if err := result.Decode(&tokenDoc); err != nil {
-		if err.Error() == "mongo: no documents in result" {
+		if client.IsNoDocumentsError(err) {
 			slog.Info("No resume token found - this appears to be first deployment")
 
 			return false, nil
