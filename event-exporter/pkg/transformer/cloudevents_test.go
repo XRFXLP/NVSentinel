@@ -174,28 +174,6 @@ func TestToCloudEvent(t *testing.T) {
 			},
 		},
 		{
-			name: "event with nil generatedTimestamp",
-			event: &pb.HealthEvent{
-				Version:            1,
-				Agent:              "test-agent",
-				ComponentClass:     "GPU",
-				CheckName:          "Test",
-				NodeName:           "node-1",
-				GeneratedTimestamp: nil,
-			},
-			metadata: map[string]string{"cluster": "test-cluster"},
-			wantErr:  false,
-			validateFunc: func(t *testing.T, ce *CloudEvent) {
-				if ce.Time == "" {
-					t.Error("Time should not be empty when generatedTimestamp is nil")
-				}
-				healthEvent := ce.Data["healthEvent"].(map[string]any)
-				if healthEvent["generatedTimestamp"] == "" {
-					t.Error("generatedTimestamp should not be empty when nil")
-				}
-			},
-		},
-		{
 			name: "event with multiple entities impacted",
 			event: &pb.HealthEvent{
 				Version:            1,

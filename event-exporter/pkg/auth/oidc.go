@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/metrics"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 type TokenProvider struct {
@@ -36,9 +38,14 @@ type TokenProvider struct {
 	clientSecret string
 	scope        string
 
-	mu             sync.RWMutex
+	mu             sync.Mutex
 	cachedToken    string
 	tokenExpiresAt time.Time
+}
+
+type tokenResponse struct {
+	AccessToken string  `json:"access_token"`
+	ExpiresIn   float64 `json:"expires_in"`
 }
 
 func NewTokenProvider(tokenURL, clientID, clientSecret, scope string) *TokenProvider {
@@ -51,50 +58,91 @@ func NewTokenProvider(tokenURL, clientID, clientSecret, scope string) *TokenProv
 }
 
 func (p *TokenProvider) GetToken(ctx context.Context) (string, error) {
-	if token := p.getCachedToken(); token != "" {
-		return token, nil
-	}
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if token := p.getCachedTokenUnsafe(); token != "" {
-		return token, nil
+	if p.cachedToken != "" && time.Now().Before(p.tokenExpiresAt.Add(-time.Minute)) {
+		return p.cachedToken, nil
 	}
 
 	return p.fetchNewToken(ctx)
 }
 
-func (p *TokenProvider) getCachedToken() string {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	return p.getCachedTokenUnsafe()
-}
-
-func (p *TokenProvider) getCachedTokenUnsafe() string {
-	if p.cachedToken != "" && time.Now().Before(p.tokenExpiresAt.Add(-time.Minute)) {
-		return p.cachedToken
-	}
-
-	return ""
-}
-
 func (p *TokenProvider) fetchNewToken(ctx context.Context) (string, error) {
-	req, err := p.createTokenRequest(ctx)
-	if err != nil {
-		return "", err
+	var tokenResp *tokenResponse
+
+	attempt := 0
+
+	backoffConfig := wait.Backoff{
+		Steps:    8,
+		Duration: 1 * time.Second,
+		Factor:   2.0,
+		Jitter:   0.1,
+		Cap:      10 * time.Second,
 	}
 
-	tokenResp, err := p.executeTokenRequest(req)
+	err := wait.ExponentialBackoffWithContext(ctx, backoffConfig, func(ctx context.Context) (bool, error) {
+		req, reqErr := p.createTokenRequest(ctx)
+		if reqErr != nil {
+			return false, reqErr
+		}
+
+		resp, execErr := p.executeTokenRequest(req)
+		if execErr != nil {
+			if isRetriableTokenError(execErr) {
+				attempt++
+				slog.Warn("Token fetch failed, will retry",
+					"attempt", attempt,
+					"error", execErr)
+
+				return false, nil
+			}
+
+			return false, execErr
+		}
+
+		tokenResp = resp
+
+		if attempt > 0 {
+			slog.Info("Token fetch succeeded after retry", "attempt", attempt)
+		}
+
+		return true, nil
+	})
 	if err != nil {
-		return "", err
+		metrics.TokenRefreshErrors.Inc()
+		return "", fmt.Errorf("token fetch failed after retries: %w", err)
 	}
 
 	p.cachedToken = tokenResp.AccessToken
 	p.tokenExpiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 
 	return p.cachedToken, nil
+}
+
+func isRetriableTokenError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	if strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "temporary failure") {
+		return true
+	}
+
+	if strings.Contains(errStr, "status 5") {
+		return true
+	}
+
+	if strings.Contains(errStr, "status 429") {
+		return true
+	}
+
+	return false
 }
 
 func (p *TokenProvider) createTokenRequest(ctx context.Context) (*http.Request, error) {
@@ -134,37 +182,27 @@ func (p *TokenProvider) executeTokenRequest(req *http.Request) (*tokenResponse, 
 
 	resp, err := client.Do(req)
 	if err != nil {
-		metrics.TokenRefreshErrors.Inc()
 		return nil, fmt.Errorf("execute request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		metrics.TokenRefreshErrors.Inc()
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		metrics.TokenRefreshErrors.Inc()
 		return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp tokenResponse
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		metrics.TokenRefreshErrors.Inc()
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
 	if tokenResp.AccessToken == "" || tokenResp.ExpiresIn <= 0 {
-		metrics.TokenRefreshErrors.Inc()
 		return nil, fmt.Errorf("invalid token response: access_token or expires_in missing")
 	}
 
 	return &tokenResp, nil
-}
-
-type tokenResponse struct {
-	AccessToken string  `json:"access_token"`
-	ExpiresIn   float64 `json:"expires_in"`
 }
