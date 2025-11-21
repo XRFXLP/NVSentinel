@@ -31,11 +31,12 @@ import (
 )
 
 type HealthEventsExporter struct {
-	cfg         *config.Config
-	dbClient    client.DatabaseClient
-	source      client.ChangeStreamWatcher
-	transformer transformer.EventTransformer
-	sink        sink.EventSink
+	cfg            *config.Config
+	dbClient       client.DatabaseClient
+	source         client.ChangeStreamWatcher
+	transformer    transformer.EventTransformer
+	sink           sink.EventSink
+	hasResumeToken bool
 }
 
 func New(
@@ -44,24 +45,35 @@ func New(
 	source client.ChangeStreamWatcher,
 	transformer transformer.EventTransformer,
 	sink sink.EventSink,
+	hasResumeToken bool,
 ) *HealthEventsExporter {
 	return &HealthEventsExporter{
-		cfg:         cfg,
-		dbClient:    dbClient,
-		source:      source,
-		transformer: transformer,
-		sink:        sink,
+		cfg:            cfg,
+		dbClient:       dbClient,
+		source:         source,
+		transformer:    transformer,
+		sink:           sink,
+		hasResumeToken: hasResumeToken,
 	}
 }
 
 func (e *HealthEventsExporter) Run(ctx context.Context) error {
-	if e.cfg.Exporter.Backfill.Enabled {
-		slog.Info("Backfill enabled, running backfill before streaming")
+	switch {
+	case e.cfg.Exporter.Backfill.Enabled && !e.hasResumeToken:
+		slog.Info("Backfill enabled and no resume token found - running historical backfill",
+			"maxAge", e.cfg.Exporter.Backfill.GetMaxAge(),
+			"maxEvents", e.cfg.Exporter.Backfill.MaxEvents)
 
 		if err := e.runBackfill(ctx); err != nil {
 			slog.Error("Failed to run backfill", "error", err)
 			return fmt.Errorf("backfill: %w", err)
 		}
+
+		slog.Info("Backfill complete")
+	case e.cfg.Exporter.Backfill.Enabled && e.hasResumeToken:
+		slog.Info("Backfill enabled but resume token exists - skipping backfill (already initialized)")
+	default:
+		slog.Info("Backfill disabled in configuration")
 	}
 
 	slog.Info("Starting event stream")
@@ -196,7 +208,15 @@ func (e *HealthEventsExporter) decodeBackfillEvent(cursor client.Cursor) (*pb.He
 }
 
 func (e *HealthEventsExporter) publishBackfillEvent(ctx context.Context, healthEvent *pb.HealthEvent) error {
-	slog.Debug("Publishing backfill event", "nodeName", healthEvent.NodeName)
+	eventTime := "unknown"
+	if healthEvent.GeneratedTimestamp != nil {
+		eventTime = healthEvent.GeneratedTimestamp.AsTime().Format(time.RFC3339)
+	}
+
+	slog.Info("Publishing backfill event",
+		"nodeName", healthEvent.NodeName,
+		"checkName", healthEvent.CheckName,
+		"generatedAt", eventTime)
 
 	if err := e.publishWithRetry(ctx, healthEvent); err != nil {
 		return fmt.Errorf("publish event: %w", err)
@@ -263,7 +283,15 @@ func (e *HealthEventsExporter) processEvent(ctx context.Context, healthEvent cli
 		return e.markProcessedOrFail(ctx, healthEvent.GetResumeToken())
 	}
 
-	slog.Debug("Publishing event", "nodeName", event.NodeName)
+	eventTime := "unknown"
+	if event.GeneratedTimestamp != nil {
+		eventTime = event.GeneratedTimestamp.AsTime().Format(time.RFC3339)
+	}
+
+	slog.Info("Publishing stream event",
+		"nodeName", event.NodeName,
+		"checkName", event.CheckName,
+		"generatedAt", eventTime)
 
 	if err := e.publishWithRetry(ctx, event); err != nil {
 		return fmt.Errorf("publish event: %w", err)

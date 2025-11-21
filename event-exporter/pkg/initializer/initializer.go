@@ -26,7 +26,9 @@ import (
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/sink"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/transformer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	storeconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
 	"github.com/nvidia/nvsentinel/store-client/pkg/helper"
 )
 
@@ -60,7 +62,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 
 	cloudEventsTransformer := transformer.NewCloudEventsTransformer(cfg.Exporter.Metadata)
 
-	datastoreBundle, err := initializeDatastore(ctx)
+	datastoreBundle, hasResumeToken, err := initializeDatastore(ctx)
 	if err != nil {
 		slog.Error("Failed to initialize datastore", "error", err)
 		return nil, fmt.Errorf("failed to initialize datastore: %w", err)
@@ -72,6 +74,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		datastoreBundle.ChangeStreamWatcher,
 		cloudEventsTransformer,
 		httpSink,
+		hasResumeToken,
 	)
 
 	return &Components{
@@ -114,11 +117,11 @@ func initializeOIDC(cfg *config.Config) (*auth.TokenProvider, error) {
 	return tokenProvider, nil
 }
 
-func initializeDatastore(ctx context.Context) (*helper.DatastoreClientBundle, error) {
+func initializeDatastore(ctx context.Context) (*helper.DatastoreClientBundle, bool, error) {
 	datastoreConfig, err := datastore.LoadDatastoreConfig()
 	if err != nil {
 		slog.Error("Failed to load datastore config", "error", err)
-		return nil, fmt.Errorf("failed to load datastore config: %w", err)
+		return nil, false, fmt.Errorf("failed to load datastore config: %w", err)
 	}
 
 	pipeline := client.BuildAllHealthEventInsertsPipeline()
@@ -126,10 +129,75 @@ func initializeDatastore(ctx context.Context) (*helper.DatastoreClientBundle, er
 	bundle, err := helper.NewDatastoreClientFromConfig(ctx, "event-exporter", *datastoreConfig, pipeline)
 	if err != nil {
 		slog.Error("Failed to create datastore client", "error", err)
-		return nil, fmt.Errorf("failed to create datastore client: %w", err)
+		return nil, false, fmt.Errorf("failed to create datastore client: %w", err)
 	}
 
 	slog.Info("Datastore client initialized", "provider", datastoreConfig.Provider)
 
-	return bundle, nil
+	hasResumeToken, err := checkResumeTokenExists(ctx)
+	if err != nil {
+		slog.Warn("Failed to check resume token, assuming false", "error", err)
+
+		hasResumeToken = false
+	}
+
+	return bundle, hasResumeToken, nil
+}
+
+func checkResumeTokenExists(ctx context.Context) (bool, error) {
+	tokenConfig, err := storeconfig.TokenConfigFromEnv("event-exporter")
+	if err != nil {
+		return false, fmt.Errorf("failed to get token config: %w", err)
+	}
+
+	slog.Info("Checking for existing resume token",
+		"database", tokenConfig.TokenDatabase,
+		"collection", tokenConfig.TokenCollection,
+		"clientName", tokenConfig.ClientName)
+
+	dbConfig, err := storeconfig.NewDatabaseConfigForCollectionType(
+		storeconfig.DefaultCertMountPath,
+		storeconfig.CollectionTypeTokens,
+	)
+	if err != nil {
+		return false, fmt.Errorf("failed to create token database config: %w", err)
+	}
+
+	clientFactory := factory.NewClientFactory(dbConfig)
+
+	tokenClient, err := clientFactory.CreateDatabaseClient(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to create token client: %w", err)
+	}
+	defer tokenClient.Close(ctx)
+
+	filter := map[string]any{
+		"clientName": tokenConfig.ClientName,
+	}
+
+	var tokenDoc struct {
+		ResumeToken any `bson:"resumeToken"`
+	}
+
+	result, err := tokenClient.FindOne(ctx, filter, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to query resume token: %w", err)
+	}
+
+	if err := result.Decode(&tokenDoc); err != nil {
+		if err.Error() == "mongo: no documents in result" {
+			slog.Info("No resume token found - this appears to be first deployment")
+
+			return false, nil
+		}
+
+		return false, fmt.Errorf("failed to decode token document: %w", err)
+	}
+
+	hasToken := tokenDoc.ResumeToken != nil
+	if hasToken {
+		slog.Info("Resume token exists - skipping backfill on this restart")
+	}
+
+	return hasToken, nil
 }

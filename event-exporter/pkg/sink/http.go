@@ -87,7 +87,7 @@ func (s *HTTPSink) Publish(ctx context.Context, event *transformer.CloudEvent) e
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	slog.Info("Event published successfully", "status", resp.StatusCode)
+	slog.Debug("Event published successfully", "status", resp.StatusCode)
 
 	return nil
 }
