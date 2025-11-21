@@ -99,33 +99,17 @@ func initializeOIDC(cfg *config.Config) (*auth.TokenProvider, error) {
 		return nil, fmt.Errorf("OIDC_CLIENT_SECRET environment variable not set")
 	}
 
-	if cfg.Exporter.OIDC.TokenURL == "" {
-		slog.Error("OIDC token URL not configured")
-		return nil, fmt.Errorf("OIDC token URL not configured")
-	}
-
-	if cfg.Exporter.OIDC.ClientID == "" {
-		slog.Error("OIDC client ID not configured")
-		return nil, fmt.Errorf("OIDC client ID not configured")
-	}
-
-	scope := cfg.Exporter.OIDC.Scope
-	if scope == "" {
-		slog.Error("OIDC scope not configured")
-		return nil, fmt.Errorf("OIDC scope not configured")
-	}
-
 	tokenProvider := auth.NewTokenProvider(
 		cfg.Exporter.OIDC.TokenURL,
 		cfg.Exporter.OIDC.ClientID,
 		clientSecret,
-		scope,
+		cfg.Exporter.OIDC.Scope,
 	)
 
 	slog.Info("OIDC token provider initialized",
 		"tokenURL", cfg.Exporter.OIDC.TokenURL,
 		"clientID", cfg.Exporter.OIDC.ClientID,
-		"scope", scope)
+		"scope", cfg.Exporter.OIDC.Scope)
 
 	return tokenProvider, nil
 }

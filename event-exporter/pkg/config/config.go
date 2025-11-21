@@ -140,6 +140,18 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("sink endpoint is required")
 	}
 
+	if c.Exporter.OIDC.TokenURL == "" {
+		return fmt.Errorf("OIDC token_url is required")
+	}
+
+	if c.Exporter.OIDC.ClientID == "" {
+		return fmt.Errorf("OIDC client_id is required")
+	}
+
+	if c.Exporter.OIDC.Scope == "" {
+		return fmt.Errorf("OIDC scope is required")
+	}
+
 	if c.Exporter.ResumeToken.Collection == "" {
 		return fmt.Errorf("resume_token collection is required")
 	}

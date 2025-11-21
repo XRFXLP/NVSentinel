@@ -20,7 +20,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -84,19 +83,11 @@ func (s *HTTPSink) Publish(ctx context.Context, event *transformer.CloudEvent) e
 	}
 	defer resp.Body.Close()
 
-	respBody, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		slog.Warn("Failed to read response body", "error", readErr)
-	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	slog.Info("Event published successfully",
-		"status", resp.StatusCode,
-		"responseBody", string(respBody),
-	)
+	slog.Info("Event published successfully", "status", resp.StatusCode)
 
 	return nil
 }
