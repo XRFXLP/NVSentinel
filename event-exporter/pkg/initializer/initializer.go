@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/auth"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/config"
@@ -33,7 +34,8 @@ import (
 )
 
 type Params struct {
-	ConfigPath string
+	ConfigPath     string
+	OIDCSecretPath string
 }
 
 type Components struct {
@@ -48,7 +50,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	tokenProvider, err := initializeOIDC(cfg)
+	tokenProvider, err := initializeOIDC(cfg, params.OIDCSecretPath)
 	if err != nil {
 		slog.Error("Failed to initialize OIDC", "error", err)
 		return nil, fmt.Errorf("failed to initialize OIDC: %w", err)
@@ -95,17 +97,17 @@ func loadConfig(configPath string) (*config.Config, error) {
 	return cfg, nil
 }
 
-func initializeOIDC(cfg *config.Config) (*auth.TokenProvider, error) {
-	clientSecret := os.Getenv("OIDC_CLIENT_SECRET")
-	if clientSecret == "" {
-		slog.Error("OIDC_CLIENT_SECRET environment variable not set")
-		return nil, fmt.Errorf("OIDC_CLIENT_SECRET environment variable not set")
+func initializeOIDC(cfg *config.Config, secretPath string) (*auth.TokenProvider, error) {
+	clientSecretBytes, err := os.ReadFile(secretPath)
+	if err != nil {
+		slog.Error("Failed to read OIDC client secret from file", "path", secretPath, "error", err)
+		return nil, fmt.Errorf("failed to read OIDC client secret from file %s: %w", secretPath, err)
 	}
 
 	tokenProvider := auth.NewTokenProvider(
 		cfg.Exporter.OIDC.TokenURL,
 		cfg.Exporter.OIDC.ClientID,
-		clientSecret,
+		strings.TrimSpace(string(clientSecretBytes)),
 		cfg.Exporter.OIDC.Scope,
 	)
 
