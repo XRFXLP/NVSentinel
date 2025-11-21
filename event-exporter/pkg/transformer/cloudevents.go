@@ -16,7 +16,6 @@ package transformer
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
