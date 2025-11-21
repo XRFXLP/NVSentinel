@@ -197,7 +197,7 @@ func TestToCloudEvent(t *testing.T) {
 			},
 		},
 		{
-			name: "metadata with missing cluster uses empty string",
+			name: "metadata with missing cluster returns error",
 			event: &pb.HealthEvent{
 				Version:            1,
 				Agent:              "test-agent",
@@ -207,12 +207,7 @@ func TestToCloudEvent(t *testing.T) {
 				GeneratedTimestamp: fixedTimestamp,
 			},
 			metadata: map[string]string{"environment": "test"},
-			wantErr:  false,
-			validateFunc: func(t *testing.T, ce *CloudEvent) {
-				if ce.Source != "nvsentinel:///healthevents" {
-					t.Errorf("Source = %v, want nvsentinel:///healthevents", ce.Source)
-				}
-			},
+			wantErr:  true,
 		},
 		{
 			name: "event with empty errorCode array",
