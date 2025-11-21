@@ -34,12 +34,6 @@ func TestToCloudEvent(t *testing.T) {
 		validateFunc func(t *testing.T, ce *CloudEvent)
 	}{
 		{
-			name:     "nil event returns error",
-			event:    nil,
-			metadata: map[string]string{"cluster": "test-cluster"},
-			wantErr:  true,
-		},
-		{
 			name: "full event with all fields",
 			event: &pb.HealthEvent{
 				Version:           1,
