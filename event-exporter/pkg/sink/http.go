@@ -96,7 +96,6 @@ func (s *HTTPSink) Publish(ctx context.Context, event *transformer.CloudEvent) e
 	slog.Info("Event published successfully",
 		"status", resp.StatusCode,
 		"responseBody", string(respBody),
-		"nodeName", event.Data["healthEvent"].(map[string]any)["nodeName"],
 	)
 
 	return nil
