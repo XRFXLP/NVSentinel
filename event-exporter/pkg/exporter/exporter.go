@@ -169,7 +169,7 @@ func (e *HealthEventsExporter) processBackfillCursor(ctx context.Context, cursor
 			continue
 		}
 
-		if err := e.publishBackfillEvent(ctx, healthEvent); err != nil {
+		if err := e.publishWithRetry(ctx, healthEvent); err != nil {
 			slog.Error("Failed to publish backfill event", "error", err)
 			return count, err
 		}
@@ -205,24 +205,6 @@ func (e *HealthEventsExporter) decodeBackfillEvent(cursor client.Cursor) (*pb.He
 	}
 
 	return healthEventWithStatus.HealthEvent, nil
-}
-
-func (e *HealthEventsExporter) publishBackfillEvent(ctx context.Context, healthEvent *pb.HealthEvent) error {
-	eventTime := "unknown"
-	if healthEvent.GeneratedTimestamp != nil {
-		eventTime = healthEvent.GeneratedTimestamp.AsTime().Format(time.RFC3339)
-	}
-
-	slog.Info("Publishing backfill event",
-		"nodeName", healthEvent.NodeName,
-		"checkName", healthEvent.CheckName,
-		"generatedAt", eventTime)
-
-	if err := e.publishWithRetry(ctx, healthEvent); err != nil {
-		return fmt.Errorf("publish event: %w", err)
-	}
-
-	return nil
 }
 
 func (e *HealthEventsExporter) waitForRateLimit(
@@ -294,7 +276,8 @@ func (e *HealthEventsExporter) processEvent(ctx context.Context, healthEvent cli
 		"generatedAt", eventTime)
 
 	if err := e.publishWithRetry(ctx, event); err != nil {
-		return fmt.Errorf("publish event: %w", err)
+		slog.Error("Failed to publish event with retry", "error", err)
+		return fmt.Errorf("publish with retry: %w", err)
 	}
 
 	return e.markProcessedOrFail(ctx, healthEvent.GetResumeToken())
@@ -338,9 +321,7 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 
 		publishErr := e.sink.Publish(ctx, cloudEvent)
 		if publishErr == nil {
-			if attempt > 0 {
-				slog.Info("Publish succeeded after retry", "attempt", attempt)
-			}
+			slog.Info("Publish succeeded after retry", "attempt", attempt)
 
 			metrics.PublishDuration.Observe(time.Since(startTime).Seconds())
 			metrics.EventsPublished.WithLabelValues(metrics.StatusSuccess).Inc()

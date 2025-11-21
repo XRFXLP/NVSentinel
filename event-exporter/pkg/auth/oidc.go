@@ -87,12 +87,13 @@ func (p *TokenProvider) fetchNewToken(ctx context.Context) (string, error) {
 			return false, reqErr
 		}
 
-		resp, execErr := p.executeTokenRequest(req)
+		resp, statusCode, execErr := p.executeTokenRequest(req)
 		if execErr != nil {
-			if isRetriableTokenError(execErr) {
+			if isRetriableHTTPStatus(statusCode) {
 				attempt++
 				slog.Warn("Token fetch failed, will retry",
 					"attempt", attempt,
+					"statusCode", statusCode,
 					"error", execErr)
 
 				return false, nil
@@ -120,29 +121,12 @@ func (p *TokenProvider) fetchNewToken(ctx context.Context) (string, error) {
 	return p.cachedToken, nil
 }
 
-func isRetriableTokenError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	errStr := err.Error()
-
-	if strings.Contains(errStr, "timeout") ||
-		strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "connection reset") ||
-		strings.Contains(errStr, "temporary failure") {
+func isRetriableHTTPStatus(statusCode int) bool {
+	if statusCode == 0 {
 		return true
 	}
 
-	if strings.Contains(errStr, "status 5") {
-		return true
-	}
-
-	if strings.Contains(errStr, "status 429") {
-		return true
-	}
-
-	return false
+	return statusCode == http.StatusTooManyRequests || (statusCode >= 500 && statusCode < 600)
 }
 
 func (p *TokenProvider) createTokenRequest(ctx context.Context) (*http.Request, error) {
@@ -170,7 +154,7 @@ func (p *TokenProvider) createTokenRequest(ctx context.Context) (*http.Request, 
 	return req, nil
 }
 
-func (p *TokenProvider) executeTokenRequest(req *http.Request) (*tokenResponse, error) {
+func (p *TokenProvider) executeTokenRequest(req *http.Request) (*tokenResponse, int, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
@@ -182,27 +166,27 @@ func (p *TokenProvider) executeTokenRequest(req *http.Request) (*tokenResponse, 
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("execute request: %w", err)
+		return nil, 0, fmt.Errorf("execute request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, 0, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, resp.StatusCode, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp tokenResponse
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
+		return nil, resp.StatusCode, fmt.Errorf("parse response: %w", err)
 	}
 
 	if tokenResp.AccessToken == "" || tokenResp.ExpiresIn <= 0 {
-		return nil, fmt.Errorf("invalid token response: access_token or expires_in missing")
+		return nil, resp.StatusCode, fmt.Errorf("invalid token response: access_token or expires_in missing")
 	}
 
-	return &tokenResp, nil
+	return &tokenResp, resp.StatusCode, nil
 }

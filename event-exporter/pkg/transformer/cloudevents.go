@@ -32,10 +32,6 @@ type CloudEvent struct {
 }
 
 func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEvent, error) {
-	if event == nil {
-		return nil, fmt.Errorf("event is nil")
-	}
-
 	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
 	if event.GeneratedTimestamp != nil {
 		timestamp = event.GeneratedTimestamp.AsTime().UTC().Format(time.RFC3339Nano)
@@ -61,7 +57,7 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 		"isFatal":            event.IsFatal,
 		"isHealthy":          event.IsHealthy,
 		"message":            event.Message,
-		"recommendedAction":  int32(event.RecommendedAction),
+		"recommendedAction":  event.RecommendedAction.String(),
 		"errorCode":          errorCodes,
 		"entitiesImpacted":   entities,
 		"generatedTimestamp": timestamp,
@@ -86,15 +82,10 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 		}
 	}
 
-	clusterName := metadata["cluster"]
-	if clusterName == "" {
-		clusterName = "unknown"
-	}
-
 	return &CloudEvent{
 		SpecVersion: "1.0",
 		Type:        "com.nvidia.nvsentinel.health.v1",
-		Source:      fmt.Sprintf("nvsentinel://%s/healthevents", clusterName),
+		Source:      fmt.Sprintf("nvsentinel://%s/healthevents", metadata["cluster"]),
 		ID:          uuid.New().String(),
 		Time:        timestamp,
 		Data: map[string]any{

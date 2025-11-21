@@ -104,8 +104,8 @@ func TestToCloudEvent(t *testing.T) {
 				if healthEvent["nodeName"] != "gpu-node-42" {
 					t.Errorf("nodeName = %v, want gpu-node-42", healthEvent["nodeName"])
 				}
-				if healthEvent["recommendedAction"] != int32(pb.RecommendedAction_RESTART_VM) {
-					t.Errorf("recommendedAction = %v, want %v", healthEvent["recommendedAction"], int32(pb.RecommendedAction_RESTART_VM))
+				if healthEvent["recommendedAction"] != pb.RecommendedAction_RESTART_VM.String() {
+					t.Errorf("recommendedAction = %v, want %v", healthEvent["recommendedAction"], pb.RecommendedAction_RESTART_VM.String())
 				}
 
 				entities := healthEvent["entitiesImpacted"].([]map[string]any)
@@ -203,7 +203,7 @@ func TestToCloudEvent(t *testing.T) {
 			},
 		},
 		{
-			name: "metadata with missing cluster defaults to unknown",
+			name: "metadata with missing cluster uses empty string",
 			event: &pb.HealthEvent{
 				Version:            1,
 				Agent:              "test-agent",
@@ -215,8 +215,8 @@ func TestToCloudEvent(t *testing.T) {
 			metadata: map[string]string{"environment": "test"},
 			wantErr:  false,
 			validateFunc: func(t *testing.T, ce *CloudEvent) {
-				if ce.Source != "nvsentinel://unknown/healthevents" {
-					t.Errorf("Source = %v, want nvsentinel://unknown/healthevents", ce.Source)
+				if ce.Source != "nvsentinel:///healthevents" {
+					t.Errorf("Source = %v, want nvsentinel:///healthevents", ce.Source)
 				}
 			},
 		},
