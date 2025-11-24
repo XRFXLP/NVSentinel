@@ -42,7 +42,7 @@ func TestEventExporterChangeStream(t *testing.T) {
 		t.Log("Waiting for event-exporter to be available")
 		err = wait.For(
 			conditions.New(client.Resources()).DeploymentAvailable(helpers.EventExporterName, helpers.NVSentinelNamespace),
-			wait.WithTimeout(2*time.Minute),
+			wait.WithTimeout(helpers.EventuallyWaitTimeout),
 		)
 		require.NoError(t, err, "event-exporter not running")
 
@@ -74,7 +74,7 @@ func TestEventExporterChangeStream(t *testing.T) {
 				return true
 			}
 			return false
-		}, helpers.NeverWaitTimeout, 2*time.Second, "event should be exported via changestream")
+		}, helpers.NeverWaitTimeout, helpers.WaitInterval, "event should be exported via changestream")
 
 		t.Log("Validating received CloudEvent")
 		require.NotNil(t, receivedEvent)
@@ -105,7 +105,7 @@ func TestEventExporterResumeToken(t *testing.T) {
 		t.Log("Waiting for event-exporter to be available")
 		err = wait.For(
 			conditions.New(client.Resources()).DeploymentAvailable(helpers.EventExporterName, helpers.NVSentinelNamespace),
-			wait.WithTimeout(2*time.Minute),
+			wait.WithTimeout(helpers.EventuallyWaitTimeout),
 		)
 		require.NoError(t, err)
 
@@ -147,7 +147,7 @@ func TestEventExporterResumeToken(t *testing.T) {
 				return false
 			}
 			return deployment.Status.ReadyReplicas == 0
-		}, 1*time.Minute, 2*time.Second, "deployment should have 0 ready replicas")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "deployment should have 0 ready replicas")
 
 		t.Log("Injecting health event while exporter is down")
 		testMessage := "XID 79 injected from event exporter resume token test"
@@ -168,7 +168,7 @@ func TestEventExporterResumeToken(t *testing.T) {
 		t.Log("Waiting for event-exporter to be scaled back and ready")
 		err = wait.For(
 			conditions.New(client.Resources()).DeploymentAvailable(helpers.EventExporterName, helpers.NVSentinelNamespace),
-			wait.WithTimeout(2*time.Minute),
+			wait.WithTimeout(helpers.EventuallyWaitTimeout),
 		)
 		require.NoError(t, err)
 
@@ -182,7 +182,7 @@ func TestEventExporterResumeToken(t *testing.T) {
 			}
 			t.Logf("No matching event found yet, total events: %d", len(events))
 			return false
-		}, 1*time.Minute, helpers.WaitInterval, "missed event should be exported after resume")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "missed event should be exported after resume")
 
 		return ctx
 	})
