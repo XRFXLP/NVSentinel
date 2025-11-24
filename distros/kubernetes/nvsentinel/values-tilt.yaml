@@ -318,36 +318,36 @@ event-exporter:
 
   oidcSecretName: "event-exporter-oidc-secret"
 
-  config: |
-    [exporter.metadata]
-    cluster = "tilt-test-cluster"
-    environment = "development"
-    tilt_test = "true"
+  exporter:
+    metadata:
+      cluster: "tilt-test-cluster"
+      environment: "development"
+      tilt_test: "true"
 
-    [exporter.sink]
-    endpoint = "http://event-exporter-mock.nvsentinel.svc.cluster.local:8443/events"
-    timeout = "30s"
-    insecure_skip_verify = true
+    sink:
+      endpoint: "http://event-exporter-mock.nvsentinel.svc.cluster.local:8443/events"
+      timeout: "30s"
+      insecureSkipVerify: true
 
-    [exporter.oidc]
-    token_url = "http://event-exporter-mock.nvsentinel.svc.cluster.local:8443/token"
-    client_id = "tilt-test-client"
-    scope = "test-scope"
-    insecure_skip_verify = true
+    oidc:
+      tokenUrl: "http://event-exporter-mock.nvsentinel.svc.cluster.local:8443/token"
+      clientId: "tilt-test-client"
+      scope: "test-scope"
+      insecureSkipVerify: true
 
-    [exporter.backfill]
-    enabled = true
-    max_age = "1h"
-    max_events = 10000
-    batch_size = 100
-    rate_limit = 100
+    backfill:
+      enabled: true
+      maxAge: "1h"
+      maxEvents: 10000
+      batchSize: 100
+      rateLimit: 100
 
-    [exporter.resume_token]
-    database = "nvsentinel"
-    collection = "resumetokens"
+    resumeToken:
+      database: "nvsentinel"
+      collection: "resumetokens"
 
-    [exporter.failure_handling]
-    max_retries = 3
-    initial_backoff = "1s"
-    max_backoff = "10s"
-    backoff_multiplier = 2.0
+    failureHandling:
+      maxRetries: 3
+      initialBackoff: "1s"
+      maxBackoff: "10s"
+      backoffMultiplier: 2.0

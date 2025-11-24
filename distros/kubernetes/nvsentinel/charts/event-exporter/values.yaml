@@ -34,40 +34,48 @@ resources:
 # You must create this secret manually before deploying this chart
 oidcSecretName: "event-exporter-oidc-secret"
 
-config: |
-  [exporter.metadata]
-  cluster = "my-cluster"
-  environment = "production"
+# Event exporter configuration
+exporter:
+  # Metadata configuration
   # Add any custom metadata fields here - they will be included in CloudEvents data.metadata
-  # region = "us-west-2"
-  # datacenter = "dc01"
-  # tenant = "acme-corp"
+  metadata:
+    cluster: "my-cluster"
+    environment: "production"
+    # Additional custom metadata fields (optional):
+    # region: "us-west-2"
+    # datacenter: "dc01"
+    # tenant: "acme-corp"
 
-  [exporter.sink]
-  endpoint = "https://events.example.com/api/v1/events"
-  timeout = "30s"
-  insecure_skip_verify = false
+  # Sink configuration for event destination
+  sink:
+    endpoint: "https://events.example.com/api/v1/events"
+    timeout: "30s"
+    insecureSkipVerify: false
 
-  [exporter.oidc]
-  token_url = "https://auth.example.com/oauth2/token"
-  client_id = "nvsentinel-exporter"
-  scope = "events:write"
-  insecure_skip_verify = false
+  # OIDC configuration for authentication
+  oidc:
+    tokenUrl: "https://auth.example.com/oauth2/token"
+    clientId: "nvsentinel-exporter"
+    scope: "events:write"
+    insecureSkipVerify: false
 
-  [exporter.backfill]
-  enabled = true
-  max_age = "720h"      # 30 days
-  max_events = 1000000
-  batch_size = 500
-  rate_limit = 1000     # events per second
+  # Backfill configuration for historical events
+  backfill:
+    enabled: true
+    maxAge: "720h"       # 30 days
+    maxEvents: 1000000
+    batchSize: 500
+    rateLimit: 1000      # events per second
 
-  [exporter.resume_token]
-  database = "nvsentinel"
-  collection = "resumetokens"
+  # Resume token storage configuration
+  resumeToken:
+    database: "nvsentinel"
+    collection: "resumetokens"
 
-  [exporter.failure_handling]
-  max_retries = 17         # ~30 minutes of retries
-  initial_backoff = "1s"
-  max_backoff = "5m"
-  backoff_multiplier = 2.0
+  # Failure handling and retry configuration
+  failureHandling:
+    maxRetries: 17           # ~30 minutes of retries
+    initialBackoff: "1s"
+    maxBackoff: "5m"
+    backoffMultiplier: 2.0
 

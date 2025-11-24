@@ -67,7 +67,7 @@ func handleTokenRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("📥 Token request from %s", r.RemoteAddr)
+	log.Printf("Token request from %s", r.RemoteAddr)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -89,7 +89,7 @@ func handleEventSink(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("❌ Failed to read request body: %v", err)
+		log.Printf("Failed to read request body: %v", err)
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
 		return
 	}
@@ -97,7 +97,7 @@ func handleEventSink(w http.ResponseWriter, r *http.Request) {
 
 	var event map[string]any
 	if err := json.Unmarshal(body, &event); err != nil {
-		log.Printf("❌ Invalid JSON: %v", err)
+		log.Printf("Invalid JSON: %v", err)
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -126,7 +126,7 @@ func handleEventSink(w http.ResponseWriter, r *http.Request) {
 	}
 	eventsMutex.Unlock()
 
-	log.Printf("✅ CloudEvent received: id=%s type=%s source=%s", eventID, eventType, source)
+	log.Printf("CloudEvent received: id=%s type=%s source=%s", eventID, eventType, source)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
