@@ -1,3 +1,3 @@
-module github.com/nvidia/nvsentinel/tilt/mock-services/event-exporter-mock
+module github.com/nvidia/nvsentinel/tilt/event-exporter-mock
 
 go 1.25
