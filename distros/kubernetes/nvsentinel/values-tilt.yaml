@@ -70,6 +70,11 @@ global:
   kubernetesObjectMonitor:
     enabled: true
 
+  eventExporter:
+    enabled: true
+  
+  metricsPort: 2112
+
 mongodb-store:
   useBitnami: true
   usePerconaOperator: false
@@ -293,3 +298,56 @@ kubernetes-object-monitor:
           matchLabels:
             kubernetes.io/metadata.name: kube-system
         topologyKey: kubernetes.io/hostname
+
+event-exporter:
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/event-exporter
+    pullPolicy: IfNotPresent
+
+  podAnnotations: {}
+
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+  oidcSecretName: "event-exporter-oidc-secret"
+
+  config: |
+    [exporter.metadata]
+    cluster = "tilt-test-cluster"
+    environment = "development"
+    tilt_test = "true"
+
+    [exporter.sink]
+    endpoint = "http://event-exporter-mock.nvsentinel.svc.cluster.local:8443/events"
+    timeout = "30s"
+    insecure_skip_verify = true
+
+    [exporter.oidc]
+    token_url = "http://event-exporter-mock.nvsentinel.svc.cluster.local:8443/token"
+    client_id = "tilt-test-client"
+    scope = "test-scope"
+    insecure_skip_verify = true
+
+    [exporter.backfill]
+    enabled = true
+    max_age = "1h"
+    max_events = 10000
+    batch_size = 100
+    rate_limit = 100
+
+    [exporter.resume_token]
+    database = "nvsentinel"
+    collection = "resumetokens"
+
+    [exporter.failure_handling]
+    max_retries = 3
+    initial_backoff = "1s"
+    max_backoff = "10s"
+    backoff_multiplier = 2.0
