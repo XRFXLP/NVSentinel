@@ -28,7 +28,7 @@ import (
 var (
 	tokenRequestCount   int64
 	eventsReceivedCount int64
-	receivedEvents      []map[string]interface{}
+	receivedEvents      []map[string]any
 	eventsMutex         sync.RWMutex
 )
 
@@ -72,7 +72,7 @@ func handleTokenRequest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	response := map[string]interface{}{
+	response := map[string]any{
 		"access_token": fmt.Sprintf("mock-token-%d", time.Now().Unix()),
 		"expires_in":   3600,
 		"token_type":   "Bearer",
@@ -95,7 +95,7 @@ func handleEventSink(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	var event map[string]interface{}
+	var event map[string]any
 	if err := json.Unmarshal(body, &event); err != nil {
 		log.Printf("❌ Invalid JSON: %v", err)
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -150,7 +150,7 @@ func handleEventsList(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]any{
 		"events": receivedEvents,
 		"count":  len(receivedEvents),
 	})
