@@ -318,6 +318,17 @@ event-exporter:
 
   oidcSecretName: "event-exporter-oidc-secret"
 
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname
+
   exporter:
     metadata:
       cluster: "tilt-test-cluster"
