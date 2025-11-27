@@ -50,7 +50,8 @@ type TemplateData struct {
     namespace = "nvsentinel"
     apiGroup = "nvsentinel.nvidia.com"
     version = "v1alpha1"
-    kind = "SlurmDrainRequest"
+    kind = "DrainRequest"
+
 
     timeout = "3600s"
 
@@ -63,7 +64,7 @@ type TemplateData struct {
 
 Name of the CR will follow the pattern `drain-<node-name>-<health-event-id>` and namespace will be `nvsentinel`.
 ```yaml
-apiVersion: drain.example.com/v1alpha1
+apiVersion: nvsentinel.nvidia.com/v1alpha1
 kind: DrainRequest
 spec:
     nodeName: {{ .HealthEvent.NodeName }} # Kubernetes node name
