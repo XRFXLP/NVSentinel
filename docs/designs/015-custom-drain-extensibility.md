@@ -130,7 +130,6 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
 **3. Reconciler** (`reconciler/reconciler.go`):
 ```go
 func (r *Reconciler) executeCustomDrain(...) error {
-    // Create CR
     crName, err := r.customDrainClient.CreateDrainCR(ctx, templateData)
     return nil  // Return immediately, informer will trigger next reconcile
 }
