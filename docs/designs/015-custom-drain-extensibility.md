@@ -1,4 +1,4 @@
-# ADR-014: Behavior — Node Drain Extensibility
+# ADR-015: Behavior — Node Drain Extensibility
 
 ## Context
 
