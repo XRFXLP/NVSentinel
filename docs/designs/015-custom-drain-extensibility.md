@@ -2,7 +2,7 @@
 
 ## Context
 
-Current flow of node drainer essentially runs `kubectl drain` and when exactly a node will be drained in a cluster is configurable by configmap using `mode` which are: `Immediate`, `DeleteAfterTimeout` and `AllowCompletion`. These three modes essentially covers the entire lifecycle of workload. This works in most of the cases but there is no coordination with scheduler present in the cluster in this process. We need a way to extend the functionality of node drain to make it aware of the ecosystem around scheduler present in the cluster.
+Current flow of node drainer essentially runs `kubectl drain` and when exactly a node will be drained in a cluster is configurable by configmap using `mode` which are: `Immediate`, `DeleteAfterTimeout` and `AllowCompletion`. These three modes essentially covers the entire lifecycle of workload. This works in most of the cases but there are some cases where additional coordination with scheduler (or meta scheduler) present in the cluster in required. Hence, we need a way to extend the functionality of node drain to make it aware of the ecosystem around scheduler present in the cluster.
 
 ## Decision
 
