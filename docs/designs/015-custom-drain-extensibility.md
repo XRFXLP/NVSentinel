@@ -31,6 +31,9 @@ flowchart TD
 
 ```go
 type TemplateData struct {
+  HealthEvent   HealthEevent
+  PodsToDrain   map[string][]string
+}
     NodeName              string
     Namespace             string
     HealthEventID         string
