@@ -55,7 +55,7 @@ type TemplateData struct {
     templateMountPath = "/etc/drain-templates"
     templateFileName = "drain-template.yaml"
     namespace = "nvsentinel"
-    apiGroup = "slurm.slinkyproject.io"
+    apiGroup = "nvsentinel.nvidia.com"
     version = "v1alpha1"
     kind = "SlurmDrainRequest"
 
