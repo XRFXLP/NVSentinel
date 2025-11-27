@@ -54,8 +54,8 @@ type TemplateData struct {
 
     timeout = "3600s"
 
-    # Status watching (follows Kubernetes standard: InProgress, Complete, Failed)
-    statusConditionType = "Complete"
+    # Status watching (follows Kubernetes standard: DrainInProgress, DrainComplete, DrainFailed)
+    statusConditionType = "DrainComplete"
     statusConditionStatus = "True"
 ```
 
@@ -66,7 +66,7 @@ Name of the CR will follow the pattern `drain-<node-name>-<health-event-id>` and
 apiVersion: drain.example.com/v1alpha1
 kind: DrainRequest
 spec:
-    nodeName: {{ .HealthEvent.NodeName }}
+    nodeName: {{ .HealthEvent.NodeName }} # Kubernetes node name
     checkName: {{ .HealthEvent.CheckName }}
     recommendedAction: {{ .HealthEvent.RecommendedAction }}
     errorCode: {{ .HealthEvent.ErrorCode }}
@@ -93,7 +93,7 @@ spec:
     {{- end }}
 status:
   conditions:
-    - type: Complete
+    - type: DrainComplete
       status: "False"
       reason: Pending
 ```
