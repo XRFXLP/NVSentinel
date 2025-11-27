@@ -64,10 +64,6 @@ type TemplateData struct {
     # Status watching (follows Kubernetes standard: InProgress, Complete, Failed)
     statusConditionType = "Complete"
     statusConditionStatus = "True"
-
-[customDrain.context]
-    partition = "gpu"
-    nodeSet = "gpu-workers"
 ```
 
 ### Template Example
@@ -76,7 +72,7 @@ type TemplateData struct {
 apiVersion: drain.example.com/v1alpha1
 kind: DrainRequest
 metadata:
-    generateName: drain-{{ .NodeName }}-{{ .HealthEventID }}
+    name: drain-{{ .NodeName }}-{{ .HealthEventID }}
     namespace: {{ .Namespace }}
 spec:
     nodeName: {{ .NodeName }}
@@ -146,7 +142,6 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
 func (r *Reconciler) executeCustomDrain(...) error {
     // Create CR
     crName, err := r.customDrainClient.CreateDrainCR(ctx, templateData)
-    // Store crName in nodeEventsMap or database
     return nil  // Return immediately, informer will trigger next reconcile
 }
 ```
