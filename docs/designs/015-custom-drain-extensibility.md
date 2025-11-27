@@ -43,10 +43,12 @@ type TemplateData struct {
 ### Configuration (TOML)
 
 ```toml
+systemNamespaces = "^(kube-system|gpu-operator)"
 [customDrain]
     enabled = false
-    templateMountPath = "/etc/drain-templates"
-    templateFileName = "drain-template.yaml"
+
+    templateMountPath = "/etc/drain-templates" # Where node-drainer mounts its ConfigMap
+    templateFileName = "drain-template.yaml" # Name of the template file
     namespace = "nvsentinel"
     apiGroup = "nvsentinel.nvidia.com"
     version = "v1alpha1"
@@ -114,6 +116,9 @@ if e.config.CustomDrain.Enabled {
     }
     
     if !CRComplete(crName) {
+        if isCRTimedOut(crName) {
+            return &DrainActionResult{Action: ActionDrainFailed}, nil
+        }
         return &DrainActionResult{Action: ActionWait}, nil
     }
     
@@ -167,6 +172,11 @@ func (r *Reconciler) executeAction(..., eventID string) error {
             r.customDrainClient.DeleteDrainCR(ctx, crName)
         }
         return err
+    
+    case ActionDrainFailed:
+        crName := getCRName(nodeName, eventID)
+        r.customDrainClient.DeleteDrainCR(ctx, crName)
+        return r.updateDrainStatustoFailed(ctx, nodeName, eventID)
     
     // ... existing cases (ActionSkip, ActionWait, ActionEvictImmediate, etc.)
     }
@@ -261,7 +271,7 @@ Node-drainer POSTs drain requests to customer HTTP service, polls status endpoin
 
 - **"User coordination"** = customer-side automation (not human operators)
 - **Opt-in**: Feature disabled by default, no breaking changes
-- **Non-goals**: Auto template discovery, multi-cluster, template validation, human approval workflows
+- **Non-goals**: Auto template discovery, multi-cluster and human approval workflows
 
 
 ## Testing
