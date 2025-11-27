@@ -34,17 +34,6 @@ type TemplateData struct {
   HealthEvent   HealthEevent
   PodsToDrain   map[string][]string
 }
-    NodeName              string
-    Namespace             string
-    HealthEventID         string
-    CheckName             string
-    Message               string
-    RecommendedAction     RecommendedAction
-    ErrorCode             []string
-    EntitiesImpacted      []*Entity
-    Metadata              map[string]string
-    PodsToEvict           map[string][]string
-}
 ```
 
 ### Configuration (TOML)
@@ -72,28 +61,29 @@ type TemplateData struct {
 apiVersion: drain.example.com/v1alpha1
 kind: DrainRequest
 metadata:
-    name: drain-{{ .NodeName }}-{{ .HealthEventID }}
-    namespace: {{ .Namespace }}
+    name: drain-{{ .HealthEvent.NodeName }}-{{ .HealthEvent.EventID }}
+    namespace: nvsentinel
 spec:
-    nodeName: {{ .NodeName }}
-    recommendedAction: {{ .RecommendedAction }}
-    errorCode: {{ .ErrorCode }}
+    nodeName: {{ .HealthEvent.NodeName }}
+    checkName: {{ .HealthEvent.CheckName }}
+    recommendedAction: {{ .HealthEvent.RecommendedAction }}
+    errorCode: {{ .HealthEvent.ErrorCode }}
 
     entitiesImpacted:
-    {{- range .EntitiesImpacted }}
-    - type: {{ .Type }}
-        value: {{ .Value }}
+    {{- range .HealthEvent.EntitiesImpacted }}
+    - type: {{ .EntityType }}
+        value: {{ .EntityValue }}
     {{- end }}
 
     metadata:
-    {{- range $key, $value := .Metadata }}
+    {{- range $key, $value := .HealthEvent.Metadata }}
         {{ $key }}: {{ $value }}
     {{- end }}
 
-    reason: "{{ .Message }}"
+    reason: "{{ .HealthEvent.Message }}"
 
-    podsToEvict:
-    {{- range $namespace, $pods := .PodsToEvict }}
+    podsToDrain:
+    {{- range $namespace, $pods := .PodsToDrain }}
         {{ $namespace }}:
         {{- range $pods }}
             - {{ . }}
