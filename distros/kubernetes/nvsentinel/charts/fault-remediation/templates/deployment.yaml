@@ -75,6 +75,8 @@ spec:
             value: "{{ .Values.logLevel }}"
           - name: LOG_COLLECTOR_MANIFEST_PATH
             value: /etc/config/log-collector-job.yaml
+          - name: LOG_COLLECTOR_TIMEOUT
+            value: "{{ .Values.logCollector.timeout | default "10m" }}"
           - name: ENABLE_GCP_SOS_COLLECTION
             value: "{{ .Values.logCollector.enableGcpSosCollection }}"
           - name: ENABLE_AWS_SOS_COLLECTION

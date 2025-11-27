@@ -456,7 +456,7 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 		if !hasExistingCheck {
 			return nil
 		}
-	case !r.eventMatchesAnyRule(event, ruleSetEvals):
+	case !r.isForceQuarantine(event) && !r.eventMatchesAnyRule(event, ruleSetEvals):
 		return nil
 	}
 
@@ -771,6 +771,11 @@ func (r *Reconciler) eventMatchesAnyRule(
 	return false
 }
 
+// isForceQuarantine checks if the event has the force quarantine override set
+func (r *Reconciler) isForceQuarantine(event *protos.HealthEvent) bool {
+	return event.QuarantineOverrides != nil && event.QuarantineOverrides.Force
+}
+
 // handleUnhealthyEventOnQuarantinedNode handles unhealthy events on already-quarantined nodes
 func (r *Reconciler) handleUnhealthyEventOnQuarantinedNode(
 	ctx context.Context,
@@ -778,7 +783,7 @@ func (r *Reconciler) handleUnhealthyEventOnQuarantinedNode(
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	healthEventsAnnotationMap *healthEventsAnnotation.HealthEventsAnnotationMap,
 ) bool {
-	if !r.eventMatchesAnyRule(event, ruleSetEvals) {
+	if !r.isForceQuarantine(event) && !r.eventMatchesAnyRule(event, ruleSetEvals) {
 		slog.Info("Unhealthy event on node doesn't match any rules, skipping annotation update",
 			"checkName", event.CheckName, "node", event.NodeName)
 
@@ -844,23 +849,23 @@ func (r *Reconciler) handleQuarantinedNode(
 			"node", event.NodeName)
 	}
 
-	if healthEventsAnnotationMap.IsEmpty() {
+	updatedHealthEventsMap, err := r.removeEventFromAnnotation(ctx, event)
+	if err != nil {
+		slog.Error("Failed to update health events annotation after recovery", "error", err)
+		return true
+	}
+
+	if updatedHealthEventsMap.IsEmpty() {
 		slog.Info("All health checks recovered for node, proceeding with uncordon",
 			"node", event.NodeName)
 
 		return r.performUncordon(ctx, event, annotations)
 	}
 
-	// Remove this event's entities from the node's annotation
-	if err := r.removeEventFromAnnotation(ctx, event); err != nil {
-		slog.Error("Failed to update health events annotation after recovery", "error", err)
-		return true
-	}
-
 	slog.Info("Node remains quarantined with failing checks",
 		"node", event.NodeName,
-		"failingChecksCount", healthEventsAnnotationMap.Count(),
-		"checks", healthEventsAnnotationMap.GetAllCheckNames())
+		"failingChecksCount", updatedHealthEventsMap.Count(),
+		"checks", updatedHealthEventsMap.GetAllCheckNames())
 
 	return true
 }
@@ -948,17 +953,23 @@ func (r *Reconciler) addEventToAnnotation(
 }
 
 // removeEventFromAnnotation removes entities from a health event in the node's quarantine annotation
+// Returns the updated healthEventsAnnotationMap from fresh K8s data and any error
 func (r *Reconciler) removeEventFromAnnotation(
 	ctx context.Context,
 	event *protos.HealthEvent,
-) error {
+) (*healthEventsAnnotation.HealthEventsAnnotationMap, error) {
+	// Capture the updated map based on the ACTUAL state after removal
+	updatedMap := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+
 	updateFn := func(node *corev1.Node) error {
 		if node.Annotations == nil {
+			updatedMap = healthEventsAnnotation.NewHealthEventsAnnotationMap()
 			return nil
 		}
 
 		existingAnnotation, exists := node.Annotations[common.QuarantineHealthEventAnnotationKey]
 		if !exists || existingAnnotation == "" {
+			updatedMap = healthEventsAnnotation.NewHealthEventsAnnotationMap()
 			return nil
 		}
 
@@ -975,6 +986,9 @@ func (r *Reconciler) removeEventFromAnnotation(
 		removed := healthEventsMap.RemoveEvent(event)
 		if removed == 0 {
 			slog.Debug("No matching entities to remove for node, no annotation update needed", "node", event.NodeName)
+
+			updatedMap = healthEventsMap
+
 			return nil
 		}
 
@@ -987,10 +1001,14 @@ func (r *Reconciler) removeEventFromAnnotation(
 
 		slog.Debug("Removed entities for node", "node", event.NodeName, "remainingEntityLevelEvents", healthEventsMap.Count())
 
+		updatedMap = healthEventsMap
+
 		return nil
 	}
 
-	return r.k8sClient.UpdateNode(ctx, event.NodeName, updateFn)
+	err := r.k8sClient.UpdateNode(ctx, event.NodeName, updateFn)
+
+	return updatedMap, err
 }
 
 func (r *Reconciler) performUncordon(

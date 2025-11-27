@@ -311,7 +311,17 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 	log.Printf("Waiting for log collector job %s to complete", created.Name)
 
 	// Use a context with timeout for the watch
-	watchCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	timeout := 10 * time.Minute // Default timeout: 10 minutes
+
+	if timeoutEnv := os.Getenv("LOG_COLLECTOR_TIMEOUT"); timeoutEnv != "" {
+		if parsed, err := time.ParseDuration(timeoutEnv); err == nil {
+			timeout = parsed
+		} else {
+			log.Printf("Warning: Invalid LOG_COLLECTOR_TIMEOUT value '%s', using default 10m: %v", timeoutEnv, err)
+		}
+	}
+
+	watchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Use SharedInformerFactory for efficient job status monitoring with filtering

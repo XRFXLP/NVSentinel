@@ -48,37 +48,10 @@ func TestFatalHealthEvent(t *testing.T) {
 		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/basic-matching-configmap.yaml")
 		ctx = helpers.ApplyNodeDrainerConfig(ctx, t, c, "data/nd-all-modes.yaml")
 
-		nodes, err := helpers.GetAllNodesNames(ctx, client)
-		assert.NoError(t, err, "failed to get cluster nodes")
-		assert.True(t, len(nodes) > 0, "no nodes found in cluster")
-
-		// Select from nodes that scale test never touched (starting from 50% onwards)
-		// Scale test uses first 45% of nodes, so selecting from 50%+ ensures no MongoDB collision
-		startIdx := int(float64(len(nodes)) * 0.50)
-		if startIdx >= len(nodes) {
-			startIdx = len(nodes) - 1
-		}
-		unusedNodes := nodes[startIdx:]
-
-		var nodeName string
-		for _, name := range unusedNodes {
-			node, err := helpers.GetNodeByName(ctx, client, name)
-			if err != nil {
-				t.Logf("failed to get node %s: %v", name, err)
-				continue
-			}
-			if !node.Spec.Unschedulable {
-				nodeName = name
-				break
-			}
-		}
-
-		if nodeName == "" {
-			nodeName = unusedNodes[0]
-			t.Logf("No uncordoned node in unused subset, using first unused node: %s", nodeName)
-		} else {
-			t.Logf("Selected uncordoned node: %s (from unused nodes starting at index %d)", nodeName, startIdx)
-		}
+		// Use a real (non-KWOK) node for smoke test to validate actual container execution
+		nodeName, err := helpers.GetRealNodeName(ctx, client)
+		assert.NoError(t, err, "failed to get real node")
+		t.Logf("Selected real node for smoke test: %s", nodeName)
 
 		err = helpers.CreateNamespace(ctx, client, workloadNamespace)
 		assert.NoError(t, err, "failed to create workloads namespace")
@@ -186,6 +159,23 @@ func TestFatalHealthEvent(t *testing.T) {
 		return ctx
 	})
 
+	feature.Assess("Log-collector job completes successfully", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		// Verify log-collector job completed successfully on real node
+		t.Logf("Waiting for log-collector job to complete on node %s", nodeName)
+		job := helpers.WaitForLogCollectorJobStatus(ctx, t, client, nodeName, "Complete")
+
+		// Verify log files were uploaded to file server
+		t.Logf("Verifying log files were uploaded to file server for node %s", nodeName)
+		helpers.VerifyLogFilesUploaded(ctx, t, client, job)
+
+		return ctx
+	})
+
 	feature.Assess("Can send healthy event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
@@ -203,6 +193,10 @@ func TestFatalHealthEvent(t *testing.T) {
 
 		t.Logf("Waiting for node %s to be uncordoned", nodeName)
 		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, false)
+
+		// Wait for node condition to be updated to healthy
+		t.Logf("Waiting for node %s condition to become healthy", nodeName)
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError", "", "GpuXidErrorIsHealthy", v1.ConditionFalse)
 
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after uncordoning")
@@ -266,35 +260,10 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/basic-matching-configmap.yaml")
 		ctx = helpers.ApplyNodeDrainerConfig(ctx, t, c, "data/nd-all-modes.yaml")
 
-		nodes, err := helpers.GetAllNodesNames(ctx, client)
-		assert.NoError(t, err, "failed to get cluster nodes")
-		assert.True(t, len(nodes) > 0, "no nodes found in cluster")
-
-		startIdx := int(float64(len(nodes)) * 0.50)
-		if startIdx >= len(nodes) {
-			startIdx = len(nodes) - 1
-		}
-		unusedNodes := nodes[startIdx:]
-
-		var nodeName string
-		for _, name := range unusedNodes {
-			node, err := helpers.GetNodeByName(ctx, client, name)
-			if err != nil {
-				t.Logf("failed to get node %s: %v", name, err)
-				continue
-			}
-			if !node.Spec.Unschedulable {
-				nodeName = name
-				break
-			}
-		}
-
-		if nodeName == "" {
-			nodeName = unusedNodes[0]
-			t.Logf("No uncordoned node in unused subset, using first unused node: %s", nodeName)
-		} else {
-			t.Logf("Selected uncordoned node: %s (from unused nodes starting at index %d)", nodeName, startIdx)
-		}
+		// Use a real (non-KWOK) node for smoke test to validate actual container execution
+		nodeName, err := helpers.GetRealNodeName(ctx, client)
+		assert.NoError(t, err, "failed to get real node")
+		t.Logf("Selected real node for smoke test: %s", nodeName)
 
 		err = helpers.CreateNamespace(ctx, client, workloadNamespace)
 		assert.NoError(t, err, "failed to create workloads namespace")
@@ -325,6 +294,10 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 
 		t.Logf("Waiting for node %s to be cordoned", nodeName)
 		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, true)
+
+		// Wait for node condition to be updated to unhealthy
+		t.Logf("Waiting for node %s condition to become unhealthy", nodeName)
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError", "", "GpuXidErrorIsNotHealthy", v1.ConditionTrue)
 
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after cordoning")
@@ -369,6 +342,23 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		return ctx
 	})
 
+	feature.Assess("Log-collector job completes successfully", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		// Verify log-collector job completed successfully on real node
+		t.Logf("Waiting for log-collector job to complete on node %s", nodeName)
+		job := helpers.WaitForLogCollectorJobStatus(ctx, t, client, nodeName, "Complete")
+
+		// Verify log files were uploaded to file server
+		t.Logf("Verifying log files were uploaded to file server for node %s", nodeName)
+		helpers.VerifyLogFilesUploaded(ctx, t, client, job)
+
+		return ctx
+	})
+
 	feature.Assess("Remediation failed label is set", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
@@ -397,6 +387,10 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 
 		t.Logf("Waiting for node %s to be uncordoned", nodeName)
 		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, false)
+
+		// Wait for node condition to be updated to healthy
+		t.Logf("Waiting for node %s condition to become healthy", nodeName)
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError", "", "GpuXidErrorIsHealthy", v1.ConditionFalse)
 
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after uncordoning")

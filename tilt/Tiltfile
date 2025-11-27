@@ -15,7 +15,12 @@
 load('ext://helm_resource', 'helm_resource', 'helm_repo')
 load('ext://namespace', 'namespace_create', 'namespace_inject')
 
-update_settings(k8s_upsert_timeout_secs=600)
+# Suppress unused image warning for log-collector because it's used in dynamically-created
+# jobs by the fault-remediation controller (not deployed via Helm templates).
+update_settings(
+    k8s_upsert_timeout_secs=600,
+    suppress_unused_image_warnings=['localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest']
+)
 
 num_gpu_nodes = int(os.getenv('NUM_GPU_NODES', '50'))
 num_kata_test_nodes = int(os.getenv('NUM_KATA_TEST_NODES', '5'))
@@ -101,7 +106,7 @@ include('../health-monitors/gpu-health-monitor/Tiltfile')
 include('../health-monitors/kubernetes-object-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
 include('../labeler/Tiltfile')
-
+include('../log-collector/Tiltfile')
 values_files = [
     '../distros/kubernetes/nvsentinel/values.yaml',
     '../distros/kubernetes/nvsentinel/values-tilt.yaml',
