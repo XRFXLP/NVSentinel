@@ -1,10 +1,10 @@
-### Runbook: GPU Driver and GPU Operator Upgrades
+# Runbook: GPU Driver and GPU Operator Upgrades
 
-#### Overview
+## Overview
 
 This runbook provides the procedure to safely upgrade GPU drivers and GPU Operator components while preventing NVSentinel from interfering with the upgrade process.
 
-#### Background
+## Background
 
 During GPU Operator or driver upgrades, DCGM on affected nodes becomes temporarily disabled or unhealthy. NVSentinel uses DCGM as a health indicator for the GPU driver. When DCGM connectivity fails, NVSentinel:
 
@@ -19,9 +19,9 @@ During GPU Operator or driver upgrades, DCGM on affected nodes becomes temporari
 
 **Solution:** Temporarily disable NVSentinel management on nodes undergoing GPU driver or GPU Operator upgrades.
 
-#### Procedure
+## Procedure
 
-##### 1. Disable NVSentinel Management on Target Nodes
+### 1. Disable NVSentinel Management on Target Nodes
 
 Apply the `k8saas.nvidia.com/ManagedByNVSentinel=false` label to all nodes that will be upgraded.
 
@@ -31,11 +31,11 @@ kubectl label node --all k8saas.nvidia.com/ManagedByNVSentinel=false
 
 **Note:** Replace `--all` with specific node names if only upgrading a subset of nodes.
 
-##### 2. Perform the GPU Driver or GPU Operator Upgrade
+### 2. Perform the GPU Driver or GPU Operator Upgrade
 
 Execute the GPU driver or GPU Operator upgrade using your organization's standard upgrade procedure.
 
-##### 3. Validate GPU Component Health
+### 3. Validate GPU Component Health
 
 Verify that all pods in the `gpu-operator` namespace are running and healthy:
 
@@ -45,7 +45,7 @@ kubectl get po -n gpu-operator
 
 Ensure all pods show `Running` status and are ready before proceeding.
 
-##### 4. Re-enable NVSentinel Management
+### 4. Re-enable NVSentinel Management
 
 Remove the `k8saas.nvidia.com/ManagedByNVSentinel` label from the upgraded nodes:
 
