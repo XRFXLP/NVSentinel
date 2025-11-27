@@ -184,15 +184,18 @@ func (c *SlurmController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
     }
     
     // Already complete, nothing to do
-    if meta.IsStatusConditionTrue(drainReq.Status.Conditions, "Complete") {
+    if meta.IsStatusConditionTrue(drainReq.Status.Conditions, "DrainComplete") {
         return ctrl.Result{}, nil
     }
     
     // Start Slurm drain if not started
-    if !meta.IsStatusConditionTrue(drainReq.Status.Conditions, "InProgress") {
-        c.slurmClient.UpdateNode(drainReq.Spec.NodeName, slurm.NodeUpdate{State: "DRAIN"})
+    if !meta.IsStatusConditionTrue(drainReq.Status.Conditions, "DrainInProgress") {
+        // Template will contains the kubernetes node name 
+        // We need to convert it to slurm node name
+        slurmNodeName := getSlurmNodeName(drainReq.Spec.NodeName)
+        c.slurmClient.UpdateNode(slurmNodeName, slurm.NodeUpdate{State: "DRAIN"})
         meta.SetStatusCondition(&drainReq.Status.Conditions, metav1.Condition{
-            Type: "InProgress", Status: metav1.ConditionTrue, Reason: "DrainStarted",
+            Type: "DrainInProgress", Status: metav1.ConditionTrue, Reason: "DrainStarted",
         })
         c.Status().Update(ctx, drainReq)
         return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -202,7 +205,7 @@ func (c *SlurmController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
     jobs := c.slurmClient.GetJobs(slurm.JobFilter{Node: drainReq.Spec.NodeName})
     if len(jobs) == 0 {
         meta.SetStatusCondition(&drainReq.Status.Conditions, metav1.Condition{
-            Type: "Complete", Status: metav1.ConditionTrue, Reason: "AllJobsCompleted",
+            Type: "DrainComplete", Status: metav1.ConditionTrue, Reason: "AllJobsCompleted",
         })
         c.Status().Update(ctx, drainReq)
         return ctrl.Result{}, nil  // Done, no requeue
