@@ -1,0 +1,250 @@
+# ADR-014: Behavior — Node Drain Extensibility
+
+## Context
+
+Current flow of node drainer essentially runs `kubectl drain` and when exactly a node will be drained in a cluster is configurable by configmap using `mode` which are: `Immediate`, `DeleteAfterTimeout` and `AllowCompletion`. These three modes essentially covers the entire lifecycle of workload. This works in most of the cases but there is no coordination with scheduler present in the cluster in this process. We need a way way to extend the functionality of node drain to make it aware of the ecosystem around scheduler present in the cluster.
+
+## Decision
+
+Design a node drain API using Custom Resource Definitions (CRDs) to represent custom drain operations. This API will be consumed by scheduler-specific bridge controllers to perform custom drain logic.
+
+## Implementation
+
+### Architecture
+
+```mermaid
+flowchart TD
+    A[Health Event] --> B[Node-Drainer Evaluator]
+    B --> C{Custom Drain Enabled?}
+    C -->|Yes| D[Load Template from ConfigMap]
+    C -->|No| E[Standard Drain Mode]
+    D --> F[Render Template with Event Data]
+    F --> G[Create Customer CR via Dynamic Client]
+    G --> H[Watch CR Status via Informer]
+    H --> I{Status Phase?}
+    I -->|Complete| J[Proceed with Pod Eviction]
+    I -->|Failed| K[Error/Retry]
+    I -->|Pending/InProgress| H
+```
+
+### Template Variables
+
+```go
+type TemplateData struct {
+    NodeName              string
+    Namespace             string
+    HealthEventID         string
+    CheckName             string
+    Message               string
+    RecommendedAction     RecommendedAction
+    ErrorCode             []string
+    EntitiesImpacted      []*Entity
+    Metadata              map[string]string
+    PodsToEvict           map[string][]string
+}
+```
+
+### Configuration (TOML)
+
+```toml
+[customDrain]
+    enabled = false
+    templateMountPath = "/etc/drain-templates"
+    templateFileName = "drain-template.yaml"
+    namespace = "nvsentinel"
+    apiGroup = "slurm.slinkyproject.io"
+    version = "v1alpha1"
+    kind = "SlurmDrainRequest"
+
+    timeout = "3600s"
+
+    # Status watching (follows Kubernetes standard: InProgress, Complete, Failed)
+    statusConditionType = "Complete"
+    statusConditionStatus = "True"
+
+[customDrain.context]
+    partition = "gpu"
+    nodeSet = "gpu-workers"
+```
+
+### Template Example
+
+```yaml
+apiVersion: drain.example.com/v1alpha1
+kind: DrainRequest
+metadata:
+    generateName: drain-{{ .NodeName }}-{{ .HealthEventID }}
+    namespace: {{ .Namespace }}
+spec:
+    nodeName: {{ .NodeName }}
+    recommendedAction: {{ .RecommendedAction }}
+    errorCode: {{ .ErrorCode }}
+
+    entitiesImpacted:
+    {{- range .EntitiesImpacted }}
+    - type: {{ .Type }}
+        value: {{ .Value }}
+    {{- end }}
+
+    metadata:
+    {{- range $key, $value := .Metadata }}
+        {{ $key }}: {{ $value }}
+    {{- end }}
+
+    reason: "{{ .Message }}"
+
+    podsToEvict:
+    {{- range $namespace, $pods := .PodsToEvict }}
+        {{ $namespace }}:
+        {{- range $pods }}
+            - {{ . }}
+        {{- end }}
+    {{- end }}
+status:
+  conditions:
+    - type: Complete
+      status: "False"
+      reason: Pending
+```
+
+### Node-Drainer Changes
+
+**1. Evaluator** (`evaluator/evaluator.go`):
+```go
+// Check if custom drain enabled
+if e.config.CustomDrain.Enabled {
+    return &DrainActionResult{
+        Action:  ActionCreateCR,
+        Timeout: e.config.CustomDrain.Timeout.Duration,
+    }, nil
+}
+```
+
+**2. Custom Drain Client** (`customdrain/client.go`):
+```go
+// Same pattern as fault-remediation
+func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, error) {
+    // 1. Execute template
+    // 2. Parse YAML to unstructured
+    // 3. Create CR via dynamic client
+    // 4. Return CR name
+}
+
+func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
+    // 1. Get CR via dynamic client
+    // 2. Extract status.conditions array
+    // 3. Check if condition type matches config and status is True
+    // 4. Return true if complete, false otherwise
+}
+```
+
+**3. Reconciler** (`reconciler/reconciler.go`):
+```go
+func (r *Reconciler) executeCustomDrain(...) error {
+    // Create CR
+    crName, err := r.customDrainClient.CreateDrainCR(ctx, templateData)
+    // Store crName in nodeEventsMap or database
+    return nil  // Return immediately, informer will trigger next reconcile
+}
+```
+
+Assumption: We will either have node drainer supported modes (Immediate, DeleteAfterTimeout, AllowCompletion) or the custom drain mode defined above, not both.
+
+### Customer Controller Example
+
+```go
+func (c *SlurmController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+    drainReq := &SlurmDrainRequest{}
+    if err := c.Get(ctx, req.NamespacedName, drainReq); err != nil {
+        return ctrl.Result{}, client.IgnoreNotFound(err)
+    }
+    
+    // Already complete, nothing to do
+    if meta.IsStatusConditionTrue(drainReq.Status.Conditions, "Complete") {
+        return ctrl.Result{}, nil
+    }
+    
+    // Start Slurm drain if not started
+    if !meta.IsStatusConditionTrue(drainReq.Status.Conditions, "InProgress") {
+        c.slurmClient.UpdateNode(drainReq.Spec.NodeName, slurm.NodeUpdate{State: "DRAIN"})
+        meta.SetStatusCondition(&drainReq.Status.Conditions, metav1.Condition{
+            Type: "InProgress", Status: metav1.ConditionTrue, Reason: "DrainStarted",
+        })
+        c.Status().Update(ctx, drainReq)
+        return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+    }
+    
+    // Check if all Slurm jobs completed
+    jobs := c.slurmClient.GetJobs(slurm.JobFilter{Node: drainReq.Spec.NodeName})
+    if len(jobs) == 0 {
+        meta.SetStatusCondition(&drainReq.Status.Conditions, metav1.Condition{
+            Type: "Complete", Status: metav1.ConditionTrue, Reason: "AllJobsCompleted",
+        })
+        c.Status().Update(ctx, drainReq)
+        return ctrl.Result{}, nil  // Done, no requeue
+    }
+    
+    // Still draining, check again later
+    return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+```
+
+## Rationale
+
+Why template-based CRD approach:
+
+1. Maximum flexibility: Customers use their own CRDs, not constrained by NVSentinel schema
+2. Kubernetes-native: Built-in observability (`kubectl`, events, metrics), persistent state (etcd)
+
+## Consequences
+
+### Positive
+- Customers own CRD schema, works with existing CRDs (e.g., Slurm Operator)
+- Zero code changes for new integrations (template + controller only)
+- Reuses fault-remediation pattern (code, familiar approach)
+- Kubernetes-native (persistent state, audit trail, standard tooling)
+
+### Negative
+- Requires CRD/controller knowledge and Go template syntax
+- Debugging complexity across template/CR/controller layers
+
+### Mitigations
+- Reference implementations and comprehensive documentation
+- Example controllers for common integrations (Slurm, checkpoint, etc.)
+
+## Alternatives Considered
+
+### 1. Fixed NVSentinel DrainRequest CRD
+Define one `DrainRequest` CRD that all customers use.
+
+**Rejected**: Schema lock-in, versioning complexity, can't reuse existing CRDs, NVSentinel dependency.
+
+### 2. Sidecar with Protobuf API
+Deploy sidecar container with drain logic API.
+
+**Rejected**: Can't support customer-side controllers (localhost only), tight coupling, no persistence, limited observability.
+
+
+### 3. Webhook/HTTP API
+Node-drainer POSTs drain requests to customer HTTP service, polls status endpoint for completion.
+
+**Rejected**: Requires customers to run HTTP servers with auth/TLS, no state persistence in Kubernetes, not observable via kubectl, doesn't fit async workflows (long-running drains).
+
+## Notes
+
+- **"User coordination"** = customer-side automation (not human operators)
+- **Opt-in**: Feature disabled by default, no breaking changes
+- **Non-goals**: Auto template discovery, multi-cluster, template validation, human approval workflows
+
+
+## Testing
+
+- **Unit**: Template parsing, dynamic client CR creation, status polling, GVK→GVR mapping
+- **Integration**: Mock controller updates CR, verify node-drainer detects completion
+- **E2E**: Deploy test CRD + controller, trigger health event, verify end-to-end flow
+
+## References
+
+- [GitHub Issue #351](https://github.com/NVIDIA/NVSentinel/issues/351) - Original feature request
+- [Slurm Operator](https://github.com/SlinkyProject/slurm-operator) - Example integration
+- [ADR-009: Fault Remediation](./009-fault-remediation-triggering.md) - Same pattern
