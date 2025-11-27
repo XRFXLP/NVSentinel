@@ -2,7 +2,7 @@
 
 ## Context
 
-Current flow of node drainer essentially runs `kubectl drain` and when exactly a node will be drained in a cluster is configurable by configmap using `mode` which are: `Immediate`, `DeleteAfterTimeout` and `AllowCompletion`. These three modes essentially covers the entire lifecycle of workload. This works in most of the cases but there are some cases where additional coordination with scheduler (or meta scheduler) present in the cluster in required. Hence, we need a way to extend the functionality of node drain to make it aware of the ecosystem around scheduler present in the cluster.
+Current flow of node drainer essentially runs `kubectl drain` and when exactly a node will be drained in a cluster is configurable by configmap using `mode` which are: `Immediate`, `DeleteAfterTimeout` and `AllowCompletion`. These three modes essentially covers the entire lifecycle of workload. This works in most of the cases but there are some cases where additional coordination with scheduler (or meta scheduler) present in the cluster is required. Hence, we need a way to extend the functionality of node drain to make it aware of the ecosystem around scheduler present in the cluster.
 
 ## Decision
 
@@ -22,7 +22,7 @@ flowchart TD
     F --> G[Create Customer CR via Dynamic Client]
     G --> H[Watch CR Status via Informer]
     H --> I{Status Phase?}
-    I -->|Complete| J[Proceed with Pod Eviction]
+    I -->|Complete| J[Mark Drain Complete in MongoDB]
     I -->|Failed| K[Error/Retry]
     I -->|Pending/InProgress| H
 ```
@@ -31,7 +31,11 @@ flowchart TD
 
 ```go
 type TemplateData struct {
-  HealthEvent   HealthEevent
+  // Health event from platform connector
+  HealthEvent   HealthEvent
+
+   // Map of namespace → pod names to drain (excludes system namespaces)
+   // Assumption: Node is already quarantined; pods are snapshot at event arrival time
   PodsToDrain   map[string][]string
 }
 ```
@@ -57,12 +61,10 @@ type TemplateData struct {
 
 ### Template Example
 
+Name of the CR will follow the pattern `drain-<node-name>-<health-event-id>` and namespace will be `nvsentinel`.
 ```yaml
 apiVersion: drain.example.com/v1alpha1
 kind: DrainRequest
-metadata:
-    name: drain-{{ .HealthEvent.NodeName }}-{{ .HealthEvent.EventID }}
-    namespace: nvsentinel
 spec:
     nodeName: {{ .HealthEvent.NodeName }}
     checkName: {{ .HealthEvent.CheckName }}
@@ -98,25 +100,37 @@ status:
 
 ### Node-Drainer Changes
 
-**1. Evaluator** (`evaluator/evaluator.go`):
+1. Evaluator (`evaluator/evaluator.go`):
 ```go
-// Check if custom drain enabled
 if e.config.CustomDrain.Enabled {
+    crName := getCRName(nodeName, eventID)
+    
+    if !CRExists(crName) {
+        return &DrainActionResult{
+            Action:     ActionCreateCR,
+            Namespaces: namespaces,
+        }, nil
+    }
+    
+    if !CRComplete(crName) {
+        return &DrainActionResult{Action: ActionWait}, nil
+    }
+    
+    // CR complete = customer already evicted pods, mark as drained
     return &DrainActionResult{
-        Action:  ActionCreateCR,
-        Timeout: e.config.CustomDrain.Timeout.Duration,
+        Action: ActionMarkAlreadyDrained,
     }, nil
 }
 ```
 
-**2. Custom Drain Client** (`customdrain/client.go`):
+2. Custom Drain Client (`customdrain/client.go`):
 ```go
 // Same pattern as fault-remediation
-func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, error) {
+func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (error) {
     // 1. Execute template
     // 2. Parse YAML to unstructured
     // 3. Create CR via dynamic client
-    // 4. Return CR name
+    // 4. Return error if any
 }
 
 func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
@@ -125,17 +139,39 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
     // 3. Check if condition type matches config and status is True
     // 4. Return true if complete, false otherwise
 }
-```
 
-**3. Reconciler** (`reconciler/reconciler.go`):
-```go
-func (r *Reconciler) executeCustomDrain(...) error {
-    crName, err := r.customDrainClient.CreateDrainCR(ctx, templateData)
-    return nil  // Return immediately, informer will trigger next reconcile
+func (c *Client) DeleteDrainCR(ctx context.Context, crName string) error {
+    // 1. Delete CR via dynamic client
+    // 2. Return error if any
 }
 ```
 
-**Design Constraint**: Node drainer must be either configured to use the built-in drain modes (Immediate, DeleteAfterTimeout, AllowCompletion) or the custom drain mode, not both. This is enforced by configuration validation.
+3. Reconciler (`reconciler/reconciler.go`):
+```go
+func (r *Reconciler) executeAction(..., eventID string) error {
+    nodeName := healthEvent.HealthEvent.NodeName
+    
+    switch action.Action {
+    case ActionCreateCR:
+        templateData := buildTemplateData(healthEvent, action.Namespaces, nodeName)
+        return r.customDrainClient.CreateDrainCR(ctx, templateData)
+    
+    case ActionMarkAlreadyDrained:
+        err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database)
+        
+        if err == nil && customDrain.Enabled {
+            crName := getCRName(nodeName, eventID)
+
+            // Delete CR to prevent accumulation
+            r.customDrainClient.DeleteDrainCR(ctx, crName)
+        }
+        return err
+    
+    // ... existing cases (ActionSkip, ActionWait, ActionEvictImmediate, etc.)
+    }
+```
+
+Design Constraint: Node drainer must be either configured to use the built-in drain modes (Immediate, DeleteAfterTimeout, AllowCompletion) or the custom drain mode, not both. This is enforced by configuration validation.
 
 ### Customer Controller Example
 
