@@ -200,7 +200,7 @@ func (c *SlurmController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
     
     // Start Slurm drain if not started
     if !meta.IsStatusConditionTrue(drainReq.Status.Conditions, "DrainInProgress") {
-        // Template will contains the kubernetes node name 
+        // Template will contain the kubernetes node name 
         // We need to convert it to slurm node name
         slurmNodeName := getSlurmNodeName(drainReq.Spec.NodeName)
         c.slurmClient.UpdateNode(slurmNodeName, slurm.NodeUpdate{State: "DRAIN"})
