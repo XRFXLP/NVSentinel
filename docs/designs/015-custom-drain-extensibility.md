@@ -72,7 +72,7 @@ spec:
     entitiesImpacted:
     {{- range .HealthEvent.EntitiesImpacted }}
     - type: {{ .EntityType }}
-        value: {{ .EntityValue }}
+      value: {{ .EntityValue }}
     {{- end }}
 
     metadata:
