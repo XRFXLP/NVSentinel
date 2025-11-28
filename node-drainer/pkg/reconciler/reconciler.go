@@ -61,14 +61,22 @@ type Reconciler struct {
 	nodeEventsMapMu     sync.Mutex
 }
 
-func NewReconciler(cfg config.ReconcilerConfig,
-	dryRunEnabled bool, kubeClient kubernetes.Interface, informersInstance *informers.Informers,
-	databaseClient queue.DataStore, dynamicClient dynamic.Interface, restMapper *restmapper.DeferredDiscoveryRESTMapper) *Reconciler {
+func NewReconciler(
+	cfg config.ReconcilerConfig,
+	dryRunEnabled bool,
+	kubeClient kubernetes.Interface,
+	informersInstance *informers.Informers,
+	databaseClient queue.DataStore,
+	dynamicClient dynamic.Interface,
+	restMapper *restmapper.DeferredDiscoveryRESTMapper,
+) *Reconciler {
 	queueManager := queue.NewEventQueueManager()
 
 	var customDrainClient *customdrain.Client
+
 	if cfg.TomlConfig.CustomDrain.Enabled {
 		var err error
+
 		customDrainClient, err = customdrain.NewClient(cfg.TomlConfig.CustomDrain, dynamicClient, restMapper)
 		if err != nil {
 			slog.Error("Failed to initialize custom drain client", "error", err)
@@ -297,6 +305,7 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 	return r.executeAction(ctx, actionResult, healthEventWithStatus, event, database, eventID)
 }
 
+//nolint:cyclop // executeAction is a clean dispatcher - complexity comes from number of actions, not nesting
 func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, eventID string) error {
 	nodeName := healthEvent.HealthEvent.NodeName
@@ -332,20 +341,10 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 
 	case evaluator.ActionMarkAlreadyDrained:
 		r.clearEventStatus(eventID, nodeName)
-		err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database)
 
-		if err == nil && r.Config.TomlConfig.CustomDrain.Enabled {
-			crName := fmt.Sprintf("drain-%s-%s", nodeName, eventID)
-			if delErr := r.customDrainClient.DeleteCR(ctx, crName); delErr != nil {
-				slog.Warn("Failed to delete custom drain CR",
-					"node", nodeName,
-					"crName", crName,
-					"error", delErr)
-			} else {
-				slog.Info("Deleted custom drain CR",
-					"node", nodeName,
-					"crName", crName)
-			}
+		err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database)
+		if err == nil {
+			r.deleteCustomDrainCRIfEnabled(ctx, nodeName, eventID)
 		}
 
 		return err
@@ -767,6 +766,7 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 	}
 
 	podsToDrain := make(map[string][]string)
+
 	for _, ns := range action.Namespaces {
 		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(ns, nodeName)
 		if err != nil {
@@ -774,14 +774,17 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 				"namespace", ns,
 				"node", nodeName,
 				"error", err)
+
 			continue
 		}
 
 		if len(pods) > 0 {
 			podNames := make([]string, 0, len(pods))
+
 			for _, pod := range pods {
 				podNames = append(podNames, pod.Name)
 			}
+
 			podsToDrain[ns] = podNames
 		}
 	}
@@ -794,35 +797,7 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 
 	crName, err := r.customDrainClient.CreateDrainCR(ctx, templateData)
 	if err != nil {
-		var noMatchErr *meta.NoKindMatchError
-		if errors.As(err, &noMatchErr) {
-			slog.Error("Custom drain CRD not found - marking drain as failed",
-				"node", nodeName,
-				"apiGroup", r.Config.TomlConfig.CustomDrain.ApiGroup,
-				"kind", r.Config.TomlConfig.CustomDrain.Kind,
-				"error", err)
-
-			metrics.CustomDrainCRDNotFound.WithLabelValues(nodeName).Inc()
-
-			if err := r.setDrainFailedStatus(ctx, healthEvent, event, database,
-				fmt.Sprintf("Custom drain CRD not found: %v", err)); err != nil {
-				slog.Error("Failed to update drain failed status",
-					"node", nodeName,
-					"error", err)
-				return fmt.Errorf("failed to update drain failed status: %w", err)
-			}
-
-			if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
-				nodeName, statemanager.DrainFailedLabelValue, false); err != nil {
-				slog.Error("Failed to update node label to drain-failed",
-					"node", nodeName,
-					"error", err)
-			}
-
-			return nil
-		}
-
-		return fmt.Errorf("failed to create custom drain CR for node %s: %w", nodeName, err)
+		return r.handleCustomDrainCRCreationError(ctx, err, nodeName, healthEvent, event, database)
 	}
 
 	slog.Info("Created custom drain CR",
@@ -832,12 +807,71 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 	return nil
 }
 
-func (r *Reconciler) setDrainFailedStatus(ctx context.Context,
+func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName, eventID string) {
+	if !r.Config.TomlConfig.CustomDrain.Enabled || r.customDrainClient == nil {
+		return
+	}
+
+	crName := fmt.Sprintf("drain-%s-%s", nodeName, eventID)
+	if err := r.customDrainClient.DeleteCR(ctx, crName); err != nil {
+		slog.Warn("Failed to delete custom drain CR",
+			"node", nodeName,
+			"crName", crName,
+			"error", err)
+	} else {
+		slog.Info("Deleted custom drain CR",
+			"node", nodeName,
+			"crName", crName)
+	}
+}
+
+func (r *Reconciler) handleCustomDrainCRCreationError(
+	ctx context.Context,
+	err error,
+	nodeName string,
 	healthEvent model.HealthEventWithStatus,
 	event datastore.Event,
 	database queue.DataStore,
-	reason string) error {
+) error {
+	var noMatchErr *meta.NoKindMatchError
+	if !errors.As(err, &noMatchErr) {
+		return fmt.Errorf("failed to create custom drain CR for node %s: %w", nodeName, err)
+	}
 
+	slog.Error("Custom drain CRD not found - marking drain as failed",
+		"node", nodeName,
+		"apiGroup", r.Config.TomlConfig.CustomDrain.ApiGroup,
+		"kind", r.Config.TomlConfig.CustomDrain.Kind,
+		"error", err)
+
+	metrics.CustomDrainCRDNotFound.WithLabelValues(nodeName).Inc()
+
+	if err := r.setDrainFailedStatus(ctx, healthEvent, event, database,
+		fmt.Sprintf("Custom drain CRD not found: %v", err)); err != nil {
+		slog.Error("Failed to update drain failed status",
+			"node", nodeName,
+			"error", err)
+
+		return fmt.Errorf("failed to update drain failed status: %w", err)
+	}
+
+	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+		nodeName, statemanager.DrainFailedLabelValue, false); err != nil {
+		slog.Error("Failed to update node label to drain-failed",
+			"node", nodeName,
+			"error", err)
+	}
+
+	return nil
+}
+
+func (r *Reconciler) setDrainFailedStatus(
+	ctx context.Context,
+	healthEvent model.HealthEventWithStatus,
+	event datastore.Event,
+	database queue.DataStore,
+	reason string,
+) error {
 	documentID, err := utils.ExtractDocumentIDNative(event)
 	if err != nil {
 		return fmt.Errorf("failed to extract document ID: %w", err)

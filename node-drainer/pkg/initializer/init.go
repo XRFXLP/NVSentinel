@@ -146,7 +146,10 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	databaseClient := datastoreAdapter.GetDatabaseClient()
 
 	// Reconciler creates its own queue manager and needs the database client
-	reconciler := initializeReconciler(reconcilerCfg, params.DryRun, clientSet, informersInstance, databaseClient, dynamicClient, restMapper)
+	reconciler := initializeReconciler(
+		reconcilerCfg, params.DryRun, clientSet, informersInstance,
+		databaseClient, dynamicClient, restMapper,
+	)
 	queueManager := reconciler.GetQueueManager()
 
 	changeStreamWatcher, err := datastoreAdapter.CreateChangeStreamWatcher(

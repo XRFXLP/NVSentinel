@@ -30,7 +30,11 @@ const (
 	customDrainPollInterval = 30 * time.Second
 )
 
-func NewNodeDrainEvaluator(cfg config.TomlConfig, informers InformersInterface, customDrainClient CustomDrainClientInterface) DrainEvaluator {
+func NewNodeDrainEvaluator(
+	cfg config.TomlConfig,
+	informers InformersInterface,
+	customDrainClient CustomDrainClientInterface,
+) DrainEvaluator {
 	return &NodeDrainEvaluator{
 		config:            cfg,
 		informers:         informers,
@@ -248,7 +252,11 @@ func isTerminalStatus(status model.Status) bool {
 		status == model.AlreadyDrained
 }
 
-func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEvent model.HealthEventWithStatus, database queue.DataStore) (*DrainActionResult, error) {
+func (e *NodeDrainEvaluator) evaluateCustomDrain(
+	ctx context.Context,
+	healthEvent model.HealthEventWithStatus,
+	database queue.DataStore,
+) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
 
 	eventID, err := getEventID(ctx, database, nodeName)
@@ -256,6 +264,7 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 		slog.Error("Failed to get event ID for custom drain",
 			"node", nodeName,
 			"error", err)
+
 		return &DrainActionResult{
 			Action:    ActionWait,
 			WaitDelay: customDrainPollInterval,
@@ -270,6 +279,7 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 			"node", nodeName,
 			"crName", crName,
 			"error", err)
+
 		return &DrainActionResult{
 			Action:    ActionWait,
 			WaitDelay: customDrainPollInterval,
@@ -278,6 +288,7 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 
 	if !exists {
 		systemNamespaces := e.config.SystemNamespaces
+
 		namespaces, err := e.informers.GetNamespacesMatchingPattern(ctx, "*", systemNamespaces, nodeName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get user namespaces: %w", err)
@@ -299,6 +310,7 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 			"node", nodeName,
 			"crName", crName,
 			"error", err)
+
 		return &DrainActionResult{
 			Action:    ActionWait,
 			WaitDelay: customDrainPollInterval,
@@ -309,6 +321,7 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 		slog.Debug("Drain CR in progress",
 			"node", nodeName,
 			"crName", crName)
+
 		return &DrainActionResult{
 			Action:    ActionWait,
 			WaitDelay: customDrainPollInterval,

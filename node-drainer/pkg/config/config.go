@@ -102,39 +102,42 @@ func LoadTomlConfigFromString(configString string) (*TomlConfig, error) {
 	return validateAndSetDefaults(&config)
 }
 
-func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
-	if config.CustomDrain.Enabled {
-		if len(config.UserNamespaces) > 0 {
-			return nil, fmt.Errorf("cannot use both customDrain.enabled=true and userNamespaces configuration")
-		}
+func validateCustomDrainConfig(config *TomlConfig) error {
+	if !config.CustomDrain.Enabled {
+		return nil
+	}
 
-		if config.CustomDrain.TemplateMountPath == "" {
-			return nil, fmt.Errorf("customDrain.templateMountPath is required when customDrain.enabled=true")
+	if len(config.UserNamespaces) > 0 {
+		return fmt.Errorf("cannot use both customDrain.enabled=true and userNamespaces configuration")
+	}
+
+	requiredFields := map[string]string{
+		"templateMountPath":     config.CustomDrain.TemplateMountPath,
+		"templateFileName":      config.CustomDrain.TemplateFileName,
+		"namespace":             config.CustomDrain.Namespace,
+		"apiGroup":              config.CustomDrain.ApiGroup,
+		"version":               config.CustomDrain.Version,
+		"kind":                  config.CustomDrain.Kind,
+		"statusConditionType":   config.CustomDrain.StatusConditionType,
+		"statusConditionStatus": config.CustomDrain.StatusConditionStatus,
+	}
+
+	for field, value := range requiredFields {
+		if value == "" {
+			return fmt.Errorf("customDrain.%s is required when customDrain.enabled=true", field)
 		}
-		if config.CustomDrain.TemplateFileName == "" {
-			return nil, fmt.Errorf("customDrain.templateFileName is required when customDrain.enabled=true")
-		}
-		if config.CustomDrain.Namespace == "" {
-			return nil, fmt.Errorf("customDrain.namespace is required when customDrain.enabled=true")
-		}
-		if config.CustomDrain.ApiGroup == "" {
-			return nil, fmt.Errorf("customDrain.apiGroup is required when customDrain.enabled=true")
-		}
-		if config.CustomDrain.Version == "" {
-			return nil, fmt.Errorf("customDrain.version is required when customDrain.enabled=true")
-		}
-		if config.CustomDrain.Kind == "" {
-			return nil, fmt.Errorf("customDrain.kind is required when customDrain.enabled=true")
-		}
-		if config.CustomDrain.StatusConditionType == "" {
-			return nil, fmt.Errorf("customDrain.statusConditionType is required when customDrain.enabled=true")
-		}
-		if config.CustomDrain.StatusConditionStatus == "" {
-			return nil, fmt.Errorf("customDrain.statusConditionStatus is required when customDrain.enabled=true")
-		}
-		if config.CustomDrain.Timeout.Duration == 0 {
-			config.CustomDrain.Timeout.Duration = 3600 * time.Second
-		}
+	}
+
+	if config.CustomDrain.Timeout.Duration == 0 {
+		config.CustomDrain.Timeout.Duration = 3600 * time.Second
+	}
+
+	return nil
+}
+
+func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
+	if err := validateCustomDrainConfig(config); err != nil {
+		return nil, err
 	}
 
 	if config.DeleteAfterTimeoutMinutes == 0 {

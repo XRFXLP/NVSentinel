@@ -693,6 +693,10 @@ func (m *mockSingleResult) Decode(v interface{}) error {
 		return json.Unmarshal(jsonBytes, v)
 	}
 
+	if *resultMap == nil {
+		*resultMap = make(map[string]any)
+	}
+
 	maps.Copy(*resultMap, m.document)
 	return nil
 }

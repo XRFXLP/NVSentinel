@@ -42,7 +42,11 @@ type Client struct {
 	config        config.CustomDrainConfig
 }
 
-func NewClient(cfg config.CustomDrainConfig, dynamicClient dynamic.Interface, restMapper *restmapper.DeferredDiscoveryRESTMapper) (*Client, error) {
+func NewClient(
+	cfg config.CustomDrainConfig,
+	dynamicClient dynamic.Interface,
+	restMapper *restmapper.DeferredDiscoveryRESTMapper,
+) (*Client, error) {
 	templatePath := filepath.Join(cfg.TemplateMountPath, cfg.TemplateFileName)
 
 	templateContent, err := os.ReadFile(templatePath)
@@ -127,7 +131,6 @@ func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, 
 		Resource(mapping.Resource).
 		Namespace(c.config.Namespace).
 		Create(ctx, cr, metav1.CreateOptions{})
-
 	if err != nil {
 		return "", fmt.Errorf("failed to create CR: %w", err)
 	}
@@ -151,15 +154,24 @@ func (c *Client) Exists(ctx context.Context, crName string) (bool, error) {
 		Resource(mapping.Resource).
 		Namespace(c.config.Namespace).
 		Get(ctx, crName, metav1.GetOptions{})
-
 	if err != nil {
 		if errors.IsNotFound(err) {
 			return false, nil
 		}
+
 		return false, fmt.Errorf("failed to check CR existence: %w", err)
 	}
 
 	return true, nil
+}
+
+func (c *Client) matchesCondition(condMap map[string]any) bool {
+	condType, typeFound, _ := unstructured.NestedString(condMap, "type")
+	condStatus, statusFound, _ := unstructured.NestedString(condMap, "status")
+
+	return typeFound && statusFound &&
+		condType == c.config.StatusConditionType &&
+		strings.EqualFold(condStatus, c.config.StatusConditionStatus)
 }
 
 func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
@@ -178,7 +190,6 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
 		Resource(mapping.Resource).
 		Namespace(c.config.Namespace).
 		Get(ctx, crName, metav1.GetOptions{})
-
 	if err != nil {
 		return false, fmt.Errorf("failed to get CR: %w", err)
 	}
@@ -187,22 +198,14 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to extract status.conditions: %w", err)
 	}
+
 	if !found {
 		return false, nil
 	}
 
 	for _, cond := range conditions {
 		condMap, ok := cond.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		condType, typeFound, _ := unstructured.NestedString(condMap, "type")
-		condStatus, statusFound, _ := unstructured.NestedString(condMap, "status")
-
-		if typeFound && statusFound &&
-			condType == c.config.StatusConditionType &&
-			strings.EqualFold(condStatus, c.config.StatusConditionStatus) {
+		if ok && c.matchesCondition(condMap) {
 			return true, nil
 		}
 	}
