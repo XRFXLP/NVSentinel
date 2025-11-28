@@ -27,6 +27,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
@@ -1401,7 +1402,7 @@ func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 	require.NoError(t, err, "First call should succeed and create the CR")
 
 	eventID := nodeName + "-event"
-	crName := fmt.Sprintf("drain-%s-%s", nodeName, eventID)
+	crName := customdrain.GenerateCRName(nodeName, eventID)
 
 	var retrievedCR *unstructured.Unstructured
 	require.Eventually(t, func() bool {

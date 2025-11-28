@@ -22,6 +22,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
@@ -271,7 +272,7 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(
 		}, nil
 	}
 
-	crName := fmt.Sprintf("drain-%s-%s", nodeName, eventID)
+	crName := customdrain.GenerateCRName(nodeName, eventID)
 
 	exists, err := e.customDrainClient.Exists(ctx, crName)
 	if err != nil {

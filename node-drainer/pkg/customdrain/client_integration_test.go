@@ -229,6 +229,6 @@ func testStatusConditions(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, isComplete, "Status check should be case-insensitive")
 
-	err = client.DeleteCR(ctx, crName)
+	err = client.DeleteDrainCR(ctx, crName)
 	require.NoError(t, err)
 }

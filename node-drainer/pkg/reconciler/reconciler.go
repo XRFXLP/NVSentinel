@@ -808,12 +808,12 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 }
 
 func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName, eventID string) {
-	if !r.Config.TomlConfig.CustomDrain.Enabled || r.customDrainClient == nil {
+	if !r.Config.TomlConfig.CustomDrain.Enabled {
 		return
 	}
 
-	crName := fmt.Sprintf("drain-%s-%s", nodeName, eventID)
-	if err := r.customDrainClient.DeleteCR(ctx, crName); err != nil {
+	crName := customdrain.GenerateCRName(nodeName, eventID)
+	if err := r.customDrainClient.DeleteDrainCR(ctx, crName); err != nil {
 		slog.Warn("Failed to delete custom drain CR",
 			"node", nodeName,
 			"crName", crName,

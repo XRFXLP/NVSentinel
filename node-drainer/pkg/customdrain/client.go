@@ -108,7 +108,7 @@ func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, 
 
 	cr := &unstructured.Unstructured{Object: obj}
 
-	crName := fmt.Sprintf("drain-%s-%s", data.HealthEvent.NodeName, data.EventID)
+	crName := GenerateCRName(data.HealthEvent.NodeName, data.EventID)
 	cr.SetName(crName)
 
 	if cr.GetNamespace() == "" {
@@ -213,7 +213,7 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
 	return false, nil
 }
 
-func (c *Client) DeleteCR(ctx context.Context, crName string) error {
+func (c *Client) DeleteDrainCR(ctx context.Context, crName string) error {
 	gvk := schema.GroupVersionKind{
 		Group:   c.config.ApiGroup,
 		Version: c.config.Version,

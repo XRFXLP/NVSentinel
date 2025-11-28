@@ -14,10 +14,18 @@
 
 package customdrain
 
-import "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+import (
+	"fmt"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+)
 
 type TemplateData struct {
 	HealthEvent *protos.HealthEvent
 	EventID     string
 	PodsToDrain map[string][]string
+}
+
+func GenerateCRName(nodeName, eventID string) string {
+	return fmt.Sprintf("drain-%s-%s", nodeName, eventID)
 }
