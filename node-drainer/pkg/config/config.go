@@ -42,13 +42,27 @@ type UserNamespace struct {
 	Mode EvictMode `toml:"mode"`
 }
 
+type CustomDrainConfig struct {
+	Enabled               bool     `toml:"enabled"`
+	TemplateMountPath     string   `toml:"templateMountPath"`
+	TemplateFileName      string   `toml:"templateFileName"`
+	Namespace             string   `toml:"namespace"`
+	Timeout               Duration `toml:"timeout"`
+	ApiGroup              string   `toml:"apiGroup"`
+	Version               string   `toml:"version"`
+	Kind                  string   `toml:"kind"`
+	StatusConditionType   string   `toml:"statusConditionType"`
+	StatusConditionStatus string   `toml:"statusConditionStatus"`
+}
+
 type TomlConfig struct {
 	EvictionTimeoutInSeconds  Duration `toml:"evictionTimeoutInSeconds"`
 	SystemNamespaces          string   `toml:"systemNamespaces"`
 	DeleteAfterTimeoutMinutes int      `toml:"deleteAfterTimeoutMinutes"`
 	// NotReadyTimeoutMinutes is the time after which a pod in NotReady state is considered stuck
-	NotReadyTimeoutMinutes int             `toml:"notReadyTimeoutMinutes"`
-	UserNamespaces         []UserNamespace `toml:"userNamespaces"`
+	NotReadyTimeoutMinutes int               `toml:"notReadyTimeoutMinutes"`
+	UserNamespaces         []UserNamespace   `toml:"userNamespaces"`
+	CustomDrain            CustomDrainConfig `toml:"customDrain"`
 }
 
 func (d *Duration) UnmarshalTOML(text any) error {
@@ -89,6 +103,40 @@ func LoadTomlConfigFromString(configString string) (*TomlConfig, error) {
 }
 
 func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
+	if config.CustomDrain.Enabled {
+		if len(config.UserNamespaces) > 0 {
+			return nil, fmt.Errorf("cannot use both customDrain.enabled=true and userNamespaces configuration")
+		}
+
+		if config.CustomDrain.TemplateMountPath == "" {
+			return nil, fmt.Errorf("customDrain.templateMountPath is required when customDrain.enabled=true")
+		}
+		if config.CustomDrain.TemplateFileName == "" {
+			return nil, fmt.Errorf("customDrain.templateFileName is required when customDrain.enabled=true")
+		}
+		if config.CustomDrain.Namespace == "" {
+			return nil, fmt.Errorf("customDrain.namespace is required when customDrain.enabled=true")
+		}
+		if config.CustomDrain.ApiGroup == "" {
+			return nil, fmt.Errorf("customDrain.apiGroup is required when customDrain.enabled=true")
+		}
+		if config.CustomDrain.Version == "" {
+			return nil, fmt.Errorf("customDrain.version is required when customDrain.enabled=true")
+		}
+		if config.CustomDrain.Kind == "" {
+			return nil, fmt.Errorf("customDrain.kind is required when customDrain.enabled=true")
+		}
+		if config.CustomDrain.StatusConditionType == "" {
+			return nil, fmt.Errorf("customDrain.statusConditionType is required when customDrain.enabled=true")
+		}
+		if config.CustomDrain.StatusConditionStatus == "" {
+			return nil, fmt.Errorf("customDrain.statusConditionStatus is required when customDrain.enabled=true")
+		}
+		if config.CustomDrain.Timeout.Duration == 0 {
+			config.CustomDrain.Timeout.Duration = 3600 * time.Second
+		}
+	}
+
 	if config.DeleteAfterTimeoutMinutes == 0 {
 		config.DeleteAfterTimeoutMinutes = 60 // Default: 60 minutes
 	}
