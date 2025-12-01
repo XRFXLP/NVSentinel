@@ -812,6 +812,13 @@ func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName,
 		return
 	}
 
+	if r.customDrainClient == nil {
+		slog.Warn("Custom drain client not initialized - skipping deletion",
+			"node", nodeName,
+			"eventID", eventID)
+		return
+	}
+
 	crName := customdrain.GenerateCRName(nodeName, eventID)
 	if err := r.customDrainClient.DeleteDrainCR(ctx, crName); err != nil {
 		slog.Warn("Failed to delete custom drain CR",
