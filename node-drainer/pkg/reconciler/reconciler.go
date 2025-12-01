@@ -816,6 +816,7 @@ func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName,
 		slog.Warn("Custom drain client not initialized - skipping deletion",
 			"node", nodeName,
 			"eventID", eventID)
+
 		return
 	}
 
