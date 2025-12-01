@@ -16,6 +16,8 @@ global:
     enabled: true
 ```
 
+> Note: This module depends on the datastore being enabled. Therefore, ensure the datastore is also enabled.
+
 ### Resources
 
 Defines CPU and memory resource requests and limits for the event-exporter pod.

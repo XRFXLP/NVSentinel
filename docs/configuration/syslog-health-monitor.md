@@ -42,7 +42,7 @@ syslog-health-monitor:
 
 ## Enabled Checks
 
-Configures which health checks are active. The module monitors journald logs for specific error patterns.
+Configures which health checks are active. The module monitors journald logs for specific error patterns. The only supported checks at this time are SysLogsXIDError, SysLogsSXIDError and SysLogsGPUFallenOff.
 
 ```yaml
 syslog-health-monitor:

@@ -45,7 +45,7 @@ platformConnector:
 ### Parameters
 
 #### enabled
-Enables Kubernetes connector for node metadata enrichment.
+Enables Kubernetes connector for creating node conditions and events.
 
 #### qps
 Queries per second allowed to the Kubernetes API server.
@@ -90,7 +90,7 @@ Number of node metadata entries to cache in memory.
 Time-to-live for cached node metadata entries in seconds.
 
 #### allowedLabels
-List of node label keys to include in health event enrichment. Only labels in this list are read from nodes and added to health events.
+List of node label keys to include in health event enrichment. Only labels in this list are read from nodes and added to events.
 
 ### Default Allowed Labels
 
@@ -98,9 +98,8 @@ The default configuration includes common topology and infrastructure labels:
 - `topology.kubernetes.io/zone`
 - `topology.kubernetes.io/region`
 - `node.kubernetes.io/instance-type`
-- ...
 
-> The default list is defined in `distros/kubernetes/nvsentinel/values.yaml`
+> Note: The complete default list is defined in `distros/kubernetes/nvsentinel/values.yaml`
 
 ### Example
 

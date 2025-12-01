@@ -16,6 +16,8 @@ global:
     enabled: true
 ```
 
+> Note: This module depends on the datastore being enabled. Therefore, ensure the datastore is also enabled.
+
 ### Resources
 
 Defines CPU and memory resource requests and limits for the fault-quarantine pod.
@@ -167,7 +169,7 @@ Optional Kubernetes taint to apply. Taints can prevent pod scheduling or evict e
 
 ### Example Rule Sets
 
-#### Example 1: Fatal GPU Errors from GPU Health Monitor
+#### Example 1: Fatal GPU Errors from GPU Health Monitor AND node not labeled with k8saas.nvidia.com/ManagedByNVSentinel=false
 
 ```yaml
 ruleSets:
@@ -185,7 +187,7 @@ ruleSets:
       shouldCordon: true
 ```
 
-#### Example 2: Syslog Fatal Errors Excluding XID 45
+#### Example 2: Syslog Fatal Errors Excluding XID 45 AND node not labeled with k8saas.nvidia.com/ManagedByNVSentinel=false
 
 ```yaml
 ruleSets:

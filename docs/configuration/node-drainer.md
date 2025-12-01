@@ -40,6 +40,8 @@ node-drainer:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+> Note: This module depends on the results from fault-quarantine. It also depends on the datastore being enabled. Therefore, ensure the datastore and the other modules are also enabled.
+
 ### Eviction Timeout
 
 Grace period in seconds applied to pod eviction requests in Immediate mode only.

@@ -16,6 +16,8 @@ global:
     enabled: true
 ```
 
+> Note: This module depends on the results from fault-quarantine and node-drainer. It also depends on the datastore being enabled. Therefore, ensure the datastore and the other modules are also enabled.
+
 ### Resources
 
 Defines CPU and memory resource requests and limits for the fault-remediation pod.
@@ -56,7 +58,6 @@ fault-remediation:
     namespace: "nvsentinel"
     resourceNames:
       - "rebootnodes"
-      - "terminatenodes"
     template: |
       # Go template content here
 ```
