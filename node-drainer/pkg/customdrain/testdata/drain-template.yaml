@@ -18,14 +18,41 @@ metadata:
   namespace: default
   labels:
     nvsentinel.nvidia.com/node: {{ .HealthEvent.NodeName }}
+    nvsentinel.nvidia.com/check: {{ .HealthEvent.CheckName }}
   annotations:
     nvsentinel.nvidia.com/created-by: node-drainer
+    nvsentinel.nvidia.com/event-id: {{ .EventID }}
+    {{- if .HealthEvent.GeneratedTimestamp }}
+    nvsentinel.nvidia.com/timestamp: {{ .HealthEvent.GeneratedTimestamp.AsTime.Format "2006-01-02T15:04:05Z07:00" }}
+    {{- end }}
 spec:
   nodeName: {{ .HealthEvent.NodeName }}
+  checkName: {{ .HealthEvent.CheckName }}
+  recommendedAction: {{ .HealthEvent.RecommendedAction.String }}
+  errorCode:
+  {{- range .HealthEvent.ErrorCode }}
+  - {{ . }}
+  {{- end }}
   healthEventID: {{ .EventID }}
-  podsToDrain: {}
+
+  entitiesImpacted:
+  {{- range .HealthEvent.EntitiesImpacted }}
+  - type: {{ .EntityType }}
+    value: {{ .EntityValue }}
+  {{- end }}
+
   metadata:
-    agent: {{ .HealthEvent.Agent }}
-    message: {{ .HealthEvent.Message }}
-    checkName: {{ .HealthEvent.CheckName }}
+  {{- range $key, $value := .HealthEvent.Metadata }}
+    {{ $key }}: {{ $value }}
+  {{- end }}
+
+  reason: "{{ .HealthEvent.Message }}"
+
+  podsToDrain:
+  {{- range $namespace, $pods := .PodsToDrain }}
+    {{ $namespace }}:
+    {{- range $pods }}
+    - {{ . }}
+    {{- end }}
+  {{- end }}
 

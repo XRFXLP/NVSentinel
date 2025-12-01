@@ -37,7 +37,30 @@ spec:
             properties:
               nodeName:
                 type: string
+              checkName:
+                type: string
+              recommendedAction:
+                type: string
+              errorCode:
+                type: array
+                items:
+                  type: string
               healthEventID:
+                type: string
+              entitiesImpacted:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    value:
+                      type: string
+              metadata:
+                type: object
+                additionalProperties:
+                  type: string
+              reason:
                 type: string
               podsToDrain:
                 type: object
@@ -45,10 +68,6 @@ spec:
                   type: array
                   items:
                     type: string
-              metadata:
-                type: object
-                additionalProperties:
-                  type: string
           status:
             type: object
             properties:
