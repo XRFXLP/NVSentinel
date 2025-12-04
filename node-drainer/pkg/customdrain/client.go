@@ -26,7 +26,6 @@ import (
 
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -67,19 +66,13 @@ func NewClient(
 
 	_, err = restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
-		if meta.IsNoMatchError(err) {
-			slog.Warn("Custom drain CRD not found in cluster - drain operations will fail until CRD is installed",
-				"apiGroup", cfg.ApiGroup,
-				"version", cfg.Version,
-				"kind", cfg.Kind,
-				"error", err)
-		} else {
-			slog.Warn("Failed to validate custom drain CRD",
-				"apiGroup", cfg.ApiGroup,
-				"version", cfg.Version,
-				"kind", cfg.Kind,
-				"error", err)
-		}
+		slog.Warn("Failed to validate custom drain CRD",
+			"apiGroup", cfg.ApiGroup,
+			"version", cfg.Version,
+			"kind", cfg.Kind,
+			"error", err)
+
+		return nil, fmt.Errorf("failed to find rest mapping for custom drain CRD: %w", err)
 	} else {
 		slog.Info("Successfully validated custom drain CRD exists",
 			"apiGroup", cfg.ApiGroup,
