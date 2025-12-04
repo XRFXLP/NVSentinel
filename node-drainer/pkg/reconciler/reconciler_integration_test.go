@@ -1488,6 +1488,9 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		DeleteAfterTimeoutMinutes: 5,
 		NotReadyTimeoutMinutes:    2,
 		CustomDrain:               customDrainCfg,
+		UserNamespaces: []config.UserNamespace{
+			{Name: "*", Mode: config.ModeImmediateEvict},
+		},
 	}
 
 	mockDatabaseConfig := &mockDatabaseConfig{
@@ -1516,8 +1519,13 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 	mockDB := newMockDataStore()
 	r := reconciler.NewReconciler(reconcilerConfig, false, client, informersInstance, mockDB, dynamicClient, restMapper)
 
+	// Verify that custom drain client failed to initialize
+	// When CRD doesn't exist, the reconciler should fall back to user namespace actions
+	require.Nil(t, r.GetCustomDrainClient(), "Custom drain client should be nil when CRD validation fails")
+
 	nodeName := "crd-notfound-node"
 	createNode(ctx, t, client, nodeName)
+	createNamespace(ctx, t, client, "default")
 
 	event := createHealthEvent(healthEventOptions{
 		nodeName:        nodeName,
@@ -1525,8 +1533,9 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 	})
 	mockDB.storeEvent(nodeName, event)
 
+	// With nil custom drain client, the reconciler should fall back to user namespace actions
+	// In this case, immediate eviction mode should trigger
 	err = r.ProcessEventGeneric(ctx, event, mockDB, nodeName)
-
-	require.Error(t, err, "Should return wait error when CRD check fails")
-	assert.Contains(t, err.Error(), "waiting for retry delay")
+	require.Error(t, err, "Should return requeue error for immediate eviction")
+	assert.Contains(t, err.Error(), "immediate eviction completed, requeuing for status verification")
 }

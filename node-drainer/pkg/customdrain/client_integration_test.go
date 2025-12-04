@@ -27,8 +27,6 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
@@ -120,30 +118,15 @@ func newTestConfig() config.CustomDrainConfig {
 }
 
 func testCRDNotFound(t *testing.T) {
-	ctx := context.Background()
-
 	cfg := newTestConfig()
 	cfg.ApiGroup = "nonexistent.example.com"
 	cfg.Kind = "FakeResource"
 
 	client, err := NewClient(cfg, dynamicClient, restMapper)
-	require.NoError(t, err, "NewClient should not error even if CRD doesn't exist")
-
-	templateData := TemplateData{
-		HealthEvent: &protos.HealthEvent{
-			NodeName:  "test-node",
-			CheckName: "fake-check",
-		},
-		EventID:     "event-crd-notfound",
-		PodsToDrain: map[string][]string{},
-	}
-
-	_, err = client.CreateDrainCR(ctx, templateData)
-	require.Error(t, err)
-
-	isNoMatch := meta.IsNoMatchError(err)
-	assert.True(t, isNoMatch || errors.IsNotFound(err),
-		"Error should be NoMatchError or NotFound, got: %v", err)
+	require.Error(t, err, "NewClient should error when CRD doesn't exist")
+	require.Nil(t, client, "client should be nil when CRD validation fails")
+	assert.Contains(t, err.Error(), "failed to find rest mapping for custom drain CRD",
+		"Error should indicate CRD validation failure")
 }
 
 func testStatusConditions(t *testing.T) {

@@ -108,6 +108,10 @@ func (r *Reconciler) GetQueueManager() queue.EventQueueManager {
 	return r.queueManager
 }
 
+func (r *Reconciler) GetCustomDrainClient() *customdrain.Client {
+	return r.customDrainClient
+}
+
 func (r *Reconciler) Shutdown() {
 	r.queueManager.Shutdown()
 }
