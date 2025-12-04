@@ -69,7 +69,7 @@ func NewReconciler(
 	databaseClient queue.DataStore,
 	dynamicClient dynamic.Interface,
 	restMapper *restmapper.DeferredDiscoveryRESTMapper,
-) *Reconciler {
+) (*Reconciler, error) {
 	queueManager := queue.NewEventQueueManager()
 
 	var customDrainClient *customdrain.Client
@@ -79,7 +79,7 @@ func NewReconciler(
 
 		customDrainClient, err = customdrain.NewClient(cfg.TomlConfig.CustomDrain, dynamicClient, restMapper)
 		if err != nil {
-			slog.Error("Failed to initialize custom drain client", "error", err)
+			return nil, fmt.Errorf("failed to initialize custom drain client: %w", err)
 		}
 	}
 
@@ -101,7 +101,7 @@ func NewReconciler(
 
 	queueManager.SetDataStoreEventProcessor(reconciler)
 
-	return reconciler
+	return reconciler, nil
 }
 
 func (r *Reconciler) GetQueueManager() queue.EventQueueManager {

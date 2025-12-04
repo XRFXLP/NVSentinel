@@ -854,7 +854,8 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 
 	// Create a mock database client for the test
 	mockDB := &mockDataStore{}
-	r := reconciler.NewReconciler(reconcilerConfig, dryRun, client, informersInstance, mockDB, nil, nil)
+	r, err := reconciler.NewReconciler(reconcilerConfig, dryRun, client, informersInstance, mockDB, nil, nil)
+	require.NoError(t, err)
 
 	return &testSetup{
 		ctx:               ctx,
@@ -944,7 +945,8 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 	require.Eventually(t, informersInstance.HasSynced, 30*time.Second, 1*time.Second)
 
 	mockDB := newMockDataStore()
-	r := reconciler.NewReconciler(reconcilerConfig, false, client, informersInstance, mockDB, dynamicClient, restMapper)
+	r, err := reconciler.NewReconciler(reconcilerConfig, false, client, informersInstance, mockDB, dynamicClient, restMapper)
+	require.NoError(t, err)
 
 	return &testSetup{
 		ctx:               ctx,
@@ -1517,25 +1519,11 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 	require.Eventually(t, informersInstance.HasSynced, 30*time.Second, 1*time.Second)
 
 	mockDB := newMockDataStore()
-	r := reconciler.NewReconciler(reconcilerConfig, false, client, informersInstance, mockDB, dynamicClient, restMapper)
+	r, err := reconciler.NewReconciler(reconcilerConfig, false, client, informersInstance, mockDB, dynamicClient, restMapper)
 
-	// Verify that custom drain client failed to initialize
-	// When CRD doesn't exist, the reconciler should fall back to user namespace actions
-	require.Nil(t, r.GetCustomDrainClient(), "Custom drain client should be nil when CRD validation fails")
-
-	nodeName := "crd-notfound-node"
-	createNode(ctx, t, client, nodeName)
-	createNamespace(ctx, t, client, "default")
-
-	event := createHealthEvent(healthEventOptions{
-		nodeName:        nodeName,
-		nodeQuarantined: model.Quarantined,
-	})
-	mockDB.storeEvent(nodeName, event)
-
-	// With nil custom drain client, the reconciler should fall back to user namespace actions
-	// In this case, immediate eviction mode should trigger
-	err = r.ProcessEventGeneric(ctx, event, mockDB, nodeName)
-	require.Error(t, err, "Should return requeue error for immediate eviction")
-	assert.Contains(t, err.Error(), "immediate eviction completed, requeuing for status verification")
+	// Verify that reconciler creation failed when CRD doesn't exist
+	require.Error(t, err, "Reconciler initialization should fail when custom drain CRD doesn't exist")
+	require.Nil(t, r, "Reconciler should be nil when initialization fails")
+	assert.Contains(t, err.Error(), "failed to initialize custom drain client", "Error should indicate custom drain client initialization failure")
+	assert.Contains(t, err.Error(), "failed to find rest mapping for custom drain CRD", "Error should indicate CRD validation failure")
 }

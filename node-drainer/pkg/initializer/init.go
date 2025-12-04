@@ -146,10 +146,14 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	databaseClient := datastoreAdapter.GetDatabaseClient()
 
 	// Reconciler creates its own queue manager and needs the database client
-	reconciler := initializeReconciler(
+	reconciler, err := initializeReconciler(
 		reconcilerCfg, params.DryRun, clientSet, informersInstance,
 		databaseClient, dynamicClient, restMapper,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize reconciler: %w", err)
+	}
+
 	queueManager := reconciler.GetQueueManager()
 
 	changeStreamWatcher, err := datastoreAdapter.CreateChangeStreamWatcher(
@@ -228,7 +232,7 @@ func initializeReconciler(
 	databaseClient client.DatabaseClient,
 	dynamicClient dynamic.Interface,
 	restMapper *restmapper.DeferredDiscoveryRESTMapper,
-) *reconciler.Reconciler {
+) (*reconciler.Reconciler, error) {
 	// Create adapter to convert client.DatabaseClient to queue.DataStore interface
 	dbAdapter := &databaseClientAdapter{client: databaseClient}
 	return reconciler.NewReconciler(cfg, dryRun, kubeClient, informersInstance, dbAdapter, dynamicClient, restMapper)

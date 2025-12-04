@@ -147,6 +147,9 @@ func testStatusConditions(t *testing.T) {
 
 	crName, err := client.CreateDrainCR(ctx, templateData)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = client.DeleteDrainCR(ctx, crName)
+	})
 
 	gvr := schema.GroupVersionResource{
 		Group:    "drain.example.com",
@@ -212,6 +215,4 @@ func testStatusConditions(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, isComplete, "Status check should be case-insensitive")
 
-	err = client.DeleteDrainCR(ctx, crName)
-	require.NoError(t, err)
 }
