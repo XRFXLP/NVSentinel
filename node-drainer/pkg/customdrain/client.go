@@ -66,7 +66,7 @@ func NewClient(
 
 	_, err = restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
-		slog.Warn("Failed to validate custom drain CRD",
+		slog.Error("Failed to validate custom drain CRD",
 			"apiGroup", cfg.ApiGroup,
 			"version", cfg.Version,
 			"kind", cfg.Kind,
