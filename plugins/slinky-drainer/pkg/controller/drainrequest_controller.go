@@ -27,6 +27,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"k8s.io/apimachinery/pkg/api/meta"
 
 	drainv1alpha1 "github.com/nvidia/nvsentinel/plugins/slinky-drainer/api/v1alpha1"
 )
@@ -236,7 +237,7 @@ func (r *DrainRequestReconciler) markDrainComplete(
 		Message:            message,
 	}
 
-	dr.Status.Conditions = []metav1.Condition{condition}
+	meta.SetStatusCondition(&dr.Status.Conditions, condition)
 
 	if err := r.Status().Update(ctx, dr); err != nil {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
