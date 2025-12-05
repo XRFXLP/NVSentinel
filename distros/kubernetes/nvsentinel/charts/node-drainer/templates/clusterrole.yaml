@@ -57,3 +57,18 @@ rules:
   - create
   - update
   - watch
+{{- if .Values.customDrain.enabled }}
+{{- $resourceName := printf "%ss" (.Values.customDrain.kind | lower) }}
+- apiGroups:
+  - {{ .Values.customDrain.apiGroup | quote }}
+  resources:
+  - {{ $resourceName }}
+  - {{ $resourceName }}/status
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - patch
+{{- end }}
