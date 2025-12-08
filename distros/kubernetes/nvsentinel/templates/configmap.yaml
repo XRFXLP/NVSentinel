@@ -36,3 +36,21 @@ data:
       {{- end }}
       {{- end }}
     }
+  overrides.toml: |
+    enabled = {{ .Values.platformConnector.healthEventOverrides.enabled }}
+    {{- range .Values.platformConnector.healthEventOverrides.rules }}
+
+    [[rules]]
+    name = {{ .name | quote }}
+    when = {{ .when | quote }}
+    {{- if .override.isFatal }}
+    [rules.override]
+    isFatal = {{ .override.isFatal }}
+    {{- end }}
+    {{- if .override.isHealthy }}
+    isHealthy = {{ .override.isHealthy }}
+    {{- end }}
+    {{- if .override.recommendedAction }}
+    recommendedAction = {{ .override.recommendedAction }}
+    {{- end }}
+    {{- end }}

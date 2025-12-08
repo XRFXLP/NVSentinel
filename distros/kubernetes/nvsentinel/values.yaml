@@ -134,6 +134,23 @@ platformConnector:
       - "cloud.google.com/gce-topology-host"
       - "cloud.google.com/gce-topology-subblock"
 
+  # Health event property overrides using CEL expressions
+  # Configuration is converted to TOML format in the ConfigMap
+  healthEventOverrides:
+    enabled: false
+    rules: []
+    # Example rules:
+    # - name: "suppress-xid-109"
+    #   when: 'event.agent == "syslog-health-monitor" && "109" in event.errorCode'
+    #   override:
+    #     isFatal: false
+    #     recommendedAction: 0  # NONE
+    #
+    # - name: "zone-specific-override"
+    #   when: 'event.metadata["topology.kubernetes.io/zone"] == "us-west1-a" && event.componentClass == "GPU"'
+    #   override:
+    #     isFatal: false
+
 socketPath: "/var/run/nvsentinel.sock"
 
 # Node condition cleanup hook configuration

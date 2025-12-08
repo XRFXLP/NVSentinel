@@ -33,6 +33,7 @@ import (
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/nodemetadata"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/overrides"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
 	"golang.org/x/sync/errgroup"
@@ -167,7 +168,27 @@ func initializeNodeMetadataProcessor(
 	return processor, nil
 }
 
-func startGRPCServer(ctx context.Context, socket string, processor nodemetadata.Processor) (net.Listener, error) {
+func initializeOverrideProcessor(overrideConfigPath string) (overrides.Processor, error) {
+	cfg, err := overrides.LoadConfig(overrideConfigPath)
+	if err != nil {
+		slog.Warn("Failed to load override config, overrides disabled", "error", err)
+		return overrides.NewProcessor(&overrides.Config{Enabled: false})
+	}
+
+	processor, err := overrides.NewProcessor(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create override processor: %w", err)
+	}
+
+	return processor, nil
+}
+
+func startGRPCServer(
+	ctx context.Context,
+	socket string,
+	processor nodemetadata.Processor,
+	overrideProcessor overrides.Processor,
+) (net.Listener, error) {
 	slog.Info("Starting gRPC server on Unix socket", "socket", socket)
 
 	err := os.Remove(socket)
@@ -193,7 +214,8 @@ func startGRPCServer(ctx context.Context, socket string, processor nodemetadata.
 
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterPlatformConnectorServer(grpcServer, &server.PlatformConnectorServer{
-		Processor: processor,
+		Processor:         processor,
+		OverrideProcessor: overrideProcessor,
 	})
 
 	go func() {
@@ -274,9 +296,18 @@ func cleanupResources(
 	return nil
 }
 
-func run() error {
+type platformConnectorConfig struct {
+	socket                      string
+	configFilePath              string
+	overrideConfigPath          string
+	metricsPort                 int
+	databaseClientCertMountPath string
+}
+
+func parseFlags() (*platformConnectorConfig, error) {
 	socket := flag.String("socket", "", "unix socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
+	overrideConfigPath := flag.String("override-config", "/etc/config/overrides.toml", "path to the override config file")
 	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
 	// Register database certificate flags using common package
@@ -284,11 +315,28 @@ func run() error {
 
 	flag.Parse()
 
-	// Resolve the certificate path using common logic
-	databaseClientCertMountPath := certConfig.ResolveCertPath()
-
 	if *socket == "" {
-		return fmt.Errorf("socket is not present")
+		return nil, fmt.Errorf("socket is not present")
+	}
+
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return nil, fmt.Errorf("invalid metrics port: %w", err)
+	}
+
+	return &platformConnectorConfig{
+		socket:                      *socket,
+		configFilePath:              *configFilePath,
+		overrideConfigPath:          *overrideConfigPath,
+		metricsPort:                 portInt,
+		databaseClientCertMountPath: certConfig.ResolveCertPath(),
+	}, nil
+}
+
+func run() error {
+	cfg, err := parseFlags()
+	if err != nil {
+		return err
 	}
 
 	sigs := make(chan os.Signal, 1)
@@ -299,28 +347,29 @@ func run() error {
 
 	defer cancel()
 
-	config, err := loadConfig(*configFilePath)
+	config, err := loadConfig(cfg.configFilePath)
 	if err != nil {
 		return err
 	}
 
-	k8sRingBuffer, storeConnector, processor, err := initializeConnectors(ctx, config, stopCh, databaseClientCertMountPath)
+	overrideProcessor, err := initializeOverrideProcessor(cfg.overrideConfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to initialize override processor: %w", err)
+	}
+
+	k8sRingBuffer, storeConnector, processor, err := initializeConnectors(ctx,
+		config, stopCh, cfg.databaseClientCertMountPath)
 	if err != nil {
 		return err
 	}
 
-	lis, err := startGRPCServer(ctx, *socket, processor)
+	lis, err := startGRPCServer(ctx, cfg.socket, processor, overrideProcessor)
 	if err != nil {
 		return err
-	}
-
-	portInt, err := strconv.Atoi(*metricsPort)
-	if err != nil {
-		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
 	srv := srv.NewServer(
-		srv.WithPort(portInt),
+		srv.WithPort(cfg.metricsPort),
 		srv.WithPrometheusMetrics(),
 		srv.WithSimpleHealth(),
 	)
@@ -329,7 +378,7 @@ func run() error {
 
 	// Metrics server failures are logged but do NOT terminate the service
 	g.Go(func() error {
-		slog.Info("Starting metrics server", "port", portInt)
+		slog.Info("Starting metrics server", "port", cfg.metricsPort)
 
 		if err := srv.Serve(gCtx); err != nil {
 			slog.Error("Metrics server failed - continuing without metrics", "error", err)
@@ -357,7 +406,7 @@ func run() error {
 
 		close(stopCh)
 
-		if err := cleanupResources(*socket, lis, k8sRingBuffer, storeConnector); err != nil {
+		if err := cleanupResources(cfg.socket, lis, k8sRingBuffer, storeConnector); err != nil {
 			return err
 		}
 
