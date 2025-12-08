@@ -53,7 +53,7 @@ platformConnector:
   healthEventOverrides:
     enabled: true
     rules:
-      # Suppress XID 48/49 - known to be non-critical in this environment
+      # Suppress XID 109 - known to be non-critical in this environment
       - match:
           agent: "syslog-health-monitor"
           errorCode: 
