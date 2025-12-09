@@ -39,7 +39,7 @@ const (
 	keyOriginalDeployment
 	keyCircuitBreakerNodes
 
-	cursorModeFresh  cursorMode = "FRESH"
+	cursorModeCreate  cursorMode = "CREATE"
 	cursorModeResume cursorMode = "RESUME"
 )
 
@@ -232,7 +232,7 @@ func TestScaleHealthEvents(t *testing.T) {
 
 	feature.Assess("Reset circuit breaker and validate blocked nodes are not cordoned", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 
-		helpers.SetCircuitBreakerState(ctx, t, c, "CLOSED", string(cursorModeFresh))
+		helpers.SetCircuitBreakerState(ctx, t, c, "CLOSED", string(cursorModeCreate))
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")

@@ -355,8 +355,8 @@ func (r *Reconciler) handleCircuitBreakerCursorMode(ctx context.Context, dbClien
 		return nil
 	}
 
-	if cursorMode == breaker.CursorModeFresh {
-		slog.Info("Circuit breaker cursor is FRESH, deleting resume token to skip accumulated events")
+	if cursorMode == breaker.CursorModeCreate {
+		slog.Info("Circuit breaker cursor is CREATE, deleting resume token to skip accumulated events")
 
 		if err := r.deleteResumeToken(ctx, dbClient); err != nil {
 			slog.Error("Failed to delete resume token", "error", err)

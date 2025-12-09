@@ -25,7 +25,7 @@ type CursorMode string
 
 const (
 	CursorModeResume CursorMode = "RESUME"
-	CursorModeFresh  CursorMode = "FRESH"
+	CursorModeCreate  CursorMode = "CREATE"
 )
 
 // K8sClientOperations defines the minimal interface needed by the circuit breaker
