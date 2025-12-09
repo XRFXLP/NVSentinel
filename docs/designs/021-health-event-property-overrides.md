@@ -91,15 +91,15 @@ type Config struct {
 }
 
 type Rule struct {
-    Name     string   `json:"name"`              // Human-readable rule name for debugging
-    When     string   `json:"when"`              // CEL expression
-    Override Override `json:"override"`
+    Name     string   `toml:"name"`              // Human-readable rule name for debugging
+    When     string   `toml:"when"`              // CEL expression
+    Override Override `toml:"override"`
 }
 
 type Override struct {
-    IsFatal           *bool                 `json:"isFatal,omitempty"`
-    IsHealthy         *bool                 `json:"isHealthy,omitempty"`
-    RecommendedAction *pb.RecommendedAction `json:"recommendedAction,omitempty"`
+    IsFatal           *bool   `toml:"isFatal,omitempty"`
+    IsHealthy         *bool   `toml:"isHealthy,omitempty"`
+    RecommendedAction *string `toml:"recommendedAction,omitempty"` // String enum validated at startup
 }
 ```
 
@@ -198,6 +198,7 @@ Rejected:
 - CEL expressions have access to all health event fields plus node metadata (labels, provider info)
 - First match wins: Rules evaluated in order; first matching rule applies
 - Opt-in: Feature disabled by default; requires explicit configuration
+- Valid `recommendedAction` values: `NONE`, `COMPONENT_RESET`, `CONTACT_SUPPORT`, `RUN_FIELDDIAG`, `RESTART_VM`, `RESTART_BM`, `REPLACE_VM`, `RUN_DCGMEUD`
 
 ## Testing
 

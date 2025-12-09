@@ -314,6 +314,21 @@ platformConnector:
   nodeMetadata:
     enabled: true
 
+  # Health event property overrides using CEL expressions
+  # Configuration is converted to TOML format in the ConfigMap
+  healthEventOverrides:
+    enabled: true
+    rules: 
+    - name: "suppress-xid-109"
+      when: 'event.agent == "syslog-health-monitor" && "109" in event.errorCode'
+      override:
+        isFatal: false
+        recommendedAction: NONE
+    #
+    # - name: "zone-specific-override"
+    #   when: 'event.metadata["topology.kubernetes.io/zone"] == "us-west1-a" && event.componentClass == "GPU"'
+    #   override:
+    #     isFatal: false
 kubernetes-object-monitor:
   logLevel: debug
 

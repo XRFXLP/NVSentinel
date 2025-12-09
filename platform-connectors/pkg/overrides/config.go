@@ -34,9 +34,9 @@ type Rule struct {
 }
 
 type Override struct {
-	IsFatal           *bool                 `toml:"isFatal,omitempty"`
-	IsHealthy         *bool                 `toml:"isHealthy,omitempty"`
-	RecommendedAction *pb.RecommendedAction `toml:"recommendedAction,omitempty"`
+	IsFatal           *bool   `toml:"isFatal,omitempty"`
+	IsHealthy         *bool   `toml:"isHealthy,omitempty"`
+	RecommendedAction *string `toml:"recommendedAction,omitempty"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -83,9 +83,30 @@ func (r *Rule) Validate() error {
 		return fmt.Errorf("(%s): at least one override field required", r.Name)
 	}
 
+	if r.Override.RecommendedAction != nil {
+		if _, err := r.Override.ParseRecommendedAction(); err != nil {
+			return fmt.Errorf("(%s): %w", r.Name, err)
+		}
+	}
+
 	return nil
 }
 
 func (o *Override) isEmpty() bool {
 	return o.IsFatal == nil && o.IsHealthy == nil && o.RecommendedAction == nil
+}
+
+func (o *Override) ParseRecommendedAction() (pb.RecommendedAction, error) {
+	if o.RecommendedAction == nil {
+		return pb.RecommendedAction_NONE, nil
+	}
+
+	action := *o.RecommendedAction
+	val, ok := pb.RecommendedAction_value[action]
+	if !ok {
+		return pb.RecommendedAction_CONTACT_SUPPORT,
+			fmt.Errorf("invalid recommendedAction: %s (valid: NONE, COMPONENT_RESET, CONTACT_SUPPORT, RUN_FIELDDIAG, RESTART_VM, RESTART_BM, REPLACE_VM, RUN_DCGMEUD)", action)
+	}
+
+	return pb.RecommendedAction(val), nil
 }

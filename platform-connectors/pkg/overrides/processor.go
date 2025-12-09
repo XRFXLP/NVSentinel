@@ -112,11 +112,13 @@ func (p *processor) applyOverride(event *pb.HealthEvent, rule compiledRule, orig
 		changed = append(changed, "isHealthy")
 	}
 
-	if rule.override.RecommendedAction != nil && *rule.override.RecommendedAction != original.recommendedAction {
-		event.RecommendedAction = *rule.override.RecommendedAction
-		overridesApplied.WithLabelValues(rule.name, "recommendedAction").Inc()
-
-		changed = append(changed, "recommendedAction")
+	if rule.override.RecommendedAction != nil {
+		newAction, _ := rule.override.ParseRecommendedAction()
+		if newAction != original.recommendedAction {
+			event.RecommendedAction = newAction
+			overridesApplied.WithLabelValues(rule.name, "recommendedAction").Inc()
+			changed = append(changed, "recommendedAction")
+		}
 	}
 
 	if len(changed) > 0 {

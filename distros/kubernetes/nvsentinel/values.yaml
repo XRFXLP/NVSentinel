@@ -154,12 +154,13 @@ platformConnector:
     #   when: 'event.agent == "syslog-health-monitor" && "109" in event.errorCode'
     #   override:
     #     isFatal: false
-    #     recommendedAction: 0  # NONE
+    #     recommendedAction: "NONE"
     #
     # - name: "zone-specific-override"
     #   when: 'event.metadata["topology.kubernetes.io/zone"] == "us-west1-a" && event.componentClass == "GPU"'
     #   override:
     #     isFatal: false
+    #     recommendedAction: "CONTACT_SUPPORT"
 
 socketPath: "/var/run/nvsentinel.sock"
 

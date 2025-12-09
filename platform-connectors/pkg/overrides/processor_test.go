@@ -186,7 +186,7 @@ func TestApplyOverrides(t *testing.T) {
 						When: `event.agent == "test-agent"`,
 						Override: Override{
 							IsFatal:           boolPtr(false),
-							RecommendedAction: pb.RecommendedAction_NONE.Enum(),
+							RecommendedAction: stringPtr("NONE"),
 						},
 					},
 				},
@@ -230,14 +230,14 @@ func TestApplyOverrides(t *testing.T) {
 						Name: "first-rule",
 						When: `event.agent == "test-agent"`,
 						Override: Override{
-							RecommendedAction: pb.RecommendedAction_NONE.Enum(),
+							RecommendedAction: stringPtr("NONE"),
 						},
 					},
 					{
 						Name: "second-rule",
 						When: `event.agent == "test-agent"`,
 						Override: Override{
-							RecommendedAction: pb.RecommendedAction_CONTACT_SUPPORT.Enum(),
+							RecommendedAction: stringPtr("CONTACT_SUPPORT"),
 						},
 					},
 				},
@@ -291,4 +291,8 @@ func TestApplyOverrides(t *testing.T) {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func stringPtr(s string) *string {
+	return &s
 }
