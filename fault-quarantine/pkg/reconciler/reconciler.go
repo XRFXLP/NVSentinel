@@ -38,6 +38,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	storeconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -202,6 +203,28 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		return err
 	}
 
+	if r.config.CircuitBreakerEnabled {
+		cursorMode, err := r.cb.GetCursorMode(ctx)
+		if err != nil {
+			slog.Warn("Failed to read cursor mode, defaulting to RESUME", "error", err)
+		} else if cursorMode == breaker.CursorModeFresh {
+			slog.Info("Circuit breaker cursor is FRESH, deleting resume token to skip accumulated events")
+
+			if err := r.deleteResumeToken(ctx, databaseClient); err != nil {
+				slog.Error("Failed to delete resume token", "error", err)
+				return fmt.Errorf("failed to delete resume token: %w", err)
+			}
+
+			if err := r.cb.SetCursorMode(ctx, breaker.CursorModeResume); err != nil {
+				slog.Warn("Failed to reset cursor to RESUME", "error", err)
+			}
+
+			slog.Info("Resume token deleted, will start from latest events")
+		} else {
+			slog.Info("Circuit breaker cursor is RESUME, will process accumulated events")
+		}
+	}
+
 	r.eventWatcher.SetProcessEventCallback(
 		func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status {
 			return r.ProcessEvent(ctx, event, ruleSetEvals, rulesetsConfig)
@@ -337,6 +360,28 @@ func (r *Reconciler) checkCircuitBreakerAtStartup(ctx context.Context) error {
 	slog.Info("Listening for events on the channel...")
 
 	return nil
+}
+
+func (r *Reconciler) deleteResumeToken(ctx context.Context, dbClient client.DatabaseClient) error {
+	tokenConfig, err := storeconfig.TokenConfigFromEnv("fault-quarantine")
+	if err != nil {
+		return fmt.Errorf("failed to load token configuration: %w", err)
+	}
+
+	type deleteOperation interface {
+		DeleteOne(ctx context.Context, database, collection string, filter interface{}) error
+	}
+
+	if deleter, ok := dbClient.(deleteOperation); ok {
+		filter := map[string]any{"clientName": tokenConfig.ClientName}
+		err := deleter.DeleteOne(ctx, tokenConfig.TokenDatabase, tokenConfig.TokenCollection, filter)
+		if err != nil {
+			return fmt.Errorf("failed to delete resume token: %w", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("database client does not support DeleteOne operation")
 }
 
 // ProcessEvent processes a single health event
