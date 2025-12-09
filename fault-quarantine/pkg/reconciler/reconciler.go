@@ -203,6 +203,10 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		return err
 	}
 
+	// Circuit breaker cursor mode lifecycle:
+	// 1. FRESH: Skip accumulated events by deleting resume token
+	// 2. Delete token -> start from latest events
+	// 3. Reset to RESUME for normal operation on subsequent restarts
 	if r.config.CircuitBreakerEnabled {
 		cursorMode, err := r.cb.GetCursorMode(ctx)
 		if err != nil {
@@ -216,7 +220,8 @@ func (r *Reconciler) Start(ctx context.Context) error {
 			}
 
 			if err := r.cb.SetCursorMode(ctx, breaker.CursorModeResume); err != nil {
-				slog.Warn("Failed to reset cursor to RESUME", "error", err)
+				slog.Error("Failed to reset cursor to RESUME", "error", err)
+				return fmt.Errorf("failed to reset cursor to RESUME: %w", err)
 			}
 
 			slog.Info("Resume token deleted, will start from latest events")
