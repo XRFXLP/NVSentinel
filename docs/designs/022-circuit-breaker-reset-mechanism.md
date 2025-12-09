@@ -4,7 +4,7 @@
 
 Circuit breaker is a safety mechanism that prevents NVSentinel from cordoning too many nodes at once. When the circuit breaker is tripped, it will block all new node remediation actions and remain in the TRIPPED state until a human operator investigates the issue and manually resets it. 
 
-The reset mechanism in the current system is to either delete the circuit breaker configmap or edit the status field to CLOSED, followed by a restart of the fault quarantine deployment. When the circuit breaker is closed, fault quarantine starts procesing accumulated events from the last time the circuit breaker was tripped. This can be problematic if the circuit breaker was tripped for a long time and there are lot of accumulated fatal events. This can cause the circuit breaker to trip again immediately or continue cordoning nodes.
+The reset mechanism in the current system is to either delete the circuit breaker configmap or edit the status field to CLOSED, followed by a restart of the fault quarantine deployment. When the circuit breaker is closed, fault quarantine starts processing accumulated events from the last time the circuit breaker was tripped. This can be problematic if the circuit breaker was tripped for a long time and there are lot of accumulated fatal events. This can cause the circuit breaker to trip again immediately or continue cordoning nodes.
 
 ## Decision
 
