@@ -8,31 +8,44 @@ The reset mechanism in the current system is to either delete the circuit breake
 
 ## Decision
 
-Add a new field `cursor` to the circuit breaker configmap. The value of this field can be either `FRESH` or `RESUME`. `FRESH` means that fault quarantine will skip accumulated events and start processing from the latest event whereas `RESUME` means that fault quarantine will process accumulated events from the last time the circuit breaker was tripped. 
+Add a new field `cursor` to the circuit breaker configmap. The value of this field can be either `CREATE` or `RESUME`. `CREATE` means that fault quarantine will skip accumulated events and start processing from the latest event whereas `RESUME` means that fault quarantine will process accumulated events from the last time the circuit breaker was tripped. 
 
 ```yaml
 apiVersion: v1
 data:
   status: CLOSED    # Can be either CLOSED or TRIPPED
-  cursor: RESUME   # Can be either RESUME or FRESH
+  cursor: RESUME   # Can be either RESUME or CREATE
 kind: ConfigMap
 metadata:
   name: circuit-breaker
   namespace: nvsentinel
 ```
 
-Unless the cursor mode is explicitly set to `FRESH`, the default mode will be `RESUME` in all the cases.
+Unless the cursor mode is explicitly set to `CREATE`, the default mode will be `RESUME` in all the cases. 
+
+```mermaid
+flowchart TD
+    A[FQ Startup] --> B{ConfigMap exists?}
+    B -->|No| C[Create ConfigMap<br/>status: CLOSED<br/>cursor: RESUME]
+    B -->|Yes| D{Read cursor mode}
+    C --> D
+    D -->|RESUME| E[Use existing<br/>resume token]
+    D -->|CREATE| F[Delete resume token]
+    F --> G[Reset cursor to RESUME]
+    G --> H[Start from latest events]
+    E --> I[Process accumulated events]
+```
 
 ## Implementation
 
 ### Components Modified
 
-**1. Circuit Breaker Types** - Added `CursorMode` enum (`RESUME`/`FRESH`) and interface methods (`GetCursorMode`, `SetCursorMode`)
+**1. Circuit Breaker Types** - Added `CursorMode` enum (`RESUME`/`CREATE`) and interface methods (`GetCursorMode`, `SetCursorMode`)
 
 **2. Kubernetes Client** - ConfigMap creation defaults to `cursor: RESUME`, added `ReadCursorMode`/`WriteCursorMode` methods
 
 **3. Reconciler Startup** - New `handleCircuitBreakerCursorMode()` function:
-- If `cursor=FRESH`: delete resume token, reset cursor to `RESUME`
+- If `cursor=CREATE`: delete resume token, reset cursor to `RESUME`
 - If `cursor=RESUME`: use existing resume token
 
 ### Operator Workflows
@@ -44,7 +57,7 @@ Unless the cursor mode is explicitly set to `FRESH`, the default mode will be `R
 **Manual reset after trip:**
 ```bash
 kubectl patch configmap fault-quarantine-circuit-breaker \
-  -p '{"data":{"status":"CLOSED","cursor":"FRESH"}}'
+  -p '{"data":{"status":"CLOSED","cursor":"CREATE"}}'
 kubectl rollout restart deployment fault-quarantine
 ```
 - Deletes resume token
@@ -60,8 +73,8 @@ kubectl rollout restart deployment fault-quarantine
 - Simple single-field interface
 
 **Negative:**
-- Manual intervention required to set `cursor=FRESH`
-- Events may be skipped when using `FRESH` mode
+- Manual intervention required to set `cursor=CREATE`
+- Events may be skipped when using `CREATE` mode
 - Additional ConfigMap field to manage
 
 ## Alternatives
@@ -70,4 +83,4 @@ kubectl rollout restart deployment fault-quarantine
 - Rejected: More complex, requires timestamp comparison on every event
 
 **2. ConfigMap watcher** - Watch changes, auto-delete token on state change
-- Deferred: Still requires cursor field for operator to specify FRESH vs RESUME intent (situation-dependent choice), adds complexity without eliminating the need for explicit operator control
+- Deferred: Still requires cursor field for operator to specify CREATE vs RESUME intent (situation-dependent choice), adds complexity without eliminating the need for explicit operator control
