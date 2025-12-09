@@ -203,31 +203,8 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		return err
 	}
 
-	// Circuit breaker cursor mode lifecycle:
-	// 1. FRESH: Skip accumulated events by deleting resume token
-	// 2. Delete token -> start from latest events
-	// 3. Reset to RESUME for normal operation on subsequent restarts
-	if r.config.CircuitBreakerEnabled {
-		cursorMode, err := r.cb.GetCursorMode(ctx)
-		if err != nil {
-			slog.Warn("Failed to read cursor mode, defaulting to RESUME", "error", err)
-		} else if cursorMode == breaker.CursorModeFresh {
-			slog.Info("Circuit breaker cursor is FRESH, deleting resume token to skip accumulated events")
-
-			if err := r.deleteResumeToken(ctx, databaseClient); err != nil {
-				slog.Error("Failed to delete resume token", "error", err)
-				return fmt.Errorf("failed to delete resume token: %w", err)
-			}
-
-			if err := r.cb.SetCursorMode(ctx, breaker.CursorModeResume); err != nil {
-				slog.Error("Failed to reset cursor to RESUME", "error", err)
-				return fmt.Errorf("failed to reset cursor to RESUME: %w", err)
-			}
-
-			slog.Info("Resume token deleted, will start from latest events")
-		} else {
-			slog.Info("Circuit breaker cursor is RESUME, will process accumulated events")
-		}
+	if err := r.handleCircuitBreakerCursorMode(ctx, databaseClient); err != nil {
+		return err
 	}
 
 	r.eventWatcher.SetProcessEventCallback(
@@ -367,6 +344,38 @@ func (r *Reconciler) checkCircuitBreakerAtStartup(ctx context.Context) error {
 	return nil
 }
 
+func (r *Reconciler) handleCircuitBreakerCursorMode(ctx context.Context, dbClient client.DatabaseClient) error {
+	if !r.config.CircuitBreakerEnabled {
+		return nil
+	}
+
+	cursorMode, err := r.cb.GetCursorMode(ctx)
+	if err != nil {
+		slog.Warn("Failed to read cursor mode, defaulting to RESUME", "error", err)
+		return nil
+	}
+
+	if cursorMode == breaker.CursorModeFresh {
+		slog.Info("Circuit breaker cursor is FRESH, deleting resume token to skip accumulated events")
+
+		if err := r.deleteResumeToken(ctx, dbClient); err != nil {
+			slog.Error("Failed to delete resume token", "error", err)
+			return fmt.Errorf("failed to delete resume token: %w", err)
+		}
+
+		if err := r.cb.SetCursorMode(ctx, breaker.CursorModeResume); err != nil {
+			slog.Error("Failed to reset cursor to RESUME", "error", err)
+			return fmt.Errorf("failed to reset cursor to RESUME: %w", err)
+		}
+
+		slog.Info("Resume token deleted, will start from latest events")
+	} else {
+		slog.Info("Circuit breaker cursor is RESUME, will process accumulated events")
+	}
+
+	return nil
+}
+
 func (r *Reconciler) deleteResumeToken(ctx context.Context, dbClient client.DatabaseClient) error {
 	tokenConfig, err := storeconfig.TokenConfigFromEnv("fault-quarantine")
 	if err != nil {
@@ -379,10 +388,12 @@ func (r *Reconciler) deleteResumeToken(ctx context.Context, dbClient client.Data
 
 	if deleter, ok := dbClient.(deleteOperation); ok {
 		filter := map[string]any{"clientName": tokenConfig.ClientName}
+
 		err := deleter.DeleteOne(ctx, tokenConfig.TokenDatabase, tokenConfig.TokenCollection, filter)
 		if err != nil {
 			return fmt.Errorf("failed to delete resume token: %w", err)
 		}
+
 		return nil
 	}
 
