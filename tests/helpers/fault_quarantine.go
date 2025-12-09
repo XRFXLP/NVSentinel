@@ -496,7 +496,8 @@ func modifyFaultQuarantineDeploymentArgs(ctx context.Context, t *testing.T, clie
 }
 
 // updateCircuitBreakerStateConfigMap updates the CB state configmap (without restarting deployment).
-func updateCircuitBreakerStateConfigMap(ctx context.Context, t *testing.T, client klient.Client, state, cursorMode string) {
+func updateCircuitBreakerStateConfigMap(ctx context.Context,
+	t *testing.T, client klient.Client, state, cursorMode string) {
 	t.Helper()
 	t.Logf("Updating circuit breaker state configmap to: %s, cursor mode: %s", state, cursorMode)
 
