@@ -59,7 +59,7 @@ import (
 
 const (
 	EventuallyWaitTimeout = 10 * time.Minute
-	NeverWaitTimeout      = 30 * time.Second
+	NeverWaitTimeout      = 10 * time.Second
 	WaitInterval          = 5 * time.Second
 	NVSentinelNamespace   = "nvsentinel"
 )

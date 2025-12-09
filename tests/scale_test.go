@@ -43,6 +43,7 @@ const (
 )
 
 func TestScaleHealthEvents(t *testing.T) {
+	t.Parallel()
 	feature := features.New("TestScaleHealthEvents").
 		WithLabel("suite", "scale")
 

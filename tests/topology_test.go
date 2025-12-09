@@ -35,6 +35,7 @@ const (
 )
 
 func TestTopologyLabels(t *testing.T) {
+	t.Parallel()
 	feature := features.New("TestTopologyLabelsAndHealthMonitors").
 		WithLabel("suite", "topology")
 
@@ -110,6 +111,7 @@ func TestTopologyLabels(t *testing.T) {
 }
 
 func TestKataTopology(t *testing.T) {
+	t.Parallel()
 	feature := features.New("TestKataTopologyLabelsAndDaemonSets").
 		WithLabel("suite", "topology")
 

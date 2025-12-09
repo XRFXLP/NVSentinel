@@ -130,7 +130,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		helpers.WaitForPodsDeleted(ctx, t, client, "allowcompletion-test", allowCompletionPods)
 
 		t.Log("Phase 3: Waiting for deleteAfterTimeout to expire (~40s remaining)")
-		time.Sleep(45 * time.Second)
+		time.Sleep(35 * time.Second)
 
 		t.Log("Phase 3: DeleteAfterTimeout pods force-deleted after timeout")
 		helpers.WaitForPodsDeleted(ctx, t, client, "delete-timeout-test", deleteTimeoutPods)

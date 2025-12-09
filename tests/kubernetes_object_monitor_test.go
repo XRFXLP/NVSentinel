@@ -35,6 +35,7 @@ const (
 )
 
 func TestKubernetesObjectMonitor(t *testing.T) {
+	t.Parallel()
 	feature := features.New("Kubernetes Object Monitor - Node Not Ready Detection").
 		WithLabel("suite", "kubernetes-object-monitor").
 		WithLabel("component", "node-monitoring")

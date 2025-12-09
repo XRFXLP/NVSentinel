@@ -34,6 +34,7 @@ const (
 // TestCSPHealthMonitorGCPMaintenanceEvent verifies the complete GCP maintenance event lifecycle:
 // event detection, quarantine workflow, status transitions, and recovery behavior.
 func TestCSPHealthMonitorGCPMaintenanceEvent(t *testing.T) {
+	t.Parallel()
 	feature := features.New("GCP Maintenance Event Lifecycle").
 		WithLabel("suite", "csp-health-monitor")
 
@@ -159,6 +160,7 @@ func TestCSPHealthMonitorGCPMaintenanceEvent(t *testing.T) {
 // TestCSPHealthMonitorAWSMaintenanceEvent verifies the complete AWS maintenance event lifecycle:
 // AWS Health API integration, node mapping via providerID, and AWS-specific status transitions.
 func TestCSPHealthMonitorAWSMaintenanceEvent(t *testing.T) {
+	t.Parallel()
 	feature := features.New("AWS Maintenance Event Lifecycle").
 		WithLabel("suite", "csp-health-monitor")
 
@@ -290,6 +292,7 @@ func TestCSPHealthMonitorAWSMaintenanceEvent(t *testing.T) {
 // TestCSPHealthMonitorQuarantineThreshold verifies the triggerQuarantineWorkflowTimeLimitMinutes threshold logic:
 // trigger engine only quarantines nodes when scheduledStartTime <= now + threshold.
 func TestCSPHealthMonitorQuarantineThreshold(t *testing.T) {
+	t.Parallel()
 	feature := features.New("Quarantine Threshold Logic").
 		WithLabel("suite", "csp-health-monitor")
 

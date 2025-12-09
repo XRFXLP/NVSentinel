@@ -141,6 +141,7 @@ func TestJanitorWebhookRejectsDuplicateReboots(t *testing.T) {
 // TestJanitorWebhookRejectsNonExistentNode tests that the janitor webhook
 // rejects RebootNode creation for nodes that don't exist in the cluster.
 func TestJanitorWebhookRejectsNonExistentNode(t *testing.T) {
+	t.Parallel()
 	feature := features.New("TestJanitorWebhookRejectsNonExistentNode").
 		WithLabel("suite", "webhook").
 		WithLabel("component", "janitor")

@@ -36,6 +36,7 @@ const (
 
 // TestSyslogHealthMonitorXIDDetection tests burst XID injection and aggregation
 func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
+	t.Parallel()
 	feature := features.New("Syslog Health Monitor - Burst XID Detection").
 		WithLabel("suite", "syslog-health-monitor").
 		WithLabel("component", "xid-detection")
@@ -433,6 +434,7 @@ func TestSyslogHealthMonitorXIDFloodAndTruncation(t *testing.T) {
 
 // TestSyslogHealthMonitorXIDWithoutMetadata tests XID detection works without metadata file
 func TestSyslogHealthMonitorXIDWithoutMetadata(t *testing.T) {
+	t.Parallel()
 	feature := features.New("Syslog Health Monitor - XID Without Metadata").
 		WithLabel("suite", "syslog-health-monitor").
 		WithLabel("component", "xid-graceful-degradation")
@@ -547,6 +549,7 @@ func TestSyslogHealthMonitorXIDWithoutMetadata(t *testing.T) {
 
 // TestSyslogHealthMonitorSXIDDetection tests SXID error detection with NVSwitch topology
 func TestSyslogHealthMonitorSXIDDetection(t *testing.T) {
+	t.Parallel()
 	feature := features.New("Syslog Health Monitor - SXID Detection").
 		WithLabel("suite", "syslog-health-monitor").
 		WithLabel("component", "sxid-detection")
