@@ -98,7 +98,6 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 
 		expectedSequencePatterns := []string{
 			`ErrorCode:119 PCI:0002:00:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0002:00:00\): 119.*?Recommended Action=COMPONENT_RESET`,
-			`ErrorCode:79 PCI:0001:00:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0001:00:00\): 79.*?Recommended Action=RESTART_BM`,
 			`ErrorCode:62 PCI:0000:19:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:19:00\): 62.*?Recommended Action=COMPONENT_RESET`,
 			`ErrorCode:45 PCI:0000:19:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:19:00\): 45.*?Recommended Action=CONTACT_SUPPORT`,
 		}
@@ -106,6 +105,8 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 			`ErrorCode:94 PCI:0000:17:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:17:00\): 94.*?Recommended Action=NONE`,
 			`ErrorCode:13 PCI:0002:00:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0002:00:00\): 13.*?Recommended Action=NONE`,
 			`ErrorCode:31 PCI:0001:00:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0001:00:00\): 31.*?Recommended Action=NONE`,
+			// XID 79 is suppressed by the override rule
+			`ErrorCode:79 PCI:0001:00:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0001:00:00\): 79.*?Recommended Action=NONE`,
 		}
 
 		helpers.InjectSyslogMessages(t, stubJournalHTTPPort, xidMessages)

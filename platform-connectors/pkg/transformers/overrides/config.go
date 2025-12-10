@@ -102,10 +102,11 @@ func (o *Override) ParseRecommendedAction() (pb.RecommendedAction, error) {
 	}
 
 	action := *o.RecommendedAction
+
 	val, ok := pb.RecommendedAction_value[action]
 	if !ok {
 		return pb.RecommendedAction_CONTACT_SUPPORT,
-			fmt.Errorf("invalid recommendedAction: %s (valid: NONE, COMPONENT_RESET, CONTACT_SUPPORT, RUN_FIELDDIAG, RESTART_VM, RESTART_BM, REPLACE_VM, RUN_DCGMEUD)", action)
+			fmt.Errorf("invalid recommendedAction: %s ", action)
 	}
 
 	return pb.RecommendedAction(val), nil

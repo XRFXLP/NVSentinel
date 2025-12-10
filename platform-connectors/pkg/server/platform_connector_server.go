@@ -20,8 +20,7 @@ import (
 
 	"github.com/golang/protobuf/ptypes/empty"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/nodemetadata"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/overrides"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -46,8 +45,7 @@ var (
 
 type PlatformConnectorServer struct {
 	pb.UnimplementedPlatformConnectorServer
-	Processor         nodemetadata.Processor
-	OverrideProcessor overrides.Processor
+	Pipeline *pipeline.Pipeline
 }
 
 func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
@@ -56,21 +54,11 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 
 	healthEventsReceived.Add(float64(len(he.Events)))
 
-	for i := range he.Events {
-		if p.Processor != nil {
-			if err := p.Processor.AugmentHealthEvent(ctx, he.Events[i]); err != nil {
-				slog.Warn("Failed to augment health event",
-					"nodeName", he.Events[i].NodeName,
-					"error", err)
-			}
-		}
-
-		if p.OverrideProcessor != nil {
-			if err := p.OverrideProcessor.ApplyOverrides(ctx, he.Events[i]); err != nil {
-				slog.Warn("Failed to apply overrides",
-					"nodeName", he.Events[i].NodeName,
-					"agent", he.Events[i].Agent,
-					"error", err)
+	if p.Pipeline != nil {
+		for i := range he.Events {
+			err := p.Pipeline.Process(ctx, he.Events[i])
+			if err != nil {
+				slog.Error("Failed to process health event", "error", err, "event", he.Events[i])
 			}
 		}
 	}

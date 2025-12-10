@@ -33,15 +33,15 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/nodemetadata"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/overrides"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
+	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/metadata"
+	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/overrides"
 	"golang.org/x/sync/errgroup"
 
 	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/util/json"
-	k8s "k8s.io/client-go/kubernetes"
 )
 
 const (
@@ -100,43 +100,37 @@ func initializeK8sConnector(
 	ctx context.Context,
 	config map[string]interface{},
 	stopCh chan struct{},
-) (*ringbuffer.RingBuffer, nodemetadata.Processor, error) {
+) (*ringbuffer.RingBuffer, error) {
 	k8sRingBuffer := ringbuffer.NewRingBuffer("kubernetes", ctx)
 	server.InitializeAndAttachRingBufferForConnectors(k8sRingBuffer)
 
 	qpsTemp, ok := config["K8sConnectorQps"].(float64)
 	if !ok {
-		return nil, nil, fmt.Errorf("failed to convert K8sConnectorQps to float: %v", config["K8sConnectorQps"])
+		return nil, fmt.Errorf("failed to convert K8sConnectorQps to float: %v", config["K8sConnectorQps"])
 	}
 
 	qps := float32(qpsTemp)
 
 	maxNodeConditionMessageLength, ok := config["MaxNodeConditionMessageLength"].(int64)
 	if !ok {
-		return nil, nil, fmt.Errorf("failed to convert MaxNodeConditionMessageLength to int64: %v",
+		return nil, fmt.Errorf("failed to convert MaxNodeConditionMessageLength to int64: %v",
 			config["MaxNodeConditionMessageLength"])
 	}
 
 	burst, ok := config["K8sConnectorBurst"].(int64)
 	if !ok {
-		return nil, nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
+		return nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
 	}
 
-	k8sConnector, clientset, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst),
+	k8sConnector, _, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst),
 		stopCh, maxNodeConditionMessageLength)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
+		return nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
 	}
 
 	go k8sConnector.FetchAndProcessHealthMetric(ctx)
 
-	// Node metadata enrichment is optional - failures are logged but don't abort startup
-	processor, err := initializeNodeMetadataProcessor(ctx, config, clientset)
-	if err != nil {
-		slog.Warn("Failed to initialize node metadata processor, continuing without enrichment", "error", err)
-	}
-
-	return k8sRingBuffer, processor, nil
+	return k8sRingBuffer, nil
 }
 
 func initializeDatabaseStoreConnector(
@@ -156,52 +150,39 @@ func initializeDatabaseStoreConnector(
 	return storeConnector, nil
 }
 
-func initializeNodeMetadataProcessor(
-	ctx context.Context,
-	config map[string]interface{},
-	clientset k8s.Interface,
-) (nodemetadata.Processor, error) {
-	cfg, err := nodemetadata.NewConfigFromMap(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create node metadata config: %w", err)
+func initializePipeline(config map[string]any) (*pipeline.Pipeline, error) {
+	pipelineCfg, ok := config["pipeline"].([]any)
+	if !ok || len(pipelineCfg) == 0 {
+		slog.Info("No pipeline configuration found, events will not be transformed")
+		return pipeline.New(), nil
 	}
 
-	if !cfg.Enabled {
-		slog.Info("Node metadata enrichment is disabled")
+	var transformerConfigs []pipeline.Config
 
-		return nil, nil
+	for _, item := range pipelineCfg {
+		cfgMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		name, _ := cfgMap["name"].(string)
+		enabled, _ := cfgMap["enabled"].(bool)
+		configPath, _ := cfgMap["config"].(string)
+
+		transformerConfigs = append(transformerConfigs, pipeline.Config{
+			Name:       name,
+			Enabled:    enabled,
+			ConfigPath: configPath,
+		})
 	}
 
-	processor, err := nodemetadata.NewProcessor(ctx, nodemetadata.PlatformKubernetes, cfg, clientset)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create node metadata processor: %w", err)
-	}
-
-	slog.Info("Node metadata processor initialized successfully")
-
-	return processor, nil
-}
-
-func initializeOverrideProcessor(overrideConfigPath string) (overrides.Processor, error) {
-	cfg, err := overrides.LoadConfig(overrideConfigPath)
-	if err != nil {
-		slog.Warn("Failed to load override config, overrides disabled", "error", err)
-		return overrides.NewProcessor(&overrides.Config{Enabled: false})
-	}
-
-	processor, err := overrides.NewProcessor(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create override processor: %w", err)
-	}
-
-	return processor, nil
+	return pipeline.NewFromConfigs(transformerConfigs)
 }
 
 func startGRPCServer(
 	ctx context.Context,
 	socket string,
-	processor nodemetadata.Processor,
-	overrideProcessor overrides.Processor,
+	pipeline *pipeline.Pipeline,
 ) (net.Listener, error) {
 	slog.Info("Starting gRPC server on Unix socket", "socket", socket)
 
@@ -228,8 +209,7 @@ func startGRPCServer(
 
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterPlatformConnectorServer(grpcServer, &server.PlatformConnectorServer{
-		Processor:         processor,
-		OverrideProcessor: overrideProcessor,
+		Pipeline: pipeline,
 	})
 
 	go func() {
@@ -250,18 +230,17 @@ func initializeConnectors(
 	config map[string]interface{},
 	stopCh chan struct{},
 	databaseClientCertMountPath string,
-) (*ringbuffer.RingBuffer, *store.DatabaseStoreConnector, nodemetadata.Processor, error) {
+) (*ringbuffer.RingBuffer, *store.DatabaseStoreConnector, error) {
 	var (
 		k8sRingBuffer  *ringbuffer.RingBuffer
 		storeConnector *store.DatabaseStoreConnector
-		processor      nodemetadata.Processor
 		err            error
 	)
 
 	if config["enableK8sPlatformConnector"] == True {
-		k8sRingBuffer, processor, err = initializeK8sConnector(ctx, config, stopCh)
+		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
 		}
 	}
 
@@ -269,11 +248,11 @@ func initializeConnectors(
 	if config["enableMongoDBStorePlatformConnector"] == True || config["enablePostgresDBStorePlatformConnector"] == True {
 		storeConnector, err = initializeDatabaseStoreConnector(ctx, databaseClientCertMountPath)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize database store connector: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize database store connector: %w", err)
 		}
 	}
 
-	return k8sRingBuffer, storeConnector, processor, nil
+	return k8sRingBuffer, storeConnector, nil
 }
 
 func cleanupResources(
@@ -313,7 +292,6 @@ func cleanupResources(
 type platformConnectorConfig struct {
 	socket                      string
 	configFilePath              string
-	overrideConfigPath          string
 	metricsPort                 int
 	databaseClientCertMountPath string
 }
@@ -321,7 +299,6 @@ type platformConnectorConfig struct {
 func parseFlags() (*platformConnectorConfig, error) {
 	socket := flag.String("socket", "", "unix socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
-	overrideConfigPath := flag.String("override-config", "/etc/config/overrides.toml", "path to the override config file")
 	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
 	// Register database certificate flags using common package
@@ -341,7 +318,6 @@ func parseFlags() (*platformConnectorConfig, error) {
 	return &platformConnectorConfig{
 		socket:                      *socket,
 		configFilePath:              *configFilePath,
-		overrideConfigPath:          *overrideConfigPath,
 		metricsPort:                 portInt,
 		databaseClientCertMountPath: certConfig.ResolveCertPath(),
 	}, nil
@@ -366,18 +342,18 @@ func run() error {
 		return err
 	}
 
-	overrideProcessor, err := initializeOverrideProcessor(cfg.overrideConfigPath)
-	if err != nil {
-		return fmt.Errorf("failed to initialize override processor: %w", err)
-	}
-
-	k8sRingBuffer, storeConnector, processor, err := initializeConnectors(ctx,
+	k8sRingBuffer, storeConnector, err := initializeConnectors(ctx,
 		config, stopCh, cfg.databaseClientCertMountPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to initialize connectors: %w", err)
 	}
 
-	lis, err := startGRPCServer(ctx, cfg.socket, processor, overrideProcessor)
+	pipeline, err := initializePipeline(config)
+	if err != nil {
+		return fmt.Errorf("failed to initialize pipeline: %w", err)
+	}
+
+	lis, err := startGRPCServer(ctx, cfg.socket, pipeline)
 	if err != nil {
 		return err
 	}

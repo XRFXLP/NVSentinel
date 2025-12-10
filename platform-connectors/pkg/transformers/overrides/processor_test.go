@@ -279,7 +279,7 @@ func TestApplyOverrides(t *testing.T) {
 			proc, err := NewProcessor(tt.config)
 			require.NoError(t, err)
 
-			err = proc.ApplyOverrides(context.Background(), tt.event)
+			err = proc.Transform(context.Background(), tt.event)
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.expectedIsFatal, tt.event.IsFatal, "isFatal mismatch")

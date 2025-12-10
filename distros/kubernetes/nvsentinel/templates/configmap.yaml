@@ -27,30 +27,35 @@ data:
       "MaxNodeConditionMessageLength": {{ .Values.platformConnector.k8sConnector.maxNodeConditionMessageLength }},
       "enableMongoDBStorePlatformConnector": "{{ .Values.global.mongodbStore.enabled }}",
       "enablePostgresDBStorePlatformConnector": {{ if and .Values.global.datastore .Values.global.datastore.provider }}{{ eq .Values.global.datastore.provider "postgresql" | quote }}{{ else }}"false"{{ end }}
-      {{- if .Values.platformConnector.nodeMetadata }}
-      ,"nodeMetadataAugmentationEnabled": "{{ .Values.platformConnector.nodeMetadata.enabled }}"
-      ,"nodeMetadataCacheSize": {{ .Values.platformConnector.nodeMetadata.cacheSize }}
-      ,"nodeMetadataCacheTTLSeconds": {{ .Values.platformConnector.nodeMetadata.cacheTTLSeconds }}
-      {{- with .Values.platformConnector.nodeMetadata.allowedLabels }}
-      ,"nodeMetadataAllowedLabels": {{ . | toJson }}
-      {{- end }}
+      {{- with .Values.platformConnector.pipeline }}
+      ,"pipeline": {{ . | toJson }}
       {{- end }}
     }
+  {{- if .Values.platformConnector.transformers.metadata }}
+  metadata.toml: |
+    cacheSize = {{ .Values.platformConnector.transformers.metadata.cacheSize }}
+    cacheTTL = "{{ .Values.platformConnector.transformers.metadata.cacheTTLSeconds }}s"
+    {{- with .Values.platformConnector.transformers.metadata.allowedLabels }}
+    allowedLabels = {{ . | toJson }}
+    {{- end }}
+  {{- end }}
   overrides.toml: |
-    enabled = {{ .Values.platformConnector.healthEventOverrides.enabled }}
-    {{- range .Values.platformConnector.healthEventOverrides.rules }}
+    enabled = {{ (index .Values.platformConnector.pipeline 1).enabled }}
+    {{- range .Values.platformConnector.transformers.overrides.rules }}
 
     [[rules]]
     name = {{ .name | quote }}
     when = {{ .when | quote }}
-    {{- if .override.isFatal }}
-    [rules.override]
-    isFatal = {{ .override.isFatal }}
-    {{- end }}
-    {{- if .override.isHealthy }}
-    isHealthy = {{ .override.isHealthy }}
-    {{- end }}
-    {{- if .override.recommendedAction }}
-    recommendedAction = {{ .override.recommendedAction }}
-    {{- end }}
+    override = { {{- $pairs := list -}}
+      {{- if hasKey .override "isFatal" -}}
+        {{- $pairs = append $pairs (printf "isFatal = %v" .override.isFatal) -}}
+      {{- end -}}
+      {{- if hasKey .override "isHealthy" -}}
+        {{- $pairs = append $pairs (printf "isHealthy = %v" .override.isHealthy) -}}
+      {{- end -}}
+      {{- if .override.recommendedAction -}}
+        {{- $pairs = append $pairs (printf "recommendedAction = %q" .override.recommendedAction) -}}
+      {{- end -}}
+      {{- $pairs | join ", " -}}
+    }
     {{- end }}

@@ -12,21 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package nodemetadata enriches health events with node metadata from Kubernetes.
-// It fetches provider IDs, labels, and topology information and caches them for performance.
-package nodemetadata
+package pipeline
 
-import (
-	"context"
-
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
-)
-
-type Processor interface {
-	AugmentHealthEvent(ctx context.Context, event *pb.HealthEvent) error
-}
-
-type NodeMetadata struct {
-	ProviderID string
-	Labels     map[string]string
+type Config struct {
+	Name       string `yaml:"name"`
+	Enabled    bool   `yaml:"enabled"`
+	ConfigPath string `yaml:"config"`
 }

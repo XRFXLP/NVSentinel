@@ -22,11 +22,7 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-type Processor interface {
-	ApplyOverrides(ctx context.Context, event *pb.HealthEvent) error
-}
-
-type processor struct {
+type Processor struct {
 	enabled bool
 	rules   []compiledRule
 }
@@ -45,7 +41,7 @@ func captureOriginalState(event *pb.HealthEvent) originalState {
 	}
 }
 
-func NewProcessor(config *Config) (Processor, error) {
+func NewProcessor(config *Config) (*Processor, error) {
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -59,13 +55,13 @@ func NewProcessor(config *Config) (Processor, error) {
 		"enabled", config.Enabled,
 		"rule_count", len(rules))
 
-	return &processor{
+	return &Processor{
 		enabled: config.Enabled,
 		rules:   rules,
 	}, nil
 }
 
-func (p *processor) ApplyOverrides(ctx context.Context, event *pb.HealthEvent) error {
+func (p *Processor) Transform(ctx context.Context, event *pb.HealthEvent) error {
 	if !p.enabled || len(p.rules) == 0 {
 		return nil
 	}
@@ -95,7 +91,11 @@ func (p *processor) ApplyOverrides(ctx context.Context, event *pb.HealthEvent) e
 	return nil
 }
 
-func (p *processor) applyOverride(event *pb.HealthEvent, rule compiledRule, original originalState) {
+func (p *Processor) Name() string {
+	return "OverrideTransformer"
+}
+
+func (p *Processor) applyOverride(event *pb.HealthEvent, rule compiledRule, original originalState) {
 	changed := []string{}
 
 	if rule.override.IsFatal != nil && *rule.override.IsFatal != original.isFatal {
@@ -116,7 +116,9 @@ func (p *processor) applyOverride(event *pb.HealthEvent, rule compiledRule, orig
 		newAction, _ := rule.override.ParseRecommendedAction()
 		if newAction != original.recommendedAction {
 			event.RecommendedAction = newAction
+
 			overridesApplied.WithLabelValues(rule.name, "recommendedAction").Inc()
+
 			changed = append(changed, "recommendedAction")
 		}
 	}
