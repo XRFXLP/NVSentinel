@@ -382,22 +382,19 @@ func (r *Reconciler) deleteResumeToken(ctx context.Context, dbClient client.Data
 		return fmt.Errorf("failed to load token configuration: %w", err)
 	}
 
-	type deleteOperation interface {
-		DeleteOne(ctx context.Context, database, collection string, filter interface{}) error
+	clientTokenConfig := client.TokenConfig{
+		ClientName:      tokenConfig.ClientName,
+		TokenDatabase:   tokenConfig.TokenDatabase,
+		TokenCollection: tokenConfig.TokenCollection,
 	}
 
-	if deleter, ok := dbClient.(deleteOperation); ok {
-		filter := map[string]any{"clientName": tokenConfig.ClientName}
-
-		err := deleter.DeleteOne(ctx, tokenConfig.TokenDatabase, tokenConfig.TokenCollection, filter)
-		if err != nil {
-			return fmt.Errorf("failed to delete resume token: %w", err)
-		}
-
-		return nil
+	if err := dbClient.DeleteResumeToken(ctx, clientTokenConfig); err != nil {
+		return fmt.Errorf("failed to delete resume token: %w", err)
 	}
 
-	return fmt.Errorf("database client does not support DeleteOne operation")
+	slog.Info("Successfully deleted resume token", "clientName", tokenConfig.ClientName)
+
+	return nil
 }
 
 // ProcessEvent processes a single health event

@@ -39,7 +39,7 @@ const (
 	keyOriginalDeployment
 	keyCircuitBreakerNodes
 
-	cursorModeCreate  cursorMode = "CREATE"
+	cursorModeCreate cursorMode = "CREATE"
 	cursorModeResume cursorMode = "RESUME"
 )
 
@@ -246,14 +246,14 @@ func TestScaleHealthEvents(t *testing.T) {
 				for _, nodeName := range blockedNodes {
 					node, err := helpers.GetNodeByName(ctx, client, nodeName)
 					if err == nil && node.Spec.Unschedulable {
-						return false
+						return true
 					}
 				}
-				return true
+				return false
 			},
-			helpers.EventuallyWaitTimeout,
+			helpers.NeverWaitTimeout,
 			helpers.WaitInterval,
-			"nodes should not be cordoned",
+			"blocked nodes should not be cordoned",
 			blockedNodes,
 		)
 
