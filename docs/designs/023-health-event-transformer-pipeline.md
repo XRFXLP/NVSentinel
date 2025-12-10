@@ -4,13 +4,13 @@
 
 Platform Connector receives health events from monitors and needs to transform them before storage and propagation. Currently, it applies metadata augmentation that adds node labels and provider info from Kubernetes.
 
-ADR-021 introduces a second transformation: property overrides using CEL-based rules to modify `isFatal`, `isHealthy`, `recommendedAction`. This is being implemented as a separate processor with its own interface, following the existing pattern used by the metadata augmentor.
+[ADR-021](./021-health-event-property-overrides.md) introduces a second transformation: property overrides using CEL-based rules to modify `isFatal`, `isHealthy`, `recommendedAction`. This is being implemented as a separate processor with its own interface, following the existing pattern used by the metadata augmentor.
 
 As we add more transformations (filtering, enrichment, audit logging), this ad-hoc approach creates maintenance burden and makes ordering/configuration difficult.
 
 ## Problem
 
-The current implementation (with ADR-021 additions) couples the server logic to specific processor interfaces:
+The current implementation (with [ADR-021](./021-health-event-property-overrides.md) additions) couples the server logic to specific processor interfaces:
 
 ```go
 if p.Processor != nil {
@@ -224,7 +224,7 @@ Transformer failures log warnings but don't block the pipeline. Events with tran
 
 Continue adding processors with custom interfaces.
 
-Rejected: Technical debt accumulates quickly. ADR-021 adds the second transformer; more are coming (audit, filtering). Better to establish the pattern now than refactor later.
+Rejected: Technical debt accumulates quickly. [ADR-021](./021-health-event-property-overrides.md) adds the second transformer; more are coming (audit, filtering). Better to establish the pattern now than refactor later.
 
 ## Notes
 
@@ -233,5 +233,5 @@ Rejected: Technical debt accumulates quickly. ADR-021 adds the second transforme
 - First transformation must be metadata augmentation (override rules depend on node labels)
 - Factory pattern maps config string names to implementations via registry
 - Transformers register themselves via `init()` - no explicit wiring in main.go
-- Implements alongside ADR-021 (both will be merged together)
+- Implements alongside [ADR-021](./021-health-event-property-overrides.md) (both will be merged together)
 
