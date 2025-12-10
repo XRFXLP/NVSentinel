@@ -351,8 +351,8 @@ func (r *Reconciler) handleCircuitBreakerCursorMode(ctx context.Context, dbClien
 
 	cursorMode, err := r.cb.GetCursorMode(ctx)
 	if err != nil {
-		slog.Warn("Failed to read cursor mode, defaulting to RESUME", "error", err)
-		return nil
+		slog.Error("Failed to read cursor mode, defaulting to RESUME", "error", err)
+		return fmt.Errorf("failed to read cursor mode: %w", err)
 	}
 
 	if cursorMode == breaker.CursorModeCreate {
