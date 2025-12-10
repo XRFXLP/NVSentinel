@@ -84,7 +84,7 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 
 ### Package Structure
 
-```
+```plaintext
 platform-connectors/pkg/
 ├── pipeline/
 │   ├── pipeline.go       # Pipeline and Transformer interface
@@ -184,7 +184,7 @@ func newFromConfig(cfg *pipeline.TransformerConfig) (pipeline.Transformer, error
     }
     return New(client), nil
 }
-
+```
 
 
 ### Configuration
@@ -195,7 +195,6 @@ platformConnector:
     - name: MetadataAugmentor
       enabled: true
       config: /etc/nvsentinel/metadata.toml
-
 ```
 
 The factory creates transformers from config. Order in YAML determines execution order. main.go imports transformer packages (triggering `init()` registration) then calls `NewPipelineFromConfig()`.
