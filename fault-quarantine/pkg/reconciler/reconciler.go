@@ -204,7 +204,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	}
 
 	if err := r.handleCircuitBreakerCursorMode(ctx, databaseClient); err != nil {
-		return err
+		return fmt.Errorf("failed to handle circuit breaker cursor mode: %w", err)
 	}
 
 	r.eventWatcher.SetProcessEventCallback(
