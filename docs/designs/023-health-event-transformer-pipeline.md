@@ -198,7 +198,7 @@ platformConnector:
 
 ```
 
-The factory creates transformers from config. Order in YAML determines execution order. Main.go imports transformer packages (triggering `init()` registration) then calls `NewPipelineFromConfig()`.
+The factory creates transformers from config. Order in YAML determines execution order. main.go imports transformer packages (triggering `init()` registration) then calls `NewPipelineFromConfig()`.
 
 ### Error Handling
 
