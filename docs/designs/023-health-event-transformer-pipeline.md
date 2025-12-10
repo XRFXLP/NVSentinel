@@ -216,7 +216,7 @@ Transformer failures log warnings but don't block the pipeline. Events with tran
 ### Negative
 
 - **Refactoring cost**: Existing `nodemetadata.Processor` needs interface change
-- **Learning curve**: New contributors need to understand pipeline and factory patterns
+- **Complexity**: Adds indirection through factory and registry
 
 ## Alternatives
 
