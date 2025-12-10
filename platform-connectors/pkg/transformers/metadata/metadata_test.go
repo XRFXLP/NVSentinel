@@ -73,6 +73,13 @@ func deleteTestNode(t *testing.T, nodeName string) {
 }
 
 func createTestAugmentor(config *Config) *Augmentor {
+	if config == nil {
+		config = &Config{
+			CacheSize:     100,
+			CacheTTL:      1 * time.Hour,
+			AllowedLabels: []string{},
+		}
+	}
 	cache := expirable.NewLRU[string, *NodeMetadata](
 		config.CacheSize,
 		nil,
