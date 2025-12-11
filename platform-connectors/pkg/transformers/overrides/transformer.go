@@ -115,7 +115,19 @@ func (p *Processor) applyOverride(event *pb.HealthEvent, rule compiledRule, orig
 	}
 
 	if rule.override.RecommendedAction != nil {
-		newAction, _ := rule.override.ParseRecommendedAction()
+		newAction, err := rule.override.ParseRecommendedAction()
+		if err != nil {
+			slog.Error("Failed to parse recommended action",
+				"rule", rule.name,
+				"node", event.NodeName,
+				"agent", event.Agent,
+				"error", err)
+
+			evaluationErrors.Inc()
+
+			newAction = original.recommendedAction
+		}
+
 		if newAction != original.recommendedAction {
 			event.RecommendedAction = newAction
 
