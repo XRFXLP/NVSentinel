@@ -173,12 +173,14 @@ func initializePipeline(config map[string]any) (*pipeline.Pipeline, error) {
 
 			continue
 		}
+
 		enabled, enabledOk := cfgMap["enabled"].(bool)
 		if !enabledOk {
 			slog.Error("Failed to convert pipeline configuration to map", "item", item)
 
 			continue
 		}
+
 		configPath, configPathOk := cfgMap["config"].(string)
 		if !configPathOk {
 			slog.Error("Failed to convert pipeline configuration to map", "item", item)
