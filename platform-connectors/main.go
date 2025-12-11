@@ -169,21 +169,21 @@ func initializePipeline(config map[string]any) (*pipeline.Pipeline, error) {
 
 		name, nameOk := cfgMap["name"].(string)
 		if !nameOk {
-			slog.Error("Failed to convert pipeline configuration to map", "item", item)
+			slog.Warn("Pipeline config missing or invalid 'name' field", "config", cfgMap)
 
 			continue
 		}
 
 		enabled, enabledOk := cfgMap["enabled"].(bool)
 		if !enabledOk {
-			slog.Error("Failed to convert pipeline configuration to map", "item", item)
+			slog.Error("Pipeline config missing or invalid 'enabled' field", "name", name, "config", cfgMap)
 
 			continue
 		}
 
 		configPath, configPathOk := cfgMap["config"].(string)
 		if !configPathOk {
-			slog.Error("Failed to convert pipeline configuration to map", "item", item)
+			slog.Error("Pipeline config missing or invalid 'config' field", "name", name, "config", cfgMap)
 
 			continue
 		}

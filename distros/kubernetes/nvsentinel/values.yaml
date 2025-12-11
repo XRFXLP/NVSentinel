@@ -121,7 +121,7 @@ platformConnector:
   pipeline:
     # List of transformers to execute (in order)
     - name: MetadataAugmentor
-      enabled: true
+      enabled: false
       config: /etc/config/metadata.toml
     
     - name: OverrideTransformer

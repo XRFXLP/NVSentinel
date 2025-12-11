@@ -198,7 +198,6 @@ Rejected:
 - CEL expressions have access to all health event fields plus node metadata (labels, provider info)
 - First match wins: Rules evaluated in order; first matching rule applies
 - Opt-in: Feature disabled by default; requires explicit configuration
-- Valid `recommendedAction` values: `NONE`, `COMPONENT_RESET`, `CONTACT_SUPPORT`, `RUN_FIELDDIAG`, `RESTART_VM`, `RESTART_BM`, `REPLACE_VM`, `RUN_DCGMEUD`
 
 ## Testing
 
