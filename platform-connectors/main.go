@@ -162,12 +162,29 @@ func initializePipeline(config map[string]any) (*pipeline.Pipeline, error) {
 	for _, item := range pipelineCfg {
 		cfgMap, ok := item.(map[string]any)
 		if !ok {
+			slog.Error("Failed to convert pipeline configuration to map", "item", item)
+
 			continue
 		}
 
-		name, _ := cfgMap["name"].(string)
-		enabled, _ := cfgMap["enabled"].(bool)
-		configPath, _ := cfgMap["config"].(string)
+		name, nameOk := cfgMap["name"].(string)
+		if !nameOk {
+			slog.Error("Failed to convert pipeline configuration to map", "item", item)
+
+			continue
+		}
+		enabled, enabledOk := cfgMap["enabled"].(bool)
+		if !enabledOk {
+			slog.Error("Failed to convert pipeline configuration to map", "item", item)
+
+			continue
+		}
+		configPath, configPathOk := cfgMap["config"].(string)
+		if !configPathOk {
+			slog.Error("Failed to convert pipeline configuration to map", "item", item)
+
+			continue
+		}
 
 		transformerConfigs = append(transformerConfigs, pipeline.Config{
 			Name:       name,

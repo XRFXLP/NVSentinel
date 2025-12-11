@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package pipeline provides a transformer pipeline for processing health events.
+// It includes a registry-based factory for creating transformers from configuration.
 package pipeline
 
 import (
@@ -36,6 +38,9 @@ func Create(cfg *Config) (Transformer, error) {
 	return factory(cfg)
 }
 
+// NewFromConfigs creates a Pipeline from a slice of transformer configurations.
+// Disabled transformers are skipped. Returns an error if any enabled transformer
+// fails to initialize.
 func NewFromConfigs(configs []Config) (*Pipeline, error) {
 	var transformers []Transformer
 

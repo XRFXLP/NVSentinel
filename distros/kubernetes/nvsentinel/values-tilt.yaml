@@ -331,11 +331,11 @@ platformConnector:
     
     overrides:
       rules:
-      - name: "suppress-xid-79"
-        when: 'event.agent == "syslog-health-monitor" && "79" in event.errorCode'
+      - name: "escalate-xid-94"
+        when: 'event.agent == "syslog-health-monitor" && "94" in event.errorCode'
         override:
-          isFatal: false
-          recommendedAction: "NONE"
+          isFatal: true
+          recommendedAction: "CONTACT_SUPPORT"
     #
     # - name: "zone-specific-override"
     #   when: 'event.metadata["topology.kubernetes.io/zone"] == "us-west1-a" && event.componentClass == "GPU"'

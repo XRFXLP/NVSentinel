@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package overrides provides a transformer that applies CEL-based property
+// overrides to health events based on configurable rules.
 package overrides
 
 import (
@@ -31,7 +33,7 @@ func newFromConfig(cfg *pipeline.Config) (pipeline.Transformer, error) {
 
 	overrideCfg, err := LoadConfig(cfg.ConfigPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load overrides configuration: %w", err)
 	}
 
 	return NewProcessor(overrideCfg)

@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package overrides provides health event property override functionality
+// using CEL-based rule evaluation to conditionally modify health event fields.
 package overrides
 
 import (

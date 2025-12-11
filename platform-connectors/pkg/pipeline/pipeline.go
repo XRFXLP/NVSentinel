@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package pipeline provides a transformer pipeline for processing health events.
+// It includes a registry-based factory for creating transformers from configuration.
 package pipeline
 
 import (

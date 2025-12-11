@@ -39,8 +39,15 @@ data:
     allowedLabels = {{ . | toJson }}
     {{- end }}
   {{- end }}
+  {{- if .Values.platformConnector.transformers.overrides }}
   overrides.toml: |
-    enabled = {{ (index .Values.platformConnector.pipeline 1).enabled }}
+    {{- $overrideEnabled := false }}
+    {{- range .Values.platformConnector.pipeline }}
+      {{- if eq .name "OverrideTransformer" }}
+        {{- $overrideEnabled = .enabled }}
+      {{- end }}
+    {{- end }}
+    enabled = {{ $overrideEnabled }}
     {{- range .Values.platformConnector.transformers.overrides.rules }}
 
     [[rules]]
@@ -59,3 +66,4 @@ data:
       {{- $pairs | join ", " -}}
     }
     {{- end }}
+  {{- end }}
