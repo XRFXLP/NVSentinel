@@ -118,11 +118,12 @@ Perfect for learning, presentations, or CI/CD testing!
 NVSentinel follows a microservices architecture with modular health monitors and core processing modules:
 
 ```mermaid
-graph TB
+graph LR
     subgraph "Health Monitors"
         GPU["GPU Health Monitor<br/>(DCGM Integration)"]
         SYS["Syslog Health Monitor<br/>(Journalctl)"]
         CSP["CSP Health Monitor<br/>(CSP APIs)"]
+        K8SOM["Kubernetes Object Monitor<br/>(CEL Policies)"]
     end
     
     subgraph "Core Processing"
@@ -142,7 +143,8 @@ graph TB
     GPU -->|gRPC| PC
     SYS -->|gRPC| PC
     CSP -->|gRPC| PC
-    
+    K8SOM -->|gRPC| PC
+
     PC -->|persist| STORE
     PC <-->|update status| K8S
     
@@ -158,6 +160,8 @@ graph TB
     HEA -.->|watch changes| STORE
     
     LBL -->|update labels| K8S
+
+    K8SOM -.->|watch changes| K8S
 ```
 
 **Data Flow**:
