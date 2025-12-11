@@ -336,7 +336,7 @@ platformConnector:
         override:
           isFatal: true
           recommendedAction: "CONTACT_SUPPORT"
-    #
+    
     # - name: "zone-specific-override"
     #   when: 'event.metadata["topology.kubernetes.io/zone"] == "us-west1-a" && event.componentClass == "GPU"'
     #   override:
