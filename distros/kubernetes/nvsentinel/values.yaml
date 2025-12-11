@@ -131,7 +131,7 @@ platformConnector:
   # Transformer-specific configurations
   transformers:
     # Metadata augmentor - enriches events with node labels and provider info
-    metadata:
+    MetadataAugmentor:
       cacheSize: 50
       cacheTTLSeconds: 3600
       allowedLabels:
@@ -158,7 +158,7 @@ platformConnector:
         - "cloud.google.com/gce-topology-subblock"
     
     # Property overrides - uses CEL expressions to override event properties
-    overrides:
+    OverrideTransformer:
       rules: []
       # Example:
       # - name: "suppress-xid-109"

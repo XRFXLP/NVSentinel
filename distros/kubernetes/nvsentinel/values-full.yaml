@@ -300,7 +300,7 @@ platformConnector:
   transformers:
     # Metadata augmentor configuration
     # Adds node labels and provider information to health events
-    metadata:
+    MetadataAugmentor:
       # LRU cache size for node metadata
       # Higher values use more memory but reduce API calls
       cacheSize: 50
@@ -336,7 +336,7 @@ platformConnector:
     # Property overrides configuration
     # Uses CEL expressions to modify health event properties
     # Allows operators to suppress errors or change recommended actions
-    overrides:
+    OverrideTransformer:
       # List of override rules (evaluated in order, first match wins)
       rules: []
       # Example rule - suppress XID 109 errors:

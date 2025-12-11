@@ -56,10 +56,7 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 
 	if p.Pipeline != nil {
 		for i := range he.Events {
-			err := p.Pipeline.Process(ctx, he.Events[i])
-			if err != nil {
-				slog.Error("Failed to process health event", "error", err, "event", he.Events[i])
-			}
+			p.Pipeline.Process(ctx, he.Events[i])
 		}
 	}
 

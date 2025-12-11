@@ -153,39 +153,31 @@ func initializeDatabaseStoreConnector(
 func initializePipeline(config map[string]any) (*pipeline.Pipeline, error) {
 	pipelineCfg, ok := config["pipeline"].([]any)
 	if !ok || len(pipelineCfg) == 0 {
-		slog.Info("No pipeline configuration found, events will not be transformed")
-		return pipeline.New(), nil
+		slog.Error("No pipeline configuration found, events will not be transformed")
+		return pipeline.New(), fmt.Errorf("no pipeline configuration found")
 	}
 
 	var transformerConfigs []pipeline.Config
 
 	for _, item := range pipelineCfg {
-		cfgMap, ok := item.(map[string]any)
+		configMap, ok := item.(map[string]any)
 		if !ok {
-			slog.Error("Failed to convert pipeline configuration to map", "item", item)
-
-			continue
+			return nil, fmt.Errorf("failed to convert pipeline configuration to map: %v", item)
 		}
 
-		name, nameOk := cfgMap["name"].(string)
-		if !nameOk {
-			slog.Warn("Pipeline config missing or invalid 'name' field", "config", cfgMap)
-
-			continue
+		name, ok := configMap["name"].(string)
+		if !ok {
+			return nil, fmt.Errorf("pipeline config missing or invalid 'name' field: %v", configMap["name"])
 		}
 
-		enabled, enabledOk := cfgMap["enabled"].(bool)
-		if !enabledOk {
-			slog.Error("Pipeline config missing or invalid 'enabled' field", "name", name, "config", cfgMap)
-
-			continue
+		enabled, ok := configMap["enabled"].(bool)
+		if !ok {
+			return nil, fmt.Errorf("pipeline config missing or invalid 'enabled' field: %v", configMap["enabled"])
 		}
 
-		configPath, configPathOk := cfgMap["config"].(string)
-		if !configPathOk {
-			slog.Error("Pipeline config missing or invalid 'config' field", "name", name, "config", cfgMap)
-
-			continue
+		configPath, ok := configMap["config"].(string)
+		if !ok {
+			return nil, fmt.Errorf("pipeline config missing or invalid 'config' field: %v", configMap["config"])
 		}
 
 		transformerConfigs = append(transformerConfigs, pipeline.Config{

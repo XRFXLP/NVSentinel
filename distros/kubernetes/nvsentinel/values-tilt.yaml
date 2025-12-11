@@ -322,14 +322,14 @@ platformConnector:
       config: /etc/config/overrides.toml
   
   transformers:
-    metadata:
+    MetadataAugmentor:
       cacheSize: 50
       cacheTTLSeconds: 3600
       allowedLabels:
         - "topology.kubernetes.io/zone"
         - "topology.kubernetes.io/region"
     
-    overrides:
+    OverrideTransformer:
       rules:
       - name: "escalate-xid-94"
         when: 'event.agent == "syslog-health-monitor" && "94" in event.errorCode'

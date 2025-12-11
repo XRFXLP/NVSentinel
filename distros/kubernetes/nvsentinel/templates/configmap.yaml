@@ -31,15 +31,15 @@ data:
       ,"pipeline": {{ . | toJson }}
       {{- end }}
     }
-  {{- if .Values.platformConnector.transformers.metadata }}
+  {{- if .Values.platformConnector.transformers.MetadataAugmentor }}
   metadata.toml: |
-    cacheSize = {{ .Values.platformConnector.transformers.metadata.cacheSize }}
-    cacheTTL = "{{ .Values.platformConnector.transformers.metadata.cacheTTLSeconds }}s"
-    {{- with .Values.platformConnector.transformers.metadata.allowedLabels }}
+    cacheSize = {{ .Values.platformConnector.transformers.MetadataAugmentor.cacheSize }}
+    cacheTTL = "{{ .Values.platformConnector.transformers.MetadataAugmentor.cacheTTLSeconds }}s"
+    {{- with .Values.platformConnector.transformers.MetadataAugmentor.allowedLabels }}
     allowedLabels = {{ . | toJson }}
     {{- end }}
   {{- end }}
-  {{- if .Values.platformConnector.transformers.overrides }}
+  {{- if .Values.platformConnector.transformers.OverrideTransformer }}
   overrides.toml: |
     {{- $overrideEnabled := false }}
     {{- range .Values.platformConnector.pipeline }}
@@ -48,7 +48,7 @@ data:
       {{- end }}
     {{- end }}
     enabled = {{ $overrideEnabled }}
-    {{- range .Values.platformConnector.transformers.overrides.rules }}
+    {{- range .Values.platformConnector.transformers.OverrideTransformer.rules }}
 
     [[rules]]
     name = {{ .name | quote }}

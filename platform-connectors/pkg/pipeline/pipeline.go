@@ -36,7 +36,7 @@ func New(transformers ...Transformer) *Pipeline {
 	return &Pipeline{transformers: transformers}
 }
 
-func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) error {
+func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) {
 	for _, t := range p.transformers {
 		if err := t.Transform(ctx, event); err != nil {
 			slog.Warn("Transformer failed",
@@ -45,6 +45,4 @@ func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) error {
 				"error", err)
 		}
 	}
-
-	return nil
 }
