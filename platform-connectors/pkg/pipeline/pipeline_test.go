@@ -87,9 +87,7 @@ func TestPipeline(t *testing.T) {
 			pipeline := New(tt.transformers...)
 			event := &pb.HealthEvent{NodeName: "test-node"}
 
-			err := pipeline.Process(context.Background(), event)
-
-			assert.NoError(t, err)
+			pipeline.Process(context.Background(), event)
 
 			callCount := 0
 			for _, tr := range tt.transformers {
