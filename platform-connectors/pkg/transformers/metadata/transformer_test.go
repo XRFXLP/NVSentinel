@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package nodemetadata
+package metadata
 
 import (
 	"context"
@@ -72,21 +72,28 @@ func deleteTestNode(t *testing.T, nodeName string) {
 	assert.NoError(t, err, "failed to delete test node")
 }
 
-func createTestProcessor(config *Config) *processor {
-	p := &processor{
-		config:    config,
-		clientset: testClient,
+func createTestAugmentor(config *Config) *Augmentor {
+	if config == nil {
+		config = &Config{
+			CacheSize:     100,
+			CacheTTL:      1 * time.Hour,
+			AllowedLabels: []string{},
+		}
 	}
-	p.cache = expirable.NewLRU[string, *NodeMetadata](
+	cache := expirable.NewLRU[string, *NodeMetadata](
 		config.CacheSize,
 		nil,
 		config.CacheTTL,
 	)
-	return p
+	return &Augmentor{
+		config:    config,
+		clientset: testClient,
+		cache:     cache,
+	}
 }
 
-// TestProcessorAugmentHealthEvent tests various augmentation scenarios
-func TestProcessorAugmentHealthEvent(t *testing.T) {
+// TestAugmentorTransform tests various augmentation scenarios
+func TestAugmentorTransform(t *testing.T) {
 	tests := []struct {
 		name           string
 		node           *corev1.Node
@@ -113,7 +120,6 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 				},
 			},
 			config: &Config{
-				Enabled:   true,
 				CacheSize: 100,
 				CacheTTL:  1 * time.Hour,
 				AllowedLabels: []string{
@@ -133,14 +139,12 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 		{
 			name:          "empty node name",
 			node:          nil,
-			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour},
 			eventNodeName: "",
 			expectError:   true,
 		},
 		{
 			name:          "node not found",
 			node:          nil,
-			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour},
 			eventNodeName: "non-existent-node",
 			expectError:   true,
 		},
@@ -150,7 +154,6 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-node-2"},
 				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-abc123"},
 			},
-			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour},
 			eventNodeName: "test-node-2",
 			existingMeta:  nil,
 			expectError:   false,
@@ -165,7 +168,6 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-node-3"},
 				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-def456"},
 			},
-			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour},
 			eventNodeName: "test-node-3",
 			existingMeta:  map[string]string{"existing-key": "existing-value"},
 			expectError:   false,
@@ -184,7 +186,6 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 				Spec: corev1.NodeSpec{},
 			},
 			config: &Config{
-				Enabled:       true,
 				CacheSize:     100,
 				CacheTTL:      1 * time.Hour,
 				AllowedLabels: []string{"test-label"},
@@ -202,7 +203,6 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-node-5"},
 				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ghi789"},
 			},
-			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour, AllowedLabels: []string{}},
 			eventNodeName: "test-node-5",
 			expectError:   false,
 			validateResult: func(t *testing.T, event *pb.HealthEvent) {
@@ -216,18 +216,17 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-node-6",
 					Labels: map[string]string{
-						"topology.k8s.aws/capacity-block-id":     "cbr-01234567",
-						"topology.k8s.aws/network-node-layer-1":  "nn-abcd",
-						"oci.oraclecloud.com/host.id":            "971b2",
-						"cloud.google.com/gce-topology-block":    "9b6c",
-						"cloud.google.com/gce-topology-host":     "7007",
-						"node.kubernetes.io/instance-type":       "p4d.24xlarge",
+						"topology.k8s.aws/capacity-block-id":    "cbr-01234567",
+						"topology.k8s.aws/network-node-layer-1": "nn-abcd",
+						"oci.oraclecloud.com/host.id":           "971b2",
+						"cloud.google.com/gce-topology-block":   "9b6c",
+						"cloud.google.com/gce-topology-host":    "7007",
+						"node.kubernetes.io/instance-type":      "p4d.24xlarge",
 					},
 				},
 				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-cloud123"},
 			},
 			config: &Config{
-				Enabled:   true,
 				CacheSize: 100,
 				CacheTTL:  1 * time.Hour,
 				AllowedLabels: []string{
@@ -277,7 +276,6 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 				},
 			},
 			config: &Config{
-				Enabled:       true,
 				CacheSize:     100,
 				CacheTTL:      1 * time.Hour,
 				AllowedLabels: []string{"topology.kubernetes.io/zone"},
@@ -294,7 +292,7 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 					defer deleteTestNode(t, node.Name)
 				}
 
-				p := createTestProcessor(tt.config)
+				p := createTestAugmentor(tt.config)
 				ctx := context.Background()
 
 				for _, node := range tt.nodes {
@@ -302,7 +300,7 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 						NodeName: node.Name,
 						Metadata: make(map[string]string),
 					}
-					err := p.AugmentHealthEvent(ctx, event)
+					err := p.Transform(ctx, event)
 					require.NoError(t, err)
 					assert.Equal(t, node.Spec.ProviderID, event.Metadata["providerID"])
 					assert.Equal(t, node.Labels["topology.kubernetes.io/zone"], event.Metadata["topology.kubernetes.io/zone"])
@@ -315,7 +313,7 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 				defer deleteTestNode(t, tt.node.Name)
 			}
 
-			p := createTestProcessor(tt.config)
+			p := createTestAugmentor(tt.config)
 
 			ctx := context.Background()
 			event := &pb.HealthEvent{
@@ -326,7 +324,7 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 				event.Metadata = make(map[string]string)
 			}
 
-			err := p.AugmentHealthEvent(ctx, event)
+			err := p.Transform(ctx, event)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -350,19 +348,18 @@ func TestProcessorCachingBehavior(t *testing.T) {
 	createTestNode(t, node)
 
 	config := &Config{
-		Enabled:   true,
 		CacheSize: 100,
 		CacheTTL:  1 * time.Hour,
 	}
 
-	p := createTestProcessor(config)
+	p := createTestAugmentor(config)
 	ctx := context.Background()
 
 	event1 := &pb.HealthEvent{
 		NodeName: "cache-test-node",
 		Metadata: make(map[string]string),
 	}
-	require.NoError(t, p.AugmentHealthEvent(ctx, event1))
+	require.NoError(t, p.Transform(ctx, event1))
 	assert.NotEmpty(t, event1.Metadata["providerID"])
 
 	// Delete node to prove second call uses cache (not API)
@@ -372,7 +369,7 @@ func TestProcessorCachingBehavior(t *testing.T) {
 		NodeName: "cache-test-node",
 		Metadata: make(map[string]string),
 	}
-	require.NoError(t, p.AugmentHealthEvent(ctx, event2))
+	require.NoError(t, p.Transform(ctx, event2))
 
 	// If cache wasn't used, this would fail because node is deleted
 	assert.Equal(t, event1.Metadata["providerID"], event2.Metadata["providerID"])
@@ -388,12 +385,11 @@ func TestProcessorContextCancellation(t *testing.T) {
 	defer deleteTestNode(t, node.Name)
 
 	config := &Config{
-		Enabled:   true,
 		CacheSize: 100,
 		CacheTTL:  1 * time.Hour,
 	}
 
-	p := createTestProcessor(config)
+	p := createTestAugmentor(config)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -403,7 +399,7 @@ func TestProcessorContextCancellation(t *testing.T) {
 		Metadata: make(map[string]string),
 	}
 
-	err := p.AugmentHealthEvent(ctx, event)
+	err := p.Transform(ctx, event)
 	if err != nil {
 		assert.Contains(t, err.Error(), "context")
 	}
@@ -426,13 +422,12 @@ func TestProcessorConcurrentAugmentations(t *testing.T) {
 	defer deleteTestNode(t, node.Name)
 
 	config := &Config{
-		Enabled:       true,
 		CacheSize:     100,
 		CacheTTL:      1 * time.Hour,
 		AllowedLabels: []string{"test-label"},
 	}
 
-	p := createTestProcessor(config)
+	p := createTestAugmentor(config)
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
@@ -444,7 +439,7 @@ func TestProcessorConcurrentAugmentations(t *testing.T) {
 				NodeName: "concurrent-test-node",
 				Metadata: make(map[string]string),
 			}
-			err := p.AugmentHealthEvent(ctx, event)
+			err := p.Transform(ctx, event)
 			assert.NoError(t, err)
 			assert.Equal(t, "aws:///us-west-2a/i-concurrent123", event.Metadata["providerID"])
 			assert.Equal(t, "test-value", event.Metadata["test-label"])
@@ -465,7 +460,6 @@ func TestNewProcessorValidation(t *testing.T) {
 		{
 			name: "invalid config",
 			config: &Config{
-				Enabled:   true,
 				CacheSize: 0, // invalid
 				CacheTTL:  1 * time.Hour,
 			},
@@ -476,7 +470,6 @@ func TestNewProcessorValidation(t *testing.T) {
 		{
 			name: "valid processor",
 			config: &Config{
-				Enabled:   true,
 				CacheSize: 100,
 				CacheTTL:  1 * time.Hour,
 			},
@@ -487,7 +480,7 @@ func TestNewProcessorValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			processor, err := NewProcessor(context.Background(), PlatformKubernetes, tt.config, tt.clientset)
+			processor, err := New(context.Background(), tt.config, tt.clientset)
 
 			if tt.expectError {
 				assert.Error(t, err)
