@@ -24,44 +24,65 @@ Platform Connectors runs as a deployment in the cluster:
 
 1. Exposes gRPC service for health monitors to send events
 2. Receives health events via gRPC (`HealthEventOccurredV1` API)
-3. Optionally enriches events with node metadata (cloud provider, labels, topology)
-4. Queues events in ring buffers for parallel processing
+3. Processes events through the transformer pipeline:
+   - **Metadata Augmentor**: Augments events with node metadata (cloud provider, labels, topology)
+   - **Override Transformer**: Applies CEL-based rules to modify event properties
+   - **Custom Transformers**: Additional transformations as configured
+4. Queues transformed events in ring buffers for parallel processing
 5. Processes events through multiple connectors:
    - **Store Connector**: Persists events to the datastore
    - **Kubernetes Connector**: Updates node conditions and Kubernetes events
 6. Each connector processes events independently for resilience
 
-The ring buffer architecture ensures events are processed reliably even under high load, with retry logic for transient failures.
+The transformer pipeline processes events in order, allowing each transformer to build on previous enrichments. The ring buffer architecture ensures events are processed reliably even under high load, with retry logic for transient failures.
 
 ## Configuration
 
 Configure Platform Connectors through Helm values:
 
 ```yaml
-platform-connectors:
+platformConnector:
   enabled: true
   
-  # Node metadata enrichment
-  nodeMetadata:
-    enabled: true
-    cacheSize: 50
-    cacheTTLSeconds: 3600
-    allowedLabels:
-      - "topology.kubernetes.io/zone"
-      - "topology.kubernetes.io/region"
-      - "node.kubernetes.io/instance-type"
-      - "nvidia.com/cuda.driver-version.major"
-      - "nvidia.com/cuda.driver-version.minor"
-      - "nvidia.com/cuda.driver-version.revision"
-      - "nvidia.com/cuda.driver-version.full"
-      # Add cloud-specific labels as needed
+  # Transformer pipeline - defines execution order
+  pipeline:
+    - name: MetadataAugmentor
+      enabled: false
+      config: /etc/config/metadata.toml
+    - name: OverrideTransformer
+      enabled: false
+      config: /etc/config/overrides.toml
+  
+  # Transformer configurations
+  transformers:
+    # Metadata enrichment
+    MetadataAugmentor:
+      cacheSize: 50
+      cacheTTLSeconds: 3600
+      allowedLabels:
+        - "topology.kubernetes.io/zone"
+        - "topology.kubernetes.io/region"
+        - "node.kubernetes.io/instance-type"
+    
+    # Health event property overrides
+    OverrideTransformer:
+      rules:
+        - name: "suppress-xid-109"
+          when: 'event.agent == "syslog-health-monitor" && "109" in event.errorCode'
+          override:
+            isFatal: false
+            recommendedAction: "NONE"
 ```
 
 ### Configuration Options
 
-- **Node Metadata**: Enable/disable metadata enrichment and configure which labels to include
-- **Cache Settings**: Configure metadata cache size and TTL for performance
+- **Pipeline**: Configure transformer execution order and enable/disable individual transformers
+- **Transformers**: Transformer-specific configurations (MetadataAugmentor, OverrideTransformer)
+- **Metadata Augmentor**: Configure node metadata enrichment, cache settings, and allowed labels
+- **Override Transformer**: Define CEL-based rules to modify event properties
 - **Kubernetes API Rate Limits**: Configure QPS and burst for Kubernetes API calls
+
+For complete configuration reference, see [Platform Connectors Configuration](configuration/platform-connectors.md).
 
 ## What It Does
 
@@ -70,12 +91,20 @@ Receives health events from all monitors via gRPC:
 - GPU Health Monitor (DCGM-based checks)
 - Syslog Health Monitor (log-based checks)
 - CSP Health Monitor (cloud provider events)
+- Kubernetes Object Monitor (resource-based checks)
 - Any custom health monitors
+
+### Event Transformation
+Processes events through configurable transformer pipeline:
+- **Metadata Augmentor**: Adds cloud provider IDs, topology labels, custom node labels
+- **Override Transformer**: Applies CEL-based rules to modify event severity and recommendations
+- **Extensible**: Support for custom transformers via factory pattern
+- Transformers execute in configured order with non-blocking error handling
 
 ### Data Persistence
 Stores health events in the datastore:
 - Atomic insertion with proper timestamps
-- Preserves all event metadata
+- Preserves all event metadata and transformations
 - Triggers change streams for downstream modules
 
 ### Kubernetes Integration
@@ -84,17 +113,65 @@ Updates cluster state based on health events:
 - **Node Events**: Creates Kubernetes events for non-fatal issues
 - Event correlation and deduplication
 
-### Metadata Enrichment
-Augments health events with node information:
+## Transformer Pipeline
+
+The transformer pipeline processes health events before they reach storage or Kubernetes. Transformers run in a configurable order, with each transformer able to modify events based on the enrichments from previous transformers.
+
+### Available Transformers
+
+#### Metadata Augmentor
+Enriches health events with node information from Kubernetes:
 - Cloud provider ID (AWS, GCP, Azure, OCI)
-- Topology labels (zone, region, rack)
-- Custom node labels
-- Cached for performance
+- Node labels (topology, instance type, custom labels)
+- Caches metadata to minimize Kubernetes API calls
+
+#### Override Transformer
+Applies CEL-based rules to modify health event properties:
+- **isFatal**: Change whether an error is considered fatal
+- **isHealthy**: Override health status
+- **recommendedAction**: Modify the recommended remediation action
+
+Use cases:
+- Suppress known non-critical errors in your environment
+- Change recommended actions during maintenance windows
+- Apply different policies based on node labels
+
+### Transformer Configuration
+
+Transformers are configured through Helm values with two sections:
+
+1. **pipeline** - defines which transformers run and in what order
+2. **transformers** - contains transformer-specific configurations
+
+```yaml
+platformConnector:
+  pipeline:
+    - name: MetadataAugmentor
+      enabled: false
+      config: /etc/config/metadata.toml
+    - name: OverrideTransformer
+      enabled: false
+      config: /etc/config/overrides.toml
+  
+  transformers:
+    MetadataAugmentor:
+      cacheSize: 50
+      cacheTTLSeconds: 3600
+      allowedLabels: [...]
+    
+    OverrideTransformer:
+      rules: [...]
+```
+
+### Error Handling
+
+Transformer failures log warnings but don't block event processing. If a transformer fails, the event still reaches storage and Kubernetes with whatever transformations were successfully applied. This ensures system resilience - monitoring continues even if enrichment features fail.
 
 ## Key Features
 
 ### gRPC API
 Standard gRPC interface for health monitors to report events - protocol buffer-based for efficiency and type safety.
+
 
 ### Ring Buffer Architecture
 Parallel event processing with independent queues:
