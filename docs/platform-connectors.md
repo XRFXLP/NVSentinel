@@ -27,7 +27,6 @@ Platform Connectors runs as a deployment in the cluster:
 3. Processes events through the transformer pipeline:
    - **Metadata Augmentor**: Augments events with node metadata (cloud provider, labels, topology)
    - **Override Transformer**: Applies CEL-based rules to modify event properties
-   - **Custom Transformers**: Additional transformations as configured
 4. Queues transformed events in ring buffers for parallel processing
 5. Processes events through multiple connectors:
    - **Store Connector**: Persists events to the datastore

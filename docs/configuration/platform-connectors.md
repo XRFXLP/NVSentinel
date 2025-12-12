@@ -209,22 +209,3 @@ platformConnector:
     qps: 10.0
     burst: 20
 ```
-
-## Database Store
-
-### MongoDB Store
-
-```yaml
-platformConnector:
-  mongodbStore:
-    enabled: false
-    clientCertMountPath: "/etc/ssl/mongo-client"
-```
-
-### PostgreSQL Store
-
-```yaml
-platformConnector:
-  postgresqlStore:
-    clientCertMountPath: "/etc/ssl/client-certs"
-```
