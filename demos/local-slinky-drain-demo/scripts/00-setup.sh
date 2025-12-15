@@ -343,7 +343,7 @@ show_summary() {
      - MongoDB
      - Platform Connectors
      - Fault Quarantine
-     - Node Drainer (patched with local image)
+     - Node Drainer
    ✓ Custom Plugins:
      - Slinky Drainer Plugin
      - Mock Slurm Operator
