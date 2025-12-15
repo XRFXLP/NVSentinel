@@ -207,7 +207,7 @@ func sendHealthEventData(nodeNames []string, eventData []byte) error {
 			eventJSON := strings.ReplaceAll(string(eventData), "NODE_NAME", nodeName)
 
 			req, err := http.NewRequestWithContext(
-				context.Background(), "POST", "http://localhost:8081/health-event",
+				context.Background(), "POST", "http://localhost:8080/health-event",
 				strings.NewReader(eventJSON),
 			)
 			if err != nil {
