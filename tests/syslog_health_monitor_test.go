@@ -28,6 +28,8 @@ import (
 
 type contextKey string
 
+var keyNodeName contextKey = "nodeName"
+
 const (
 	stubJournalHTTPPort            = 9091
 	keyStopChan         contextKey = "stopChan"
