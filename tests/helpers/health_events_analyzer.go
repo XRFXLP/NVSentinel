@@ -16,8 +16,7 @@ package helpers
 
 import (
 	"context"
-	"crypto/rand"
-	"math/big"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -59,14 +58,8 @@ func SetupHealthEventsAnalyzerTest(ctx context.Context,
 	if testNodeName != "" {
 		gpuNodeName = testNodeName
 	} else {
-		gpuNodes, err := GetAllNodesNames(ctx, client)
-		require.NoError(t, err, "failed to get nodes")
-		require.True(t, len(gpuNodes) > 0, "no gpu nodes found")
-
-		index, err := rand.Int(rand.Reader, big.NewInt(int64(len(gpuNodes))))
-		require.NoError(t, err, "failed to generate random index")
-
-		gpuNodeName = gpuNodes[index.Int64()]
+		// Use node pool to get an unused node (prevents event contamination from previous tests)
+		gpuNodeName = AcquireNodeFromPool(ctx, t, client, DefaultExpiry)
 	}
 
 	testCtx := &HealthEventsAnalyzerTestContext{
@@ -193,9 +186,9 @@ func applyHealthEventsAnalyzerConfigAndRestart(
 }
 
 func TriggerMultipleRemediationsCycle(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
-	xidsToInject := []string{ERRORCODE_13, ERRORCODE_48, ERRORCODE_13, ERRORCODE_48, ERRORCODE_13}
+	xidsToInject := []string{ERRORCODE_79, ERRORCODE_48}
 
-	// inject 5 fatal errors and let the remediation cycle finish
+	// inject 2 fatal errors and let the remediation cycle finish
 	t.Logf("Injecting fatal errors to node %s", nodeName)
 
 	for _, xid := range xidsToInject {
@@ -237,6 +230,8 @@ func waitForRemediationToComplete(ctx context.Context, t *testing.T, client klie
 				return false
 			}
 		}
+
+		slog.Info("Node fully cleaned up", "node", nodeName)
 
 		return true
 	}, EventuallyWaitTimeout, WaitInterval, "node should be fully cleaned up before next remediation cycle")

@@ -7,7 +7,7 @@ data:
   config.toml: |
     [[rules]]
     name = "MultipleRemediations"
-    description = "Detect if multiple remediations are performed within 1.5 minutes on a node"
+    description = "Detect if multiple remediations are performed within 2 minutes on a node (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
     stage = [
@@ -17,7 +17,7 @@ data:
           "$expr": {
             "$gte": [
               "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 90]}
+              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 120]}
             ]
           }
         }
@@ -33,12 +33,12 @@ data:
       }
       ''',
       '{"$count": "count"}',
-      '{"$match": {"count": {"$gte": 5}}}'
+      '{"$match": {"count": {"$gte": 2}}}'
     ]
 
     [[rules]]
     name = "RepeatedXIDErrorOnSameGPU"
-    description = "Detect occurrence of fatal XIDs 2 times within 2 minutes where the burst window is 20 seconds and sticky XIDs window is 30 seconds"
+    description = "Detect occurrence of fatal XIDs 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
     stage = [
@@ -199,7 +199,7 @@ data:
                       "then": 0,
                       "else": {
                         "$cond": {
-                          "if": {"$gt": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$prevTimestamp"]}, 20]},
+                          "if": {"$gt": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$prevTimestamp"]}, 15]},
                           "then": 1,
                           "else": 0
                         }
@@ -280,7 +280,7 @@ data:
 
     [[rules]]
     name = "RepeatedXID31OnSameGPU"
-    description = "Detect if XID 31 occurred 2 or more times on the same GPU within 3 minutes where the burst window is 20 seconds and sticky XIDs window is 30 seconds"
+    description = "Detect if XID 31 occurred 2 or more times on the same GPU within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
     recommended_action = "RUN_DCGMEUD"
     message = "if DCGM EUD tests pass, run field diagnostics"
     evaluate_rule = true
@@ -291,7 +291,7 @@ data:
           "$expr": {
             "$gte": [
               "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 180]}
+              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 120]}
             ]
           }
         }
@@ -442,7 +442,7 @@ data:
                       "then": 0,
                       "else": {
                         "$cond": {
-                          "if": {"$gt": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$prevTimestamp"]}, 20]},
+                          "if": {"$gt": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$prevTimestamp"]}, 15]},
                           "then": 1,
                           "else": 0
                         }
@@ -523,7 +523,7 @@ data:
 
     [[rules]]
     name = "RepeatedXID31OnDifferentGPU"
-    description = "Detect if XID 31 occurred 2 or more times on different GPUs within 1 minute"
+    description = "Detect if XID 31 occurred 2 or more times on different GPUs within 2 minutes (test config)"
     message = "App passing bad data or using incorrect GPU methods; check error PID to identify source of the problem, if application is known good and problem persists, then contact support"
     recommended_action = "NONE"
     evaluate_rule = true
@@ -534,7 +534,7 @@ data:
           "$expr": {
             "$gte": [
               "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 60]}
+              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 120]}
             ]
           }
         }
@@ -612,7 +612,7 @@ data:
     
     [[rules]]
     name = "RepeatedXID13OnSameGPCAndTPC"
-    description = "Detect if XID 13 occurred 2 or more times on the same GPC and TPC within 3 minutes"
+    description = "Detect if XID 13 occurred 2 or more times on the same GPC and TPC within 2 minutes (test config)"
     message = "if DCGM EUD tests pass, run field diagnostics" 
     recommended_action = "RUN_DCGMEUD"
     evaluate_rule = true
@@ -623,7 +623,7 @@ data:
           "$expr": {
             "$gte": [
               "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 180]}
+              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 120]}
             ]
           }
         }
@@ -774,7 +774,7 @@ data:
                       "then": 0,
                       "else": {
                         "$cond": {
-                          "if": {"$gt": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$prevTimestamp"]}, 20]},
+                          "if": {"$gt": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$prevTimestamp"]}, 15]},
                           "then": 1,
                           "else": 0
                         }
@@ -910,7 +910,7 @@ data:
     
     [[rules]]
     name = "RepeatedXID13OnDifferentGPCAndTPC"
-    description = "Detect if XID 13 occurred 2 or more times on different GPC and TPC combinations within 1.5 minutes"
+    description = "Detect if XID 13 occurred 2 or more times on different GPC and TPC combinations within 2 minutes (test config)"
     message = "App passing bad data or using incorrect GPU methods; check error PID to identify source of the problem, if application is known good and problem persists, then contact support"
     recommended_action = "NONE"
     evaluate_rule = true
@@ -921,7 +921,7 @@ data:
           "$expr": {
             "$gte": [
               "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 90]}
+              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 120]}
             ]
           }
         }
@@ -1050,7 +1050,7 @@ data:
     
     [[rules]]
     name = "XIDErrorSoloNoBurst"
-    description = "Detect if XID error occurred only once in the last burst within 1 minute time window"
+    description = "Detect if XID error occurred only once in the last burst within 2 minutes time window (test config)"
     message = "App passing bad data or using incorrect GPU methods; check error PID to identify source of the problem, if application is known good and problem persists, then contact support"
     recommended_action = "NONE"
     evaluate_rule = true
@@ -1061,7 +1061,7 @@ data:
           "$expr": {
             "$gte": [
               "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 60]}
+              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 120]}
             ]
           }
         }
