@@ -31,10 +31,9 @@ import (
 
 type contextKey string
 
-var keyNodeName contextKey = "nodeName"
-
 const (
 	stubJournalHTTPPort            = 9091
+	keySyslogNodeName   contextKey = "nodeName"
 	keyStopChan         contextKey = "stopChan"
 	keySyslogPodName    contextKey = "syslogPodName"
 )
@@ -78,7 +77,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
 		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
 
-		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keySyslogNodeName, testNodeName)
 		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
 		ctx = context.WithValue(ctx, keyStopChan, stopChan)
 		return ctx
@@ -88,7 +87,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		nodeName := ctx.Value(keyNodeName).(string)
+		nodeName := ctx.Value(keySyslogNodeName).(string)
 
 		xidMessages := []string{
 			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
@@ -133,7 +132,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		nodeName := ctx.Value(keyNodeName).(string)
+		nodeName := ctx.Value(keySyslogNodeName).(string)
 
 		const (
 			maxConditionMessageLength = 1024
@@ -195,7 +194,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 			return ctx
 		}
 
-		nodeNameVal := ctx.Value(keyNodeName)
+		nodeNameVal := ctx.Value(keySyslogNodeName)
 		if nodeNameVal == nil {
 			t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
 			return ctx
@@ -273,7 +272,7 @@ func TestSyslogHealthMonitorXIDWithoutMetadata(t *testing.T) {
 		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
 		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
 
-		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keySyslogNodeName, testNodeName)
 		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
 		ctx = context.WithValue(ctx, keyStopChan, stopChan)
 		return ctx
@@ -283,7 +282,7 @@ func TestSyslogHealthMonitorXIDWithoutMetadata(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		nodeName := ctx.Value(keyNodeName).(string)
+		nodeName := ctx.Value(keySyslogNodeName).(string)
 
 		xidMessage := "kernel: [16450076.435595] NVRM: Xid (PCI:0000:17:00): 79, pid=123456, name=test, GPU has fallen off the bus."
 
@@ -332,7 +331,7 @@ func TestSyslogHealthMonitorXIDWithoutMetadata(t *testing.T) {
 			return ctx
 		}
 
-		nodeNameVal := ctx.Value(keyNodeName)
+		nodeNameVal := ctx.Value(keySyslogNodeName)
 		if nodeNameVal == nil {
 			t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
 			return ctx
@@ -390,7 +389,7 @@ func TestSyslogHealthMonitorSXIDDetection(t *testing.T) {
 		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
 		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
 
-		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keySyslogNodeName, testNodeName)
 		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
 		ctx = context.WithValue(ctx, keyStopChan, stopChan)
 		return ctx
@@ -400,7 +399,7 @@ func TestSyslogHealthMonitorSXIDDetection(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		nodeName := ctx.Value(keyNodeName).(string)
+		nodeName := ctx.Value(keySyslogNodeName).(string)
 
 		sxidMessages := []string{
 			"kernel: [123.456789] nvidia-nvswitch0: SXid (PCI:0000:c3:00.0): 20009, Non-fatal, Link 28 RX Short Error Rate",
@@ -446,7 +445,7 @@ func TestSyslogHealthMonitorSXIDDetection(t *testing.T) {
 			return ctx
 		}
 
-		nodeNameVal := ctx.Value(keyNodeName)
+		nodeNameVal := ctx.Value(keySyslogNodeName)
 		if nodeNameVal == nil {
 			t.Log("Skipping teardown: nodeName not set")
 			return ctx
