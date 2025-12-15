@@ -1,5 +1,4 @@
-//go:build amd64_group
-// +build amd64_group
+
 
 // Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 //
@@ -654,8 +653,8 @@ func TestXIDErrorOnGPCAndTPC(t *testing.T) {
 
 		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testNodeName, "RepeatedXID13OnDifferentGPCAndTPC")
 
-		t.Log("Waiting 22s to create burst gap (>20s required)")
-		time.Sleep(22 * time.Second)
+		t.Log("Waiting 5s to create burst gap")
+		time.Sleep(5 * time.Second)
 
 		// STEP 2: Inject XID 13 error on GPC:0, TPC:0, SM:1
 		// EXPECTED: This differs from the previous errors which were on GPC:0, TPC:1.
@@ -692,8 +691,8 @@ func TestXIDErrorOnGPCAndTPC(t *testing.T) {
 		// Errors on different GPC/TPC combinations.
 		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testNodeName, "RepeatedXID13OnSameGPCAndTPC")
 
-		t.Log("Waiting 22s to create burst gap (>20s required)")
-		time.Sleep(22 * time.Second)
+		t.Log("Waiting 5s to create burst gap")
+		time.Sleep(5 * time.Second)
 
 		// STEP 3: Inject XID 13 error on GPC:0, TPC:1, SM:1
 		// EXPECTED: This creates a third burst on GPC:0, TPC:1, the same GPC/TPC as Burst 1.
@@ -831,8 +830,8 @@ func TestSoloNoBurstRule(t *testing.T) {
 			)
 		}
 
-		t.Log("Waiting 22s to create burst gap (>20s required)")
-		time.Sleep(22 * time.Second)
+		t.Log("Waiting 5s to create burst gap")
+		time.Sleep(5 * time.Second)
 
 		helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(testNodeName).
 			WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).

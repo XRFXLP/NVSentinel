@@ -1050,7 +1050,7 @@ data:
     
     [[rules]]
     name = "XIDErrorSoloNoBurst"
-    description = "Detect if XID error occurred only once in the last burst within 2 minutes time window (test config)"
+    description = "Detect if XID error occurred only once in the last burst within 1 minutes time window"
     message = "App passing bad data or using incorrect GPU methods; check error PID to identify source of the problem, if application is known good and problem persists, then contact support"
     recommended_action = "NONE"
     evaluate_rule = true
@@ -1061,7 +1061,7 @@ data:
           "$expr": {
             "$gte": [
               "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 120]}
+              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 60]}
             ]
           }
         }
