@@ -31,14 +31,6 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 )
 
-type testContextKey int
-
-const (
-	keyNodeName testContextKey = iota
-	keyNamespace
-	keyPodName
-)
-
 func TestFatalHealthEvent(t *testing.T) {
 	feature := features.New("TestFatalHealthEventEndToEnd").
 		WithLabel("suite", "smoke")

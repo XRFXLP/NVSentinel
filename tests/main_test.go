@@ -30,6 +30,17 @@ import (
 
 var testEnv env.Environment
 
+// Shared test context keys used across multiple test files
+
+//lint:ignore U1000 Used by test files with build tags
+type testContextKey int
+
+const (
+	keyNodeName  testContextKey = iota //lint:ignore U1000 Used by test files with build tags
+	keyNamespace                       //lint:ignore U1000 Used by test files with build tags
+	keyPodName                         //lint:ignore U1000 Used by test files with build tags
+)
+
 // TestMain sets up the test environment and makes testEnv available
 func TestMain(m *testing.M) {
 	log.SetLogger(NewLogger())
