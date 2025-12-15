@@ -125,11 +125,7 @@ func TestMultipleRemediationsNotTriggered(t *testing.T) {
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
-		helpers.ReleaseNode(ctx, t, client, testCtx.NodeName)
 
 		return helpers.TeardownHealthEventsAnalyzer(ctx, t, c, testCtx.NodeName, testCtx.ConfigMapBackup)
 	})
