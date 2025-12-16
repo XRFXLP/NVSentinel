@@ -17,7 +17,6 @@ package helpers
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,9 +26,9 @@ import (
 )
 
 const (
-	NodeUsedByLabel   = "nvsentinel.nvidia.com/test-used-by"
-	NodeUsedFromLabel = "nvsentinel.nvidia.com/test-used-from"
-	DefaultExpiry     = 10 * time.Minute
+	NodeUsedByAnnotation   = "nvsentinel.nvidia.com/test-used-by"
+	NodeUsedFromAnnotation = "nvsentinel.nvidia.com/test-used-from"
+	DefaultExpiry          = 10 * time.Minute
 )
 
 var (
@@ -78,8 +77,8 @@ func AcquireNodeFromPool(ctx context.Context, t *testing.T, client klient.Client
 
 	require.NotEmpty(t, selectedNodeName, "failed to acquire a node")
 
-	err := labelNodeAsUsed(ctx, client, selectedNodeName, t.Name())
-	require.NoError(t, err, "failed to label node %s as used", selectedNodeName)
+	err := annotateNodeAsUsed(ctx, client, selectedNodeName, t.Name())
+	require.NoError(t, err, "failed to annotate node %s as used", selectedNodeName)
 
 	t.Logf("Acquired node '%s' for test '%s'", selectedNodeName, t.Name())
 
@@ -87,7 +86,7 @@ func AcquireNodeFromPool(ctx context.Context, t *testing.T, client klient.Client
 }
 
 // isNodeAvailable checks if a node is currently available for use by a test.
-// A node is available if it does not have the NodeUsedByLabel, or if the label
+// A node is available if it does not have the NodeUsedByAnnotation, or if the annotation
 // indicates it was used by an expired test.
 func isNodeAvailable(
 	ctx context.Context,
@@ -105,8 +104,8 @@ func isNodeAvailable(
 		return false
 	}
 
-	usedBy, hasUsedBy := node.Labels[NodeUsedByLabel]
-	usedFromStr, hasUsedFrom := node.Labels[NodeUsedFromLabel]
+	usedBy, hasUsedBy := node.Annotations[NodeUsedByAnnotation]
+	usedFromStr, hasUsedFrom := node.Annotations[NodeUsedFromAnnotation]
 
 	if !hasUsedBy || !hasUsedFrom {
 		return true
@@ -117,10 +116,10 @@ func isNodeAvailable(
 	_, parseErr := fmt.Sscanf(usedFromStr, "%d", &usedFromUnix)
 	if parseErr != nil {
 		t.Logf(
-			"Warning: Malformed timestamp for node '%s' label '%s': %v. Treating as expired.",
+			"Warning: Malformed timestamp for node '%s' annotation '%s': %v. Treating as expired.",
 			nodeName,
-			NodeUsedFromLabel,
-			err,
+			NodeUsedFromAnnotation,
+			parseErr,
 		)
 
 		return true
@@ -141,53 +140,19 @@ func isNodeAvailable(
 	return false
 }
 
-// LabelNodeAsUsed applies the usage labels to a node.
-func labelNodeAsUsed(ctx context.Context, client klient.Client, nodeName, testName string) error {
+// annotateNodeAsUsed applies the usage annotations to a node.
+func annotateNodeAsUsed(ctx context.Context, client klient.Client, nodeName, testName string) error {
 	node, err := GetNodeByName(ctx, client, nodeName)
 	if err != nil {
 		return fmt.Errorf("failed to get node %s: %w", nodeName, err)
 	}
 
-	if node.Labels == nil {
-		node.Labels = make(map[string]string)
+	if node.Annotations == nil {
+		node.Annotations = make(map[string]string)
 	}
 
-	node.Labels[NodeUsedByLabel] = sanitizeTestName(testName)
-	node.Labels[NodeUsedFromLabel] = fmt.Sprintf("%d", time.Now().Unix())
+	node.Annotations[NodeUsedByAnnotation] = testName
+	node.Annotations[NodeUsedFromAnnotation] = fmt.Sprintf("%d", time.Now().Unix())
 
 	return client.Resources().Update(ctx, node)
-}
-
-// sanitizeTestName converts a test name to a valid Kubernetes label value.
-// Labels must be 63 characters or less and match [a-z0-9]([-a-z0-9]*[a-z0-9])?
-func sanitizeTestName(name string) string {
-	sanitized := strings.ToLower(name)
-	sanitized = strings.ReplaceAll(sanitized, "/", "-")
-	sanitized = strings.ReplaceAll(sanitized, "_", "-")
-	sanitized = strings.ReplaceAll(sanitized, " ", "-")
-
-	sanitized = strings.Trim(sanitized, "-")
-
-	if len(sanitized) > 0 && !isAlphanumeric(sanitized[0]) {
-		sanitized = "t-" + sanitized
-	}
-
-	if len(sanitized) > 0 && !isAlphanumeric(sanitized[len(sanitized)-1]) {
-		sanitized += "-t"
-	}
-
-	if len(sanitized) > 63 {
-		sanitized = sanitized[:63]
-	}
-
-	if sanitized == "" {
-		return "default-test"
-	}
-
-	return sanitized
-}
-
-// isAlphanumeric checks if a byte is an alphanumeric character
-func isAlphanumeric(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }
