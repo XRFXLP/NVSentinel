@@ -1362,7 +1362,6 @@ func PatchServicePort(ctx context.Context, c klient.Client, namespace, serviceNa
 }
 
 // SetNodeManagedByNVSentinel sets the ManagedByNVSentinel label on a node.
-// Uses retry.RetryOnConflict for automatic retry handling.
 func SetNodeManagedByNVSentinel(ctx context.Context, c klient.Client, nodeName string, managed bool) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
@@ -1385,7 +1384,6 @@ func SetNodeManagedByNVSentinel(ctx context.Context, c klient.Client, nodeName s
 }
 
 // RemoveNodeManagedByNVSentinelLabel removes the ManagedByNVSentinel label from a node.
-// Uses retry.RetryOnConflict for automatic retry handling.
 func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, nodeName string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
