@@ -1366,7 +1366,7 @@ func SetNodeManagedByNVSentinel(ctx context.Context, c klient.Client, nodeName s
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
 		if err != nil {
-			return fmt.Errorf("failed to get node: %w", err)
+			return err
 		}
 
 		if node.Labels == nil {
@@ -1388,7 +1388,7 @@ func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, no
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
 		if err != nil {
-			return fmt.Errorf("failed to get node: %w", err)
+			return err
 		}
 
 		if node.Labels != nil {
