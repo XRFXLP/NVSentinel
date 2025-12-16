@@ -13,6 +13,7 @@ prometheus-client = "^0.20.0"
 grpcio-tools = "1.75.1"
 protobuf = ">=6.31.1,<7.0.0"
 googleapis-common-protos = ">=1.56.0"
+structlog = "^25.1.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.12.0"

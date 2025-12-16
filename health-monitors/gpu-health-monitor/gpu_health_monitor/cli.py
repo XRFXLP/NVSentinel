@@ -15,12 +15,14 @@
 import os
 import click, configparser, signal, sys
 import logging as log
+from importlib.metadata import version as get_package_version
 from threading import Event
 from prometheus_client import start_http_server
 import csv
 from .dcgm_watcher import dcgm
 from .platform_connector import platform_connector
 from gpu_health_monitor.protos import health_event_pb2
+from gpu_health_monitor.logger import set_default_structured_logger_with_level
 
 
 def _init_event_processor(
@@ -95,11 +97,12 @@ def cli(
 
     dcgm_errors_info_dict: dict[str, str] = {}
     dcgm_health_conditions_categorization_mapping_config = config["DCGMHealthConditionsCategorizationMapping"]
-    log.basicConfig(format=logging_config["LogFormat"], datefmt=logging_config["DateTimeFormat"])
-    if verbose:
-        log.getLogger().setLevel(log.DEBUG)
-    else:
-        log.getLogger().setLevel(log.INFO)
+
+    # Initialize structured JSON logging
+    # Version is read from package metadata (set at build time via poetry version)
+    version = get_package_version("gpu-health-monitor")
+    log_level = "debug" if verbose else os.getenv("LOG_LEVEL", "info")
+    set_default_structured_logger_with_level("gpu-health-monitor", version, log_level)
 
     with open(dcgm_error_mapping_config_file, mode="r") as file:
         csv_reader = csv.reader(file)
