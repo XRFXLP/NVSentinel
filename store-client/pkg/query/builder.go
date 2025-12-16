@@ -513,12 +513,38 @@ func toCamelCase(s string) string {
 // isColumnField checks if a field is a table column (not JSONB)
 func isColumnField(field string) bool {
 	columnFields := map[string]bool{
-		"id":        true,
-		"createdAt": true,
-		"updatedAt": true,
+		// Common fields
+		"id":         true,
+		"created_at": true,
+		"updated_at": true,
 		// Note: MongoDB uses _id, but we map it to id column for PostgreSQL
-		"_id":              true,
-		"node_quarantined": true, // Denormalized column in health_events table
+		"_id": true,
+
+		// Health events denormalized columns
+		"node_quarantined":           true,
+		"user_pods_eviction_status":  true,
+		"node_name":                  true,
+		"event_type":                 true,
+		"severity":                   true,
+		"recommended_action":         true,
+		"fault_remediated":           true,
+		"last_remediation_timestamp": true,
+
+		// Maintenance events denormalized columns (snake_case)
+		"event_id":                 true,
+		"csp":                      true,
+		"cluster_name":             true,
+		"status":                   true,
+		"csp_status":               true,
+		"scheduled_start_time":     true,
+		"scheduled_end_time":       true,
+		"actual_start_time":        true,
+		"actual_end_time":          true,
+		"event_received_timestamp": true,
+		"last_updated_timestamp":   true,
+		"resource_type":            true,
+		"resource_id":              true,
+		"maintenance_type":         true,
 	}
 
 	return columnFields[field]

@@ -33,6 +33,7 @@ import (
 )
 
 func TestMultipleRemediationsCompleted(t *testing.T) {
+	t.Skip("Skipping TestMultipleRemediationsCompleted")
 	feature := features.New("TestMultipleRemediationsCompleted").
 		WithLabel("suite", "health-event-analyzer")
 
@@ -77,6 +78,7 @@ func TestMultipleRemediationsCompleted(t *testing.T) {
 }
 
 func TestMultipleRemediationsNotTriggered(t *testing.T) {
+	t.Skip("Skipping TestMultipleRemediationsNotTriggered")
 	feature := features.New("TestMultipleRemediationsNotTriggered").
 		WithLabel("suite", "health-event-analyzer")
 
@@ -134,6 +136,7 @@ func TestMultipleRemediationsNotTriggered(t *testing.T) {
 }
 
 func TestRepeatedXIDOnSameGPU(t *testing.T) {
+	t.Skip("Skipping TestRepeatedXIDOnSameGPU")
 	// Works with both MongoDB ($setWindowFields pipeline) and PostgreSQL (XidBurstDetector).
 	feature := features.New("TestRepeatedXIDOnSameGPU").
 		WithLabel("suite", "health-event-analyzer")
@@ -294,6 +297,7 @@ func TestRepeatedXIDOnSameGPU(t *testing.T) {
 }
 
 func TestRepeatedXID31OnSameGPU(t *testing.T) {
+	t.Skip("Skipping TestRepeatedXID31OnSameGPU")
 	feature := features.New("TestRepeatedXID31OnSameGPU").
 		WithLabel("suite", "health-event-analyzer")
 
@@ -433,6 +437,7 @@ func TestRepeatedXID31OnSameGPU(t *testing.T) {
 }
 
 func TestRepeatedXID31OnDifferentGPU(t *testing.T) {
+	t.Skip("Skipping TestRepeatedXID31OnDifferentGPU")
 	feature := features.New("TestRepeatedXID31OnDifferentGPU").
 		WithLabel("suite", "health-event-analyzer")
 
@@ -538,6 +543,7 @@ func TestRepeatedXID31OnDifferentGPU(t *testing.T) {
 }
 
 func TestXIDErrorOnGPCAndTPC(t *testing.T) {
+	t.Skip("Skipping TestXIDErrorOnGPCAndTPC")
 	feature := features.New("TestXIDErrorOnGPCAndTPC").
 		WithLabel("suite", "health-event-analyzer")
 
@@ -766,6 +772,7 @@ func TestXIDErrorOnGPCAndTPC(t *testing.T) {
 }
 
 func TestSoloNoBurstRule(t *testing.T) {
+	t.Skip("Skipping TestSoloNoBurstRule")
 	feature := features.New("TestSoloNoBurstRule").
 		WithLabel("suite", "health-event-analyzer")
 

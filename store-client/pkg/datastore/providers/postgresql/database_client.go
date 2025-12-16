@@ -43,8 +43,11 @@ type PostgreSQLDatabaseClient struct {
 	connString string // For creating LISTEN connections
 }
 
-// toSnakeCase converts PascalCase strings to snake_case for PostgreSQL table names
-// Examples: "HealthEvents" -> "health_events", "MaintenanceEvents" -> "maintenance_events"
+// toSnakeCase converts PascalCase or camelCase strings to snake_case for PostgreSQL
+// Examples:
+//   - "HealthEvents" -> "health_events"
+//   - "MaintenanceEvents" -> "maintenance_events"
+//   - "scheduledStartTime" -> "scheduled_start_time"
 func toSnakeCase(s string) string {
 	if s == "" {
 		return s
@@ -66,6 +69,34 @@ func toSnakeCase(s string) string {
 	}
 
 	return result.String()
+}
+
+// transformFilterMapForMaintenanceEvents converts filter map keys to snake_case
+// for the maintenance_events table to use indexed columns instead of JSON queries.
+// Example: {"scheduledStartTime": {"$gt": now}} -> {"scheduled_start_time": {"$gt": now}}
+func transformFilterMapForMaintenanceEvents(filterMap map[string]interface{}) map[string]interface{} {
+	transformed := make(map[string]interface{})
+
+	for key, value := range filterMap {
+		// Convert camelCase field names to snake_case
+		snakeCaseKey := toSnakeCase(key)
+
+		// If the value is a map (e.g., MongoDB operators), recursively transform it
+		if valueMap, ok := value.(map[string]interface{}); ok {
+			// Keep the MongoDB operators as-is, but transform any nested field references
+			transformedValue := make(map[string]interface{})
+			for opKey, opValue := range valueMap {
+				// Don't transform operator keys (they start with $)
+				transformedValue[opKey] = opValue
+			}
+			transformed[snakeCaseKey] = transformedValue
+		} else {
+			// Simple value, just transform the key
+			transformed[snakeCaseKey] = value
+		}
+	}
+
+	return transformed
 }
 
 // NewPostgreSQLDatabaseClient creates a new PostgreSQL database client
@@ -485,6 +516,13 @@ func (c *PostgreSQLDatabaseClient) updateDocuments(
 func (c *PostgreSQLDatabaseClient) UpsertDocument(
 	ctx context.Context, filter interface{}, document interface{},
 ) (*client.UpdateResult, error) {
+	// For maintenance_events table, use the specialized store implementation
+	// which properly handles the denormalized schema with indexed columns
+	if c.tableName == "maintenance_events" {
+		return c.upsertMaintenanceEvent(ctx, document)
+	}
+
+	// For other tables, use generic JSONB document storage
 	jsonData, err := json.Marshal(document)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal document: %w", err)
@@ -512,6 +550,38 @@ func (c *PostgreSQLDatabaseClient) UpsertDocument(
 		MatchedCount:  rowsAffected,
 		ModifiedCount: rowsAffected,
 		UpsertedCount: rowsAffected,
+	}, nil
+}
+
+// upsertMaintenanceEvent handles upserts for the maintenance_events table
+// which uses a specialized schema with indexed columns
+func (c *PostgreSQLDatabaseClient) upsertMaintenanceEvent(
+	ctx context.Context, document any,
+) (*client.UpdateResult, error) {
+	// Convert document to MaintenanceEvent type
+	var event model.MaintenanceEvent
+
+	// Marshal and unmarshal to convert between types
+	jsonData, err := json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal maintenance event: %w", err)
+	}
+
+	if err := json.Unmarshal(jsonData, &event); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal maintenance event: %w", err)
+	}
+
+	// Use the specialized maintenance event store
+	store := NewPostgreSQLMaintenanceEventStore(c.db)
+	if err := store.UpsertMaintenanceEvent(ctx, &event); err != nil {
+		return nil, err
+	}
+
+	// Return success result
+	return &client.UpdateResult{
+		MatchedCount:  1,
+		ModifiedCount: 1,
+		UpsertedCount: 1,
 	}, nil
 }
 
@@ -772,6 +842,12 @@ func (c *PostgreSQLDatabaseClient) Find(
 	if builder, ok := filter.(*query.Builder); ok {
 		whereClause, args = builder.ToSQL()
 	} else if filterMap, ok := filter.(map[string]interface{}); ok {
+		// For maintenance_events table, transform field names to snake_case
+		// to use indexed columns instead of querying JSON document
+		if c.tableName == "maintenance_events" {
+			filterMap = transformFilterMapForMaintenanceEvents(filterMap)
+		}
+
 		// Handle both simple equality and MongoDB-style filters
 		// Collect all conditions and combine them with AND
 		var conditions []query.Condition

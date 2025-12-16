@@ -180,7 +180,7 @@ func NewDatabaseConfigWithCollection(
 ) (DatabaseConfig, error) {
 	// Check if using PostgreSQL datastore - if so, delegate to datastore config
 	if provider := os.Getenv("DATASTORE_PROVIDER"); provider == "postgresql" {
-		return newPostgreSQLCompatibleConfig(certMountPath)
+		return newPostgreSQLCompatibleConfig(certMountPath, collectionEnvVar, defaultCollection)
 	}
 
 	// Load required MongoDB environment variables
@@ -235,7 +235,7 @@ func NewDatabaseConfigWithCollection(
 // using DATASTORE_* environment variables instead of MONGODB_* variables
 //
 //nolint:cyclop // Config validation requires checking multiple environment variables
-func newPostgreSQLCompatibleConfig(certMountPath string) (DatabaseConfig, error) {
+func newPostgreSQLCompatibleConfig(certMountPath, collectionEnvVar, defaultCollection string) (DatabaseConfig, error) {
 	host := os.Getenv("DATASTORE_HOST")
 	if host == "" {
 		return nil, fmt.Errorf("required environment variable DATASTORE_HOST is not set")
@@ -282,10 +282,20 @@ func newPostgreSQLCompatibleConfig(certMountPath string) (DatabaseConfig, error)
 	connectionURI := fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s sslcert=%s sslkey=%s sslrootcert=%s",
 		host, port, database, username, sslmode, sslcert, sslkey, sslrootcert)
 
-	// Use health_events as the default collection for PostgreSQL
-	collectionName := os.Getenv("MONGODB_COLLECTION_NAME")
+	// Determine collection/table name using the provided parameters
+	// For PostgreSQL, this maps to the table name (converted to snake_case by the client)
+	collectionEnvName := collectionEnvVar
+	if collectionEnvName == "" {
+		collectionEnvName = "MONGODB_COLLECTION_NAME"
+	}
+
+	collectionName := os.Getenv(collectionEnvName)
 	if collectionName == "" {
-		collectionName = "health_events"
+		if defaultCollection != "" {
+			collectionName = defaultCollection
+		} else {
+			collectionName = "health_events" // Final fallback
+		}
 	}
 
 	// Load timeout configuration
