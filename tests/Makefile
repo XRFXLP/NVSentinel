@@ -21,7 +21,7 @@
 
 # E2E Tests module configuration
 IS_GO_MODULE := 1
-TEST_EXTRA_FLAGS := -timeout 40m -count 1
+TEST_EXTRA_FLAGS := -timeout 35m -count 1 -failfast
 TEST_TAGS ?= amd64_group,arm64_group
 
 # =============================================================================
