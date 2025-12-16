@@ -80,7 +80,8 @@ func TestDontCordonIfEventDoesntMatchCELExpression(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, testCtx.NodeName)
+		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
 
 		return helpers.TeardownQuarantineTest(ctx, t, c)
 	})

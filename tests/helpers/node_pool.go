@@ -27,13 +27,9 @@ import (
 )
 
 const (
-	// NodeUsedByLabel indicates which test is currently using the node
-	NodeUsedByLabel = "nvsentinel.nvidia.com/test-used-by"
-	// NodeUsedFromLabel stores the Unix timestamp when the node was acquired
+	NodeUsedByLabel   = "nvsentinel.nvidia.com/test-used-by"
 	NodeUsedFromLabel = "nvsentinel.nvidia.com/test-used-from"
-
-	// DefaultExpiry is the default duration after which a node is considered expired
-	DefaultExpiry = 10 * time.Minute
+	DefaultExpiry     = 10 * time.Minute
 )
 
 var (
@@ -55,8 +51,15 @@ func AcquireNodeFromPool(ctx context.Context, t *testing.T, client klient.Client
 
 	require.Eventually(t, func() bool {
 		nodes, err := GetAllNodesNames(ctx, client)
-		require.NoError(t, err, "failed to get nodes from cluster")
-		require.NotEmpty(t, nodes, "no nodes found in cluster")
+		if err != nil {
+			t.Logf("failed to get nodes from cluster: %v", err)
+			return false
+		}
+
+		if len(nodes) == 0 {
+			t.Log("no nodes found in cluster")
+			return false
+		}
 
 		for _, nodeName := range nodes {
 			if isNodeAvailable(ctx, t, client, nodeName, expiryDuration) {
@@ -71,7 +74,7 @@ func AcquireNodeFromPool(ctx context.Context, t *testing.T, client klient.Client
 		)
 
 		return false
-	}, 15*time.Minute, 5*time.Second, "timed out waiting to acquire a node from the pool")
+	}, EventuallyWaitTimeout, WaitInterval, "timed out waiting to acquire a node from the pool")
 
 	require.NotEmpty(t, selectedNodeName, "failed to acquire a node")
 
@@ -83,7 +86,7 @@ func AcquireNodeFromPool(ctx context.Context, t *testing.T, client klient.Client
 	return selectedNodeName
 }
 
-// IsNodeAvailable checks if a node is currently available for use by a test.
+// isNodeAvailable checks if a node is currently available for use by a test.
 // A node is available if it does not have the NodeUsedByLabel, or if the label
 // indicates it was used by an expired test.
 func isNodeAvailable(

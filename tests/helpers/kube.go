@@ -606,11 +606,13 @@ func GetAllNodesNames(ctx context.Context, c klient.Client) ([]string, error) {
 // It accepts a v1.NodeList and counts only nodes where Spec.Unschedulable is false.
 func CountSchedulableNodes(nodeList v1.NodeList) int {
 	count := 0
+
 	for _, node := range nodeList.Items {
 		if !node.Spec.Unschedulable {
 			count++
 		}
 	}
+
 	return count
 }
 
