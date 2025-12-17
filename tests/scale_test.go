@@ -83,7 +83,7 @@ func TestScaleHealthEvents(t *testing.T) {
 		t.Logf("Found %d KWOK nodes, %d total nodes in cluster", len(kwokNodes), totalNodesInCluster)
 
 		cbThresholdPercentage := 40
-		nodesToCordon := min(int(float64(totalNodesInCluster)*float64(cbThresholdPercentage+3)/100.0), len(kwokNodes))
+		nodesToCordon := min(int(math.Ceil(float64(totalNodesInCluster)*float64(cbThresholdPercentage+3)/100.0)), len(kwokNodes))
 
 		healthCheckNodes := kwokNodes[:nodesToCordon]
 		t.Logf("Selected %d KWOK nodes to cordon (43%% of %d total nodes, exceeds 40%% CB threshold)",
