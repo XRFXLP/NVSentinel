@@ -28,6 +28,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/initializer"
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
@@ -40,6 +41,7 @@ var (
 )
 
 func main() {
+	logger.SetDefaultStructuredLogger("event-exporter", version)
 	slog.Info("Health Events Exporter starting", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

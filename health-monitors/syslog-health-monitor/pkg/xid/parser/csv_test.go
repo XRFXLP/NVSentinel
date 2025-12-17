@@ -66,7 +66,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedSuccess:   true,
 			expectedXIDCode:   13,
 			expectedPCIAddr:   "0000:b5:00",
-			expectedAction:    pb.RecommendedAction_RESTART_VM,
+			expectedAction:    pb.RecommendedAction_NONE,
 			expectedMnemonic:  "XID 13",
 			expectedErrorCode: "13",
 			expectedMetadata:  map[string]string{"GPC": "1", "TPC": "3", "SM": "0"},
@@ -77,10 +77,30 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedSuccess:   true,
 			expectedXIDCode:   13,
 			expectedPCIAddr:   "0000:b5:00",
-			expectedAction:    pb.RecommendedAction_RESTART_VM,
+			expectedAction:    pb.RecommendedAction_NONE,
 			expectedMnemonic:  "XID 13",
 			expectedErrorCode: "13",
 			expectedMetadata:  map[string]string{},
+		},
+		{
+			name:              "XID 74 with NVLINK ID and registers values",
+			message:           "NVRM: Xid (PCI:0003:00:00): 74, pid='<unknown>', name=<unknown>, NVLink: fatal error detected on link 14(0x0, 0x0, 0x10000, 0x0, 0x0, 0x0, 0x0)",
+			expectedSuccess:   true,
+			expectedXIDCode:   74,
+			expectedPCIAddr:   "0003:00:00",
+			expectedAction:    pb.RecommendedAction_CONTACT_SUPPORT,
+			expectedMnemonic:  "XID 74",
+			expectedErrorCode: "74",
+			expectedMetadata: map[string]string{
+				"NVLINK": "14",
+				"REG0":   "00000000000000000000000000000000",
+				"REG1":   "00000000000000000000000000000000",
+				"REG2":   "00000000000000010000000000000000",
+				"REG3":   "00000000000000000000000000000000",
+				"REG4":   "00000000000000000000000000000000",
+				"REG5":   "00000000000000000000000000000000",
+				"REG6":   "00000000000000000000000000000000",
+			},
 		},
 		{
 			name:              "Complex XID format with all fields",
@@ -195,13 +215,9 @@ func TestCSVParser_Parse(t *testing.T) {
 			assert.Equal(t, tc.expectedErrorCode, result.Result.Name, "Name should match")
 			assert.Equal(t, tc.expectedMetadata, result.Result.Metadata, "Metadata should match")
 
-			if tc.expectedXIDCode != 999 {
-				assert.NotEqual(t, pb.RecommendedAction_CONTACT_SUPPORT.String(), result.Result.Resolution,
-					"XID %d should have a specific mapping from real CSV, not default CONTACT_SUPPORT", tc.expectedXIDCode)
-			} else {
-				assert.Equal(t, pb.RecommendedAction_CONTACT_SUPPORT.String(), result.Result.Resolution,
-					"Unknown XID should default to CONTACT_SUPPORT")
-			}
+			// Verify the resolution matches the expected action from the test case
+			assert.Equal(t, tc.expectedAction.String(), result.Result.Resolution,
+				"XID %d resolution should match expected action", tc.expectedXIDCode)
 
 			assert.Empty(t, result.Result.Driver, "Driver should be empty as requested")
 			assert.Empty(t, result.Error, "Error field should be empty for successful parse")

@@ -146,23 +146,16 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 	}
 
 	if xidResp.Result.Metadata != nil {
-		if gpc, ok := xidResp.Result.Metadata["GPC"]; ok {
-			entities = append(entities, &pb.Entity{
-				EntityType: "GPC", EntityValue: gpc,
-			})
+		var metadata []*pb.Entity
+
+		switch xidResp.Result.DecodedXIDStr {
+		case "13":
+			metadata = getXID13Metadata(xidResp.Result.Metadata)
+		case "74":
+			metadata = getXID74Metadata(xidResp.Result.Metadata)
 		}
 
-		if tpc, ok := xidResp.Result.Metadata["TPC"]; ok {
-			entities = append(entities, &pb.Entity{
-				EntityType: "TPC", EntityValue: tpc,
-			})
-		}
-
-		if sm, ok := xidResp.Result.Metadata["SM"]; ok {
-			entities = append(entities, &pb.Entity{
-				EntityType: "SM", EntityValue: sm,
-			})
-		}
+		entities = append(entities, metadata...)
 	}
 
 	metadata := make(map[string]string)
@@ -196,4 +189,49 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 		Version: 1,
 		Events:  []*pb.HealthEvent{event},
 	}
+}
+
+func getXID13Metadata(metadata map[string]string) []*pb.Entity {
+	entities := []*pb.Entity{}
+
+	if gpc, ok := metadata["GPC"]; ok {
+		entities = append(entities, &pb.Entity{
+			EntityType: "GPC", EntityValue: gpc,
+		})
+	}
+
+	if tpc, ok := metadata["TPC"]; ok {
+		entities = append(entities, &pb.Entity{
+			EntityType: "TPC", EntityValue: tpc,
+		})
+	}
+
+	if sm, ok := metadata["SM"]; ok {
+		entities = append(entities, &pb.Entity{
+			EntityType: "SM", EntityValue: sm,
+		})
+	}
+
+	return entities
+}
+
+func getXID74Metadata(metadata map[string]string) []*pb.Entity {
+	entities := []*pb.Entity{}
+
+	if nvlink, ok := metadata["NVLINK"]; ok {
+		entities = append(entities, &pb.Entity{
+			EntityType: "NVLINK", EntityValue: nvlink,
+		})
+	}
+
+	for i := 0; i <= 6; i++ {
+		key := fmt.Sprintf("REG%d", i)
+		if reg, ok := metadata[key]; ok {
+			entities = append(entities, &pb.Entity{
+				EntityType: key, EntityValue: reg,
+			})
+		}
+	}
+
+	return entities
 }

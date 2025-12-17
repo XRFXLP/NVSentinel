@@ -33,6 +33,7 @@ const (
 	ERRORCODE_119                = "119"
 	ERRORCODE_120                = "120"
 	ERRORCODE_79                 = "79"
+	ERRORCODE_74                 = "74"
 	HEALTH_EVENTS_ANALYZER_AGENT = "health-events-analyzer"
 	SYSLOG_HEALTH_MONITOR_AGENT  = "syslog-health-monitor"
 )
