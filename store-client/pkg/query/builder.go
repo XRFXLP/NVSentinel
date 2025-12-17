@@ -17,6 +17,7 @@ package query
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Builder provides a database-agnostic query builder
@@ -412,19 +413,18 @@ func (c *orCondition) ToSQL(paramNum int) (string, []interface{}, int) {
 func mongoFieldToJSONB(fieldPath string) string {
 	// Handle simple top-level fields that aren't nested
 	if !strings.Contains(fieldPath, ".") {
+		// Convert camelCase to snake_case first for column field matching
+		snakeCaseField := toSnakeCase(fieldPath)
+
 		// If it's a column name (like "createdAt"), use it directly
 		// Map _id to id for PostgreSQL compatibility
-		if isColumnField(fieldPath) {
+		if isColumnField(snakeCaseField) {
 			// Convert MongoDB field names to PostgreSQL column names (snake_case)
-			switch fieldPath {
+			switch snakeCaseField {
 			case "_id":
 				return "id"
-			case "createdAt":
-				return "created_at"
-			case "updatedAt":
-				return "updated_at"
 			default:
-				return fieldPath
+				return snakeCaseField // Return the snake_case version for indexed columns
 			}
 		}
 
@@ -548,6 +548,34 @@ func isColumnField(field string) bool {
 	}
 
 	return columnFields[field]
+}
+
+// toSnakeCase converts PascalCase or camelCase strings to snake_case for PostgreSQL
+// Examples:
+//   - "HealthEvents" -> "health_events"
+//   - "MaintenanceEvents" -> "maintenance_events"
+//   - "scheduledStartTime" -> "scheduled_start_time"
+func toSnakeCase(s string) string {
+	if s == "" {
+		return s
+	}
+
+	var result strings.Builder
+
+	for i, r := range s {
+		if unicode.IsUpper(r) {
+			// Add underscore before uppercase letters (except first character)
+			if i > 0 {
+				result.WriteRune('_')
+			}
+
+			result.WriteRune(unicode.ToLower(r))
+		} else {
+			result.WriteRune(r)
+		}
+	}
+
+	return result.String()
 }
 
 // --- Type Conversion Helpers ---

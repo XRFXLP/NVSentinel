@@ -58,7 +58,13 @@ func (p *PostgreSQLMaintenanceEventStore) UpsertMaintenanceEvent(
 		)
 		ON CONFLICT (event_id)
 		DO UPDATE SET
-			status = EXCLUDED.status,
+			-- Preserve trigger engine statuses (QUARANTINE_TRIGGERED, HEALTHY_TRIGGERED, etc.)
+			-- Only update status if existing is not a trigger status
+			status = CASE
+				WHEN maintenance_events.status IN ('QUARANTINE_TRIGGERED', 'HEALTHY_TRIGGERED', 'NODE_READINESS_TIMEOUT')
+				THEN maintenance_events.status
+				ELSE EXCLUDED.status
+			END,
 			csp_status = EXCLUDED.csp_status,
 			scheduled_start_time = EXCLUDED.scheduled_start_time,
 			actual_end_time = EXCLUDED.actual_end_time,
