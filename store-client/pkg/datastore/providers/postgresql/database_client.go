@@ -601,17 +601,26 @@ func (c *PostgreSQLDatabaseClient) upsertMaintenanceEvent(
 		return nil, fmt.Errorf("failed to unmarshal maintenance event: %w", err)
 	}
 
-	// Use the specialized maintenance event store
+	// Use the specialized maintenance event store with result tracking
 	store := NewPostgreSQLMaintenanceEventStore(c.db)
-	if err := store.UpsertMaintenanceEvent(ctx, &event); err != nil {
+	wasInserted, err := store.upsertMaintenanceEventWithResult(ctx, &event)
+	if err != nil {
 		return nil, err
 	}
 
-	// Return success result
+	// Return accurate counts based on whether it was INSERT or UPDATE
+	if wasInserted {
+		return &client.UpdateResult{
+			MatchedCount:  0,
+			ModifiedCount: 0,
+			UpsertedCount: 1,
+		}, nil
+	}
+
 	return &client.UpdateResult{
 		MatchedCount:  1,
 		ModifiedCount: 1,
-		UpsertedCount: 1,
+		UpsertedCount: 0,
 	}, nil
 }
 

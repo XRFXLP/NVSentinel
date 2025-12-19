@@ -38,18 +38,28 @@ func NewPostgreSQLMaintenanceEventStore(db *sql.DB) *PostgreSQLMaintenanceEventS
 	return &PostgreSQLMaintenanceEventStore{db: db}
 }
 
-// UpsertMaintenanceEvent upserts a maintenance event
+// UpsertMaintenanceEvent upserts a maintenance event (implements MaintenanceEventStore interface)
 func (p *PostgreSQLMaintenanceEventStore) UpsertMaintenanceEvent(
 	ctx context.Context, event *model.MaintenanceEvent,
 ) error {
+	_, err := p.upsertMaintenanceEventWithResult(ctx, event)
+	return err
+}
+
+// upsertMaintenanceEventWithResult upserts a maintenance event and returns whether it was an INSERT.
+// This is used internally by database_client.go to return accurate UpdateResult counts.
+func (p *PostgreSQLMaintenanceEventStore) upsertMaintenanceEventWithResult(
+	ctx context.Context, event *model.MaintenanceEvent,
+) (wasInserted bool, err error) {
 	// Marshal the event to JSON for document storage
 	documentJSON, err := json.Marshal(event)
 	if err != nil {
-		return fmt.Errorf("failed to marshal maintenance event: %w", err)
+		return false, fmt.Errorf("failed to marshal maintenance event: %w", err)
 	}
 
 	// Build the preserved status value for use in both column and document updates.
 	// This ensures consistency between the status column and document.status field.
+	// RETURNING (xmax = 0) tells us if it was INSERT (true) or UPDATE (false)
 	query := `
 		INSERT INTO maintenance_events (
 			event_id, csp, cluster_name, node_name, status, csp_status,
@@ -85,9 +95,10 @@ func (p *PostgreSQLMaintenanceEventStore) UpsertMaintenanceEvent(
 				END)
 			),
 			updated_at = NOW()
+		RETURNING (xmax = 0)
 	`
 
-	_, err = p.db.ExecContext(ctx, query,
+	err = p.db.QueryRowContext(ctx, query,
 		event.EventID,
 		string(event.CSP),
 		event.ClusterName,
@@ -99,14 +110,14 @@ func (p *PostgreSQLMaintenanceEventStore) UpsertMaintenanceEvent(
 		event.EventReceivedTimestamp,
 		event.LastUpdatedTimestamp,
 		documentJSON,
-	)
+	).Scan(&wasInserted)
 	if err != nil {
-		return fmt.Errorf("failed to upsert maintenance event: %w", err)
+		return false, fmt.Errorf("failed to upsert maintenance event: %w", err)
 	}
 
-	slog.Debug("Successfully upserted maintenance event", "eventID", event.EventID)
+	slog.Debug("Successfully upserted maintenance event", "eventID", event.EventID, "wasInserted", wasInserted)
 
-	return nil
+	return wasInserted, nil
 }
 
 // FindEventsToTriggerQuarantine finds events ready for quarantine triggering

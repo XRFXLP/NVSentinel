@@ -549,8 +549,6 @@ func isColumnField(field string) bool {
 		"status":                   true,
 		"csp_status":               true,
 		"scheduled_start_time":     true,
-		"scheduled_end_time":       true,
-		"actual_start_time":        true,
 		"actual_end_time":          true,
 		"event_received_timestamp": true,
 		"last_updated_timestamp":   true,

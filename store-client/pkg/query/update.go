@@ -101,64 +101,52 @@ func (u *UpdateBuilder) ToSQL() (string, []interface{}) {
 		return "", nil
 	}
 
-	var columnSetParts []string                                  // Regular column updates (e.g., "status = $1")
-	var documentUpdates []struct{ path string; value interface{} } // Document field updates to chain
+	var columnSetParts []string
+	var documentUpdates []struct {
+		path  string
+		value interface{}
+	}
 	var allArgs []interface{}
+	currentParam := 1
 
-	// First pass: categorize operations into column updates vs document updates
+	// Single pass: build column updates and collect document updates
 	for _, op := range u.operations {
 		switch typedOp := op.(type) {
 		case *setDocumentFieldOperation:
-			// Always a document update
-			documentUpdates = append(documentUpdates, struct{ path string; value interface{} }{
+			// Document update - defer to second pass
+			documentUpdates = append(documentUpdates, struct {
+				path  string
+				value interface{}
+			}{
 				path:  typedOp.field,
 				value: typedOp.value,
 			})
 		case *setOperation:
-			if isColumnField(typedOp.field) && !strings.Contains(typedOp.field, ".") {
-				// Regular column update - will be handled individually
-				columnSetParts = append(columnSetParts, "") // placeholder
-				allArgs = append(allArgs, typedOp.value)
-			} else {
-				// Document field update (nested path or non-column field)
-				path := typedOp.field
-				if strings.Contains(path, ".") {
-					path = mongoFieldToJSONBPath(path)
-				}
-				documentUpdates = append(documentUpdates, struct{ path string; value interface{} }{
-					path:  path,
-					value: typedOp.value,
-				})
-			}
-		default:
-			// Unknown operation type - use the standard ToSQL
-			sql, args, _ := op.ToSQL(len(allArgs) + 1)
-			columnSetParts = append(columnSetParts, sql)
-			allArgs = append(allArgs, args...)
-		}
-	}
-
-	// Second pass: build column SET clauses with proper parameter numbering
-	// We need to rebuild columnSetParts with proper parameter numbers
-	columnSetParts = nil
-	allArgs = nil
-	currentParam := 1
-
-	for _, op := range u.operations {
-		if typedOp, ok := op.(*setOperation); ok {
 			if isColumnField(typedOp.field) && !strings.Contains(typedOp.field, ".") {
 				// Regular column update
 				sql := fmt.Sprintf("%s = $%d", typedOp.field, currentParam)
 				columnSetParts = append(columnSetParts, sql)
 				allArgs = append(allArgs, typedOp.value)
 				currentParam++
+			} else {
+				// Document update - defer to second pass
+				path := typedOp.field
+				if strings.Contains(path, ".") {
+					path = mongoFieldToJSONBPath(path)
+				}
+				documentUpdates = append(documentUpdates, struct {
+					path  string
+					value interface{}
+				}{
+					path:  path,
+					value: typedOp.value,
+				})
 			}
 		}
 	}
 
-	// Third pass: build chained jsonb_set for document updates
+	// Second pass: build chained jsonb_set for document updates
 	if len(documentUpdates) > 0 {
-		// Start with "document" and chain jsonb_set calls
 		expr := "document"
 		var docArgs []interface{}
 		for _, du := range documentUpdates {
