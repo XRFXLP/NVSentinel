@@ -436,7 +436,7 @@ func mongoFieldToJSONB(fieldPath string) string {
 			case "_id":
 				return "id"
 			default:
-				return snakeCaseField // Return the snake_case version for indexed columns
+				return snakeCaseField
 			}
 		}
 

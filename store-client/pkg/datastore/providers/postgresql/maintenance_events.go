@@ -226,8 +226,8 @@ func (p *PostgreSQLMaintenanceEventStore) UpdateEventStatus(
 		WHERE event_id = $4
 	`
 
-	// Convert status to JSON string format for jsonb_set
 	statusJSON := fmt.Sprintf("\"%s\"", newStatus)
+
 	result, err := p.db.ExecContext(ctx, query, string(newStatus), statusJSON, time.Now(), eventID)
 	if err != nil {
 		return fmt.Errorf("failed to update maintenance event status: %w", err)

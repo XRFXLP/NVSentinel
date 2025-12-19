@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
 	"strings"
 	"unicode"
@@ -32,7 +33,8 @@ import (
 
 // MongoDB operator constants
 const (
-	opNe = "$ne"
+	maintenanceEventTableName = "maintenance_events"
+	trueString                = "TRUE"
 )
 
 // PostgreSQLDatabaseClient implements client.DatabaseClient for PostgreSQL
@@ -43,11 +45,8 @@ type PostgreSQLDatabaseClient struct {
 	connString string // For creating LISTEN connections
 }
 
-// toSnakeCase converts PascalCase or camelCase strings to snake_case for PostgreSQL
-// Examples:
-//   - "HealthEvents" -> "health_events"
-//   - "MaintenanceEvents" -> "maintenance_events"
-//   - "scheduledStartTime" -> "scheduled_start_time"
+// toSnakeCase converts PascalCase strings to snake_case for PostgreSQL table names
+// Examples: "HealthEvents" -> "health_events", "MaintenanceEvents" -> "maintenance_events"
 func toSnakeCase(s string) string {
 	if s == "" {
 		return s
@@ -74,24 +73,17 @@ func toSnakeCase(s string) string {
 // transformFilterMapForMaintenanceEvents converts filter map keys to snake_case
 // for the maintenance_events table to use indexed columns instead of JSON queries.
 // Example: {"scheduledStartTime": {"$gt": now}} -> {"scheduled_start_time": {"$gt": now}}
-func transformFilterMapForMaintenanceEvents(filterMap map[string]interface{}) map[string]interface{} {
-	transformed := make(map[string]interface{})
+func transformFilterMapForMaintenanceEvents(filterMap map[string]any) map[string]any {
+	transformed := make(map[string]any)
 
 	for key, value := range filterMap {
-		// Convert camelCase field names to snake_case
 		snakeCaseKey := toSnakeCase(key)
 
-		// If the value is a map (e.g., MongoDB operators), recursively transform it
-		if valueMap, ok := value.(map[string]interface{}); ok {
-			// Keep the MongoDB operators as-is, but transform any nested field references
-			transformedValue := make(map[string]interface{})
-			for opKey, opValue := range valueMap {
-				// Don't transform operator keys (they start with $)
-				transformedValue[opKey] = opValue
-			}
+		if valueMap, ok := value.(map[string]any); ok {
+			transformedValue := make(map[string]any)
+			maps.Copy(transformedValue, valueMap)
 			transformed[snakeCaseKey] = transformedValue
 		} else {
-			// Simple value, just transform the key
 			transformed[snakeCaseKey] = value
 		}
 	}
@@ -338,66 +330,9 @@ func (c *PostgreSQLDatabaseClient) convertFilterToWhereClause(
 	filterMap := c.convertFilterToMap(filter)
 
 	if filterMap != nil {
-		// Handle both simple equality and MongoDB-style filters
-		// Collect all conditions and combine them with AND
-		var conditions []query.Condition
-
-		for key, value := range filterMap {
-			// Handle top-level logical operators ($and, $or)
-			if key == "$and" || key == "$or" {
-				subConditions, err := c.processLogicalOperator(key, value)
-				if err != nil {
-					return "", nil, err
-				}
-				conditions = append(conditions, subConditions...)
-				continue
-			}
-
-			// Check if value is a MongoDB operator map (e.g., {"$ne": "value"})
-			// Also use convertFilterToMap to handle bson.M and other map types
-			valueMap := c.convertFilterToMap(value)
-			if valueMap != nil {
-				// Parse MongoDB operators
-				for op, opValue := range valueMap {
-					// Create condition directly based on operator
-					var cond query.Condition
-
-					//nolint:goconst // MongoDB operator strings are clear as literals
-					switch op {
-					case opNe:
-						cond = query.Ne(key, opValue)
-					case "$eq":
-						cond = query.Eq(key, opValue)
-					case "$gt":
-						cond = query.Gt(key, opValue)
-					case "$gte":
-						cond = query.Gte(key, opValue)
-					case "$lt":
-						cond = query.Lt(key, opValue)
-					case "$lte":
-						cond = query.Lte(key, opValue)
-					case "$in":
-						inValues := c.convertToInterfaceSlice(opValue)
-						if inValues != nil {
-							cond = query.In(key, inValues)
-						} else {
-							slog.Error("$in operator type mismatch", "key", key, "actualType", fmt.Sprintf("%T", opValue))
-							return "", nil, fmt.Errorf("$in operator requires array value, got: %T", opValue)
-						}
-					default:
-						slog.Error("Unsupported operator", "operator", op)
-
-						return "", nil, fmt.Errorf("unsupported MongoDB operator: %s", op)
-					}
-
-					if cond != nil {
-						conditions = append(conditions, cond)
-					}
-				}
-			} else {
-				// Simple equality
-				conditions = append(conditions, query.Eq(key, value))
-			}
+		conditions, err := c.filterMapToConditions(filterMap)
+		if err != nil {
+			return "", nil, err
 		}
 
 		// Combine all conditions with AND
@@ -471,7 +406,7 @@ func (c *PostgreSQLDatabaseClient) convertUpdateToSetClause(
 			// For maintenance_events table, when updating denormalized columns (like status),
 			// also update the corresponding field in the JSONB document to keep them in sync.
 			// This is critical because queries may filter on either the column or the document field.
-			if c.tableName == "maintenance_events" && key == "status" {
+			if c.tableName == maintenanceEventTableName && key == "status" {
 				slog.Debug("Also updating document.status field to keep in sync with column", "value", value)
 				// Use a special key format that ToSQL will recognize as a document field update
 				builder.SetDocumentField("status", value)
@@ -548,7 +483,7 @@ func (c *PostgreSQLDatabaseClient) UpsertDocument(
 ) (*client.UpdateResult, error) {
 	// For maintenance_events table, use the specialized store implementation
 	// which properly handles the denormalized schema with indexed columns
-	if c.tableName == "maintenance_events" {
+	if c.tableName == maintenanceEventTableName {
 		return c.upsertMaintenanceEvent(ctx, document)
 	}
 
@@ -603,6 +538,7 @@ func (c *PostgreSQLDatabaseClient) upsertMaintenanceEvent(
 
 	// Use the specialized maintenance event store with result tracking
 	store := NewPostgreSQLMaintenanceEventStore(c.db)
+
 	wasInserted, err := store.upsertMaintenanceEventWithResult(ctx, &event)
 	if err != nil {
 		return nil, err
@@ -750,78 +686,115 @@ func (c *PostgreSQLDatabaseClient) convertToInterfaceSlice(value interface{}) []
 	return nil
 }
 
-// processLogicalOperator processes $and and $or operators from MongoDB-style filters.
-// It extracts the array of sub-filters and recursively processes each one.
-func (c *PostgreSQLDatabaseClient) processLogicalOperator(operator string, value interface{}) ([]query.Condition, error) {
+// operatorToCondition converts a MongoDB operator and value to a query.Condition.
+// Returns the condition and any error encountered.
+func (c *PostgreSQLDatabaseClient) operatorToCondition(key, op string, opValue any) (query.Condition, error) {
+	switch op {
+	case opNe:
+		return query.Ne(key, opValue), nil
+	case opEq:
+		return query.Eq(key, opValue), nil
+	case opGt:
+		return query.Gt(key, opValue), nil
+	case opGte:
+		return query.Gte(key, opValue), nil
+	case opLt:
+		return query.Lt(key, opValue), nil
+	case opLte:
+		return query.Lte(key, opValue), nil
+	case opIn:
+		inValues := c.convertToInterfaceSlice(opValue)
+		if inValues != nil {
+			return query.In(key, inValues), nil
+		}
+
+		return nil, fmt.Errorf("$in operator requires array value for key %q, got: %T", key, opValue)
+	default:
+		return nil, fmt.Errorf("unsupported MongoDB operator: %s", op)
+	}
+}
+
+// filterMapToConditions converts a MongoDB-style filter map to query conditions.
+// Handles logical operators ($and, $or) and comparison operators ($eq, $ne, $gt, etc.)
+func (c *PostgreSQLDatabaseClient) filterMapToConditions(filterMap map[string]any) ([]query.Condition, error) {
 	var conditions []query.Condition
 
-	// The value should be an array of filter objects
+	for key, value := range filterMap {
+		if key == opAnd || key == opOr {
+			subConditions, err := c.processLogicalOperator(key, value)
+			if err != nil {
+				return nil, err
+			}
+
+			conditions = append(conditions, subConditions...)
+
+			continue
+		}
+
+		valueMap := c.convertFilterToMap(value)
+		if valueMap != nil {
+			for op, opValue := range valueMap {
+				cond, err := c.operatorToCondition(key, op, opValue)
+				if err != nil {
+					return nil, err
+				}
+
+				if cond != nil {
+					conditions = append(conditions, cond)
+				}
+			}
+		} else {
+			conditions = append(conditions, query.Eq(key, value))
+		}
+	}
+
+	return conditions, nil
+}
+
+// conditionsToWhereClause combines conditions with AND and converts to SQL WHERE clause.
+func conditionsToWhereClause(conditions []query.Condition) (whereClause string, args []any) {
+	if len(conditions) == 0 {
+		return trueString, nil
+	}
+
+	var finalCondition query.Condition
+	if len(conditions) == 1 {
+		finalCondition = conditions[0]
+	} else {
+		finalCondition = query.And(conditions...)
+	}
+
+	builder := query.New().Build(finalCondition)
+
+	return builder.ToSQL()
+}
+
+// processLogicalOperator processes $and and $or operators from MongoDB-style filters.
+// It extracts the array of sub-filters and recursively processes each one.
+func (c *PostgreSQLDatabaseClient) processLogicalOperator(operator string, value any) ([]query.Condition, error) {
+	var conditions []query.Condition
+
 	filterArray := c.convertToInterfaceSlice(value)
 	if filterArray == nil {
 		return nil, fmt.Errorf("%s operator requires array value, got: %T", operator, value)
 	}
 
 	for _, subFilter := range filterArray {
-		// Each sub-filter should be a map
 		subFilterMap := c.convertFilterToMap(subFilter)
 		if subFilterMap == nil {
 			return nil, fmt.Errorf("%s sub-filter must be a map, got: %T", operator, subFilter)
 		}
 
-		// For maintenance_events table, transform field names to snake_case
-		if c.tableName == "maintenance_events" {
+		if c.tableName == maintenanceEventTableName {
 			subFilterMap = transformFilterMapForMaintenanceEvents(subFilterMap)
 		}
 
-		// Process each field in the sub-filter
-		for key, fieldValue := range subFilterMap {
-			// Handle nested logical operators
-			if key == "$and" || key == "$or" {
-				nestedConds, err := c.processLogicalOperator(key, fieldValue)
-				if err != nil {
-					return nil, err
-				}
-				conditions = append(conditions, nestedConds...)
-				continue
-			}
-
-			// Check if value is an operator map
-			valueMap := c.convertFilterToMap(fieldValue)
-			if valueMap != nil {
-				for op, opValue := range valueMap {
-					var cond query.Condition
-					switch op {
-					case opNe:
-						cond = query.Ne(key, opValue)
-					case "$eq":
-						cond = query.Eq(key, opValue)
-					case "$gt":
-						cond = query.Gt(key, opValue)
-					case "$gte":
-						cond = query.Gte(key, opValue)
-					case "$lt":
-						cond = query.Lt(key, opValue)
-					case "$lte":
-						cond = query.Lte(key, opValue)
-					case "$in":
-						inValues := c.convertToInterfaceSlice(opValue)
-						if inValues != nil {
-							cond = query.In(key, inValues)
-						} else {
-							return nil, fmt.Errorf("$in operator requires array value, got: %T", opValue)
-						}
-					default:
-						return nil, fmt.Errorf("unsupported MongoDB operator in %s: %s", operator, op)
-					}
-					if cond != nil {
-						conditions = append(conditions, cond)
-					}
-				}
-			} else {
-				// Simple equality
-				conditions = append(conditions, query.Eq(key, fieldValue))
-			}
+		subConditions, err := c.filterMapToConditions(subFilterMap)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", operator, err)
 		}
+
+		conditions = append(conditions, subConditions...)
 	}
 
 	return conditions, nil
@@ -846,79 +819,12 @@ func (c *PostgreSQLDatabaseClient) FindOne(
 	if builder, ok := filter.(*query.Builder); ok {
 		whereClause, args = builder.ToSQL()
 	} else if filterMap != nil {
-		// Handle both simple equality and MongoDB-style filters
-		// Collect all conditions and combine them with AND
-		var conditions []query.Condition
-
-		for key, value := range filterMap {
-			// Handle top-level logical operators ($and, $or)
-			if key == "$and" || key == "$or" {
-				subConditions, err := c.processLogicalOperator(key, value)
-				if err != nil {
-					return nil, err
-				}
-				conditions = append(conditions, subConditions...)
-				continue
-			}
-
-			// Check if value is a MongoDB operator map (e.g., {"$in": [...]})
-			// Use convertFilterToMap to handle bson.M and other map types
-			valueMap := c.convertFilterToMap(value)
-			if valueMap != nil {
-				// Parse MongoDB operators
-				for op, opValue := range valueMap {
-					// Create condition directly based on operator
-					var cond query.Condition
-
-					switch op {
-					case opNe:
-						cond = query.Ne(key, opValue)
-					case "$eq":
-						cond = query.Eq(key, opValue)
-					case "$gt":
-						cond = query.Gt(key, opValue)
-					case "$gte":
-						cond = query.Gte(key, opValue)
-					case "$lt":
-						cond = query.Lt(key, opValue)
-					case "$lte":
-						cond = query.Lte(key, opValue)
-					case "$in":
-						// Convert various array types to []interface{}
-						inValues := c.convertToInterfaceSlice(opValue)
-						if inValues != nil {
-							cond = query.In(key, inValues)
-						} else {
-							slog.Error("$in operator type mismatch", "key", key, "actualType", fmt.Sprintf("%T", opValue))
-							return nil, fmt.Errorf("$in operator requires array value, got: %T", opValue)
-						}
-					default:
-						slog.Error("Unsupported operator", "operator", op)
-
-						return nil, fmt.Errorf("unsupported MongoDB operator: %s", op)
-					}
-
-					if cond != nil {
-						conditions = append(conditions, cond)
-					}
-				}
-			} else {
-				// Simple equality
-				conditions = append(conditions, query.Eq(key, value))
-			}
+		conditions, err := c.filterMapToConditions(filterMap)
+		if err != nil {
+			return nil, err
 		}
 
-		// Combine all conditions with AND
-		var finalCondition query.Condition
-
-		if len(conditions) == 1 {
-			finalCondition = conditions[0]
-		} else if len(conditions) > 1 {
-			finalCondition = query.And(conditions...)
-		}
-
-		builder := query.New().Build(finalCondition)
-		whereClause, args = builder.ToSQL()
+		whereClause, args = conditionsToWhereClause(conditions)
 	} else {
 		slog.Error("Unsupported filter type", "filterType", fmt.Sprintf("%T", filter))
 
@@ -974,82 +880,18 @@ func (c *PostgreSQLDatabaseClient) Find(
 
 		if filterMap != nil {
 			// For maintenance_events table, transform field names to snake_case
-			// to use indexed columns instead of querying JSON document
-			if c.tableName == "maintenance_events" {
+			if c.tableName == maintenanceEventTableName {
 				filterMap = transformFilterMapForMaintenanceEvents(filterMap)
 			}
 
-			// Handle both simple equality and MongoDB-style filters
-			// Collect all conditions and combine them with AND
-			var conditions []query.Condition
-
-			for key, value := range filterMap {
-				// Handle top-level logical operators ($and, $or)
-				if key == "$and" || key == "$or" {
-					subConditions, err := c.processLogicalOperator(key, value)
-					if err != nil {
-						return nil, err
-					}
-					conditions = append(conditions, subConditions...)
-					continue
-				}
-
-				// Check if value is a MongoDB operator map (e.g., {"$in": [...]})
-				// Also use convertFilterToMap to handle bson.M and other map types
-				valueMap := c.convertFilterToMap(value)
-				if valueMap != nil {
-					// Parse MongoDB operators
-					for op, opValue := range valueMap {
-						// Create condition directly based on operator
-						var cond query.Condition
-
-						switch op {
-						case opNe:
-							cond = query.Ne(key, opValue)
-						case "$eq":
-							cond = query.Eq(key, opValue)
-						case "$gt":
-							cond = query.Gt(key, opValue)
-						case "$gte":
-							cond = query.Gte(key, opValue)
-						case "$lt":
-							cond = query.Lt(key, opValue)
-						case "$lte":
-							cond = query.Lte(key, opValue)
-						case "$in":
-							inValues := c.convertToInterfaceSlice(opValue)
-							if inValues != nil {
-								cond = query.In(key, inValues)
-							} else {
-								return nil, fmt.Errorf("$in operator requires array value, got: %T", opValue)
-							}
-						default:
-							return nil, fmt.Errorf("unsupported MongoDB operator: %s", op)
-						}
-
-						if cond != nil {
-							conditions = append(conditions, cond)
-						}
-					}
-				} else {
-					// Simple equality
-					conditions = append(conditions, query.Eq(key, value))
-				}
+			conditions, err := c.filterMapToConditions(filterMap)
+			if err != nil {
+				return nil, err
 			}
 
-			// Combine all conditions with AND
-			var finalCondition query.Condition
-
-			if len(conditions) == 1 {
-				finalCondition = conditions[0]
-			} else if len(conditions) > 1 {
-				finalCondition = query.And(conditions...)
-			}
-
-			builder := query.New().Build(finalCondition)
-			whereClause, args = builder.ToSQL()
+			whereClause, args = conditionsToWhereClause(conditions)
 		} else {
-			whereClause = "TRUE" // No filter (filterMap was nil)
+			whereClause = trueString // No filter (filterMap was nil)
 		}
 	}
 
@@ -1081,15 +923,15 @@ func (c *PostgreSQLDatabaseClient) CountDocuments(
 
 	if builder, ok := filter.(*query.Builder); ok {
 		whereClause, args = builder.ToSQL()
-	} else if filterMap, ok := filter.(map[string]interface{}); ok {
-		builder := query.New()
-		for key, value := range filterMap {
-			builder.Build(query.Eq(key, value))
+	} else if filterMap := c.convertFilterToMap(filter); filterMap != nil {
+		conditions, err := c.filterMapToConditions(filterMap)
+		if err != nil {
+			return 0, err
 		}
 
-		whereClause, args = builder.ToSQL()
+		whereClause, args = conditionsToWhereClause(conditions)
 	} else {
-		whereClause = "TRUE"
+		whereClause = trueString
 	}
 
 	//nolint:gosec // G201: table name is controlled internally, not from user input
