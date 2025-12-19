@@ -1361,48 +1361,43 @@ func PatchServicePort(ctx context.Context, c klient.Client, namespace, serviceNa
 	return nil
 }
 
-// SetNodeManagedByNVSentinel sets the ManagedByNVSentinel label on a node
+// SetNodeManagedByNVSentinel sets the ManagedByNVSentinel label on a node.
 func SetNodeManagedByNVSentinel(ctx context.Context, c klient.Client, nodeName string, managed bool) error {
-	node, err := GetNodeByName(ctx, c, nodeName)
-	if err != nil {
-		return fmt.Errorf("failed to get node: %w", err)
-	}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			return err
+		}
 
-	if node.Labels == nil {
-		node.Labels = make(map[string]string)
-	}
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
 
-	if managed {
-		node.Labels["k8saas.nvidia.com/ManagedByNVSentinel"] = "true"
-	} else {
-		node.Labels["k8saas.nvidia.com/ManagedByNVSentinel"] = "false"
-	}
+		if managed {
+			node.Labels["k8saas.nvidia.com/ManagedByNVSentinel"] = "true"
+		} else {
+			node.Labels["k8saas.nvidia.com/ManagedByNVSentinel"] = "false"
+		}
 
-	err = c.Resources().Update(ctx, node)
-	if err != nil {
-		return fmt.Errorf("failed to update node labels: %w", err)
-	}
-
-	return nil
+		return c.Resources().Update(ctx, node)
+	})
 }
 
-// RemoveNodeManagedByNVSentinelLabel removes the ManagedByNVSentinel label from a node
+// RemoveNodeManagedByNVSentinelLabel removes the ManagedByNVSentinel label from a node.
 func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, nodeName string) error {
-	node, err := GetNodeByName(ctx, c, nodeName)
-	if err != nil {
-		return fmt.Errorf("failed to get node: %w", err)
-	}
-
-	if node.Labels != nil {
-		delete(node.Labels, "k8saas.nvidia.com/ManagedByNVSentinel")
-
-		err = c.Resources().Update(ctx, node)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		node, err := GetNodeByName(ctx, c, nodeName)
 		if err != nil {
-			return fmt.Errorf("failed to update node labels: %w", err)
+			return err
 		}
-	}
 
-	return nil
+		if node.Labels != nil {
+			delete(node.Labels, "k8saas.nvidia.com/ManagedByNVSentinel")
+			return c.Resources().Update(ctx, node)
+		}
+
+		return nil
+	})
 }
 
 // GetPodOnWorkerNode returns a running pod matching the given name pattern on a real worker node

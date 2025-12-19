@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
 )
 
 // DatabaseConfig represents database-agnostic configuration
@@ -65,6 +67,8 @@ const (
 	// Legacy: Non-prefixed versions (for backward compatibility)
 	EnvChangeStreamRetryDeadlineSeconds = "CHANGE_STREAM_RETRY_DEADLINE_SECONDS"
 	EnvChangeStreamRetryIntervalSeconds = "CHANGE_STREAM_RETRY_INTERVAL_SECONDS"
+	// Certificate rotation configuration
+	EnvMongoDBEnableCertRotation = "MONGODB_ENABLE_CERT_ROTATION"
 )
 
 // Default values that match existing module defaults for backward compatibility
@@ -512,4 +516,12 @@ func (c *StandardTimeoutConfig) GetChangeStreamRetryDeadlineSeconds() int {
 
 func (c *StandardTimeoutConfig) GetChangeStreamRetryIntervalSeconds() int {
 	return c.changeStreamRetryIntervalSeconds
+}
+
+// IsCertRotationEnabled returns true if certificate rotation is enabled via environment variable.
+// When enabled, the MongoDB client will use fsnotify to watch for certificate file changes
+// and automatically reload certificates without restarting the application.
+func IsCertRotationEnabled() bool {
+	value := os.Getenv(EnvMongoDBEnableCertRotation)
+	return stringutil.IsTruthyValue(value)
 }

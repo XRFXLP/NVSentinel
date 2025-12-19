@@ -34,6 +34,22 @@ var (
 		`NVRM: Xid \(PCI:([^)]+)\): (\d+)(?:, pid=[^,]*)?(?:, name=[^,]*)?, ` +
 			`(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+Link\s+(-?\d+)\s+\((0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)`,
 	)
+
+	// reXid74NVLinkPattern matches XID 74 NVLink errors with 7 registers
+	// Example: "NVLink: fatal error detected on link 14(0x0, 0x0, 0x10000, 0x0, 0x0, 0x0, 0x0)"
+	reXid74NVLinkPattern = regexp.MustCompile(
+		`link\s+(\d+)\(` +
+			`(0x[0-9a-fA-F]+),\s*` +
+			`(0x[0-9a-fA-F]+),\s*` +
+			`(0x[0-9a-fA-F]+),\s*` +
+			`(0x[0-9a-fA-F]+),\s*` +
+			`(0x[0-9a-fA-F]+),\s*` +
+			`(0x[0-9a-fA-F]+),\s*` +
+			`(0x[0-9a-fA-F]+)\)`,
+	)
+
+	// reXid13Pattern matches XID 13 error with GPC, TPC, and SM values
+	reXid13Pattern = regexp.MustCompile(`\(GPC\s+(\d+),\s*TPC\s+(\d+),\s*SM\s+(\d+)\)`)
 )
 
 // CSVParser implements Parser interface using local CSV-based error resolution
@@ -152,13 +168,16 @@ func (p *CSVParser) parseStandardXID(message string) (*Response, error) {
 	metadata := make(map[string]string)
 
 	if xidCode == 13 {
-		gpc, tpc, sm := fetchXID13MetadataFromMessage(message)
-		if gpc != "" && tpc != "" && sm != "" {
-			metadata = map[string]string{
-				"GPC": gpc,
-				"TPC": tpc,
-				"SM":  sm,
-			}
+		xid13Metadata := fetchXID13MetadataFromMessage(message)
+		for k, v := range xid13Metadata {
+			metadata[k] = v
+		}
+	}
+
+	if xidCode == 74 {
+		nvLinkMetadata := fetchXID74NVLinkData(message)
+		for k, v := range nvLinkMetadata {
+			metadata[k] = v
 		}
 	}
 
@@ -271,13 +290,49 @@ func (p *CSVParser) doesXIDIntrInfoMatchRule(intrinfoBinaryPattern string, intrI
 	return true
 }
 
-func fetchXID13MetadataFromMessage(message string) (string, string, string) {
-	re := regexp.MustCompile(`\(GPC\s+(\d+),\s*TPC\s+(\d+),\s*SM\s+(\d+)\)`)
-	matches := re.FindStringSubmatch(message)
+func fetchXID13MetadataFromMessage(message string) map[string]string {
+	matches := reXid13Pattern.FindStringSubmatch(message)
 
 	if len(matches) != 4 {
-		return "", "", ""
+		return map[string]string{}
 	}
 
-	return matches[1], matches[2], matches[3]
+	metadata := map[string]string{
+		"GPC": matches[1],
+		"TPC": matches[2],
+		"SM":  matches[3],
+	}
+
+	return metadata
+}
+
+// fetchXID74NVLinkData extracts link number and registers value from XID 74 NVLink messages
+// Returns (link, reg0, reg1, reg2, reg3, reg4, reg5, reg6)
+func fetchXID74NVLinkData(message string) map[string]string {
+	matches := reXid74NVLinkPattern.FindStringSubmatch(message)
+
+	if len(matches) == 0 {
+		return map[string]string{} // Not an XID 74 NVLink error
+	}
+
+	metadata := make(map[string]string)
+	nvlink := matches[1]
+
+	metadata["NVLINK"] = nvlink
+
+	for i := 2; i < len(matches); i++ {
+		metadata[fmt.Sprintf("REG%d", i-2)] = convertHexToBinary32(matches[i])
+	}
+
+	return metadata
+}
+
+func convertHexToBinary32(hexStr string) string {
+	value, err := strconv.ParseInt(hexStr, 0, 64)
+	if err != nil {
+		slog.Warn("Failed to parse hex value", "hex", hexStr, "error", err)
+		return strings.Repeat("0", 32)
+	}
+
+	return fmt.Sprintf("%032b", value)
 }
