@@ -35,6 +35,7 @@ import (
 
 // All tests in this file are not yet supported for PostgreSQL.
 // So we skip them for now using a build tag (mongodb) that excludes them from PostgreSQL tests.
+// Github Issue: https://github.com/NVIDIA/NVSentinel/issues/606
 
 func TestMultipleRemediationsCompleted(t *testing.T) {
 	feature := features.New("TestMultipleRemediationsCompleted").
