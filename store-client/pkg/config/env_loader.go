@@ -239,7 +239,7 @@ func NewDatabaseConfigWithCollection(
 // using DATASTORE_* environment variables instead of MONGODB_* variables
 //
 //nolint:cyclop // Config validation requires checking multiple environment variables
-func newPostgreSQLCompatibleConfig(certMountPath, collectionEnvVar, defaultCollection string) (DatabaseConfig, error) {
+func newPostgreSQLCompatibleConfig(certMountPath, tableEnvVar, defaultTable string) (DatabaseConfig, error) {
 	host := os.Getenv("DATASTORE_HOST")
 	if host == "" {
 		return nil, fmt.Errorf("required environment variable DATASTORE_HOST is not set")
@@ -286,19 +286,19 @@ func newPostgreSQLCompatibleConfig(certMountPath, collectionEnvVar, defaultColle
 	connectionURI := fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s sslcert=%s sslkey=%s sslrootcert=%s",
 		host, port, database, username, sslmode, sslcert, sslkey, sslrootcert)
 
-	// Determine collection/table name using the provided parameters
+	// Determine table name using the provided parameters
 	// For PostgreSQL, this maps to the table name (converted to snake_case by the client)
-	collectionEnvName := collectionEnvVar
-	if collectionEnvName == "" {
-		collectionEnvName = "MONGODB_COLLECTION_NAME"
+	tableEnvName := tableEnvVar
+	if tableEnvName == "" {
+		tableEnvName = EnvMongoDBCollectionName
 	}
 
-	collectionName := os.Getenv(collectionEnvName)
-	if collectionName == "" {
-		if defaultCollection != "" {
-			collectionName = defaultCollection
+	tableName := os.Getenv(tableEnvName)
+	if tableName == "" {
+		if defaultTable != "" {
+			tableName = defaultTable
 		} else {
-			collectionName = "health_events" // Final fallback
+			return nil, fmt.Errorf("required environment variable %s is not set", tableEnvName)
 		}
 	}
 
@@ -317,7 +317,7 @@ func newPostgreSQLCompatibleConfig(certMountPath, collectionEnvVar, defaultColle
 	return &StandardDatabaseConfig{
 		connectionURI:  connectionURI,
 		databaseName:   database,
-		collectionName: collectionName,
+		collectionName: tableName,
 		certConfig:     certConfig,
 		timeoutConfig:  timeoutConfig,
 	}, nil

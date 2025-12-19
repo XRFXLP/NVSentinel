@@ -425,7 +425,6 @@ func (c *orCondition) ToSQL(paramNum int) (string, []interface{}, int) {
 func mongoFieldToJSONB(fieldPath string) string {
 	// Handle simple top-level fields that aren't nested
 	if !strings.Contains(fieldPath, ".") {
-		// Convert camelCase to snake_case first for column field matching
 		snakeCaseField := toSnakeCase(fieldPath)
 
 		// If it's a column name (like "createdAt"), use it directly

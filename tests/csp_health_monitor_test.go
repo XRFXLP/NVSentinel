@@ -196,11 +196,7 @@ func TestCSPHealthMonitorAWSMaintenanceEvent(t *testing.T) {
 		t.Log("Restarting csp-health-monitor to sync AWS node informer (uses AddFunc on initial cache sync)")
 		require.NoError(t, helpers.RestartDeployment(ctx, t, client, "csp-health-monitor", helpers.NVSentinelNamespace))
 
-		// Wait for multiple polls to ensure node informer has synced
-		// First poll may happen before informer cache is fully synced (especially in slower CI environments)
-		t.Log("Waiting for CSP health monitor to poll twice (ensuring node informer sync)")
 		helpers.WaitForCSPHealthMonitorPoll(t, testCtx.CSPClient, helpers.CSPAWS)
-		helpers.WaitForNextPoll(t, testCtx.CSPClient, helpers.CSPAWS)
 
 		return newCtx
 	})

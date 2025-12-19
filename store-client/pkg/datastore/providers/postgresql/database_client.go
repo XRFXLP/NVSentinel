@@ -324,8 +324,8 @@ func (c *PostgreSQLDatabaseClient) convertFilterToWhereClause(
 		return whereClause, filterArgs, nil
 	}
 
-	// Try to convert filter to map[string]interface{} if it's a compatible type
-	// This handles bson.M (primitive.M) which is essentially map[string]interface{}
+	// Try to convert filter to map[string]any if it's a compatible type
+	// This handles bson.M (primitive.M) which is essentially map[string]any
 	// MongoDB builder factory may be registered as the default, so we may receive MongoDB types
 	filterMap := c.convertFilterToMap(filter)
 
@@ -335,7 +335,6 @@ func (c *PostgreSQLDatabaseClient) convertFilterToWhereClause(
 			return "", nil, err
 		}
 
-		// Combine all conditions with AND
 		var finalCondition query.Condition
 
 		if len(conditions) == 1 {
@@ -365,8 +364,8 @@ func (c *PostgreSQLDatabaseClient) convertUpdateToSetClause(
 		return setClause, updateArgs, nil
 	}
 
-	// Try to convert update to map[string]interface{} if it's a compatible type
-	// This handles bson.M (primitive.M) which is essentially map[string]interface{}
+	// Try to convert update to map[string]any if it's a compatible type
+	// This handles bson.M (primitive.M) which is essentially map[string]any
 	// MongoDB builder factory may be registered as the default, so we may receive MongoDB types
 	updateMap := c.convertFilterToMap(update)
 

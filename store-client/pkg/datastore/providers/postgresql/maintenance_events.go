@@ -226,9 +226,12 @@ func (p *PostgreSQLMaintenanceEventStore) UpdateEventStatus(
 		WHERE event_id = $4
 	`
 
-	statusJSON := fmt.Sprintf("\"%s\"", newStatus)
+	statusJSONBytes, err := json.Marshal(string(newStatus))
+	if err != nil {
+		return fmt.Errorf("failed to marshal status: %w", err)
+	}
 
-	result, err := p.db.ExecContext(ctx, query, string(newStatus), statusJSON, time.Now(), eventID)
+	result, err := p.db.ExecContext(ctx, query, string(newStatus), string(statusJSONBytes), time.Now(), eventID)
 	if err != nil {
 		return fmt.Errorf("failed to update maintenance event status: %w", err)
 	}
