@@ -48,6 +48,8 @@ func (p *PostgreSQLMaintenanceEventStore) UpsertMaintenanceEvent(
 		return fmt.Errorf("failed to marshal maintenance event: %w", err)
 	}
 
+	// Build the preserved status value for use in both column and document updates.
+	// This ensures consistency between the status column and document.status field.
 	query := `
 		INSERT INTO maintenance_events (
 			event_id, csp, cluster_name, node_name, status, csp_status,
@@ -58,10 +60,12 @@ func (p *PostgreSQLMaintenanceEventStore) UpsertMaintenanceEvent(
 		)
 		ON CONFLICT (event_id)
 		DO UPDATE SET
-			-- Preserve trigger engine statuses (QUARANTINE_TRIGGERED, HEALTHY_TRIGGERED, etc.)
-			-- Only update status if existing is not a trigger status
+			-- Preserve trigger engine statuses ONLY during ongoing maintenance (not when completing)
+			-- When MAINTENANCE_COMPLETE arrives, we MUST update status so trigger engine can find it
+			-- and send the HEALTHY event to uncordon the node
 			status = CASE
 				WHEN maintenance_events.status IN ('QUARANTINE_TRIGGERED', 'HEALTHY_TRIGGERED', 'NODE_READINESS_TIMEOUT')
+				     AND EXCLUDED.status NOT IN ('MAINTENANCE_COMPLETE')
 				THEN maintenance_events.status
 				ELSE EXCLUDED.status
 			END,
@@ -69,7 +73,17 @@ func (p *PostgreSQLMaintenanceEventStore) UpsertMaintenanceEvent(
 			scheduled_start_time = EXCLUDED.scheduled_start_time,
 			actual_end_time = EXCLUDED.actual_end_time,
 			last_updated_timestamp = EXCLUDED.last_updated_timestamp,
-			document = EXCLUDED.document,
+			-- Update document.status to match the column status determined above
+			document = jsonb_set(
+				EXCLUDED.document, 
+				'{status}', 
+				to_jsonb(CASE
+					WHEN maintenance_events.status IN ('QUARANTINE_TRIGGERED', 'HEALTHY_TRIGGERED', 'NODE_READINESS_TIMEOUT')
+					     AND EXCLUDED.status NOT IN ('MAINTENANCE_COMPLETE')
+					THEN maintenance_events.status
+					ELSE EXCLUDED.status
+				END)
+			),
 			updated_at = NOW()
 	`
 
@@ -184,16 +198,26 @@ func (p *PostgreSQLMaintenanceEventStore) FindEventsToTriggerHealthy(
 }
 
 // UpdateEventStatus updates the status of a maintenance event
+// Updates BOTH the denormalized status column AND the document.status field to keep them in sync.
+// This is critical because queries may filter on either the column or the document field.
 func (p *PostgreSQLMaintenanceEventStore) UpdateEventStatus(
 	ctx context.Context, eventID string, newStatus model.InternalStatus,
 ) error {
+	// Update both the status column AND the document.status field to maintain consistency.
+	// The status column is used for indexed queries, while document.status is used
+	// when the full document is deserialized.
 	query := `
 		UPDATE maintenance_events
-		SET status = $1, last_updated_timestamp = $2, updated_at = NOW()
-		WHERE event_id = $3
+		SET status = $1, 
+		    document = jsonb_set(document, '{status}', $2::jsonb),
+		    last_updated_timestamp = $3, 
+		    updated_at = NOW()
+		WHERE event_id = $4
 	`
 
-	result, err := p.db.ExecContext(ctx, query, string(newStatus), time.Now(), eventID)
+	// Convert status to JSON string format for jsonb_set
+	statusJSON := fmt.Sprintf("\"%s\"", newStatus)
+	result, err := p.db.ExecContext(ctx, query, string(newStatus), statusJSON, time.Now(), eventID)
 	if err != nil {
 		return fmt.Errorf("failed to update maintenance event status: %w", err)
 	}

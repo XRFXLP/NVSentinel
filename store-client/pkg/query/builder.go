@@ -144,6 +144,12 @@ func (c *eqCondition) ToSQL(paramNum int) (string, []interface{}, int) {
 	// Convert field path to JSONB syntax if needed
 	sqlField := mongoFieldToJSONB(c.field)
 
+	// Handle nil value specially - PostgreSQL needs IS NULL, not = NULL
+	if c.value == nil {
+		sql := fmt.Sprintf("%s IS NULL", sqlField)
+		return sql, nil, paramNum
+	}
+
 	sql := fmt.Sprintf("%s = $%d", sqlField, paramNum)
 
 	return sql, []interface{}{c.value}, paramNum + 1
@@ -164,6 +170,12 @@ func (c *neCondition) ToMongo() map[string]interface{} {
 
 func (c *neCondition) ToSQL(paramNum int) (string, []interface{}, int) {
 	sqlField := mongoFieldToJSONB(c.field)
+
+	// Handle nil value specially - PostgreSQL needs IS NOT NULL, not != NULL
+	if c.value == nil {
+		sql := fmt.Sprintf("%s IS NOT NULL", sqlField)
+		return sql, nil, paramNum
+	}
 
 	sql := fmt.Sprintf("%s != $%d", sqlField, paramNum)
 
@@ -542,9 +554,6 @@ func isColumnField(field string) bool {
 		"actual_end_time":          true,
 		"event_received_timestamp": true,
 		"last_updated_timestamp":   true,
-		"resource_type":            true,
-		"resource_id":              true,
-		"maintenance_type":         true,
 	}
 
 	return columnFields[field]

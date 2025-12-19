@@ -1,5 +1,3 @@
-//go:build arm64_group
-// +build arm64_group
 
 // Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 //
