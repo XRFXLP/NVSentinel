@@ -33,6 +33,9 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
+// All tests in this file are not yet supported for PostgreSQL.
+// So we skip them for now using a build tag (mongodb) that excludes them from PostgreSQL tests.
+
 func TestMultipleRemediationsCompleted(t *testing.T) {
 	feature := features.New("TestMultipleRemediationsCompleted").
 		WithLabel("suite", "health-event-analyzer")
