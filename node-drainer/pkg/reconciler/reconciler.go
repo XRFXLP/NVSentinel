@@ -228,8 +228,18 @@ func (r *Reconciler) setInitialStatusAndEnqueue(ctx context.Context, document ma
 
 	r.logStatusUpdateResult(result, nodeName, documentID)
 
-	// Enqueue to the queue manager
-	return r.queueManager.EnqueueEventGeneric(ctx, nodeName, document, r.databaseClient)
+	// Only enqueue if we successfully claimed the event (ModifiedCount > 0)
+	// This prevents duplicate enqueueing when change stream replays events or
+	// cold start reprocesses events that are already InProgress
+	if result.ModifiedCount > 0 {
+		return r.queueManager.EnqueueEventGeneric(ctx, nodeName, document, r.databaseClient)
+	}
+
+	slog.Debug("Event already in progress, skipping enqueue",
+		"node", nodeName,
+		"documentID", fmt.Sprintf("%v", documentID))
+
+	return nil
 }
 
 // logStatusUpdateResult logs the result of the status update
