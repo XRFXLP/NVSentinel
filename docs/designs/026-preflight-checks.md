@@ -32,28 +32,48 @@ Implement a MutatingAdmissionWebhook that injects preflight check init container
 ### Component Structure
 
 ```
-preflight-injector/
-├── main.go
-├── go.mod
-├── go.sum
-├── Makefile
-├── Tiltfile
-└── pkg/
-    ├── config/
-    │   ├── config.go
-    │   └── config_test.go
-    ├── webhook/
-    │   └── v1alpha1/
-    │       ├── handler.go          # Admission handler
-    │       └── handler_test.go
-    ├── injection/
-    │   ├── injector.go             # Init container construction
-    │   └── injector_test.go
-    ├── coordination/
-    │   ├── discovery.go            # Peer discovery via workloadRef
-    │   └── configmap.go            # NCCL ID ConfigMap management
-    └── metrics/
-        └── metrics.go
+preflight/
+├── injector/                       # Webhook (Deployment)
+│   ├── main.go
+│   ├── go.mod
+│   ├── Makefile
+│   ├── Tiltfile
+│   └── pkg/
+│       ├── config/
+│       │   └── config.go
+│       ├── webhook/
+│       │   └── v1alpha1/
+│       │       ├── handler.go
+│       │       └── handler_test.go
+│       ├── injection/
+│       │   ├── injector.go
+│       │   └── injector_test.go
+│       └── metrics/
+│           └── metrics.go
+│
+├── checker/                        # Init container image
+│   ├── main.go
+│   ├── go.mod
+│   ├── Makefile
+│   ├── Tiltfile
+│   └── pkg/
+│       ├── runner/
+│       │   └── runner.go
+│       ├── checks/
+│       │   ├── dcgm/
+│       │   │   └── diag.go         # dcgmi diag -r 1/2
+│       │   └── nccl/
+│       │       ├── loopback.go
+│       │       └── allreduce.go
+│       ├── coordination/
+│       │   ├── discovery.go        # Peer discovery via workloadRef
+│       │   └── configmap.go        # NCCL ID sharing
+│       ├── reporting/
+│       │   └── healthevents.go
+│       └── metrics/
+│           └── metrics.go
+│
+└── Makefile                        # Builds both
 ```
 
 ### Webhook Flow
@@ -290,6 +310,25 @@ preflight-injector:
 ```
 
 All GPU pods in listed namespaces get the configured checks.
+
+### Metrics
+
+**preflight/checker** (exposed via pushgateway or scraped from pod annotations):
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `preflight_check_total` | Counter | `check`, `result` |
+| `preflight_check_duration_seconds` | Histogram | `check` |
+| `preflight_check_failures_total` | Counter | `check`, `node`, `error_code` |
+| `preflight_gang_wait_seconds` | Histogram | `workload` |
+| `preflight_config_errors_total` | Counter | `error` |
+
+**preflight/injector** (standard Prometheus endpoint):
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `preflight_injection_total` | Counter | `result` |
+| `preflight_webhook_latency_seconds` | Histogram | - |
 
 ## Rationale
 
