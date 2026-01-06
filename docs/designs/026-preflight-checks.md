@@ -2,7 +2,9 @@
 
 ## Context
 
-Kubernetes 1.35 introduced `spec.workloadRef` for gang scheduling. GPU failures during distributed training waste compute time. Running diagnostics before the workload starts catches bad GPUs early.
+GPU failures during training waste compute time. Running diagnostics before the workload starts catches bad GPUs early.
+
+Kubernetes 1.35 introduced `spec.workloadRef` for gang scheduling, which enables gang-wide checks (NCCL all-reduce across multiple pods).
 
 ### Distinction from Health Monitors
 
@@ -20,7 +22,10 @@ Preflight asks "is this GPU healthy enough to start?" Health monitors ask "did t
 
 ## Decision
 
-Implement a MutatingAdmissionWebhook that injects preflight check init containers into pods that have `spec.workloadRef`.
+Implement a MutatingAdmissionWebhook that injects preflight check init containers into GPU pods (pods requesting `nvidia.com/gpu`) in configured namespaces.
+
+- Injection trigger: GPU resource request + namespace
+- Gang coordination (NCCL all-reduce): Uses `workloadRef` if present, skipped otherwise
 
 ## Implementation
 
@@ -166,10 +171,10 @@ initContainers:
 ```
 
 **Plugin contract:**
-- Exit `0` on success, non-zero on failure
+- Exit codes: `0` (passed), `1` (check failed), `2` (config error)
 - Write HealthEvent to Platform Connector socket (same as built-in checks)
 - Plugin sets `isFatal`, `recommendedAction` in HealthEvent
-- Platform Connector overrides can modify if operator disagrees (existing feature)
+- Platform Connector overrides can modify values
 - Webhook mounts same volumes (GPU, DCGM socket, Platform Connector socket)
 
 ### Configuration
@@ -210,7 +215,7 @@ sequenceDiagram
 - Other ranks poll until ConfigMap exists (10 min timeout)
 - ConfigMap has owner reference to Workload for cleanup
 
-**Webhook just injects the init container.** No Service or other resources needed.
+Webhook injects the init container. No Service or other resources created.
 
 **Gang coordination timeout:** 10 minutes. If gang doesn't form, init fails with `isFatal: false` (not a hardware issue).
 
@@ -288,17 +293,16 @@ All GPU pods in listed namespaces get the configured checks.
 
 ## Rationale
 
-- Mutating webhook requires no external dependencies
-- Init containers are native Kubernetes
-- Opt-in via namespace selector
-- Deployment-level config, no user workload changes
+- Mutating webhook, no external dependencies
+- Init containers
+- Namespace selector opt-in
+- Deployment-level config
 
 ## Consequences
 
 ### Positive
 - Catches GPU failures before workload starts
 - Works with any workload controller
-- No user workload changes
 
 ### Negative
 - Adds 30-60s pod startup latency (DCGM diag)
@@ -323,7 +327,7 @@ Rejected: Requires changing how workloads are deployed.
 
 ## Out of Scope
 
-- **Repeated failure handling**: Health Event Analyzer handles pattern detection on HealthEvents. Preflight just emits events.
+- **Repeated failure handling**: Health Event Analyzer handles pattern detection. Preflight emits events.
 
 ## References
 
