@@ -344,14 +344,14 @@ All GPU pods in listed namespaces get the configured checks.
 - Works with any workload controller
 
 ### Negative
-- Adds 30-60s pod startup latency (DCGM diag)
-- Requires privileged init container
-- Webhook downtime blocks pod creation
+- Adds 30-60s pod startup latency (DCGM diag level 1)
+- Requires privileged init container for DCGM
+- Webhook downtime blocks pod creation (if `failurePolicy: Fail`)
 
 ### Mitigations
-- `failurePolicy: Ignore` if latency unacceptable
-- Timeout configuration
-- HA deployment (replicas, PDB)
+- **Latency**: Use DCGM level 1 (~30s) instead of level 2 (~2-3min); skip expensive checks for non-critical workloads
+- **Privileged**: Required for hardware access; limit to specific namespaces
+- **Webhook availability**: HA deployment (replicas, PDB); `failurePolicy: Ignore` allows pods through if webhook is down
 
 ## Alternatives Considered
 
