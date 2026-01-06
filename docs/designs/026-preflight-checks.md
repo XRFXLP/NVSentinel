@@ -4,7 +4,7 @@
 
 GPU failures during training waste compute time. Running diagnostics before the workload starts catches bad GPUs early.
 
-Kubernetes 1.35 introduced `spec.workloadRef` for gang scheduling, which enables gang-wide checks (NCCL all-reduce across multiple pods).
+Kubernetes 1.35 introduced `spec.workloadRef` for gang scheduling. Preflight can use `workloadRef` to discover peer pods and run gang-wide checks (NCCL all-reduce).
 
 ### Distinction from Health Monitors
 
