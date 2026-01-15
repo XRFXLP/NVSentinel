@@ -401,6 +401,7 @@ var fieldNameMapping = map[string]string{
 	"faultremediated":        "faultremediated",
 	"status":                 "status",
 	"message":                "message",
+	"processingstrategy":     "processingStrategy",
 }
 
 // isOperationTypeField checks if the field is the operationType field.
