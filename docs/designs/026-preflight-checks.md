@@ -1,22 +1,21 @@
-# ADR-026: Feature — Preflight Checks via Init Container Injection
+# ADR-026: Feature — Preflight Checks
 
 ## Context
 
 GPU failures during training waste compute time. Running diagnostics before the workload starts catches bad GPUs early.
 
-Kubernetes 1.35 introduced `spec.workloadRef` for gang scheduling. Preflight can use `workloadRef` to discover peer pods and run gang-wide checks (NCCL all-reduce).
+Gang-wide NCCL tests require discovering all pods in a gang. Kubernetes 1.35 introduced `spec.workloadRef` as a native gang identifier, but users may also use Volcano, Kueue, or other schedulers with their own mechanisms.
 
 ### Distinction from Health Monitors
 
 NVSentinel already has health monitors (GPU Health Monitor, Syslog Health Monitor) that detect GPU issues. This is different:
 
-| | Health Monitors | Preflight Checks |
-|-|-----------------|------------------|
-| When | Continuous (DaemonSet) | Once at pod start (init container) |
-| Check type | Passive (health watches, syslog parsing) | Active diagnostics (DCGM diag) |
-| Detects | Failures as they occur (XID errors, ECC, thermal) | Latent issues before starting |
-| NCCL tests | No | Yes |
-| Purpose | Reactive remediation | Prevent bad starts |
+|            | Health Monitors        | Preflight Checks              |
+|------------|------------------------|-------------------------------|
+| When       | Continuous             | Once at pod start             |
+| Check type | Passive                | Active diagnostics            |
+| Detects    | Failures as they occur | Latent issues before starting |
+| Purpose    | Reactive remediation   | Prevent bad starts            |
 
 Preflight asks "is this GPU healthy enough to start?" Health monitors ask "did this GPU fail while running?"
 
@@ -27,26 +26,43 @@ Implement a MutatingAdmissionWebhook that injects preflight check init container
 ### Key points
 
 - Injection trigger: GPU resources (extended resources or DRA claims) + namespace
-- Gang coordination: Uses `workloadRef` for gang-wide checks when present
+- Gang discovery: Pluggable (supports `workloadRef`; can be extended to Volcano, Kueue .etc.)
 - Resource detection: Configurable lists for extended resource names and DRA device classes
 
 ## Architecture
 
 ### Components
 
+Each check is a separate image. Webhook injects one init container per enabled check.
+
 ```
 preflight/
-├── injector/                       # Webhook (Deployment)
+├── injector/
 │   └── pkg/
-│       ├── webhook/                # Admission handler
-│       └── injection/              # Pod mutation + DRA detection
+│       ├── webhook/
+│       └── injection/
 │
-└── checker/                        # Init container image
-    ├── nccl-topologies/            # Built-in topology files
+├── controller/
+│   └── pkg/
+│       ├── gang/
+│       └── coordination/
+│
+├── dcgm-diag/
+│   ├── Dockerfile
+│   ├── main.go
+│   └── pkg/
+│
+├── nccl-loopback/
+│   ├── Dockerfile
+│   ├── nccl-topologies/
+│   ├── main.go
+│   └── pkg/
+│
+└── nccl-allreduce/
+    ├── Dockerfile
+    ├── nccl-topologies/
+    ├── main.go
     └── pkg/
-        ├── checks/                 # dcgm + nccl
-        ├── coordination/           # gang registration + NCCL ID
-        └── reporting/              # HealthEvent reporting
 ```
 
 ### Webhook flow
@@ -60,13 +76,6 @@ flowchart TD
 ```
 
 Namespace filtering handled by `namespaceSelector` in webhook config.
-
-### Namespace model
-
-- NVSentinel Helm chart is installed in `nvsentinel` namespace (webhook Deployment runs there).
-- Webhook mutates Pods in *other* namespaces based on `namespaceSelector` (and skips system namespaces).
-- The injected init containers run in the workload namespace.
-- Any Kubernetes API access needed by the init container (gang coordination ConfigMap + Workload reads) must be granted in the workload namespace (namespace-scoped Role/RoleBinding). This is created by the Helm chart in the opted-in namespaces.
 
 ### MutatingWebhookConfiguration (sketch)
 
@@ -107,40 +116,40 @@ webhooks:
 1. Extended resources (device plugins): check `resources.limits`/`resources.requests` for configured names (e.g. `nvidia.com/gpu`)
 2. DRA: check `spec.resourceClaims`, resolve claim/template, match `deviceClassName` against configured list
 
-### Init container spec (sketch)
+### Injected init containers (sketch)
+
+One init container per enabled check:
 
 ```yaml
 initContainers:
-  - name: nvsentinel-preflight
-    image: ghcr.io/nvidia/nvsentinel/preflight-checker:v1
+  - name: preflight-dcgm-diag
+    image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:v1
     env:
-      - name: PREFLIGHT_CHECKS
-        value: "dcgm-diag,nccl-loopback"
       - name: DCGM_DIAG_LEVEL
         value: "1"
-      - name: CHECK_TIMEOUT
-        value: "300s"
-      - name: GANG_TIMEOUT
-        value: "600s"
+      - name: DCGM_HOSTENGINE_ADDR
+        value: "dcgm-hostengine.nvsentinel.svc:5555"
       - name: PLATFORM_CONNECTOR_SOCKET
         value: "unix:///var/run/nvsentinel.sock"
-      - name: MY_POD_NAME
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.name
-      - name: MY_POD_IP
-        valueFrom:
-          fieldRef:
-            fieldPath: status.podIP
     resources:
       limits:
-        nvidia.com/gpu: 8          # Max across all containers
-        nvidia.com/mlnxnics: 4     # Max across all containers (if NCCL enabled)
-    securityContext:
-      privileged: true             # DCGM diag
+        nvidia.com/gpu: 8  # Max across all containers
     volumeMounts:
-      - name: dcgm-socket
-        mountPath: /var/run/nvidia
+      - name: platform-connector-socket
+        mountPath: /var/run
+
+  - name: preflight-nccl-loopback
+    image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:v1
+    env:
+      - name: NCCL_LOOPBACK_THRESHOLD_GBPS
+        value: "10.0"
+      - name: PLATFORM_CONNECTOR_SOCKET
+        value: "unix:///var/run/nvsentinel.sock"
+    resources:
+      limits:
+        nvidia.com/gpu: 8
+        nvidia.com/mlnxnics: 4
+    volumeMounts:
       - name: platform-connector-socket
         mountPath: /var/run
 ```
@@ -153,94 +162,184 @@ initContainers:
 
 ## Check types
 
-| Check | Scope | Coordination |
-|-------|-------|--------------|
-| `dcgm-diag` | Single node | None |
-| `nccl-loopback` | Single node | None |
-| `nccl-allreduce` | Gang-wide | ConfigMap |
-| `plugin:<name>` | Varies | Varies |
+| Check            | Scope       | Coordination |
+|------------------|-------------|--------------|
+| `dcgm-diag`      | Single node | None         |
+| `nccl-loopback`  | Single node | None         |
+| `nccl-allreduce` | Gang-wide   | ConfigMap    |
 
-### Plugin Interface (Third-Party Checks)
+Third-party checks follow the same pattern: separate image, configured in Helm.
 
-Plugins are separate init containers. Webhook injects one container per plugin.
+### DCGM Diag
 
-**Registration:**
+Runs DCGM diagnostics on allocated GPUs via remote DCGM hostengine Service.
+
+**How it works:**
+1. Init container gets GPU UUIDs: `nvidia-smi --query-gpu=uuid --format=csv,noheader`
+2. Calls DCGM hostengine via Service: `dcgmi diag -r <level> --host $DCGM_HOSTENGINE_ADDR -i <gpu-uuids>`
+3. Parses results, maps failures to HealthEvents
+
+**Requirements:**
+- DCGM hostengine DaemonSet running (privileged, with GPU access)
+- DCGM Service exposing hostengine (port 5555)
+- NetworkPolicy allowing init container → DCGM Service
+
+**Diag levels:**
+- Level 1 (~30s): Quick hardware validation (memory, PCIe bandwidth)
+- Level 2 (~2-3min): Extended tests (stress, targeted diagnostics)
+
+Init container remains unprivileged; hostengine performs diagnostics.
+
+### NCCL Loopback
+
+Tests intra-node GPU-to-GPU communication (NVLink/PCIe paths) without network.
+
+**How it works:**
+1. Init container runs `all_reduce_perf` (from nccl-tests) with all allocated GPUs
+2. Command: `all_reduce_perf -b 8 -e 256M -f 2 -g <num_gpus>`
+3. Validates bandwidth meets threshold set in Helm values
+4. No coordination needed — single node only
+
+**What it catches:**
+- NVLink failures between GPUs
+- PCIe bandwidth degradation
+- GPU memory errors during collective ops
+
+**Requirements:**
+- GPU allocation (device plugin)
+- `nccl-tests` binary in checker image
+
+**Example output parsing:**
+```
+# nccl-tests output format:
+#       size    count   type   redop    time   algbw   busbw
+         8M    2097152  float     sum    1.23   6.50    12.19
+```
+Checker validates `busbw` (bus bandwidth) against configured threshold.
+
+### NCCL All-Reduce (Gang-Wide)
+
+Tests cross-node GPU collective communication over RDMA/InfiniBand.
+
+**How it works:**
+1. **Gang formation**: All pods register in shared ConfigMap (see Gang Coordination section)
+2. **Rank assignment**: Sort pod names alphabetically → rank 0, 1, 2, ...
+3. **NCCL bootstrap**: Controller generates NCCL unique ID, writes to ConfigMap
+4. **Run test**: Each pod reads ConfigMap and runs `all_reduce_perf` independently
+
+**Command:**
+```bash
+NCCL_COMM_ID=<nccl_unique_id> \
+NCCL_NRANKS=$WORLD_SIZE \
+NCCL_RANK=$MY_RANK \
+all_reduce_perf -b 8 -e 256M -f 2 -g $GPUS_PER_NODE
+```
+
+Each init container runs independently. NCCL handles cross-node coordination via the shared `NCCL_COMM_ID`.
+
+**What it catches:**
+- InfiniBand/RDMA link failures
+- Network topology misconfigurations
+- Cross-node NVLink (when present)
+- NCCL algorithm/protocol issues
+
+**Requirements:**
+- `workloadRef` for gang discovery (K8s 1.35+)
+- Network device allocation (InfiniBand NICs)
+- NCCL topology file (auto-detected or user-provided)
+- ConfigMap RBAC for coordination
+
+**Timeout handling:**
+- `GANG_TIMEOUT` sets max wait for all peers to register
+- If timeout expires before gang forms → exit with `isFatal: false` (not a hardware issue)
+
+### Third-Party Checks
+
+Third-party checks follow the same pattern as built-in checks. Register in Helm:
+
 ```yaml
 preflight-injector:
-  plugins:
-    - name: bandwidth-check
+  checks:
+    - name: dcgm-diag
+      image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:v1
+    - name: nccl-loopback
+      image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:v1
+    - name: bandwidth-check  # third-party
       image: myregistry/bandwidth-check:v1
-      timeout: "60s"
 ```
 
-**Injected init containers:**
-```yaml
-initContainers:
-  # Built-in checks
-  - name: nvsentinel-preflight
-    image: ghcr.io/nvidia/nvsentinel/preflight-checker:v1
-    ...
-  
-  # Plugin (separate container)
-  - name: preflight-bandwidth-check
-    image: myregistry/bandwidth-check:v1
-    env:
-      - name: CHECK_TIMEOUT
-        value: "60s"
-      - name: NODE_NAME
-        valueFrom:
-          fieldRef:
-            fieldPath: spec.nodeName
-```
-
-**Plugin contract:**
+**Check contract:**
 - Exit codes: `0` (passed), `1` (check failed), `2` (config error)
 - Report failures via gRPC to Platform Connector:
-  - Unix socket: `unix:///var/run/nvsentinel.sock` (matches global `socketPath`)
-  - Use `HealthEventOccurredV1` RPC (service `PlatformConnector`, proto `data-models/protobufs/health_event.proto`)
-  - Plugin sets `isFatal`, `recommendedAction`, `errorCode` in HealthEvent
-  - Platform Connector overrides can modify these values via CEL rules
-- Webhook mounts required volumes: GPU devices, DCGM socket, Platform Connector socket
+  - Unix socket: `unix:///var/run/nvsentinel.sock`
+  - RPC: `HealthEventOccurredV1` (proto: `data-models/protobufs/health_event.proto`)
+  - Set `isFatal`, `recommendedAction`, `errorCode` in HealthEvent
+- Webhook mounts: GPU devices, Platform Connector socket, network devices
 
 ### Configuration
 
 Configured at deployment time via Helm values. No per-workload annotations.
 
+### Gang Discovery
+
+Gang discovery is pluggable. Given one pod, return all pods in the gang.
+
+**Interface:**
+```go
+type GangDiscoverer interface {
+    DiscoverGang(pod *corev1.Pod) ([]PeerInfo, error)
+}
+
+type PeerInfo struct {
+    PodName  string
+    PodIP    string
+    NodeName string
+}
+```
+
+**Implementations:**
+
+| Scheduler       | Discovery chain                                                          |
+|-----------------|--------------------------------------------------------------------------|
+| K8s 1.35 native | Pod → `spec.workloadRef` → list pods with same ref                       |
+| Volcano         | Pod → `volcano.sh/pod-group` annotation → list pods with same annotation |
+| Kueue           | Pod → `kueue.x-k8s.io/workload-name` label → list pods with same label   |
+| Label-based     | Pod → configurable labels → list pods with same labels                   |
+
+Controller selects implementation based on Helm config. If no gang identifier found, pod is treated as singleton (skip gang-wide tests).
+
 ### Gang Coordination
 
-For gang-wide checks like `nccl-allreduce`, pods discover peers via ConfigMap registration:
+For gang-wide checks like `nccl-allreduce`, the preflight controller maintains a ConfigMap with peer registration and NCCL bootstrap data. Pods only read it.
 
 ```mermaid
 sequenceDiagram
-    participant W as Webhook
+    participant C as Preflight Controller
     participant P0 as Pod 0 Init
     participant P1 as Pod 1 Init
     participant API as Kube API
     participant CM as ConfigMap
 
-    Note over W: First pod in gang
-    W->>API: Create ConfigMap (expected=2, peers="")
-    
-    P0->>API: Patch ConfigMap: add pod-0:10.0.1.5
-    P1->>API: Patch ConfigMap: add pod-1:10.0.1.6
-    
-    P0->>API: Poll until len(peers) == expected
-    P1->>API: Poll until len(peers) == expected
-    
+    C->>API: Create/Update ConfigMap (expected=2, peers="")
+    C->>API: Update ConfigMap: add pod-0:10.0.1.5
+    C->>API: Update ConfigMap: add pod-1:10.0.1.6
+    C->>API: Update ConfigMap: set nccl_unique_id
+
+    P0->>API: Read ConfigMap until len(peers) == expected
+    P1->>API: Read ConfigMap until len(peers) == expected
+
     Note over P0,P1: Determine rank by sorting pod names
-    
-    P0->>CM: Update with NCCL unique ID
-    P1->>CM: Read NCCL unique ID
-    
+
     P0->>P1: nccl.init() (barrier inside NCCL)
     P0->>P1: nccl.all_reduce()
 ```
 
-**Peer registration (no pod listing):**
-- Webhook idempotently creates ConfigMap named `preflight-<workloadRef.name>-<workloadRef.podGroup>` with `expected_count`
-- Each init container patches ConfigMap to add its IP
-- Init containers poll until all peers register
-- Determines rank by sorting pod names alphabetically
+**Peer registration (controller-managed):**
+- Preflight controller creates/updates ConfigMap `preflight-<gangID>` with `expected_count`
+- `gangID` derived from gang discoverer (e.g., `workload-name/pod-group`, `volcano-pg-name`, `kueue-workload-name`)
+- Controller watches pods in the gang and updates `peers` and `nccl_unique_id`
+- Init containers read/poll ConfigMap until all peers are registered
+- Each pod determines rank by sorting pod names alphabetically
 
 **ConfigMap structure:**
 ```yaml
@@ -257,35 +356,50 @@ data:
   peers: |
     pod-0:10.0.1.5
     pod-1:10.0.1.6
-  nccl_unique_id: "base64..."  # Added by rank 0
+  nccl_unique_id: "base64..."  # Added by controller
 ```
 
-**Security:** Init containers have minimal RBAC (get/patch ConfigMap, get Workload). No pod list permission.
+**Security:** Init containers read the ConfigMap only. Controller owns write access.
 
 **Gang coordination timeout:** 10 minutes. If gang doesn't form, init fails with `isFatal: false` (not a hardware issue).
 
-### RBAC (gang coordination)
+### RBAC
 
-Use a namespace-scoped Role for coordination. Kubernetes RBAC does not support label-based restrictions for ConfigMaps, so the checker enforces scope in code (expected ConfigMap name + required labels/ownerRef).
+Controller needs write access; init containers only need read. Both use ClusterRole since they operate across workload namespaces.
 
+**Controller ClusterRole:**
 ```yaml
 rules:
-  - apiGroups: ["scheduling.k8s.io"]
-    resources: ["workloads"]
-    verbs: ["get"]
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "create", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Additional rules based on gang discoverer:
+  # workloadRef: scheduling.k8s.io/workloads (get)
+  # Volcano: scheduling.volcano.sh/podgroups (get)
+  # Kueue: kueue.x-k8s.io/workloads (get)
 ```
 
-Checker only reads/writes the coordination ConfigMap `preflight-<workloadRef.name>-<workloadRef.podGroup>` in its own namespace.
+Controller only touches ConfigMaps with `preflight-` prefix (enforced by code).
+
+**Init container ClusterRole:**
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+```
+
+Init containers poll ConfigMap until all peers are registered.
 
 ### DRA Integration
 
 For pods using Dynamic Resource Allocation (DRA), the webhook copies resource claim references to the init container.
 
 **Device claim detection:**
-Webhook checks pod's `spec.resourceClaims`, retrieves each ResourceClaim or ResourceClaimTemplate, and matches `deviceClassName` against configurable lists for GPUs and network devices:
+Webhook checks pod's `spec.resourceClaims`, retrieves each ResourceClaim or ResourceClaimTemplate, and matches `deviceClassName` against configured lists for GPUs and network devices:
 
 ```yaml
 # Helm values
@@ -329,30 +443,6 @@ spec:
           - name: rdma-claim
 ```
 
-**Multiple containers with GPUs:**
-```yaml
-# Extended resources example
-containers:
-  - name: trainer
-    resources:
-      limits:
-        nvidia.com/gpu: 4
-        nvidia.com/mlnxnics: 2
-  - name: validator
-    resources:
-      limits:
-        nvidia.com/gpu: 8
-        nvidia.com/mlnxnics: 4
-
-# Init container gets max(4, 8) = 8 GPUs, max(2, 4) = 4 NICs
-initContainers:
-  - name: nvsentinel-preflight
-    resources:
-      limits:
-        nvidia.com/gpu: 8
-        nvidia.com/mlnxnics: 4
-```
-
 **Detection logic:**
 1. Check if pod uses extended resources (`nvidia.com/gpu`, `nvidia.com/mlnxnics`) → inject with max counts across all containers
 2. Check if pod has DRA claims with matching `deviceClassName` → inject with all unique GPU and network claim references
@@ -381,40 +471,6 @@ If `nccl-loopback` or `nccl-allreduce` is enabled, webhook:
 1. Copies all network device resources (extended resources using max count, or DRA claim references)
 2. Scans all container env vars, copies those matching `ncclEnvPatterns` (glob patterns from Helm config)
 3. Copies volume mounts referenced by `NCCL_TOPO_FILE` (if present)
-
-**Example: How env vars are copied**
-
-Main container has:
-```yaml
-env:
-  - name: NCCL_TOPO_FILE
-    value: /etc/nccl/topo.xml
-  - name: NCCL_IB_PCI_RELAXED_ORDERING
-    value: "1"
-  - name: NCCL_SOCKET_IFNAME
-    value: eth0
-  - name: MY_APP_CONFIG
-    value: /app/config.yaml
-  - name: OMPI_MCA_btl
-    value: openib
-```
-
-Webhook with `ncclEnvPatterns: ["NCCL_*", "OMPI_*"]` copies to init container:
-```yaml
-env:
-  - name: NCCL_TOPO_FILE           # Matches NCCL_*
-    value: /etc/nccl/topo.xml
-  - name: NCCL_IB_PCI_RELAXED_ORDERING  # Matches NCCL_*
-    value: "1"
-  - name: NCCL_SOCKET_IFNAME       # Matches NCCL_*
-    value: eth0
-  - name: OMPI_MCA_btl             # Matches OMPI_*
-    value: openib
-  # MY_APP_CONFIG NOT copied (doesn't match patterns)
-volumeMounts:
-  - name: nccl-topology            # Copied because NCCL_TOPO_FILE references it
-    mountPath: /etc/nccl
-```
 
 **NCCL topology file handling:**
 The init container image includes common topology files for major cloud platforms:
@@ -453,56 +509,30 @@ HealthEvent feeds into existing NVSentinel workflow (quarantine, correlation, et
 
 **DCGM Diag** :
 
-| Test | Result | Recommended Action |
-|------|--------|-------------------|
-| Memory | `FAIL` | `CONTACT_SUPPORT` |
-| PCIe | `FAIL` | `CONTACT_SUPPORT` |
-| NVLink | `FAIL` | `CONTACT_SUPPORT` |
-| Stress | `FAIL` | `RUN_DCGMEUD` |
-| Any | `WARN` | `NONE` |
+| Test   | Result | Recommended Action |
+|--------|--------|--------------------|
+| Memory | `FAIL` | `CONTACT_SUPPORT`  |
+| PCIe   | `FAIL` | `CONTACT_SUPPORT`  |
+| NVLink | `FAIL` | `CONTACT_SUPPORT`  |
+| Stress | `FAIL` | `RUN_DCGMEUD`      |
+| Any    | `WARN` | `NONE`             |
+
 
 **NCCL Checks**:
 
-| Error | Recommended Action |
-|-------|-------------------|
-| `NCCL_SYSTEM_ERROR` | `CONTACT_SUPPORT` |
-| `NCCL_INTERNAL_ERROR` | `RUN_DCGMEUD` |
-| `NCCL_INVALID_USAGE` | `NONE` |
-| `NCCL_TIMEOUT` | `NONE` |
-| `NCCL_REMOTE_ERROR` | `CONTACT_SUPPORT` |
+| Error                 | Recommended Action |
+|-----------------------|--------------------|
+| `NCCL_SYSTEM_ERROR`   | `CONTACT_SUPPORT`  |
+| `NCCL_INTERNAL_ERROR` | `RUN_DCGMEUD`      |
+| `NCCL_INVALID_USAGE`  | `NONE`             |
+| `NCCL_TIMEOUT`        | `NONE`             |
+| `NCCL_REMOTE_ERROR`   | `CONTACT_SUPPORT`  |
 
 **isFatal determination**:
 - DCGM diag `FAIL` → `isFatal: true`
 - DCGM diag `WARN` → `isFatal: false`
 - NCCL hardware errors (`SYSTEM_ERROR`, `INTERNAL_ERROR`, `REMOTE_ERROR`) → `isFatal: true`
 - NCCL timeout/config errors → `isFatal: false`
-
-### Integration with Node Drainer
-
-Preflight failures quarantine nodes without draining. Rationale:
-- Workload never started → no pods to evict
-- Draining would disrupt other gang members waiting for coordination
-- Quarantine prevents new scheduling while remediation happens
-
-**Platform Connector override:**
-```yaml
-pipeline:
-  overrides:
-    - match:
-        agent: "preflight-checker"
-      override:
-        drainOverrides:
-          skip: true
-```
-
-**Flow:**
-1. Preflight fails → HealthEvent with `isFatal: true`
-2. Platform Connector applies override → `drainOverrides.skip: true`
-3. Node drainer sees `skip: true` → quarantines node (taint), skips drain
-4. Fault Remediation runs based on `recommendedAction` (EUD, support ticket, etc.)
-5. Remediation succeeds → taint removed → node back in rotation
-
-Gang members on other nodes timeout after `gangTimeout`, fail with `isFatal: false` (coordination failure, not hardware), no quarantine.
 
 ### Helm Values
 
@@ -511,13 +541,34 @@ preflight-injector:
   enabled: false  # Opt-in
   
   checks:
-    - dcgm-diag
-    - nccl-loopback
-    # - nccl-allreduce  # Enable for gang workloads
+    - name: dcgm-diag
+      image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:v1
+    - name: nccl-loopback
+      image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:v1
+    # - name: nccl-allreduce
+    #   image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:v1
   
-  dcgmDiagLevel: 1       # 1 (quick, ~30s) or 2 (medium, ~2-3min)
+  # DCGM configuration
+  dcgm:
+    hostengineAddr: "dcgm-hostengine.nvsentinel.svc:5555"  # DCGM Service address
+    diagLevel: 1       # 1 (quick, ~30s) or 2 (extended, ~2-3min)
+  
+  # NCCL test configuration
+  nccl:
+    loopbackThresholdGBps: 10.0   # Min bus bandwidth for loopback pass
+    allreduceThresholdGBps: 5.0   # Min bus bandwidth for all-reduce pass
+  
   checkTimeout: "300s"   # Per-check timeout
   gangTimeout: "600s"    # Gang coordination timeout
+  
+  # Gang discovery configuration
+  gangDiscovery:
+    # Options: workloadRef, volcano, kueue, labels
+    method: "workloadRef"
+    # For label-based discovery:
+    # labels:
+    #   gangIdLabel: "app.kubernetes.io/gang-id"
+    #   gangSizeLabel: "app.kubernetes.io/gang-size"
   
   # GPU detection configuration
   gpuDetection:
@@ -533,10 +584,9 @@ preflight-injector:
   
   # Network device resources (for NCCL tests)
   networkDetection:
-    # Extended resources
+    # Extended resources (cluster-specific, configure for your environment)
     resourceNames:
-      - "nvidia.com/mlnxnics"
-      - "rdma/hca"
+      - "nvidia.com/mlnxnics"  # Mellanox/NVIDIA InfiniBand NICs
       # Add other network device plugin resources used in your cluster
     
     # DRA device classes (if using DRA for network devices)
@@ -578,58 +628,59 @@ preflight-injector:
   
   webhook:
     failurePolicy: Fail  # or Ignore
-  
-  image:
-    repository: ghcr.io/nvidia/nvsentinel/preflight-checker
-    tag: v1
 ```
 
 All GPU pods in listed namespaces get the configured checks.
 
 ### Metrics
 
-**preflight/checker** (exposed via pushgateway or scraped from pod annotations):
+**Check containers** (exposed via pushgateway or scraped from pod annotations):
 
-| Metric | Type | Labels |
-|--------|------|--------|
-| `preflight_check_total` | Counter | `check`, `result` |
-| `preflight_check_duration_seconds` | Histogram | `check` |
-| `preflight_check_failures_total` | Counter | `check`, `node`, `error_code` |
-| `preflight_gang_wait_seconds` | Histogram | `workload` |
-| `preflight_config_errors_total` | Counter | `error` |
+| Metric                             | Type      | Labels                        |
+|------------------------------------|-----------|-------------------------------|
+| `preflight_check_total`            | Counter   | `check`, `result`             |
+| `preflight_check_duration_seconds` | Histogram | `check`                       |
+| `preflight_check_failures_total`   | Counter   | `check`, `node`, `error_code` |
+| `preflight_gang_wait_seconds`      | Histogram | `workload`                    |
+| `preflight_config_errors_total`    | Counter   | `error`                       |
+
 
 **preflight/injector** (standard Prometheus endpoint):
 
-| Metric | Type | Labels |
-|--------|------|--------|
-| `preflight_injection_total` | Counter | `result` |
-| `preflight_webhook_latency_seconds` | Histogram | - |
+| Metric                              | Type      | Labels   |
+|-------------------------------------|-----------|----------|
+| `preflight_injection_total`         | Counter   | `result` |
+| `preflight_webhook_latency_seconds` | Histogram | -        |
+
 
 ## Rationale
 
-- Mutating webhook, no external dependencies
-- Init containers
+- Mutating webhook for transparent injection
+- Non-privileged init containers (DCGM diag runs via remote hostengine)
 - Namespace selector opt-in
-- Deployment-level config
+- Deployment-level config (no per-workload changes)
 
 ## Consequences
 
 ### Positive
 - Catches GPU failures before workload starts
 - Works with any workload controller
+- Unprivileged init container (uses DCGM hostengine)
 - Built-in NCCL topology files for major cloud platforms
 
 ### Negative
 - Adds 30-60s pod startup latency (DCGM diag level 1)
-- Requires privileged init container for DCGM
+- Requires DCGM hostengine DaemonSet for diag checks
 - Webhook downtime blocks pod creation (if `failurePolicy: Fail`)
 - NCCL tests require network device plugins (InfiniBand/RDMA) to be configured
+- Gang-wide NCCL tests require K8s 1.35+ (`workloadRef`)
 
 ### Mitigations
 - **Latency**: Use DCGM level 1 (~30s) vs level 2 (~2-3min); skip expensive checks for non-critical workloads
-- **Privileged**: Required for hardware access; limit to specific namespaces
+- **DCGM dependency**: Most GPU clusters already run DCGM for monitoring; expose as Service
 - **Webhook availability**: HA deployment (replicas, PDB); `failurePolicy: Ignore` for graceful degradation
 - **Network resources**: NCCL tests skipped if network devices unavailable; DCGM diag runs regardless
+- **K8s version**: NCCL loopback (single-node) works without `workloadRef`; gang tests are opt-in
 
 ## Alternatives Considered
 
