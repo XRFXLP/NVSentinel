@@ -104,6 +104,7 @@ class TestPlatformConnectors(unittest.TestCase):
             "statefile",
             dcgm_health_conditions_categorization_mapping_config,
             "/tmp/test_metadata.json",
+            platformconnector_pb2.STORE_ONLY,
         )
         dcgm_health_events = watcher._get_health_status_dict()
         dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
@@ -238,6 +239,7 @@ class TestPlatformConnectors(unittest.TestCase):
             "statefile",
             dcgm_health_conditions_categorization_mapping_config,
             "/tmp/test_metadata.json",
+            platformconnector_pb2.STORE_ONLY,
         )
 
         # Simulate multiple NvLink failures for GPU 0 (4 links down: 8, 9, 14, 15)
@@ -296,6 +298,8 @@ class TestPlatformConnectors(unittest.TestCase):
         # Verify the complete aggregated message is preserved
         assert nvlink_failure_event.message == aggregated_message
 
+        assert nvlink_failure_event.processingStrategy == platformconnector_pb2.STORE_ONLY
+
         server.stop(0)
 
     def test_health_event_multiple_gpus_multiple_failures_each(self):
@@ -352,6 +356,7 @@ class TestPlatformConnectors(unittest.TestCase):
             "statefile",
             dcgm_health_conditions_categorization_mapping_config,
             "/tmp/test_metadata.json",
+            platformconnector_pb2.STORE_ONLY,
         )
 
         # Simulate multiple NvLink failures for GPU 0 and GPU 1
@@ -413,6 +418,7 @@ class TestPlatformConnectors(unittest.TestCase):
         assert "link 15" in gpu0_event.message
         assert gpu0_event.message.count(";") == 3
         assert gpu0_event.message == gpu0_message
+        assert gpu0_event.processingStrategy == platformconnector_pb2.STORE_ONLY
 
         # Verify GPU 1 event
         assert gpu1_event is not None, "NvLink failure event for GPU 1 not found"
@@ -427,6 +433,7 @@ class TestPlatformConnectors(unittest.TestCase):
         assert "link 13" in gpu1_event.message
         assert gpu1_event.message.count(";") == 3
         assert gpu1_event.message == gpu1_message
+        assert gpu1_event.processingStrategy == platformconnector_pb2.STORE_ONLY
 
         server.stop(0)
 
@@ -463,6 +470,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 state_file_path=state_file_path,
                 dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
                 metadata_path="/tmp/test_metadata.json",
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
 
             # Trigger connectivity failure
@@ -482,6 +490,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 assert event.recommendedAction == platformconnector_pb2.CONTACT_SUPPORT
                 assert event.nodeName == node_name
                 assert event.entitiesImpacted == []
+                assert event.processingStrategy == platformconnector_pb2.STORE_ONLY
 
             server.stop(0)
         finally:
@@ -511,6 +520,7 @@ class TestPlatformConnectors(unittest.TestCase):
             state_file_path="statefile",
             dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
             metadata_path="/tmp/test_metadata.json",
+            processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
         )
 
         timestamp = Timestamp()
@@ -536,6 +546,7 @@ class TestPlatformConnectors(unittest.TestCase):
         assert restored_event.errorCode == []
         assert restored_event.message == "DCGM connectivity reported no errors"
         assert restored_event.recommendedAction == platformconnector_pb2.NONE
+        assert restored_event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
 
         server.stop(0)
 
@@ -589,6 +600,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 state_file_path=state_file_path,
                 dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
                 metadata_path="/tmp/test_metadata.json",
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
 
             # Verify cache is empty initially

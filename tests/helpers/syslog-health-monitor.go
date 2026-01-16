@@ -32,7 +32,7 @@ const (
 // helper function to set up syslog health monitor and port forward to it.
 // Returns the node name, pod, stop channel, and original args (for restoration during teardown).
 func SetUpSyslogHealthMonitor(ctx context.Context, t *testing.T,
-	client klient.Client, args map[string]string) (string, *v1.Pod, chan struct{}, []string) {
+	client klient.Client, args map[string]string, setManagedByNVSentinel bool) (string, *v1.Pod, chan struct{}, []string) {
 	var err error
 
 	var syslogPod *v1.Pod
@@ -66,8 +66,8 @@ func SetUpSyslogHealthMonitor(ctx context.Context, t *testing.T,
 	<-readyChan
 	t.Log("Port-forward ready")
 
-	t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
-	err = SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
+	t.Logf("Setting ManagedByNVSentinel=%t on node %s", setManagedByNVSentinel, testNodeName)
+	err = SetNodeManagedByNVSentinel(ctx, client, testNodeName, setManagedByNVSentinel)
 	require.NoError(t, err, "failed to set ManagedByNVSentinel label")
 
 	return testNodeName, syslogPod, stopChan, originalArgs

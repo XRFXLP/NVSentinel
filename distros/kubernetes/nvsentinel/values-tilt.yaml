@@ -266,9 +266,9 @@ fault-remediation:
         apiVersion: {{ .ApiGroup }}/{{ .Version }}
         kind: RebootNode
         metadata:
-          name: maintenance-{{ .NodeName }}-{{ .HealthEventID }}
+          name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
         spec:
-          nodeName: {{ .NodeName }}
+          nodeName: {{ .HealthEvent.NodeName }}
 
   logCollector:
     enabled: true

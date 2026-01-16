@@ -21,12 +21,23 @@ import (
 // RemediationEquivalenceGroups defines groups of remediation actions that are considered
 // to have the same operational effect. This is used to prevent multiple, similar remediations
 // (like various forms of reboots) from occurring in rapid succession.
-// TODO: Fix this multiple mappings as part of https://jirasw.nvidia.com/browse/KACE-1736
 var RemediationEquivalenceGroups = map[string][]protos.RecommendedAction{
 	"restart": {
 		protos.RecommendedAction_COMPONENT_RESET,
 		protos.RecommendedAction_RESTART_VM,
 		protos.RecommendedAction_RESTART_BM,
+	},
+	"fieldiag": {
+		protos.RecommendedAction_RUN_FIELDDIAG,
+	},
+	"dcgmeud": {
+		protos.RecommendedAction_RUN_DCGMEUD,
+	},
+	"support": {
+		protos.RecommendedAction_CONTACT_SUPPORT,
+	},
+	"replace": {
+		protos.RecommendedAction_REPLACE_VM,
 	},
 }
 

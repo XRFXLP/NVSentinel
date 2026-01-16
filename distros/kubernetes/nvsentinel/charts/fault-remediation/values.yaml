@@ -90,11 +90,11 @@ maintenance:
       apiVersion: janitor.dgxc.nvidia.com/v1alpha1
       kind: RebootNode
       metadata:
-        name: maintenance-{{ .NodeName }}-{{ .HealthEventID }}
+        name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
         labels:
           app.kubernetes.io/managed-by: nvsentinel
       spec:
-        nodeName: {{ .NodeName }}
+        nodeName: {{ .HealthEvent.NodeName }}
         force: false
     # Additional template examples:
     # "namespaced-restart.yaml": |

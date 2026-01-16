@@ -258,12 +258,17 @@ func (r *Reconciler) handleXidDetector(ctx context.Context, event *datamodels.He
 func (r *Reconciler) processRule(ctx context.Context,
 	rule config.HealthEventsAnalyzerRule,
 	event *datamodels.HealthEventWithStatus) (bool, error) {
+	startTime := time.Now()
+
 	// Validate all sequences from DB docs
 	matchedSequences, err := r.validateAllSequenceCriteria(ctx, rule, *event)
 	if err != nil {
 		slog.Error("Error in validating all sequence criteria", "error", err)
 		return false, fmt.Errorf("error in validating all sequence criteria: %w", err)
 	}
+
+	duration := time.Since(startTime).Seconds()
+	mongoQueryExecutionDuration.WithLabelValues(rule.Name).Observe(duration)
 
 	if !matchedSequences {
 		return false, nil

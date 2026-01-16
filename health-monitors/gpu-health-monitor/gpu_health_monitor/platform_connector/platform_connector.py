@@ -48,6 +48,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         state_file_path: str,
         dcgm_health_conditions_categorization_mapping_config: dict[str, str],
         metadata_path: str,
+        processing_strategy: platformconnector_pb2.ProcessingStrategy,
     ) -> None:
         self._exit = exit
         self._socket_path = socket_path
@@ -62,6 +63,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.entity_cache: dict[str, CachedEntityState] = {}
         self.dcgm_health_conditions_categorization_mapping_config = dcgm_health_conditions_categorization_mapping_config
         self._metadata_reader = MetadataReader(metadata_path)
+        self._processing_strategy = processing_strategy
 
     def read_old_system_bootid_from_state_file(self) -> str:
         bootid = ""
@@ -115,6 +117,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 recommendedAction=platformconnector_pb2.NONE,
                 nodeName=self._node_name,
                 metadata=event_metadata,
+                processingStrategy=self._processing_strategy,
             )
             health_events.append(health_event)
 
@@ -215,6 +218,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     recommendedAction=recommended_action,
                                     nodeName=self._node_name,
                                     metadata=event_metadata,
+                                    processingStrategy=self._processing_strategy,
                                 )
                             )
                             severity = (
@@ -278,6 +282,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                         recommendedAction=platformconnector_pb2.NONE,
                                         nodeName=self._node_name,
                                         metadata=event_metadata,
+                                        processingStrategy=self._processing_strategy,
                                     )
                                 )
                             severity = (
@@ -372,6 +377,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     recommendedAction=platformconnector_pb2.CONTACT_SUPPORT,
                     nodeName=self._node_name,
                     metadata=event_metadata,
+                    processingStrategy=self._processing_strategy,
                 )
                 health_events.append(health_event)
                 metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", severity="fatal").set(1)

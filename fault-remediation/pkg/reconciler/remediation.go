@@ -80,6 +80,8 @@ type TemplateData struct {
 	RecommendedAction     protos.RecommendedAction
 	RecommendedActionName string
 
+	HealthEvent *protos.HealthEvent
+
 	// CRD routing metadata (populated from MaintenanceResource)
 	ApiGroup  string
 	Version   string
@@ -270,6 +272,8 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		HealthEventID:         healthEventID,
 		RecommendedAction:     healthEvent.RecommendedAction,
 		RecommendedActionName: recommendedActionName,
+
+		HealthEvent: healthEvent,
 
 		ApiGroup:  maintenanceResource.ApiGroup,
 		Version:   maintenanceResource.Version,

@@ -44,9 +44,9 @@ func TestGetRemediationGroupForAction(t *testing.T) {
 			expectedGroup: "restart",
 		},
 		{
-			name:          "CONTACT_SUPPORT returns empty string (not in any group)",
+			name:          "CONTACT_SUPPORT returns support",
 			action:        protos.RecommendedAction_CONTACT_SUPPORT,
-			expectedGroup: "",
+			expectedGroup: "support",
 		},
 		{
 			name:          "NONE returns empty string (not in any group)",

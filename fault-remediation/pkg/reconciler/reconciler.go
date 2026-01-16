@@ -150,7 +150,8 @@ func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 		return true
 	}
 
-	if common.GetRemediationGroupForAction(action) != "" {
+	_, exists := r.config.RemediationClient.GetConfig().RemediationActions[action.String()]
+	if common.GetRemediationGroupForAction(action) != "" && exists {
 		return false
 	}
 

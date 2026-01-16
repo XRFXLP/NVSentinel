@@ -444,9 +444,9 @@ func TestCreateRebootNodeResource(t *testing.T) {
 			tmpl, err := tmpl.Parse(`apiVersion: {{.ApiGroup}}/{{.Version}}
 kind: RebootNode
 metadata:
-  name: maintenance-{{.NodeName}}-{{.HealthEventID}}
+  name: maintenance-{{.HealthEvent.NodeName}}-{{.HealthEventID}}
 spec:
-  nodeName: {{.NodeName}}`)
+  nodeName: {{.HealthEvent.NodeName}}`)
 			assert.NoError(t, err)
 
 			// Create K8sClient with mock

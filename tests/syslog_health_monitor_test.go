@@ -21,6 +21,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"tests/helpers"
 
@@ -49,7 +50,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		testNodeName, syslogPod, stopChan, originalArgs := helpers.SetUpSyslogHealthMonitor(ctx, t, client, nil)
+		testNodeName, syslogPod, stopChan, originalArgs := helpers.SetUpSyslogHealthMonitor(ctx, t, client, nil, false)
 
 		ctx = context.WithValue(ctx, keySyslogNodeName, testNodeName)
 		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
@@ -350,7 +351,7 @@ func TestSyslogHealthMonitorSXIDDetection(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		testNodeName, syslogPod, stopChan, originalArgs := helpers.SetUpSyslogHealthMonitor(ctx, t, client, nil)
+		testNodeName, syslogPod, stopChan, originalArgs := helpers.SetUpSyslogHealthMonitor(ctx, t, client, nil, false)
 
 		ctx = context.WithValue(ctx, keySyslogNodeName, testNodeName)
 		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
@@ -426,7 +427,7 @@ func TestSyslogHealthMonitorStoreOnlyStrategy(t *testing.T) {
 
 		testNodeName, syslogPod, stopChan, originalArgs := helpers.SetUpSyslogHealthMonitor(ctx, t, client, map[string]string{
 			"--processing-strategy": "STORE_ONLY",
-		})
+		}, true)
 
 		ctx = context.WithValue(ctx, keySyslogNodeName, testNodeName)
 		ctx = context.WithValue(ctx, keyStopChan, stopChan)
@@ -447,8 +448,29 @@ func TestSyslogHealthMonitorStoreOnlyStrategy(t *testing.T) {
 
 		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, xidMessages)
 
-		t.Log("Verifying no node condition is created")
-		helpers.EnsureNodeConditionNotPresent(ctx, t, client, nodeName, "SysLogsXIDError")
+		// The syslog monitor processes journal messages at 15sec interval. The timeout is set to
+		// 20 seconds to ensure the syslog monitor has sufficient time to process messages and insert
+		// events into the database before verifying that the node condition is not present.
+		require.Never(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, nodeName)
+			if err != nil {
+				t.Logf("failed to get node %s: %v", nodeName, err)
+				return false
+			}
+
+			for _, condition := range node.Status.Conditions {
+				if condition.Status == v1.ConditionTrue && condition.Reason == "SysLogsXIDErrorIsNotHealthy" {
+					t.Logf("ERROR: Found unexpected node condition: Type=%s, Reason=%s, Status=%s, Message=%s",
+						condition.Type, condition.Reason, condition.Status, condition.Message)
+
+					return true
+				}
+			}
+
+			t.Logf("Node %s correctly does not have a condition with check name '%s'", nodeName, "SysLogsXIDError")
+
+			return false
+		}, 20*time.Second, helpers.WaitInterval, "node %s should NOT have a condition with check name %s", nodeName, "SysLogsXIDError")
 
 		t.Log("Verifying node was not cordoned")
 		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
