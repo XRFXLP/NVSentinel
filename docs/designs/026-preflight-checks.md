@@ -33,20 +33,18 @@ Implement a MutatingAdmissionWebhook that injects preflight check init container
 
 ### Components
 
-Each check is a separate image. Webhook injects one init container per enabled check.
-
 ```
 preflight/
-├── injector/
-│   └── pkg/
-│       ├── webhook/
-│       └── injection/
-│
-├── controller/
-│   └── pkg/
-│       ├── gang/
-│       └── coordination/
-│
+└── controller/              # Webhook + gang controller (controller-runtime)
+    ├── Dockerfile
+    ├── main.go
+    └── pkg/
+        ├── webhook/         # Admission handler
+        ├── injection/       # Pod mutation, DRA detection
+        ├── gang/            # Gang discovery implementations
+        └── coordination/    # ConfigMap management
+
+preflight-checks/
 ├── dcgm-diag/
 │   ├── Dockerfile
 │   ├── main.go
@@ -138,13 +136,17 @@ initContainers:
       - name: platform-connector-socket
         mountPath: /var/run
 
-  - name: preflight-nccl-loopback
-    image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:v1
+  - name: preflight-nccl-allreduce
+    image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:v1
     env:
-      - name: NCCL_LOOPBACK_THRESHOLD_GBPS
-        value: "10.0"
-      - name: PLATFORM_CONNECTOR_SOCKET
-        value: "unix:///var/run/nvsentinel.sock"
+      - name: NCCL_ALLREDUCE_THRESHOLD_GBPS
+        value: "5.0"
+      - name: GANG_TIMEOUT
+        value: "600s"
+      - name: MY_POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
     resources:
       limits:
         nvidia.com/gpu: 8
@@ -152,6 +154,8 @@ initContainers:
     volumeMounts:
       - name: platform-connector-socket
         mountPath: /var/run
+      - name: preflight-gang-config      # ConfigMap mounted as volume
+        mountPath: /etc/preflight
 ```
 
 ### Resource handling
@@ -310,36 +314,36 @@ Controller selects implementation based on Helm config. If no gang identifier fo
 
 ### Gang Coordination
 
-For gang-wide checks like `nccl-allreduce`, the preflight controller maintains a ConfigMap with peer registration and NCCL bootstrap data. Pods only read it.
+For gang-wide checks like `nccl-allreduce`, the preflight controller maintains a ConfigMap. Webhook mounts it as a volume; init containers read from filesystem.
 
 ```mermaid
 sequenceDiagram
     participant C as Preflight Controller
+    participant K as Kubelet
     participant P0 as Pod 0 Init
     participant P1 as Pod 1 Init
-    participant API as Kube API
-    participant CM as ConfigMap
 
-    C->>API: Create/Update ConfigMap (expected=2, peers="")
-    C->>API: Update ConfigMap: add pod-0:10.0.1.5
-    C->>API: Update ConfigMap: add pod-1:10.0.1.6
-    C->>API: Update ConfigMap: set nccl_unique_id
+    C->>C: Create ConfigMap (expected=2)
+    C->>C: Update ConfigMap: add pod-0:10.0.1.5
+    C->>C: Update ConfigMap: add pod-1:10.0.1.6
+    C->>C: Update ConfigMap: set nccl_unique_id
 
-    P0->>API: Read ConfigMap until len(peers) == expected
-    P1->>API: Read ConfigMap until len(peers) == expected
+    K->>P0: Sync ConfigMap to volume
+    K->>P1: Sync ConfigMap to volume
+
+    P0->>P0: Read /etc/preflight/peers until len == expected
+    P1->>P1: Read /etc/preflight/peers until len == expected
 
     Note over P0,P1: Determine rank by sorting pod names
 
-    P0->>P1: nccl.init() (barrier inside NCCL)
-    P0->>P1: nccl.all_reduce()
+    P0->>P1: nccl.init() + nccl.all_reduce()
 ```
 
-**Peer registration (controller-managed):**
-- Preflight controller creates/updates ConfigMap `preflight-<gangID>` with `expected_count`
-- `gangID` derived from gang discoverer (e.g., `workload-name/pod-group`, `volcano-pg-name`, `kueue-workload-name`)
-- Controller watches pods in the gang and updates `peers` and `nccl_unique_id`
-- Init containers read/poll ConfigMap until all peers are registered
-- Each pod determines rank by sorting pod names alphabetically
+**Flow:**
+1. Controller creates/updates ConfigMap `preflight-<gangID>` with `expected_count`, `peers`, `nccl_unique_id`
+2. Webhook mounts ConfigMap as volume at `/etc/preflight/`
+3. Init containers poll filesystem until all peers registered (kubelet syncs ~1 min)
+4. Each pod determines rank by sorting pod names alphabetically
 
 **ConfigMap structure:**
 ```yaml
@@ -347,25 +351,21 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: preflight-myworkload-group1
-  ownerReferences:
-    - apiVersion: scheduling.k8s.io/v1alpha1
-      kind: Workload
-      name: myworkload
 data:
   expected_count: "2"
   peers: |
     pod-0:10.0.1.5
     pod-1:10.0.1.6
-  nccl_unique_id: "base64..."  # Added by controller
+  nccl_unique_id: "base64..."
 ```
 
-**Security:** Init containers read the ConfigMap only. Controller owns write access.
+**Benefits:** Init containers need no RBAC — just read files.
 
 **Gang coordination timeout:** 10 minutes. If gang doesn't form, init fails with `isFatal: false` (not a hardware issue).
 
 ### RBAC
 
-Controller needs write access; init containers only need read. Both use ClusterRole since they operate across workload namespaces.
+Only the controller needs RBAC. Init containers read from mounted volume (no API access).
 
 **Controller ClusterRole:**
 ```yaml
@@ -383,16 +383,6 @@ rules:
 ```
 
 Controller only touches ConfigMaps with `preflight-` prefix (enforced by code).
-
-**Init container ClusterRole:**
-```yaml
-rules:
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get"]
-```
-
-Init containers poll ConfigMap until all peers are registered.
 
 ### DRA Integration
 
