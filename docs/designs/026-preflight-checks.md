@@ -285,38 +285,81 @@ Checker validates `busbw` (bus bandwidth) against configured threshold.
 
 Tests cross-node GPU collective communication over RDMA/InfiniBand.
 
+**Why PyTorch over MPI:**
+- MPI-based tests require `pods/exec` to spawn processes on peer pods
+- `pods/exec` is high privilege — allows executing commands in any pod in the namespace
+- PyTorch's `torchrun` handles coordination via TCP without cross-pod exec
+- Each init container runs independently; NCCL uses RDMA for actual data transfer
+
 **How it works:**
 1. **Gang formation**: All pods register in shared ConfigMap (see Gang Coordination section)
 2. **Wait for peers**: Each init container polls ConfigMap (mounted volume) until all peers registered
-3. **Bootstrap via TCP**: Rank 0's IP from ConfigMap; PyTorch/NCCL handles handshake
-4. **Run test**: Each init container runs PyTorch all-reduce independently; NCCL coordinates internally
+3. **torchrun bootstrap**: Each pod runs `torchrun` connecting to master (rank 0) via TCP
+4. **Single communicator**: All GPUs form one NCCL communicator (e.g., 2 nodes × 8 GPUs = 16 ranks)
+5. **Run test**: `dist.all_reduce()` runs across all ranks; NCCL uses RDMA
 
-**Test script (PyTorch-based, no MPI needed):**
+**Test script (PyTorch-based):**
 ```python
-import torch
+#!/usr/bin/env python3
+"""
+NCCL All-Reduce benchmark - single communicator spanning all GPUs.
+Env vars set by torchrun: RANK, LOCAL_RANK, WORLD_SIZE
+"""
+import os, time, torch
 import torch.distributed as dist
-import os
 
-# Read from mounted ConfigMap
-rank = int(os.environ['MY_RANK'])
-world_size = int(os.environ['WORLD_SIZE'])
-master_addr = os.environ['MASTER_ADDR']  # Rank 0's IP from ConfigMap
+def benchmark_allreduce(size_bytes, iters=20, warmup=5):
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    tensor = torch.randn(size_bytes // 4, dtype=torch.float32, 
+                         device=f"cuda:{local_rank}")
+    
+    for _ in range(warmup):
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    torch.cuda.synchronize()
+    
+    start = time.perf_counter()
+    for _ in range(iters):
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    torch.cuda.synchronize()
+    elapsed = time.perf_counter() - start
+    
+    world_size = dist.get_world_size()
+    algo_bw = (size_bytes * iters) / elapsed / 1e9
+    bus_bw = algo_bw * (2 * (world_size - 1) / world_size)
+    return bus_bw
 
-# PyTorch handles NCCL bootstrap via TCP
-dist.init_process_group(
-    backend='nccl',
-    init_method=f'tcp://{master_addr}:29500',
-    rank=rank,
-    world_size=world_size
-)
+def main():
+    dist.init_process_group(backend="nccl")
+    torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", 0)))
+    
+    bus_bw = benchmark_allreduce(4 * 1024**3)  # 4GB
+    threshold = float(os.environ.get("BW_THRESHOLD_GBPS", "100"))
+    
+    if dist.get_rank() == 0 and bus_bw < threshold:
+        # Report failure to Platform Connector via gRPC
+        ...
+    
+    dist.destroy_process_group()
 
-# Run all-reduce test, measure bandwidth
-tensor = torch.ones(256 * 1024 * 1024, device='cuda')  # 1GB
-dist.all_reduce(tensor)
-# ... measure time, calculate bandwidth, compare to threshold
+if __name__ == "__main__":
+    main()
 ```
 
-Each init container runs independently.
+**Invocation (per pod):**
+```bash
+torchrun --nnodes=$NNODES --nproc_per_node=$GPUS_PER_NODE \
+  --node_rank=$MY_RANK --master_addr=$MASTER_ADDR --master_port=29500 \
+  /scripts/bench.py
+```
+
+Each pod runs `torchrun` independently. No MPI, no `pods/exec`, no special RBAC.
+
+**Benchmark results (Azure NDv4, A100):**
+
+| Nodes | MPI-based (GB/s) | PyTorch (GB/s) |
+|-------|------------------|----------------|
+| 2     | 164              | 169            |
+| 3     | 160              | 168            |
 
 **What it catches:**
 - InfiniBand/RDMA link failures
