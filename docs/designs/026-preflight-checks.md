@@ -63,17 +63,77 @@ preflight-checks/
     └── pkg/
 ```
 
-### Webhook flow
+### Overall flow
 
 ```mermaid
-flowchart TD
-    A[Pod CREATE request] --> B{GPU resources?}
-    B -->|No| C[Allow]
-    B -->|Yes| D[Inject init containers]
-    D --> E[Return JSON patch]
-```
+stateDiagram-v2
+    [*] --> PodCreated: User creates GPU pod
 
-Namespace filtering handled by `namespaceSelector` in webhook config.
+    state "Webhook Injection" as Webhook {
+        PodCreated --> CheckGPU: Admission webhook triggered
+        CheckGPU --> Inject: GPU resources detected
+        CheckGPU --> Skip: No GPU resources
+        Skip --> [*]: Pod starts normally
+        Inject --> PodScheduled: Init containers injected
+    }
+
+    state "Init Container Execution" as InitExec {
+        PodScheduled --> DCGMDiag: Run dcgm-diag
+        
+        state "DCGM Diag" as DCGMDiag {
+            [*] --> GetGPUUUIDs: nvidia-smi query
+            GetGPUUUIDs --> RemoteDiag: dcgmi diag via hostengine
+            RemoteDiag --> DCGMPass: All tests pass
+            RemoteDiag --> DCGMFail: Test failure
+        }
+        
+        DCGMPass --> NCCLLoopback: Next check
+        DCGMFail --> ReportFailure: HealthEvent
+        
+        state "NCCL Loopback" as NCCLLoopback {
+            [*] --> RunLoopback: all_reduce_perf -g N
+            RunLoopback --> CheckBW: Measure bandwidth
+            CheckBW --> LoopbackPass: BW >= threshold
+            CheckBW --> LoopbackFail: BW < threshold
+        }
+        
+        LoopbackPass --> GangCheck: Check if gang-wide enabled
+        LoopbackFail --> ReportFailure
+        
+        GangCheck --> NCCLAllReduce: nccl-allreduce enabled
+        GangCheck --> AllPassed: Single-node only
+    }
+
+    state "Gang Coordination" as GangCoord {
+        NCCLAllReduce --> WaitPeers: Poll ConfigMap
+        WaitPeers --> PeersReady: All peers registered
+        WaitPeers --> GangTimeout: Timeout (10 min)
+        GangTimeout --> ReportTimeout: isFatal=false
+        
+        state "NCCL All-Reduce" as AllReduce {
+            PeersReady --> PyTorchInit: TCP bootstrap to master
+            PyTorchInit --> RunAllReduce: dist.all_reduce()
+            RunAllReduce --> AllReducePass: BW >= threshold
+            RunAllReduce --> AllReduceFail: BW < threshold or error
+        }
+        
+        AllReducePass --> AllPassed
+        AllReduceFail --> ReportFailure
+    }
+
+    state "Failure Handling" as FailHandle {
+        ReportFailure --> SendHealthEvent: gRPC to Platform Connector
+        ReportTimeout --> SendHealthEvent
+        SendHealthEvent --> PlatformConnector: HealthEvent published
+        PlatformConnector --> FaultQuarantine: Cordon node
+        FaultQuarantine --> NodeDrainer: Drain workloads
+        NodeDrainer --> FaultRemediation: Based on recommendedAction
+        FaultRemediation --> [*]: Node remediated or escalate
+    }
+
+    AllPassed --> MainContainerStart: Init success (exit 0)
+    MainContainerStart --> [*]: Workload runs
+```
 
 ### MutatingWebhookConfiguration (sketch)
 
