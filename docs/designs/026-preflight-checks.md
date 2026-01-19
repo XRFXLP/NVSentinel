@@ -116,7 +116,7 @@ webhooks:
 
 ### Injected init containers (sketch)
 
-One init container per enabled check:
+One init container per enabled check with be prepended to the pod's init containers:
 
 ```yaml
 initContainers:
@@ -154,7 +154,7 @@ initContainers:
     volumeMounts:
       - name: platform-connector-socket
         mountPath: /var/run
-      - name: preflight-gang-config      # ConfigMap mounted as volume
+      - name: preflight-gang-config      # ConfigMap: peers, master_addr, rank, world_size
         mountPath: /etc/preflight
 ```
 
@@ -227,19 +227,36 @@ Tests cross-node GPU collective communication over RDMA/InfiniBand.
 
 **How it works:**
 1. **Gang formation**: All pods register in shared ConfigMap (see Gang Coordination section)
-2. **Rank assignment**: Sort pod names alphabetically → rank 0, 1, 2, ...
-3. **NCCL bootstrap**: Controller generates NCCL unique ID, writes to ConfigMap
-4. **Run test**: Each pod reads ConfigMap and runs `all_reduce_perf` independently
+2. **Wait for peers**: Each init container polls ConfigMap (mounted volume) until all peers registered
+3. **Bootstrap via TCP**: Rank 0's IP from ConfigMap; PyTorch/NCCL handles handshake
+4. **Run test**: Each init container runs PyTorch all-reduce independently; NCCL coordinates internally
 
-**Command:**
-```bash
-NCCL_COMM_ID=<nccl_unique_id> \
-NCCL_NRANKS=$WORLD_SIZE \
-NCCL_RANK=$MY_RANK \
-all_reduce_perf -b 8 -e 256M -f 2 -g $GPUS_PER_NODE
+**Test script (PyTorch-based, no MPI needed):**
+```python
+import torch
+import torch.distributed as dist
+import os
+
+# Read from mounted ConfigMap
+rank = int(os.environ['MY_RANK'])
+world_size = int(os.environ['WORLD_SIZE'])
+master_addr = os.environ['MASTER_ADDR']  # Rank 0's IP from ConfigMap
+
+# PyTorch handles NCCL bootstrap via TCP
+dist.init_process_group(
+    backend='nccl',
+    init_method=f'tcp://{master_addr}:29500',
+    rank=rank,
+    world_size=world_size
+)
+
+# Run all-reduce test, measure bandwidth
+tensor = torch.ones(256 * 1024 * 1024, device='cuda')  # 1GB
+dist.all_reduce(tensor)
+# ... measure time, calculate bandwidth, compare to threshold
 ```
 
-Each init container runs independently. NCCL handles cross-node coordination via the shared `NCCL_COMM_ID`.
+Each init container runs independently.
 
 **What it catches:**
 - InfiniBand/RDMA link failures
@@ -248,10 +265,9 @@ Each init container runs independently. NCCL handles cross-node coordination via
 - NCCL algorithm/protocol issues
 
 **Requirements:**
-- `workloadRef` for gang discovery (K8s 1.35+)
+- Gang discovery (`workloadRef`, Volcano, or Kueue)
 - Network device allocation (InfiniBand NICs)
 - NCCL topology file (auto-detected or user-provided)
-- ConfigMap RBAC for coordination
 
 **Timeout handling:**
 - `GANG_TIMEOUT` sets max wait for all peers to register
@@ -323,10 +339,9 @@ sequenceDiagram
     participant P0 as Pod 0 Init
     participant P1 as Pod 1 Init
 
-    C->>C: Create ConfigMap (expected=2)
+    C->>C: Create ConfigMap (expected=2, master_addr=10.0.1.5)
     C->>C: Update ConfigMap: add pod-0:10.0.1.5
     C->>C: Update ConfigMap: add pod-1:10.0.1.6
-    C->>C: Update ConfigMap: set nccl_unique_id
 
     K->>P0: Sync ConfigMap to volume
     K->>P1: Sync ConfigMap to volume
@@ -336,14 +351,17 @@ sequenceDiagram
 
     Note over P0,P1: Determine rank by sorting pod names
 
-    P0->>P1: nccl.init() + nccl.all_reduce()
+    P0->>P0: PyTorch init (rank=0, listens on :29500)
+    P1->>P0: PyTorch init (rank=1, connects to master_addr:29500)
+    P0->>P1: NCCL all_reduce over RDMA
 ```
 
 **Flow:**
-1. Controller creates/updates ConfigMap `preflight-<gangID>` with `expected_count`, `peers`, `nccl_unique_id`
+1. Controller creates/updates ConfigMap `preflight-<gangID>` with `expected_count`, `peers`, `master_addr`
 2. Webhook mounts ConfigMap as volume at `/etc/preflight/`
 3. Init containers poll filesystem until all peers registered (kubelet syncs ~1 min)
 4. Each pod determines rank by sorting pod names alphabetically
+5. PyTorch connects to `master_addr` for NCCL bootstrap (TCP), then NCCL uses RDMA
 
 **ConfigMap structure:**
 ```yaml
@@ -353,19 +371,15 @@ metadata:
   name: preflight-myworkload-group1
 data:
   expected_count: "2"
+  master_addr: "10.0.1.5"  # Rank 0's IP for PyTorch TCP bootstrap
   peers: |
     pod-0:10.0.1.5
     pod-1:10.0.1.6
-  nccl_unique_id: "base64..."
 ```
-
-**Benefits:** Init containers need no RBAC — just read files.
 
 **Gang coordination timeout:** 10 minutes. If gang doesn't form, init fails with `isFatal: false` (not a hardware issue).
 
 ### RBAC
-
-Only the controller needs RBAC. Init containers read from mounted volume (no API access).
 
 **Controller ClusterRole:**
 ```yaml
