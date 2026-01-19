@@ -74,6 +74,7 @@ spec:
           args:
           - "--metrics-port={{ .Values.global.metricsPort }}"
           - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          - "--processing-strategy={{ .Values.processingStrategy }}"
           ports:
             - name: metrics
               containerPort: {{ .Values.global.metricsPort }}

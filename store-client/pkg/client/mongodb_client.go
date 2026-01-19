@@ -288,14 +288,14 @@ func BuildNodeQuarantineStatusUpdatesPipeline() datastore.Pipeline {
 	return builder.BuildNodeQuarantineStatusPipeline()
 }
 
-// BuildNonFatalUnhealthyInsertsPipeline creates a pipeline that watches for non-fatal, unhealthy event inserts
-// This is used by health-events-analyzer to detect warning-level health events for pattern analysis
+// BuildProcessableNonFatalUnhealthyInsertsPipeline creates a pipeline that watches for non-fatal,
+// unhealthy event inserts with processingStrategy=EXECUTE_REMEDIATION.
 //
-// Deprecated: Use GetPipelineBuilder().BuildNonFatalUnhealthyInsertsPipeline() instead.
+// Deprecated: Use GetPipelineBuilder().BuildProcessableNonFatalUnhealthyInsertsPipeline() instead.
 // This function is maintained for backward compatibility and will be removed in a future version.
-func BuildNonFatalUnhealthyInsertsPipeline() datastore.Pipeline {
+func BuildProcessableNonFatalUnhealthyInsertsPipeline() datastore.Pipeline {
 	builder := GetPipelineBuilder()
-	return builder.BuildNonFatalUnhealthyInsertsPipeline()
+	return builder.BuildProcessableNonFatalUnhealthyInsertsPipeline()
 }
 
 // BuildQuarantinedAndDrainedNodesPipeline creates a pipeline that watches for nodes ready for remediation

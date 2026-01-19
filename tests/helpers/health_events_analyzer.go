@@ -27,15 +27,17 @@ import (
 )
 
 const (
-	ERRORCODE_13                 = "13"
-	ERRORCODE_48                 = "48"
-	ERRORCODE_31                 = "31"
-	ERRORCODE_119                = "119"
-	ERRORCODE_120                = "120"
-	ERRORCODE_79                 = "79"
-	ERRORCODE_74                 = "74"
-	HEALTH_EVENTS_ANALYZER_AGENT = "health-events-analyzer"
-	SYSLOG_HEALTH_MONITOR_AGENT  = "syslog-health-monitor"
+	ERRORCODE_13                           = "13"
+	ERRORCODE_48                           = "48"
+	ERRORCODE_31                           = "31"
+	ERRORCODE_119                          = "119"
+	ERRORCODE_120                          = "120"
+	ERRORCODE_79                           = "79"
+	ERRORCODE_74                           = "74"
+	HEALTH_EVENTS_ANALYZER_AGENT           = "health-events-analyzer"
+	SYSLOG_HEALTH_MONITOR_AGENT            = "syslog-health-monitor"
+	HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME = "health-events-analyzer"
+	HEALTH_EVENTS_ANALYZER_CONTAINER_NAME  = "health-events-analyzer"
 )
 
 type HealthEventsAnalyzerTestContext struct {
@@ -182,6 +184,8 @@ func applyHealthEventsAnalyzerConfigAndRestart(
 	if err != nil {
 		return err
 	}
+
+	WaitForDeploymentRollout(ctx, t, client, HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME, NVSentinelNamespace)
 
 	return nil
 }

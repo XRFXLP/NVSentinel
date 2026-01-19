@@ -294,7 +294,8 @@ func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 
 	// No need to clone here - Publisher.Publish already clones the event
 	// The EventProcessor creates a fresh stack variable for each event, so no mutation risk
-	err := r.config.Publisher.Publish(ctx, event.HealthEvent, protos.RecommendedAction(actionVal), rule.Name, rule.Message)
+	err := r.config.Publisher.Publish(ctx, event.HealthEvent, protos.RecommendedAction(actionVal),
+		rule.Name, rule.Message, &rule)
 	if err != nil {
 		slog.Error("Error in publishing the new fatal event", "error", err)
 		return fmt.Errorf("error in publishing the new fatal event: %w", err)
@@ -404,6 +405,9 @@ func (r *Reconciler) getPipelineStages(
 		{
 			"$match": map[string]interface{}{
 				"healthevent.agent": map[string]interface{}{"$ne": "health-events-analyzer"},
+				"healthevent.processingstrategy": map[string]interface{}{
+					"$eq": int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
+				},
 			},
 		},
 	}
@@ -470,7 +474,7 @@ func (r *Reconciler) processXidBurstDetection(ctx context.Context, event *protos
 	// Use the publisher to create and publish the RepeatedXidError event
 	// The publisher will set agent, checkName, isHealthy, isFatal, and recommendedAction
 	err := r.config.Publisher.Publish(ctx, event, protos.RecommendedAction_CONTACT_SUPPORT, "RepeatedXidError",
-		event.Message)
+		event.Message, nil)
 	if err != nil {
 		slog.Error("Failed to publish RepeatedXidError event",
 			"error", err,
