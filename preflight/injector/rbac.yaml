@@ -1,0 +1,43 @@
+# RBAC for preflight-injector webhook
+# The webhook needs to:
+# - List pods for gang discovery
+# - Create ConfigMaps for NCCL coordination (stores peer DNS names)
+# - Create headless Services for DNS-based pod discovery
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: preflight-injector
+rules:
+  # Required for gang discovery: list pods to find gang members
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  
+  # Required for NCCL gang coordination: create ConfigMaps with peer DNS names
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  
+  # Required for NCCL DNS discovery: create headless Services
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create"]
+  
+  # Read PodGroups for Volcano gang size (minMember)
+  - apiGroups: ["scheduling.volcano.sh"]
+    resources: ["podgroups"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: preflight-injector
+subjects:
+  - kind: ServiceAccount
+    name: preflight-injector
+    namespace: nvsentinel
+roleRef:
+  kind: ClusterRole
+  name: preflight-injector
+  apiGroup: rbac.authorization.k8s.io
+

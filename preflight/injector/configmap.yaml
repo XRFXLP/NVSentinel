@@ -1,0 +1,63 @@
+# Configuration for preflight-injector webhook
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: preflight-injector-config
+  namespace: nvsentinel
+data:
+  # Preflight check image to inject into pods
+  preflight-checker-image: "xrfxlp/preflight-dcgm-diag:latest"
+  
+  # DCGM hostengine address (the DaemonSet running DCGM)
+  # For GPU Operator deployments, this is typically: nvidia-dcgm.gpu-operator.svc:5555
+  dcgm-hostengine-addr: "nvidia-dcgm.gpu-operator.svc:5555"
+  
+  # DCGM diagnostic level:
+  #   1 = Quick (~30s) - memory, PCIe bandwidth
+  #   2 = Extended (~2-3min) - stress, targeted diagnostics
+  #   3 = Full - comprehensive hardware validation
+  dcgm-diag-level: "1"
+  
+  # Platform Connector Unix socket path (for health event reporting)
+  platform-connector-socket: "/var/run/nvsentinel/nvsentinel.sock"
+  
+  # Gang discovery method priority (comma-separated)
+  # Options: volcano, workloadref, kueue, labels
+  gang-discoverers: "volcano,workloadref"
+  
+  # GPU resource names to detect (comma-separated)
+  # The webhook will inject preflight init container only if pod has these resources
+  gpu-resource-names: "nvidia.com/gpu"
+  
+  # Network resource names for NCCL tests (comma-separated)
+  network-resource-names: "nvidia.com/mlnxnics"
+  
+  # Timeouts
+  check-timeout: "300s"
+  gang-timeout: "600s"
+  
+  # ============================================================
+  # NCCL All-Reduce Configuration
+  # ============================================================
+  
+  # Enable NCCL all-reduce preflight check for multi-node gang jobs
+  # Set to "true" to enable gang-wide NCCL bandwidth tests
+  nccl-enabled: "false"
+  
+  # NCCL all-reduce checker image
+  nccl-image: "xrfxlp/preflight-nccl-allreduce:latest"
+  
+  # Minimum bus bandwidth threshold in GB/s
+  # Jobs with lower measured bandwidth will fail preflight
+  # Typical values:
+  #   - Azure NDv4 A100 (8x 200Gb HDR InfiniBand): ~146 GB/s measured, set threshold to 140
+  #   - Azure NDv5 H100 (8x 400Gb NDR InfiniBand): 300+ GB/s expected
+  #   - Ethernet (100GbE):    5-12 GB/s
+  #   - Ethernet (25GbE):     2-3 GB/s
+  nccl-bw-threshold: "1"
+  
+  # Number of GPUs per node (used for torchrun --nproc_per_node)
+  nccl-nprocs-per-node: "8"
+  
+  # Port for PyTorch distributed rendezvous (master port)
+  nccl-master-port: "29500"

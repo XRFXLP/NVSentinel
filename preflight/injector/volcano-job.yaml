@@ -1,0 +1,23 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: preflight-test
+  namespace: default
+spec:
+  minAvailable: 2
+  schedulerName: volcano
+  tasks:
+    - replicas: 2
+      name: worker
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: worker
+              image: busybox
+              command: ["sleep", "300"]
+              resources:
+                limits:
+                  nvidia.com/gpu: 8
+                requests:
+                  nvidia.com/gpu: 8

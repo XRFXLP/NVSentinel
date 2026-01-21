@@ -1,0 +1,75 @@
+<system version="1">
+  <!-- Azure NDv4 (Standard_ND96asr_v4) Topology File -->
+  <!-- 8x A100 80GB GPUs with 8x 200Gb HDR InfiniBand NICs -->
+  <cpu numaid="0" affinity="0000ffff,0000ffff" arch="x86_64" vendor="AuthenticAMD" familyid="23" modelid="49">
+    <pci busid="0001:00:00.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+      <pci busid="0001:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16">
+        <gpu dev="0" sm="80" rank="0" gdr="1"/>
+      </pci>
+    </pci>
+    <pci busid="0002:00:00.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+      <pci busid="0002:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16">
+        <gpu dev="1" sm="80" rank="1" gdr="1"/>
+      </pci>
+    </pci>
+    <pci busid="000b:00:00.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+      <pci busid="000b:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16">
+        <gpu dev="2" sm="80" rank="2" gdr="1"/>
+      </pci>
+    </pci>
+    <pci busid="000c:00:00.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+      <pci busid="000c:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16">
+        <gpu dev="3" sm="80" rank="3" gdr="1"/>
+      </pci>
+    </pci>
+    <!-- NICs for GPUs 0-3 -->
+    <nic>
+      <net name="mlx5_ib0" dev="0" speed="200000" port="1" gdr="1" coll="1"/>
+    </nic>
+    <nic>
+      <net name="mlx5_ib1" dev="1" speed="200000" port="1" gdr="1" coll="1"/>
+    </nic>
+    <nic>
+      <net name="mlx5_ib2" dev="2" speed="200000" port="1" gdr="1" coll="1"/>
+    </nic>
+    <nic>
+      <net name="mlx5_ib3" dev="3" speed="200000" port="1" gdr="1" coll="1"/>
+    </nic>
+  </cpu>
+  <cpu numaid="1" affinity="ffff0000,ffff0000" arch="x86_64" vendor="AuthenticAMD" familyid="23" modelid="49">
+    <pci busid="0041:00:00.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+      <pci busid="0041:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16">
+        <gpu dev="4" sm="80" rank="4" gdr="1"/>
+      </pci>
+    </pci>
+    <pci busid="0042:00:00.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+      <pci busid="0042:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16">
+        <gpu dev="5" sm="80" rank="5" gdr="1"/>
+      </pci>
+    </pci>
+    <pci busid="004b:00:00.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+      <pci busid="004b:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16">
+        <gpu dev="6" sm="80" rank="6" gdr="1"/>
+      </pci>
+    </pci>
+    <pci busid="004c:00:00.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+      <pci busid="004c:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16">
+        <gpu dev="7" sm="80" rank="7" gdr="1"/>
+      </pci>
+    </pci>
+    <!-- NICs for GPUs 4-7 -->
+    <nic>
+      <net name="mlx5_ib4" dev="4" speed="200000" port="1" gdr="1" coll="1"/>
+    </nic>
+    <nic>
+      <net name="mlx5_ib5" dev="5" speed="200000" port="1" gdr="1" coll="1"/>
+    </nic>
+    <nic>
+      <net name="mlx5_ib6" dev="6" speed="200000" port="1" gdr="1" coll="1"/>
+    </nic>
+    <nic>
+      <net name="mlx5_ib7" dev="7" speed="200000" port="1" gdr="1" coll="1"/>
+    </nic>
+  </cpu>
+</system>
+

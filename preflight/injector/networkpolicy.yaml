@@ -1,0 +1,16 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: preflight-injector-allow-webhook
+  namespace: nvsentinel
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: preflight-injector
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8443
+

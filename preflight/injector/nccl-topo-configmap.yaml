@@ -1,0 +1,47 @@
+# NCCL Topology ConfigMap for Azure NDv4 VMs
+# This provides GPU-NIC PCIe switch hierarchy for optimal InfiniBand performance
+# IMPORTANT: Deploy to the namespace where jobs run (e.g., default)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nccl-topo-ndv4
+  namespace: default  # Must be in the job namespace!
+  labels:
+    app.kubernetes.io/name: nvsentinel
+    app.kubernetes.io/component: nccl-topo
+data:
+  topo.xml: |
+    <system version="1">
+      <cpu numaid="0" affinity="0000ffff,0000ffff" arch="x86_64" vendor="AuthenticAMD" familyid="23" modelid="49">
+        <pci busid="ffff:ff:01.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+          <pci busid="0003:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="0103:00:00.0" class="0x020700" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="0004:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="0104:00:00.0" class="0x020700" link_speed="16 GT/s" link_width="16"/>
+        </pci>
+      </cpu>
+      <cpu numaid="1" affinity="0000ffff,0000ffff" arch="x86_64" vendor="AuthenticAMD" familyid="23" modelid="49">
+        <pci busid="ffff:ff:02.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+          <pci busid="0001:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="0101:00:00.0" class="0x020700" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="0002:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="0102:00:00.0" class="0x020700" link_speed="16 GT/s" link_width="16"/>
+        </pci>
+      </cpu>
+      <cpu numaid="2" affinity="0000ffff,0000ffff" arch="x86_64" vendor="AuthenticAMD" familyid="23" modelid="49">
+        <pci busid="ffff:ff:03.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+          <pci busid="000d:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="0107:00:00.0" class="0x020700" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="000e:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="0108:00:00.0" class="0x020700" link_speed="16 GT/s" link_width="16"/>
+        </pci>
+      </cpu>
+      <cpu numaid="3" affinity="0000ffff,0000ffff" arch="x86_64" vendor="AuthenticAMD" familyid="23" modelid="49">
+        <pci busid="ffff:ff:04.0" class="0x060400" link_speed="16 GT/s" link_width="16">
+          <pci busid="000b:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="0105:00:00.0" class="0x020700" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="000c:00:00.0" class="0x030200" link_speed="16 GT/s" link_width="16"/>
+          <pci busid="0106:00:00.0" class="0x020700" link_speed="16 GT/s" link_width="16"/>
+        </pci>
+      </cpu>
+    </system>

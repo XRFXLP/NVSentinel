@@ -1,0 +1,916 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/NVIDIA/NVSentinel/preflight/pkg/gang"
+	"github.com/go-logr/logr"
+	"gomodules.xyz/jsonpatch/v2"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+)
+
+const (
+	// GangIDLabel is applied to pods to identify their gang membership.
+	GangIDLabel = "nvsentinel.nvidia.com/gang-id"
+
+	// GangDiscovererLabel records which discoverer identified the gang.
+	GangDiscovererLabel = "nvsentinel.nvidia.com/gang-discoverer"
+
+	// Default values for DCGM configuration
+	// For GPU Operator deployments: nvidia-dcgm.gpu-operator.svc:5555
+	defaultDCGMHostengineAddr        = "nvidia-dcgm.gpu-operator.svc:5555"
+	defaultDCGMDiagLevel             = "2"
+	defaultPlatformConnectorSocket   = "/var/run/nvsentinel/nvsentinel.sock"
+	defaultPreflightImage            = "ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:latest"
+	platformConnectorVolumeName      = "platform-connector-socket"
+	platformConnectorVolumeMountPath = "/var/run/nvsentinel"
+
+	// Default GPU resource name
+	defaultGPUResourceName = "nvidia.com/gpu"
+
+	// NCCL All-Reduce configuration
+	defaultNCCLImage         = "ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:latest"
+	defaultNCCLBWThreshold   = "165" // GB/s (Azure NDv4 A100 InfiniBand)
+	defaultNCCLNProcsPerNode = "8"
+	defaultNCCLMasterPort    = "29500"
+	gangConfigVolumeName     = "gang-config"
+	gangConfigMountPath      = "/etc/preflight"
+
+	// NCCL topology ConfigMap (for Azure NDv4 or similar)
+	ncclTopoVolumeName    = "nccl-topo"
+	ncclTopoConfigMapName = "nccl-topo-ndv4"
+	ncclTopoMountPath     = "/etc/nccl"
+	ncclShmVolumeName     = "nccl-shm"
+	ncclShmMountPath      = "/dev/shm"
+)
+
+// InjectorConfig holds configuration for the webhook injector.
+type InjectorConfig struct {
+	// PreflightImage is the container image for the preflight checker
+	PreflightImage string
+
+	// DCGMHostengineAddr is the address of the DCGM hostengine service
+	DCGMHostengineAddr string
+
+	// DCGMDiagLevel is the DCGM diagnostic level (1, 2, or 3)
+	DCGMDiagLevel string
+
+	// PlatformConnectorSocket is the path to the Platform Connector Unix socket
+	PlatformConnectorSocket string
+
+	// GPUResourceNames is a list of GPU resource names to detect (comma-separated)
+	GPUResourceNames string
+
+	// NetworkResourceNames is a list of network resource names (e.g., nvidia.com/mlnxnics)
+	NetworkResourceNames string
+
+	// NCCL All-Reduce configuration
+	// NCCLEnabled enables the NCCL all-reduce preflight check for gang pods
+	NCCLEnabled bool
+
+	// NCCLImage is the container image for the NCCL all-reduce checker
+	NCCLImage string
+
+	// NCCLBWThreshold is the minimum bus bandwidth threshold in GB/s
+	NCCLBWThreshold string
+
+	// NCCLNProcsPerNode is the number of GPUs per node for NCCL
+	NCCLNProcsPerNode string
+
+	// NCCLMasterPort is the port for PyTorch distributed rendezvous
+	NCCLMasterPort string
+}
+
+// InitContainerInjector is the admission webhook handler that injects
+// preflight check init containers into GPU pods.
+type InitContainerInjector struct {
+	Decoder        admission.Decoder
+	Client         client.Client
+	GangDiscoverer gang.GangDiscoverer
+	Log            logr.Logger
+	Config         InjectorConfig
+}
+
+// Handle processes pod admission requests, injecting preflight init containers
+// and adding gang identification labels.
+func (i *InitContainerInjector) Handle(ctx context.Context, req admission.Request) admission.Response {
+	log := i.Log.WithValues("namespace", req.Namespace, "name", req.Name)
+
+	pod := &corev1.Pod{}
+	if err := i.Decoder.Decode(req, pod); err != nil {
+		log.Error(err, "Failed to decode pod")
+		return admission.Errored(http.StatusBadRequest, err)
+	}
+
+	// Check if pod has GPU resources - skip injection if not a GPU pod
+	gpuResources := i.extractGPUResources(pod)
+	if len(gpuResources) == 0 {
+		log.Info("Pod has no GPU resources, skipping preflight injection")
+		return admission.Allowed("no GPU resources")
+	}
+
+	log.Info("Detected GPU resources", "resources", gpuResources)
+
+	// Track original state to determine patch operations
+	origInitContainersNil := pod.Spec.InitContainers == nil
+	origLabelsNil := pod.Labels == nil
+	origVolumesNil := pod.Spec.Volumes == nil
+
+	// Extract gang ID using pluggable discoverer
+	gangID := ""
+	discovererName := ""
+	var gangInfo *gang.GangInfo
+	if i.GangDiscoverer != nil {
+		gangID = i.GangDiscoverer.ExtractGangID(pod)
+		if gangID != "" {
+			if composite, ok := i.GangDiscoverer.(*gang.CompositeGangDiscoverer); ok {
+				if active := composite.ActiveDiscoverer(pod); active != nil {
+					discovererName = active.Name()
+				}
+			} else {
+				discovererName = i.GangDiscoverer.Name()
+			}
+			log.Info("Discovered gang", "gangID", gangID, "discoverer", discovererName)
+
+			// Discover gang peers for NCCL coordination
+			var err error
+			gangInfo, err = i.GangDiscoverer.DiscoverPeers(ctx, pod)
+			if err != nil {
+				log.Error(err, "Failed to discover gang peers")
+				// Continue without gang info - DCGM will still run
+			} else {
+				log.Info("Gang info", "expectedCount", gangInfo.ExpectedCount)
+			}
+		}
+	}
+
+	// Add gang labels if gang ID was discovered
+	if gangID != "" {
+		if pod.Labels == nil {
+			pod.Labels = map[string]string{}
+		}
+		pod.Labels[GangIDLabel] = sanitizeLabelValue(gangID)
+		if discovererName != "" {
+			pod.Labels[GangDiscovererLabel] = discovererName
+		}
+	}
+
+	// Add Platform Connector socket volume if not already present
+	i.ensurePlatformConnectorVolume(pod)
+
+	// Create resources for NCCL coordination (if gang and NCCL enabled)
+	if gangID != "" && i.Config.NCCLEnabled && gangInfo != nil && gangInfo.ExpectedCount > 1 {
+		// Create headless service for DNS-based pod discovery
+		// This allows pods to resolve each other: {pod}.{gang-id}.{namespace}.svc
+		if err := i.ensureGangHeadlessService(ctx, pod, gangID); err != nil {
+			log.Error(err, "Failed to ensure gang headless service")
+			// Continue - NCCL might fail but DCGM will still run
+		}
+
+		// Create ConfigMap with peer DNS names pre-populated
+		if err := i.ensureGangConfigMap(ctx, pod, gangID, gangInfo); err != nil {
+			// "AlreadyExists" is expected when multiple pods are created simultaneously
+			if !errors.IsAlreadyExists(err) {
+				log.Error(err, "Failed to ensure gang ConfigMap")
+			}
+		}
+		// Always add ConfigMap volume - ConfigMap either exists or was just created
+		i.ensureGangConfigVolume(pod, gangID, req.Namespace)
+
+		// Add Azure NCCL topology files volume for A100 VMs
+		i.ensureNCCLTopoVolume(pod)
+
+		// Add /dev/shm volume for NCCL performance
+		i.ensureNCCLShmVolume(pod)
+
+		// Ensure main containers can access gang config + NCCL assets
+		i.ensureNCCLVolumeMountsForAllContainers(pod)
+
+		// Set subdomain and hostname on pod for DNS resolution
+		// Pod DNS: {hostname}.{subdomain}.{namespace}.svc.cluster.local
+		// IMPORTANT: Both must be set for headless service DNS to work!
+		pod.Spec.Subdomain = sanitizeGangID(gangID)
+		// Set hostname to pod name for DNS resolution
+		if pod.Spec.Hostname == "" {
+			if req.Name != "" {
+				pod.Spec.Hostname = req.Name
+			} else if pod.Name != "" {
+				pod.Spec.Hostname = pod.Name
+			}
+		}
+	}
+
+	// Inject preflight init containers with GPU resources
+	if err := i.injectInitContainers(pod, gangID, gangInfo, gpuResources); err != nil {
+		log.Error(err, "Failed to inject init containers")
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
+
+	// Build JSON patch for the mutation
+	ops, err := i.buildPatchOperations(pod, origInitContainersNil, origLabelsNil, origVolumesNil)
+	if err != nil {
+		log.Error(err, "Failed to build patch operations")
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
+
+	log.Info("Injected preflight init container", "gangID", gangID, "gpuResources", gpuResources, "ncclEnabled", i.Config.NCCLEnabled)
+	return admission.Patched("injected preflight init containers", ops...)
+}
+
+// extractGPUResources finds GPU resources from all containers and returns the max for each resource type.
+// Per design doc: "GPUs / extended resources: inject max across all containers"
+func (i *InitContainerInjector) extractGPUResources(pod *corev1.Pod) corev1.ResourceList {
+	gpuResourceNames := i.getGPUResourceNames()
+	maxResources := make(corev1.ResourceList)
+
+	// Check all containers (including existing init containers)
+	allContainers := append(pod.Spec.Containers, pod.Spec.InitContainers...)
+
+	for _, container := range allContainers {
+		// Check limits (preferred) and requests
+		for _, resources := range []corev1.ResourceList{container.Resources.Limits, container.Resources.Requests} {
+			for resourceName, quantity := range resources {
+				// Check if this is a GPU resource
+				if i.isGPUResource(string(resourceName), gpuResourceNames) {
+					existing, exists := maxResources[resourceName]
+					if !exists || quantity.Cmp(existing) > 0 {
+						maxResources[resourceName] = quantity.DeepCopy()
+					}
+				}
+			}
+		}
+	}
+
+	return maxResources
+}
+
+// getGPUResourceNames returns the list of GPU resource names to detect.
+func (i *InitContainerInjector) getGPUResourceNames() []string {
+	if i.Config.GPUResourceNames != "" {
+		return strings.Split(i.Config.GPUResourceNames, ",")
+	}
+	return []string{defaultGPUResourceName}
+}
+
+// isGPUResource checks if a resource name is a GPU resource.
+func (i *InitContainerInjector) isGPUResource(resourceName string, gpuResourceNames []string) bool {
+	for _, gpuName := range gpuResourceNames {
+		if strings.TrimSpace(gpuName) == resourceName {
+			return true
+		}
+	}
+	return false
+}
+
+// extractNetworkResources finds network resources (e.g., InfiniBand NICs) from containers.
+func (i *InitContainerInjector) extractNetworkResources(pod *corev1.Pod) corev1.ResourceList {
+	networkResourceNames := i.getNetworkResourceNames()
+	if len(networkResourceNames) == 0 {
+		return nil
+	}
+
+	maxResources := make(corev1.ResourceList)
+
+	// Check all containers
+	allContainers := append(pod.Spec.Containers, pod.Spec.InitContainers...)
+
+	for _, container := range allContainers {
+		for _, resources := range []corev1.ResourceList{container.Resources.Limits, container.Resources.Requests} {
+			for resourceName, quantity := range resources {
+				if i.isNetworkResource(string(resourceName), networkResourceNames) {
+					existing, exists := maxResources[resourceName]
+					if !exists || quantity.Cmp(existing) > 0 {
+						maxResources[resourceName] = quantity.DeepCopy()
+					}
+				}
+			}
+		}
+	}
+
+	return maxResources
+}
+
+// getNetworkResourceNames returns the list of network resource names to detect.
+func (i *InitContainerInjector) getNetworkResourceNames() []string {
+	if i.Config.NetworkResourceNames != "" {
+		return strings.Split(i.Config.NetworkResourceNames, ",")
+	}
+	// Default: Mellanox InfiniBand NICs
+	return []string{"nvidia.com/mlnxnics"}
+}
+
+// isNetworkResource checks if a resource name is a network resource.
+func (i *InitContainerInjector) isNetworkResource(resourceName string, networkResourceNames []string) bool {
+	for _, netName := range networkResourceNames {
+		if strings.TrimSpace(netName) == resourceName {
+			return true
+		}
+	}
+	return false
+}
+
+// ensurePlatformConnectorVolume adds the Platform Connector socket volume if not present.
+func (i *InitContainerInjector) ensurePlatformConnectorVolume(pod *corev1.Pod) {
+	// Check if volume already exists
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == platformConnectorVolumeName {
+			return
+		}
+	}
+
+	// Add hostPath volume for Platform Connector socket
+	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+		Name: platformConnectorVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: platformConnectorVolumeMountPath,
+				Type: func() *corev1.HostPathType {
+					t := corev1.HostPathDirectoryOrCreate
+					return &t
+				}(),
+			},
+		},
+	})
+}
+
+// ensureNCCLTopoVolume adds the NCCL topology ConfigMap volume if not present.
+func (i *InitContainerInjector) ensureNCCLTopoVolume(pod *corev1.Pod) {
+	// Check if volume already exists
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == ncclTopoVolumeName {
+			return
+		}
+	}
+
+	// Add ConfigMap volume for NCCL topology files
+	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+		Name: ncclTopoVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: ncclTopoConfigMapName,
+				},
+				Optional: func() *bool { b := true; return &b }(),
+			},
+		},
+	})
+}
+
+// ensureNCCLShmVolume adds an in-memory /dev/shm volume for NCCL performance.
+func (i *InitContainerInjector) ensureNCCLShmVolume(pod *corev1.Pod) {
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == ncclShmVolumeName {
+			return
+		}
+	}
+
+	sizeLimit := resource.MustParse("64Gi")
+	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+		Name: ncclShmVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{
+				Medium:    corev1.StorageMediumMemory,
+				SizeLimit: &sizeLimit,
+			},
+		},
+	})
+}
+
+// ensureNCCLVolumeMountsForAllContainers adds NCCL-related mounts to all containers.
+func (i *InitContainerInjector) ensureNCCLVolumeMountsForAllContainers(pod *corev1.Pod) {
+	if pod == nil {
+		return
+	}
+	log := i.Log.WithValues("namespace", pod.Namespace, "name", pod.Name)
+	for ci := range pod.Spec.Containers {
+		container := &pod.Spec.Containers[ci]
+		container.VolumeMounts = ensureVolumeMount(container.VolumeMounts, corev1.VolumeMount{
+			Name:      gangConfigVolumeName,
+			MountPath: gangConfigMountPath,
+			ReadOnly:  true,
+		})
+		container.VolumeMounts = ensureVolumeMount(container.VolumeMounts, corev1.VolumeMount{
+			Name:      ncclShmVolumeName,
+			MountPath: ncclShmMountPath,
+		})
+		container.VolumeMounts = ensureVolumeMount(container.VolumeMounts, corev1.VolumeMount{
+			Name:      ncclTopoVolumeName,
+			MountPath: ncclTopoMountPath,
+			ReadOnly:  true,
+		})
+		var mountNames []string
+		for _, mount := range container.VolumeMounts {
+			mountNames = append(mountNames, mount.Name)
+		}
+		log.Info("Ensured NCCL volume mounts for container", "container", container.Name, "mounts", mountNames)
+	}
+}
+
+func ensureVolumeMount(mounts []corev1.VolumeMount, mount corev1.VolumeMount) []corev1.VolumeMount {
+	for _, existing := range mounts {
+		if existing.Name == mount.Name {
+			return mounts
+		}
+	}
+	return append(mounts, mount)
+}
+
+// injectInitContainers adds preflight check init containers to the pod.
+func (i *InitContainerInjector) injectInitContainers(pod *corev1.Pod, gangID string, gangInfo *gang.GangInfo, gpuResources corev1.ResourceList) error {
+	config := i.Config
+
+	// Apply defaults
+	if config.PreflightImage == "" {
+		config.PreflightImage = defaultPreflightImage
+	}
+	if config.DCGMHostengineAddr == "" {
+		config.DCGMHostengineAddr = defaultDCGMHostengineAddr
+	}
+	if config.DCGMDiagLevel == "" {
+		config.DCGMDiagLevel = defaultDCGMDiagLevel
+	}
+	if config.PlatformConnectorSocket == "" {
+		config.PlatformConnectorSocket = defaultPlatformConnectorSocket
+	}
+
+	// Build environment variables for the DCGM init container
+	dcgmEnv := []corev1.EnvVar{
+		// Pod metadata (via fieldRef)
+		{
+			Name: "POD_NAME",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "metadata.name",
+				},
+			},
+		},
+		{
+			Name: "POD_NAMESPACE",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "metadata.namespace",
+				},
+			},
+		},
+		{
+			Name: "NODE_NAME",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "spec.nodeName",
+				},
+			},
+		},
+		// DCGM configuration
+		{
+			Name:  "DCGM_HOSTENGINE_ADDR",
+			Value: config.DCGMHostengineAddr,
+		},
+		{
+			Name:  "DCGM_DIAG_LEVEL",
+			Value: config.DCGMDiagLevel,
+		},
+		// Platform Connector socket
+		{
+			Name:  "PLATFORM_CONNECTOR_SOCKET",
+			Value: config.PlatformConnectorSocket,
+		},
+	}
+
+	// Add gang ID if discovered
+	if gangID != "" {
+		dcgmEnv = append(dcgmEnv, corev1.EnvVar{
+			Name:  "NVSENTINEL_GANG_ID",
+			Value: gangID,
+		})
+	}
+
+	// Build resource requirements with GPU resources
+	resources := corev1.ResourceRequirements{
+		Limits:   gpuResources.DeepCopy(),
+		Requests: gpuResources.DeepCopy(),
+	}
+
+	// Add minimal CPU/memory if not already present
+	// DCGM diag needs more memory, especially for multi-GPU systems
+	if _, ok := resources.Requests[corev1.ResourceCPU]; !ok {
+		resources.Requests[corev1.ResourceCPU] = resource.MustParse("500m")
+	}
+	if _, ok := resources.Requests[corev1.ResourceMemory]; !ok {
+		resources.Requests[corev1.ResourceMemory] = resource.MustParse("1Gi")
+	}
+	if _, ok := resources.Limits[corev1.ResourceCPU]; !ok {
+		resources.Limits[corev1.ResourceCPU] = resource.MustParse("2")
+	}
+	if _, ok := resources.Limits[corev1.ResourceMemory]; !ok {
+		resources.Limits[corev1.ResourceMemory] = resource.MustParse("4Gi")
+	}
+
+	// Create the DCGM preflight init container
+	dcgmContainer := corev1.Container{
+		Name:            "nvsentinel-preflight-dcgm",
+		Image:           config.PreflightImage,
+		ImagePullPolicy: corev1.PullAlways, // Always pull to ensure latest image
+		Env:             dcgmEnv,
+		Resources:       resources,
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      platformConnectorVolumeName,
+				MountPath: platformConnectorVolumeMountPath,
+			},
+		},
+		// Note: Cannot use strict security context with GPU access
+		// The NVIDIA device plugin requires certain capabilities
+	}
+
+	// Start with DCGM container
+	newInitContainers := []corev1.Container{dcgmContainer}
+
+	// Add NCCL all-reduce container if enabled and this is a multi-node gang
+	if config.NCCLEnabled && gangID != "" && gangInfo != nil && gangInfo.ExpectedCount > 1 {
+		// Extract network resources (e.g., InfiniBand NICs) for NCCL
+		networkResources := i.extractNetworkResources(pod)
+		ncclContainer := i.buildNCCLContainer(pod, gangID, gangInfo, gpuResources, networkResources)
+		newInitContainers = append(newInitContainers, ncclContainer)
+	}
+
+	// Prepend to existing init containers so preflight runs first
+	pod.Spec.InitContainers = append(newInitContainers, pod.Spec.InitContainers...)
+
+	return nil
+}
+
+// buildNCCLContainer creates the NCCL all-reduce init container by cloning the main container.
+// This ensures init == main (same image, command, env, resources) for fair comparison.
+func (i *InitContainerInjector) buildNCCLContainer(pod *corev1.Pod, gangID string, gangInfo *gang.GangInfo, gpuResources corev1.ResourceList, networkResources corev1.ResourceList) corev1.Container {
+	// Clone the main container verbatim so init == main
+	if len(pod.Spec.Containers) == 0 {
+		return corev1.Container{Name: "nvsentinel-preflight-nccl"}
+	}
+	nccl := pod.Spec.Containers[0].DeepCopy()
+	nccl.Name = "nvsentinel-preflight-nccl"
+
+	// Ensure required volume mounts are present
+	nccl.VolumeMounts = ensureVolumeMount(nccl.VolumeMounts, corev1.VolumeMount{
+		Name:      gangConfigVolumeName,
+		MountPath: gangConfigMountPath,
+		ReadOnly:  true,
+	})
+	nccl.VolumeMounts = ensureVolumeMount(nccl.VolumeMounts, corev1.VolumeMount{
+		Name:      ncclShmVolumeName,
+		MountPath: ncclShmMountPath,
+	})
+	nccl.VolumeMounts = ensureVolumeMount(nccl.VolumeMounts, corev1.VolumeMount{
+		Name:      ncclTopoVolumeName,
+		MountPath: ncclTopoMountPath,
+		ReadOnly:  true,
+	})
+	nccl.VolumeMounts = ensureVolumeMount(nccl.VolumeMounts, corev1.VolumeMount{
+		Name:      platformConnectorVolumeName,
+		MountPath: platformConnectorVolumeMountPath,
+	})
+
+	return *nccl
+}
+func extractRankFromPodName(podName string) int {
+	// Try to find trailing number
+	re := regexp.MustCompile(`-(\d+)$`)
+	matches := re.FindStringSubmatch(podName)
+	if len(matches) >= 2 {
+		if rank, err := strconv.Atoi(matches[1]); err == nil {
+			return rank
+		}
+	}
+	return 0
+}
+
+// determineMasterAddress determines the master address for NCCL rendezvous.
+// For Volcano, we derive it from the pod naming pattern.
+func (i *InitContainerInjector) determineMasterAddress(pod *corev1.Pod, gangID string) string {
+	// For Volcano, pod names follow: {job}-{task}-{index}
+	// Replace the index with 0 to get master pod name
+	masterPod := regexp.MustCompile(`-\d+$`).ReplaceAllString(pod.Name, "-0")
+
+	// Use the headless service DNS pattern
+	// {pod-name}.{headless-service}.{namespace}.svc.cluster.local
+	// The headless service name is the sanitized gang ID
+	sanitizedGangID := sanitizeGangID(gangID)
+	return fmt.Sprintf("%s.%s.%s.svc.cluster.local", masterPod, sanitizedGangID, pod.Namespace)
+}
+
+// sanitizeGangID removes namespace prefix and special characters from gang ID.
+// Gang ID format is "namespace/podgroup-name" - we extract just the podgroup name.
+// The result is truncated to 63 characters max for Kubernetes label compliance.
+func sanitizeGangID(gangID string) string {
+	// Remove namespace prefix if present
+	if idx := strings.LastIndex(gangID, "/"); idx >= 0 {
+		gangID = gangID[idx+1:]
+	}
+	// Replace any remaining invalid characters
+	gangID = strings.ReplaceAll(gangID, "/", "-")
+	// Truncate to 63 characters (Kubernetes label limit)
+	if len(gangID) > 63 {
+		gangID = gangID[:63]
+	}
+	return gangID
+}
+
+// sanitizeLabelValue makes a string safe for use as a Kubernetes label value.
+// Label values must be ≤63 chars and alphanumeric with -_. only.
+func sanitizeLabelValue(value string) string {
+	// Replace invalid characters
+	value = strings.ReplaceAll(value, "/", "-")
+	// Truncate to 63 characters
+	if len(value) > 63 {
+		value = value[:63]
+	}
+	return value
+}
+
+// ensureGangConfigMap creates or updates a ConfigMap for gang coordination.
+func (i *InitContainerInjector) ensureGangConfigMap(ctx context.Context, pod *corev1.Pod, gangID string, gangInfo *gang.GangInfo) error {
+	if i.Client == nil {
+		return fmt.Errorf("no Kubernetes client available")
+	}
+
+	// Sanitize gang ID for use in resource names
+	sanitizedGangID := sanitizeGangID(gangID)
+	configMapName := fmt.Sprintf("nvsentinel-gang-%s", sanitizedGangID)
+
+	// Build desired data for ConfigMap (based on current gang info)
+	// Compute master address using DNS (rank 0 pod)
+	// Pod naming: {job}-{task}-{index} -> master is index 0
+	masterPodName := regexp.MustCompile(`-\d+$`).ReplaceAllString(pod.Name, "-0")
+	masterAddr := fmt.Sprintf("%s.%s.%s.svc.cluster.local", masterPodName, sanitizedGangID, pod.Namespace)
+
+	masterPort := i.Config.NCCLMasterPort
+	if masterPort == "" {
+		masterPort = defaultNCCLMasterPort
+	}
+
+	// Build peers list with DNS names (we know all pod names from naming pattern)
+	var peers []string
+	baseName := regexp.MustCompile(`-\d+$`).ReplaceAllString(pod.Name, "")
+	for idx := 0; idx < gangInfo.ExpectedCount; idx++ {
+		peerPodName := fmt.Sprintf("%s-%d", baseName, idx)
+		peerDNS := fmt.Sprintf("%s.%s.%s.svc.cluster.local", peerPodName, sanitizedGangID, pod.Namespace)
+		peers = append(peers, fmt.Sprintf("%s:%s", peerPodName, peerDNS))
+	}
+
+	desiredData := map[string]string{
+		"expected_count": strconv.Itoa(gangInfo.ExpectedCount),
+		"master_addr":    masterAddr,
+		"master_port":    masterPort,
+		"peers":          strings.Join(peers, "\n"),
+	}
+
+	// Try to get existing ConfigMap
+	existing := &corev1.ConfigMap{}
+	err := i.Client.Get(ctx, client.ObjectKey{
+		Namespace: pod.Namespace,
+		Name:      configMapName,
+	}, existing)
+
+	if errors.IsNotFound(err) {
+		// Create new ConfigMap with all peer DNS names pre-populated
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      configMapName,
+				Namespace: pod.Namespace,
+				Labels: map[string]string{
+					"nvsentinel.nvidia.com/gang-config": "true",
+					"nvsentinel.nvidia.com/gang-id":     sanitizeLabelValue(gangID),
+				},
+			},
+			Data: desiredData,
+		}
+
+		return i.Client.Create(ctx, cm)
+	} else if err != nil {
+		return err
+	}
+
+	// ConfigMap already exists - reconcile if it doesn't match expected gang size
+	needsUpdate := false
+	if existing.Data == nil {
+		existing.Data = map[string]string{}
+		needsUpdate = true
+	}
+	if existing.Data["expected_count"] != desiredData["expected_count"] {
+		needsUpdate = true
+	}
+	if existing.Data["peers"] != desiredData["peers"] {
+		needsUpdate = true
+	}
+	if existing.Data["master_addr"] != desiredData["master_addr"] {
+		needsUpdate = true
+	}
+	if existing.Data["master_port"] != desiredData["master_port"] {
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latest := &corev1.ConfigMap{}
+			if err := i.Client.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: configMapName}, latest); err != nil {
+				return err
+			}
+			latest.Data = desiredData
+			return i.Client.Update(ctx, latest)
+		})
+	}
+
+	// ConfigMap already matches desired state
+	return nil
+}
+
+// ensureGangHeadlessService creates a headless Service for DNS-based pod discovery.
+// This allows pods to resolve each other by name: {pod-name}.{service-name}.{namespace}.svc
+func (i *InitContainerInjector) ensureGangHeadlessService(ctx context.Context, pod *corev1.Pod, gangID string) error {
+	if i.Client == nil {
+		return fmt.Errorf("no Kubernetes client available")
+	}
+
+	// Sanitize gang ID for use in resource names
+	sanitizedGangID := sanitizeGangID(gangID)
+	serviceName := sanitizedGangID // Service name uses sanitized gang ID for DNS resolution
+
+	// Check if service already exists
+	existing := &corev1.Service{}
+	err := i.Client.Get(ctx, client.ObjectKey{
+		Namespace: pod.Namespace,
+		Name:      serviceName,
+	}, existing)
+
+	if errors.IsNotFound(err) {
+		// Create headless service
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceName,
+				Namespace: pod.Namespace,
+				Labels: map[string]string{
+					"nvsentinel.nvidia.com/gang-service": "true",
+					"nvsentinel.nvidia.com/gang-id":      sanitizeLabelValue(gangID),
+				},
+			},
+			Spec: corev1.ServiceSpec{
+				ClusterIP: "None", // Headless service
+				Selector: map[string]string{
+					GangIDLabel: sanitizeLabelValue(gangID), // Select pods with this gang ID
+				},
+				// PublishNotReadyAddresses is critical for init containers!
+				// Without this, DNS won't resolve until pods are Ready,
+				// but init containers run before the pod is Ready.
+				PublishNotReadyAddresses: true,
+				Ports: []corev1.ServicePort{
+					{
+						Name:     "nccl-rdzv",
+						Port:     29500,
+						Protocol: corev1.ProtocolTCP,
+					},
+				},
+			},
+		}
+
+		return i.Client.Create(ctx, svc)
+	} else if err != nil {
+		return err
+	}
+
+	// Service already exists
+	return nil
+}
+
+// ensureGangConfigVolume adds a ConfigMap volume for gang coordination.
+func (i *InitContainerInjector) ensureGangConfigVolume(pod *corev1.Pod, gangID string, namespace string) {
+	// Check if volume already exists
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == gangConfigVolumeName {
+			return
+		}
+	}
+
+	sanitizedGangID := sanitizeGangID(gangID)
+	configMapName := fmt.Sprintf("nvsentinel-gang-%s", sanitizedGangID)
+
+	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+		Name: gangConfigVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: configMapName,
+				},
+				Optional: boolPtr(true), // Don't fail if ConfigMap doesn't exist yet
+			},
+		},
+	})
+}
+
+// buildPatchOperations creates JSON patch operations for the pod mutation.
+func (i *InitContainerInjector) buildPatchOperations(pod *corev1.Pod, origInitContainersNil, origLabelsNil, origVolumesNil bool) ([]jsonpatch.JsonPatchOperation, error) {
+	var ops []jsonpatch.JsonPatchOperation
+
+	// Patch init containers
+	initOp := "replace"
+	if origInitContainersNil {
+		initOp = "add"
+	}
+
+	initContainersValue, err := json.Marshal(pod.Spec.InitContainers)
+	if err != nil {
+		return nil, err
+	}
+
+	ops = append(ops, jsonpatch.JsonPatchOperation{
+		Operation: initOp,
+		Path:      "/spec/initContainers",
+		Value:     json.RawMessage(initContainersValue),
+	})
+
+	// Patch containers (needed when we add mounts to main containers)
+	containersValue, err := json.Marshal(pod.Spec.Containers)
+	if err != nil {
+		return nil, err
+	}
+	ops = append(ops, jsonpatch.JsonPatchOperation{
+		Operation: "replace",
+		Path:      "/spec/containers",
+		Value:     json.RawMessage(containersValue),
+	})
+
+	// Patch volumes
+	volumeOp := "replace"
+	if origVolumesNil {
+		volumeOp = "add"
+	}
+
+	volumesValue, err := json.Marshal(pod.Spec.Volumes)
+	if err != nil {
+		return nil, err
+	}
+
+	ops = append(ops, jsonpatch.JsonPatchOperation{
+		Operation: volumeOp,
+		Path:      "/spec/volumes",
+		Value:     json.RawMessage(volumesValue),
+	})
+
+	// Patch labels if gang ID was added
+	if gangID, ok := pod.Labels[GangIDLabel]; ok && gangID != "" {
+		labelsValue, err := json.Marshal(pod.Labels)
+		if err != nil {
+			return nil, err
+		}
+
+		labelOp := "replace"
+		if origLabelsNil {
+			labelOp = "add"
+		}
+
+		ops = append(ops, jsonpatch.JsonPatchOperation{
+			Operation: labelOp,
+			Path:      "/metadata/labels",
+			Value:     json.RawMessage(labelsValue),
+		})
+	}
+
+	// Patch subdomain if set (for NCCL DNS-based discovery)
+	if pod.Spec.Subdomain != "" {
+		ops = append(ops, jsonpatch.JsonPatchOperation{
+			Operation: "add",
+			Path:      "/spec/subdomain",
+			Value:     pod.Spec.Subdomain,
+		})
+	}
+
+	// Patch hostname if set (required for headless service DNS)
+	if pod.Spec.Hostname != "" {
+		ops = append(ops, jsonpatch.JsonPatchOperation{
+			Operation: "add",
+			Path:      "/spec/hostname",
+			Value:     pod.Spec.Hostname,
+		})
+	}
+
+	return ops, nil
+}
+
+// Helper functions
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+func int64Ptr(i int64) *int64 {
+	return &i
+}

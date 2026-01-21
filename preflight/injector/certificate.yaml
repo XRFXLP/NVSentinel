@@ -1,0 +1,33 @@
+# TLS Certificate for preflight-injector webhook
+# 
+# Option 1: Use Kubernetes CertificateSigningRequest (CSR)
+# This creates a certificate signed by the cluster CA.
+# After applying, you need to approve it and extract the cert.
+#
+# Option 2: Use cert-manager (recommended for production)
+# See certificate-certmanager.yaml for cert-manager approach.
+#
+# Option 3: Generate manually with openssl (see generate-certs.sh)
+
+---
+# CertificateSigningRequest approach
+# After applying this, run:
+#   kubectl certificate approve preflight-injector.nvsentinel
+#   kubectl get csr preflight-injector.nvsentinel -o jsonpath='{.status.certificate}' | base64 -d > tls.crt
+#
+# Note: CSR approach requires generating a private key first and creating the secret manually.
+# For simplicity in POC, use generate-certs.sh script instead.
+
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: preflight-injector.nvsentinel
+spec:
+  # This will be populated by generate-certs.sh
+  request: ""  # Base64-encoded CSR
+  signerName: kubernetes.io/kubelet-serving
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+

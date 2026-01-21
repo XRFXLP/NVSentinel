@@ -1,0 +1,122 @@
+# Example Volcano Job with NCCL preflight check enabled
+# This job runs across N nodes and tests inter-node GPU communication bandwidth
+#
+# Prerequisites:
+# 1. Volcano scheduler installed
+# 2. preflight-injector webhook deployed with NCCL enabled (nccl-enabled: "true")
+# 3. GPU nodes with NVIDIA drivers and device plugin
+#
+# The webhook will automatically:
+# - Create a headless Service for DNS-based pod discovery
+# - Create a ConfigMap with peer DNS names pre-populated
+# - Set subdomain on pods for DNS resolution
+# - Inject nvsentinel-preflight-dcgm init container (per-node GPU health)
+# - Inject nvsentinel-preflight-nccl init container (gang-wide bandwidth test)
+#
+# No special RBAC or Service needed from the user!
+---
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: preflight-nccl-test
+  namespace: default
+spec:
+  minAvailable: 2  # All 2 workers must be scheduled together
+  schedulerName: volcano
+  # The PodGroup is created automatically with name matching the Job
+  tasks:
+    - replicas: 2  # 2 nodes for this example - scale to N as needed
+      name: worker
+      template:
+        metadata:
+          labels:
+            # These labels help the webhook identify gang membership
+            volcano.sh/job-name: preflight-nccl-test
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: worker
+              image: nvcr.io/nvidia/pytorch:24.01-py3
+              securityContext:
+                capabilities:
+                  add: ["IPC_LOCK"]
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -e
+                  echo "Running NCCL benchmark in main container..."
+                  EXPECTED_COUNT=$(cat /etc/preflight/expected_count | tr -d '[:space:]')
+                  MASTER_ADDR=$(cat /etc/preflight/master_addr | tr -d '[:space:]')
+                  MASTER_PORT=$(cat /etc/preflight/master_port | tr -d '[:space:]')
+                  POD_NAME=$(hostname)
+                  if [[ "$POD_NAME" =~ -([0-9]+)$ ]]; then
+                    MY_RANK="${BASH_REMATCH[1]}"
+                  else
+                    echo "Failed to determine rank from pod name"
+                    exit 2
+                  fi
+                  export BW_THRESHOLD_GBPS=1
+                  export NPROCS_PER_NODE=8
+                  export MESSAGE_SIZES="4G,8G"
+                  cat > /tmp/bench.py << 'PYEOF'
+                  import os, time, torch
+                  import torch.distributed as dist
+                  def bench(size, iters=20, warmup=5):
+                      local_rank = int(os.environ.get("LOCAL_RANK", 0))
+                      t = torch.randn(size // 4, device=f"cuda:{local_rank}")
+                      for _ in range(warmup):
+                          dist.all_reduce(t)
+                      torch.cuda.synchronize()
+                      start = time.time()
+                      for _ in range(iters):
+                          dist.all_reduce(t)
+                      torch.cuda.synchronize()
+                      elapsed = (time.time() - start) / iters
+                      ws = dist.get_world_size()
+                      algo = size / elapsed / 1e9
+                      bus = algo * 2 * (ws - 1) / ws
+                      return elapsed * 1000, algo, bus
+                  dist.init_process_group(backend="nccl")
+                  sizes = [4 * 1024**3, 8 * 1024**3]
+                  if dist.get_rank() == 0:
+                      print("        Size    Time (ms)  AlgoBW (GB/s)   BusBW (GB/s)")
+                  for sz in sizes:
+                      t, algo, bus = bench(sz)
+                      if dist.get_rank() == 0:
+                          print(f"{sz/1024**3:8.2f} GB {t:12.2f} {algo:14.2f} {bus:14.2f}")
+                  dist.destroy_process_group()
+                  PYEOF
+                  torchrun \
+                    --nnodes="${EXPECTED_COUNT}" \
+                    --nproc_per_node=8 \
+                    --node_rank="${MY_RANK}" \
+                    --master_addr="${MASTER_ADDR}" \
+                    --master_port="${MASTER_PORT}" \
+                    /tmp/bench.py
+                  sleep 30
+              resources:
+                limits:
+                  nvidia.com/gpu: 8
+                  nvidia.com/mlnxnics: 8
+                requests:
+                  nvidia.com/gpu: 8
+                  nvidia.com/mlnxnics: 8
+              env:
+                - name: NCCL_DEBUG
+                  value: "WARN"
+                - name: NCCL_SOCKET_IFNAME
+                  value: "eth0"
+                - name: NCCL_IB_PCI_RELAXED_ORDERING
+                  value: "1"
+                - name: UCX_IB_PCI_RELAXED_ORDERING
+                  value: "on"
+                - name: UCX_NET_DEVICES
+                  value: "eth0"
+                - name: UCX_TLS
+                  value: "tcp"
+                - name: UCX_MEM_EVENTS
+                  value: "n"
+                - name: NCCL_TOPO_FILE
+                  value: "/etc/nccl/topo.xml"
+
