@@ -177,6 +177,11 @@ func clearHealthEventsAnalyzerConditions(ctx context.Context, t *testing.T, node
 func TriggerMultipleRemediationsCycle(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
 	xidsToInject := []string{ERRORCODE_79, ERRORCODE_48}
 
+	t.Log("Delete any existing RebootNode CR")
+
+	err := DeleteAllRebootNodeCRs(ctx, t, client)
+	require.NoError(t, err, "failed to delete all RebootNode CRs")
+
 	// inject 2 fatal errors and let the remediation cycle finish
 	t.Logf("Injecting fatal errors to node %s", nodeName)
 
@@ -194,9 +199,6 @@ func waitForRemediationToComplete(ctx context.Context, t *testing.T, client klie
 	rebootNodeCR := WaitForRebootNodeCR(ctx, t, client, nodeName)
 	require.NotNil(t, rebootNodeCR, "RebootNode CR should be created for XID error")
 
-	err := DeleteRebootNodeCR(ctx, client, rebootNodeCR)
-	require.NoError(t, err, "failed to delete RebootNode CR")
-
 	SendHealthyEvent(ctx, t, nodeName)
 
 	t.Logf("Waiting for node %s to be fully uncordoned and cleaned up", nodeName)
@@ -207,15 +209,18 @@ func waitForRemediationToComplete(ctx context.Context, t *testing.T, client klie
 		}
 
 		if node.Spec.Unschedulable {
+			t.Logf("Node %s is still cordoned", nodeName)
 			return false
 		}
 
 		if node.Annotations != nil {
 			if _, exists := node.Annotations["quarantineHealthEvent"]; exists {
+				t.Logf("Node %s has quarantineHealthEvent annotation", nodeName)
 				return false
 			}
 
 			if _, exists := node.Annotations["latestFaultRemediationState"]; exists {
+				t.Logf("Node %s has latestFaultRemediationState annotation", nodeName)
 				return false
 			}
 		}
@@ -224,6 +229,9 @@ func waitForRemediationToComplete(ctx context.Context, t *testing.T, client klie
 
 		return true
 	}, EventuallyWaitTimeout, WaitInterval, "node should be fully cleaned up before next remediation cycle")
+
+	err := DeleteRebootNodeCR(ctx, client, rebootNodeCR)
+	require.NoError(t, err, "failed to delete RebootNode CR")
 }
 
 func TeardownHealthEventsAnalyzer(ctx context.Context, t *testing.T,

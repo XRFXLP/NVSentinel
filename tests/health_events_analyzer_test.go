@@ -1645,17 +1645,10 @@ func TestHealthEventsAnalyzerProcessingStrategyRuleOverride(t *testing.T) {
 		WithLabel("suite", "health-event-analyzer")
 
 	var testCtx *helpers.HealthEventsAnalyzerTestContext
-	var testNodeName string
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
-
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-rule-override.yaml", "health-events-analyzer-test", testNodeName)
-		testNodeName = testCtx.NodeName
-		t.Logf("Using node: %s", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-rule-override.yaml", "health-events-analyzer-test", "")
+		t.Logf("Using node: %s", testCtx.NodeName)
 		return ctx
 	})
 
@@ -1664,15 +1657,15 @@ func TestHealthEventsAnalyzerProcessingStrategyRuleOverride(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Log("Triggering multiple remediations cycle")
-		helpers.TriggerMultipleRemediationsCycle(ctx, t, client, testNodeName)
+		helpers.TriggerMultipleRemediationsCycle(ctx, t, client, testCtx.NodeName)
 
-		event := helpers.NewHealthEvent(testNodeName).
+		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithFatal(true).
 			WithErrorCode(helpers.ERRORCODE_31).
 			WithRecommendedAction(int(pb.RecommendedAction_RESTART_VM))
 		helpers.SendHealthEvent(ctx, t, event)
 
-		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testNodeName, "MultipleRemediations")
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testCtx.NodeName, "MultipleRemediations")
 
 		return ctx
 	})
