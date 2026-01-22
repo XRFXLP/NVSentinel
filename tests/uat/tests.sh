@@ -20,29 +20,80 @@ source "${SCRIPT_DIR}/common.sh"
 
 get_boot_id() {
     local node=$1
-    kubectl get node "$node" -o jsonpath='{.status.nodeInfo.bootID}' 2>/dev/null | tr -d '[:space:]'
+    local boot_id
+    local tmp_err
+    tmp_err=$(mktemp)
+
+    if boot_id=$(kubectl get node "$node" -o jsonpath='{.status.nodeInfo.bootID}' 2>"$tmp_err"); then
+        rm -f "$tmp_err"
+        echo "$boot_id" | tr -d '[:space:]'
+    else
+        log "Warning: kubectl failed to get boot ID for node $node: $(cat "$tmp_err")"
+        rm -f "$tmp_err"
+        echo ""
+    fi
 }
 
-get_gpu_node_with_healthy_syslog_monitor() {
-    local nodes_with_syslog_health_monitor
-    nodes_with_syslog_health_monitor=$(kubectl get pods -n nvsentinel -l app.kubernetes.io/name=syslog-health-monitor \
+is_node_ready_and_uncordoned() {
+    local node=$1
+    local node_info
+    node_info=$(kubectl get node "$node" -o json 2>/dev/null)
+
+    if [[ -z "$node_info" ]]; then
+        return 1
+    fi
+
+    # Check if node is Ready
+    local is_ready
+    is_ready=$(echo "$node_info" | jq -r '.status.conditions[] | select(.type == "Ready" and .status == "True") | .status')
+    if [[ "$is_ready" != "True" ]]; then
+        return 1
+    fi
+
+    # Check if node is uncordoned (unschedulable is either null/missing or false)
+    local is_unschedulable
+    is_unschedulable=$(echo "$node_info" | jq -r '.spec.unschedulable // false')
+    if [[ "$is_unschedulable" == "true" ]]; then
+        return 1
+    fi
+
+    return 0
+}
+
+get_gpu_node_with_healthy_monitor() {
+    local monitor_label=$1
+    local namespace=${2:-nvsentinel}
+
+    # Get nodes running the specified health monitor pod
+    local nodes_with_monitor
+    nodes_with_monitor=$(kubectl get pods -n "$namespace" -l "app.kubernetes.io/name=$monitor_label" \
         --field-selector=status.phase=Running -o jsonpath='{.items[*].spec.nodeName}')
 
-    if [[ -z "$nodes_with_syslog_health_monitor" ]]; then
+    if [[ -z "$nodes_with_monitor" ]]; then
         echo ""
         return
     fi
 
-    for node in $nodes_with_syslog_health_monitor; do
+    # Find first GPU node that is Ready, uncordoned, and has the monitor
+    for node in $nodes_with_monitor; do
         local has_gpu
         has_gpu=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' 2>/dev/null)
-        if [[ "$has_gpu" == "true" ]]; then
+
+        if [[ "$has_gpu" == "true" ]] && is_node_ready_and_uncordoned "$node"; then
             echo "$node"
             return
         fi
     done
 
     echo ""
+}
+
+get_gpu_node_with_healthy_gpu_monitor() {
+    get_gpu_node_with_healthy_monitor "gpu-health-monitor"
+}
+
+get_gpu_node_with_healthy_syslog_monitor() {
+    get_gpu_node_with_healthy_monitor "syslog-health-monitor"
 }
 
 wait_for_node_condition() {
@@ -161,10 +212,10 @@ test_gpu_monitoring_dcgm() {
     log "========================================="
 
     local gpu_node
-    gpu_node=$(kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.name}')
+    gpu_node=$(get_gpu_node_with_healthy_gpu_monitor)
 
     if [[ -z "$gpu_node" ]]; then
-        error "No GPU nodes found"
+        error "No GPU node found with healthy gpu-health-monitor pod (Ready + uncordoned)"
     fi
 
     log "Selected GPU node: $gpu_node"
@@ -225,7 +276,7 @@ test_xid_monitoring_syslog() {
     gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
 
     if [[ -z "$gpu_node" ]]; then
-        error "No GPU node found with healthy syslog-health-monitor pod"
+        error "No GPU node found with healthy syslog-health-monitor pod (Ready + uncordoned)"
     fi
 
     log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
@@ -263,10 +314,10 @@ test_sxid_monitoring_syslog() {
     gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
 
     if [[ -z "$gpu_node" ]]; then
-        error "No GPU node found with healthy syslog-health-monitor pod"
+        error "No GPU node found with healthy syslog-health-monitor pod (Ready + uncordoned)"
     fi
 
-    log "Selected GPU node: $gpu_node"
+    log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
 
     local dcgm_pod
     dcgm_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-dcgm -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
