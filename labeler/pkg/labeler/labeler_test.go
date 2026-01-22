@@ -16,6 +16,7 @@ package labeler
 
 import (
 	"context"
+	"maps"
 	"testing"
 	"time"
 
@@ -984,13 +985,13 @@ func TestKataLabelDetection(t *testing.T) {
 
 func TestStaleLabelsRemoval(t *testing.T) {
 	tests := []struct {
-		name                   string
-		existingNode           *corev1.Node
-		existingPods           []*corev1.Pod
-		expectedDriverLabel    string
-		expectedDCGMLabel      string
-		shouldHaveDriverLabel  bool
-		shouldHaveDCGMLabel    bool
+		name                  string
+		existingNode          *corev1.Node
+		existingPods          []*corev1.Pod
+		expectedDriverLabel   string
+		expectedDCGMLabel     string
+		shouldHaveDriverLabel bool
+		shouldHaveDCGMLabel   bool
 	}{
 		{
 			name: "both stale labels removed when no pods exist",
@@ -1112,6 +1113,22 @@ func TestStaleLabelsRemoval(t *testing.T) {
 			require.Eventually(t, func() bool {
 				return cache.WaitForCacheSync(labelerCtx.Done(), labeler.informersSynced...)
 			}, 10*time.Second, 100*time.Millisecond, "informer cache did not sync")
+
+			if len(tt.existingPods) > 0 {
+				require.Eventually(t, func() bool {
+					dcgmObjs, _ := labeler.podInformer.GetIndexer().ByIndex(NodeDCGMIndex, tt.existingNode.Name)
+					driverObjs, _ := labeler.podInformer.GetIndexer().ByIndex(NodeDriverIndex, tt.existingNode.Name)
+					return len(dcgmObjs) > 0 || len(driverObjs) > 0
+				}, 10*time.Second, 100*time.Millisecond, "pods not indexed")
+
+				// Re-apply original labels since the informer may have already processed the node
+				// before pods were indexed, incorrectly removing the labels
+				node, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
+				require.NoError(t, err, "failed to get node")
+				maps.Copy(node.Labels, tt.existingNode.Labels)
+				_, err = cli.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+				require.NoError(t, err, "failed to restore node labels")
+			}
 
 			err = labeler.handleNodeEvent(tt.existingNode)
 			require.NoError(t, err, "failed to handle node event")
