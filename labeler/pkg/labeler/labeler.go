@@ -560,27 +560,7 @@ func (l *Labeler) updateNodeLabels(nodeName string) error {
 			node.Labels = make(map[string]string)
 		}
 
-		needsUpdate := false
-
-		expectedKataLabel := l.getKataLabelForNode(node)
-		if node.Labels[KataEnabledLabel] != expectedKataLabel {
-			needsUpdate = true
-			node.Labels[KataEnabledLabel] = expectedKataLabel
-			slog.Info("Setting Kata enabled label on node", "node", nodeName, "kata", expectedKataLabel)
-		}
-
-		if driverLabel == "" && node.Labels[DriverInstalledLabel] != "" {
-			needsUpdate = true
-			delete(node.Labels, DriverInstalledLabel)
-			slog.Info("Removing stale driver installed label from node", "node", nodeName)
-		}
-
-		if dcgmVersion == "" && node.Labels[DCGMVersionLabel] != "" {
-			needsUpdate = true
-			delete(node.Labels, DCGMVersionLabel)
-			slog.Info("Removing stale DCGM version label from node", "node", nodeName)
-		}
-
+		needsUpdate := l.reconcileNodeLabelsInPlace(node, driverLabel, dcgmVersion)
 		if !needsUpdate {
 			slog.Debug("Node labels are correct", "node", nodeName)
 			return nil
@@ -596,6 +576,33 @@ func (l *Labeler) updateNodeLabels(nodeName string) error {
 	}
 
 	return nil
+}
+
+func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVersion string) bool {
+	needsUpdate := false
+
+	expectedKataLabel := l.getKataLabelForNode(node)
+	if node.Labels[KataEnabledLabel] != expectedKataLabel {
+		needsUpdate = true
+		node.Labels[KataEnabledLabel] = expectedKataLabel
+		slog.Info("Setting Kata enabled label on node", "node", node.Name, "kata", expectedKataLabel)
+	}
+
+	if driverLabel == "" && node.Labels[DriverInstalledLabel] != "" {
+		needsUpdate = true
+
+		delete(node.Labels, DriverInstalledLabel)
+		slog.Info("Removing stale driver installed label from node", "node", node.Name)
+	}
+
+	if dcgmVersion == "" && node.Labels[DCGMVersionLabel] != "" {
+		needsUpdate = true
+
+		delete(node.Labels, DCGMVersionLabel)
+		slog.Info("Removing stale DCGM version label from node", "node", node.Name)
+	}
+
+	return needsUpdate
 }
 
 // handlePodDeleteEvent processes pod delete events by recalculating node labels
