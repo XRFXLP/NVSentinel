@@ -20,7 +20,29 @@ source "${SCRIPT_DIR}/common.sh"
 
 get_boot_id() {
     local node=$1
-    kubectl get node "$node" -o jsonpath='{.status.nodeInfo.bootID}'
+    kubectl get node "$node" -o jsonpath='{.status.nodeInfo.bootID}' 2>/dev/null | tr -d '[:space:]'
+}
+
+get_gpu_node_with_healthy_syslog_monitor() {
+    local nodes_with_syslog_health_monitor
+    nodes_with_syslog_health_monitor=$(kubectl get pods -n nvsentinel -l app.kubernetes.io/name=syslog-health-monitor \
+        --field-selector=status.phase=Running -o jsonpath='{.items[*].spec.nodeName}')
+
+    if [[ -z "$nodes_with_syslog_health_monitor" ]]; then
+        echo ""
+        return
+    fi
+
+    for node in $nodes_with_syslog_health_monitor; do
+        local has_gpu
+        has_gpu=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' 2>/dev/null)
+        if [[ "$has_gpu" == "true" ]]; then
+            echo "$node"
+            return
+        fi
+    done
+
+    echo ""
 }
 
 wait_for_node_condition() {
@@ -76,19 +98,27 @@ wait_for_boot_id_change() {
     local original_boot_id=$2
     local timeout=${UAT_REBOOT_TIMEOUT:-600}
     local elapsed=0
+    local boot_id_changed=false
 
+    # Trim original boot ID for consistent comparison
+    original_boot_id=$(echo "$original_boot_id" | tr -d '[:space:]')
 
     log "Waiting for node $node to reboot (boot ID to change)..."
-
+    log "Original boot ID: $original_boot_id"
 
     while [[ $elapsed -lt $timeout ]]; do
         local current_boot_id
-        current_boot_id=$(get_boot_id "$node" 2>/dev/null || echo "")
+        current_boot_id=$(get_boot_id "$node" || echo "")
 
+        if [[ $((elapsed % 30)) -eq 0 && $elapsed -gt 0 ]]; then
+            log "Still waiting... elapsed=${elapsed}s, current_boot_id='$current_boot_id'"
+        fi
 
         if [[ -n "$current_boot_id" && "$current_boot_id" != "$original_boot_id" ]]; then
             log "Node $node rebooted successfully (boot ID changed)"
-            elapsed=0
+            log "  Old: $original_boot_id"
+            log "  New: $current_boot_id"
+            boot_id_changed=true
             break
         fi
 
@@ -96,19 +126,26 @@ wait_for_boot_id_change() {
         elapsed=$((elapsed + 5))
     done
 
-    if [[ $elapsed -ge $timeout ]]; then
-        error "Timeout waiting for node $node to reboot"
+    if [[ "$boot_id_changed" != "true" ]]; then
+        local final_boot_id
+        final_boot_id=$(get_boot_id "$node" || echo "FAILED_TO_GET")
+        error "Timeout waiting for node $node to reboot. Current boot ID: '$final_boot_id', Original: '$original_boot_id'"
     fi
 
     log "Waiting for node $node to be uncordoned..."
+    elapsed=0
     while [[ $elapsed -lt $timeout ]]; do
         local is_cordoned
         is_cordoned=$(kubectl get node "$node" -o jsonpath='{.spec.unschedulable}')
 
-
         if [[ "$is_cordoned" != "true" ]]; then
             log "Node $node is uncordoned and ready ✓"
             return 0
+        fi
+
+        # Log every 30 seconds to show progress
+        if [[ $((elapsed % 30)) -eq 0 && $elapsed -gt 0 ]]; then
+            log "Still waiting for uncordon... elapsed=${elapsed}s, unschedulable=$is_cordoned"
         fi
 
         sleep 5
@@ -185,13 +222,13 @@ test_xid_monitoring_syslog() {
     log "========================================="
 
     local gpu_node
-    gpu_node=$(kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.name}')
+    gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
 
     if [[ -z "$gpu_node" ]]; then
-        error "No GPU nodes found"
+        error "No GPU node found with healthy syslog-health-monitor pod"
     fi
 
-    log "Selected GPU node: $gpu_node"
+    log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
 
     local original_boot_id
     original_boot_id=$(get_boot_id "$gpu_node")
@@ -223,10 +260,10 @@ test_sxid_monitoring_syslog() {
     log "========================================="
 
     local gpu_node
-    gpu_node=$(kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.name}')
+    gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
 
     if [[ -z "$gpu_node" ]]; then
-        error "No GPU nodes found"
+        error "No GPU node found with healthy syslog-health-monitor pod"
     fi
 
     log "Selected GPU node: $gpu_node"
