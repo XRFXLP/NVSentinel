@@ -81,7 +81,8 @@ spec:
       {{- else }}
       - name: mongo-app-client-cert
         secret:
-          secretName: mongo-app-client-cert-secret # Defined in mongodb-store chart
+          secretName: {{ include "nvsentinel.certificates.secretName" . }}
+          {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
           optional: true
       {{- end }}
       - name: platform-connector-uds
@@ -158,6 +159,7 @@ spec:
           - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
           - "--uds-path=/run/nvsentinel/nvsentinel.sock"
           - "--metrics-port=2113"
+          - "--processing-strategy={{ .Values.processingStrategy }}"
           resources:
             {{- toYaml .Values.quarantineTriggerEngine.resources | default .Values.resources | nindent 12 }}
           ports:

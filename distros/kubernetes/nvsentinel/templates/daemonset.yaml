@@ -177,7 +177,8 @@ spec:
         {{- else }}
         - name: mongo-app-client-cert
           secret:
-            secretName: mongo-app-client-cert-secret
+            secretName: {{ include "nvsentinel.certificates.secretName" . }}
+            {{- include "nvsentinel.certificates.volumeItems" . | nindent 12 }}
             optional: true
         {{- end }}
         {{- if .Values.global.auditLogging.enabled }}
