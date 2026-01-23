@@ -1110,8 +1110,8 @@ func TestStaleLabelsRemoval(t *testing.T) {
 			}()
 
 			require.Eventually(t, func() bool {
-				return labeler.initialSyncComplete
-			}, 10*time.Second, 100*time.Millisecond, "labeler initial sync did not complete")
+				return labeler.allInformersSynced()
+			}, 10*time.Second, 100*time.Millisecond, "labeler informers did not sync")
 
 			err = labeler.handleNodeEvent(tt.existingNode)
 			require.NoError(t, err, "failed to handle node event")
