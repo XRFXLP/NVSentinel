@@ -1113,6 +1113,15 @@ func TestStaleLabelsRemoval(t *testing.T) {
 				return labeler.allInformersSynced()
 			}, 10*time.Second, 100*time.Millisecond, "labeler informers did not sync")
 
+			// Wait for pods to be indexed in custom indexes before testing
+			if len(tt.existingPods) > 0 {
+				require.Eventually(t, func() bool {
+					dcgmObjs, _ := labeler.podInformer.GetIndexer().ByIndex(NodeDCGMIndex, tt.existingNode.Name)
+					driverObjs, _ := labeler.podInformer.GetIndexer().ByIndex(NodeDriverIndex, tt.existingNode.Name)
+					return len(dcgmObjs) > 0 || len(driverObjs) > 0
+				}, 10*time.Second, 100*time.Millisecond, "pods not indexed in custom indexes")
+			}
+
 			err = labeler.handleNodeEvent(tt.existingNode)
 			require.NoError(t, err, "failed to handle node event")
 
