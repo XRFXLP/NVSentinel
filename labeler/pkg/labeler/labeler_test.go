@@ -1120,6 +1120,16 @@ func TestStaleLabelsRemoval(t *testing.T) {
 					driverObjs, _ := labeler.podInformer.GetIndexer().ByIndex(NodeDriverIndex, tt.existingNode.Name)
 					return len(dcgmObjs) > 0 || len(driverObjs) > 0
 				}, 10*time.Second, 100*time.Millisecond, "pods not indexed in custom indexes")
+
+				// Restore original labels - reconcileAllNodes() may have removed them
+				// before pods were indexed during the initial sync race
+				node, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
+				require.NoError(t, err, "failed to get node")
+				for k, v := range tt.existingNode.Labels {
+					node.Labels[k] = v
+				}
+				_, err = cli.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+				require.NoError(t, err, "failed to restore node labels")
 			}
 
 			err = labeler.handleNodeEvent(tt.existingNode)
