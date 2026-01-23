@@ -75,7 +75,7 @@ Repeat for each affected node.
 
 Choose the appropriate reset mode based on your situation:
 
-**Option A: Skip accumulated events (recommended after long outages)**
+#### Option A: Skip accumulated events (recommended after long outages)
 
 Use `cursor: CREATE` to discard events that accumulated while the circuit breaker was tripped. This prevents immediate re-tripping from stale events.
 
@@ -86,7 +86,7 @@ kubectl rollout restart deploy fault-quarantine -n nvsentinel
 kubectl rollout status deploy fault-quarantine -n nvsentinel
 ```
 
-**Option B: Process accumulated events**
+#### Option B: Process accumulated events
 
 Use `cursor: RESUME` (or omit cursor) to process all events that occurred while tripped. Only use this if you're confident the accumulated events won't cause immediate re-tripping.
 
