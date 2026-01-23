@@ -66,6 +66,7 @@ type Labeler struct {
 	driverAppLabel       string
 	gkeInstallerAppLabel string
 	kataLabels           []string // Instance-specific kata labels
+	initialSyncComplete  bool     // True after all informers have synced
 }
 
 // NewLabeler creates a new Labeler instance
@@ -308,6 +309,8 @@ func (l *Labeler) Run(ctx context.Context) error {
 	if ok := cache.WaitForCacheSync(ctx.Done(), l.informersSynced...); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
+
+	l.initialSyncComplete = true
 
 	slog.Info("Labeler caches synced")
 
@@ -586,6 +589,13 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 		needsUpdate = true
 		node.Labels[KataEnabledLabel] = expectedKataLabel
 		slog.Info("Setting Kata enabled label on node", "node", node.Name, "kata", expectedKataLabel)
+	}
+
+	// Only remove stale labels after initial sync is complete.
+	// During startup, node events may fire before pod informer has indexed all pods,
+	// which would incorrectly identify valid labels as stale.
+	if !l.initialSyncComplete {
+		return needsUpdate
 	}
 
 	if driverLabel == "" && node.Labels[DriverInstalledLabel] != "" {
