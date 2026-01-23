@@ -314,10 +314,31 @@ func (l *Labeler) Run(ctx context.Context) error {
 
 	slog.Info("Labeler caches synced")
 
+	// Reconcile all nodes now that all informers have synced.
+	// This ensures stale labels are cleaned up for nodes that were processed
+	// during initial sync before pod data was available.
+	l.reconcileAllNodes()
+
 	<-ctx.Done()
 	slog.Info("Labeler stopped")
 
 	return nil
+}
+
+func (l *Labeler) reconcileAllNodes() {
+	nodes := l.nodeInformer.GetStore().List()
+	for _, obj := range nodes {
+		node, ok := obj.(*v1.Node)
+		if !ok {
+			continue
+		}
+
+		if err := l.updateNodeLabels(node.Name); err != nil {
+			slog.Error("Failed to reconcile node labels", "node", node.Name, "error", err)
+		}
+	}
+
+	slog.Info("Completed initial node label reconciliation", "nodeCount", len(nodes))
 }
 
 // getDCGMVersionForNode returns the expected DCGM version for a specific node
