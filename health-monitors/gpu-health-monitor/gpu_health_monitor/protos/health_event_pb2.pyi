@@ -78,6 +78,7 @@ class HealthEvent(_message.Message):
         "quarantineOverrides",
         "drainOverrides",
         "processingStrategy",
+        "id",
     )
 
     class MetadataEntry(_message.Message):
@@ -104,6 +105,7 @@ class HealthEvent(_message.Message):
     QUARANTINEOVERRIDES_FIELD_NUMBER: _ClassVar[int]
     DRAINOVERRIDES_FIELD_NUMBER: _ClassVar[int]
     PROCESSINGSTRATEGY_FIELD_NUMBER: _ClassVar[int]
+    ID_FIELD_NUMBER: _ClassVar[int]
     version: int
     agent: str
     componentClass: str
@@ -120,6 +122,7 @@ class HealthEvent(_message.Message):
     quarantineOverrides: BehaviourOverrides
     drainOverrides: BehaviourOverrides
     processingStrategy: ProcessingStrategy
+    id: str
     def __init__(
         self,
         version: _Optional[int] = ...,
@@ -138,6 +141,7 @@ class HealthEvent(_message.Message):
         quarantineOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ...,
         drainOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ...,
         processingStrategy: _Optional[_Union[ProcessingStrategy, str]] = ...,
+        id: _Optional[str] = ...,
     ) -> None: ...
 
 class BehaviourOverrides(_message.Message):
