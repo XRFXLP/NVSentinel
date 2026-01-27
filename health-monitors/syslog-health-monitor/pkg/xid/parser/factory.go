@@ -38,7 +38,7 @@ func CreateParser(config ParserConfig) (Parser, error) {
 
 		slog.Info("Creating sidecar parser", "endpoint", config.XidAnalyserEndpoint)
 
-		return NewSidecarParser(config.XidAnalyserEndpoint, config.NodeName), nil
+		return NewSidecarParser(config.XidAnalyserEndpoint, config.NodeName, config.DriverVersion), nil
 	}
 
 	slog.Info("Creating Excel parser with embedded mapping file")
