@@ -28,9 +28,9 @@ import (
 
 // SidecarParser implements Parser interface using external sidecar service
 type SidecarParser struct {
-	url      string
-	client   *retryablehttp.Client
-	nodeName string
+	url           string
+	client        *retryablehttp.Client
+	nodeName      string
 	driverVersion string
 }
 
@@ -40,9 +40,9 @@ func NewSidecarParser(endpoint, nodeName, driverVersion string) *SidecarParser {
 	c.Logger = slog.With("http", "retryablehttp-client")
 
 	return &SidecarParser{
-		url:      fmt.Sprintf("%s/decode-xid", endpoint),
-		client:   c,
-		nodeName: nodeName,
+		url:           fmt.Sprintf("%s/decode-xid", endpoint),
+		client:        c,
+		nodeName:      nodeName,
 		driverVersion: driverVersion,
 	}
 }
