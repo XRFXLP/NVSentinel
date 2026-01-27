@@ -50,10 +50,9 @@ is_node_ready_and_uncordoned() {
         return 1
     fi
 
-    # Check if node is uncordoned (unschedulable is either null/missing or false)
-    local is_unschedulable
-    is_unschedulable=$(echo "$node_info" | jq -r '.spec.unschedulable // false')
-    if [[ "$is_unschedulable" == "true" ]]; then
+    # Check if node is uncordoned (unschedulable should not be true)
+    # Using jq -e which exits 0 if expression is true, non-zero otherwise
+    if echo "$node_info" | jq -e '.spec.unschedulable == true' > /dev/null 2>&1; then
         return 1
     fi
 
