@@ -30,11 +30,12 @@ import (
 
 var (
 	// reXidNVL5Pattern matches NVIDIA NVL5 XID messages with subcode and intrinfo
-	// Example message: NVRM: Xid (PCI:0000:3f:00): 145, RLW_SRC_TRACK Nonfatal XC1 i0 
+	// Example message: NVRM: Xid (PCI:0000:3f:00): 145, RLW_SRC_TRACK Nonfatal XC1 i0
 	//                        Link 10 (0x04082907 0x00000008 0x00000000 0x00000000 0x00000000 0x00000000)
 	//
-	// Format: Xid (PCI:0000:BB:DF): <Xid Number> <sub component> <fatal vs nonfatal> <Crosscontain> <injected> 
-	//         <link> (<intrInfo> <errorStatus> <errorDebugData[0]> <errorDebugData[1]> <errorDebugData[2]> <errorDebugData[3]> <errorDebugData[4]>)
+	// Format: Xid (PCI:0000:BB:DF): <Xid Number> <sub component> <fatal vs nonfatal> <Crosscontain> <injected>
+	//         <link> (<intrInfo> <errorStatus> <errorDebugData[0]> <errorDebugData[1]> <errorDebugData[2]>
+	// 		   <errorDebugData[3]> <errorDebugData[4]>)
 	//
 	// Match: NVRM: Xid (PCI:0000:3f:00): 145, RLW_SRC_TRACK Nonfatal XC1 i0 Link 10 (0x04082907 0x00000008
 	// Group 1 (PCI address): 0000:3f:00
