@@ -54,6 +54,18 @@ func SetUpSyslogHealthMonitor(ctx context.Context, t *testing.T,
 	metadata := CreateTestMetadata(testNodeName)
 	InjectMetadata(t, ctx, client, NVSentinelNamespace, testNodeName, metadata)
 
+	// Restart the syslog-health-monitor pod to pick up the newly injected metadata file.
+	// The metadata reader uses sync.Once caching, so if it tried to read the file before
+	// injection, it will have cached the "file not found" error.
+	t.Logf("Restarting syslog-health-monitor pod to load metadata file")
+	err = DeletePod(ctx, t, client, NVSentinelNamespace, syslogPod.Name, true)
+	require.NoError(t, err, "failed to restart syslog-health-monitor pod")
+
+	// Re-fetch the new pod after restart
+	syslogPod, err = GetDaemonSetPodOnWorkerNode(ctx, t, client, SyslogDaemonSetName, "syslog-health-monitor-regular")
+	require.NoError(t, err, "failed to get restarted syslog health monitor pod")
+	t.Logf("New syslog-health-monitor pod: %s on node: %s", syslogPod.Name, syslogPod.Spec.NodeName)
+
 	t.Logf("Setting up port-forward to pod %s on port %d", syslogPod.Name, StubJournalHTTPPort)
 	stopChan, readyChan := PortForwardPod(
 		ctx,
