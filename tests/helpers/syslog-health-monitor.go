@@ -61,9 +61,8 @@ func SetUpSyslogHealthMonitor(ctx context.Context, t *testing.T,
 	err = DeletePod(ctx, t, client, NVSentinelNamespace, syslogPod.Name, true)
 	require.NoError(t, err, "failed to restart syslog-health-monitor pod")
 
-	// Re-fetch the new pod after restart
-	syslogPod, err = GetDaemonSetPodOnWorkerNode(ctx, t, client, SyslogDaemonSetName, "syslog-health-monitor-regular")
-	require.NoError(t, err, "failed to get restarted syslog health monitor pod")
+	syslogPod, err = GetDaemonSetPodOnWorkerNode(ctx, t, client, SyslogDaemonSetName, "syslog-health-monitor-regular", testNodeName)
+	require.NoError(t, err, "failed to get restarted syslog health monitor pod on node %s", testNodeName)
 	t.Logf("New syslog-health-monitor pod: %s on node: %s", syslogPod.Name, syslogPod.Spec.NodeName)
 
 	t.Logf("Setting up port-forward to pod %s on port %d", syslogPod.Name, StubJournalHTTPPort)
