@@ -67,6 +67,3 @@ dependencies:
   - name: event-exporter
     version: "0.1.0"
     condition: global.eventExporter.enabled
-  - name: preflight
-    version: "0.1.0"
-    condition: global.preflight.enabled

@@ -12,7 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-MODULE := preflight
-
-include ../make/go.mk
+# Bootstrap self-signed issuer - only used to create the CA certificate
+{{- if .Values.webhook.createIssuer }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "preflight.fullname" . }}-selfsigned
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preflight.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+{{- end }}
 

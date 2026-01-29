@@ -18,16 +18,21 @@ import (
 	"fmt"
 	"os"
 
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/yaml"
 )
 
 type Config struct {
-	Port             int
-	CertDir          string
-	ConfigFile       string
-	InitContainers   []corev1.Container `json:"initContainers"`
-	GPUResourceNames []string           `json:"gpuResourceNames"`
+	Port    int
+	CertDir string
+
+	FileConfig
+}
+
+type FileConfig struct {
+	InitContainers       []corev1.Container `yaml:"initContainers"`
+	GPUResourceNames     []string           `yaml:"gpuResourceNames"`
+	NetworkResourceNames []string           `yaml:"networkResourceNames"`
 }
 
 func Load(path string) (*Config, error) {
@@ -36,21 +41,14 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	cfg := &Config{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	var fileConfig FileConfig
+	if err := yaml.Unmarshal(data, &fileConfig); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	if len(cfg.InitContainers) == 0 {
-		cfg.InitContainers = []corev1.Container{{
-			Name:  "preflight-ping",
-			Image: "ghcr.io/nvidia/nvsentinel/preflight-checks-ping:latest",
-		}}
+	if len(fileConfig.GPUResourceNames) == 0 {
+		fileConfig.GPUResourceNames = []string{"nvidia.com/gpu"}
 	}
 
-	if len(cfg.GPUResourceNames) == 0 {
-		cfg.GPUResourceNames = []string{"nvidia.com/gpu"}
-	}
-
-	return cfg, nil
+	return &Config{FileConfig: fileConfig}, nil
 }

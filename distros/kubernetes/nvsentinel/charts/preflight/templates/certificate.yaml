@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TLS Certificate for webhook, managed by cert-manager
+# TLS Certificate for webhook, issued by CA Issuer for proper rotation support
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -22,12 +22,19 @@ metadata:
     {{- include "preflight.labels" . | nindent 4 }}
 spec:
   secretName: {{ include "preflight.certSecretName" . }}
-  duration: 8760h    # 1 year
-  renewBefore: 360h  # 15 days before expiration
+  duration: 2160h     # 90 days
+  renewBefore: 360h   # 15 days before expiration
   commonName: {{ include "preflight.fullname" . }}.{{ .Release.Namespace }}.svc
   dnsNames:
     {{- include "preflight.certDnsNames" . | nindent 4 }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
   issuerRef:
+    {{- if .Values.webhook.createIssuer }}
+    name: {{ include "preflight.fullname" . }}-ca-issuer
+    {{- else }}
     name: {{ .Values.webhook.certIssuer }}
+    {{- end }}
     kind: Issuer
-
+    group: cert-manager.io

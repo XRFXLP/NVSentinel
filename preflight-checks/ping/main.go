@@ -15,11 +15,17 @@
 package main
 
 import (
-	"fmt"
+	"log/slog"
 	"os"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
-	fmt.Println("Preflight ping check passed")
+	slog.Info("Preflight ping check passed", "version", version, "commit", commit, "date", date)
 	os.Exit(0)
 }

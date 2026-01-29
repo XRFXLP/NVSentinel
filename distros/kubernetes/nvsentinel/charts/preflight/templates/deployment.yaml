@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,7 +27,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "preflight.labels" . | nindent 8 }}
+        {{- include "preflight.selectorLabels" . | nindent 8 }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -34,7 +35,7 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "preflight.serviceAccountName" . }}
       containers:
-        - name: webhook
+        - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
@@ -44,22 +45,15 @@ spec:
           ports:
             - name: https
               containerPort: {{ .Values.webhook.port }}
-          {{- with .Values.securityContext }}
+              protocol: TCP
           securityContext:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.livenessProbe }}
+            {{- toYaml .Values.securityContext | nindent 12 }}
           livenessProbe:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.readinessProbe }}
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.resources }}
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: tls-certs
               mountPath: /certs
@@ -86,3 +80,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+

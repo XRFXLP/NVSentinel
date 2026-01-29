@@ -12,7 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-MODULE := preflight
-
-include ../make/go.mk
+# CA Issuer - issues webhook certificates using the CA certificate
+{{- if .Values.webhook.createIssuer }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "preflight.fullname" . }}-ca-issuer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preflight.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ include "preflight.fullname" . }}-ca-secret
+{{- end }}
 

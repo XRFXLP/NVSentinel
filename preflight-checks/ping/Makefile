@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,18 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-IS_GO_MODULE := 1
-IS_KO_MODULE := 1
+MODULE := ping
 
-include ../../make/common.mk
 include ../../make/go.mk
-
-.PHONY: all
-all: build
-
-.PHONY: help
-help:
-	@echo "preflight-checks/ping Makefile"
-	@echo ""
-	@echo "Main targets: build, ko-build"
 

@@ -12,23 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-{{- if .Values.networkPolicy.enabled }}
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
+# CA Certificate - long-lived, used to sign webhook certificates
+# This is what inject-ca-from should reference for stable CA rotation
+{{- if .Values.webhook.createIssuer }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
 metadata:
-  name: {{ include "preflight.fullname" . }}-allow-webhook
+  name: {{ include "preflight.fullname" . }}-ca
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "preflight.labels" . | nindent 4 }}
 spec:
-  podSelector:
-    matchLabels:
-      {{- include "preflight.selectorLabels" . | nindent 6 }}
-  policyTypes:
-    - Ingress
-  ingress:
-    - ports:
-        - protocol: TCP
-          port: {{ .Values.webhook.port }}
+  isCA: true
+  secretName: {{ include "preflight.fullname" . }}-ca-secret
+  duration: 87600h  # 10 years
+  renewBefore: 8760h  # 1 year before expiry
+  commonName: {{ include "preflight.fullname" . }}-ca
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: {{ include "preflight.fullname" . }}-selfsigned
+    kind: Issuer
+    group: cert-manager.io
 {{- end }}
 

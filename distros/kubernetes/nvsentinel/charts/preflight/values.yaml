@@ -17,7 +17,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/nvidia/nvsentinel/preflight
   pullPolicy: IfNotPresent
-  tag: "latest"
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""
@@ -74,19 +74,25 @@ webhook:
   port: 8443
   failurePolicy: Fail
   timeoutSeconds: 10
-  certIssuer: "selfsigned-ca-issuer"
-  createIssuer: false
+  # Set to true to create the two-tier CA (recommended)
+  # Set to false to use an existing CA issuer
+  createIssuer: true
+  # Only used when createIssuer=false
+  certIssuer: ""
+  caCertificateName: ""
 
 # Init containers to inject into GPU pods
-# Each entry becomes an init container prepended to the pod
 initContainers:
   - name: preflight-ping
-    image: ghcr.io/nvidia/nvsentinel/preflight-checks-ping:latest
-    # Resources are copied from the target pod's GPU container
+    image: ghcr.io/nvidia/nvsentinel/ping:latest
 
 # GPU resource names that trigger preflight injection
 gpuResourceNames:
   - "nvidia.com/gpu"
+
+# Network resource names to copy to init containers (RDMA, InfiniBand, etc.)
+networkResourceNames:
+  - "nvidia.com/mlnxnics"
 
 # Label-based namespace selection
 # Enable preflight in a namespace: kubectl label namespace <name> nvsentinel.nvidia.com/preflight=enabled
@@ -96,3 +102,4 @@ namespaceSelector:
 
 networkPolicy:
   enabled: true
+

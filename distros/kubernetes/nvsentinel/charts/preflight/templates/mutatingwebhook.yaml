@@ -18,8 +18,13 @@ metadata:
   labels:
     {{- include "preflight.labels" . | nindent 4 }}
   annotations:
-    # cert-manager injects the CA bundle automatically
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "preflight.fullname" . }}-webhook-cert
+    # cert-manager injects the CA bundle from the CA certificate (not the leaf cert)
+    # This ensures stable CA across leaf certificate rotations
+    {{- if .Values.webhook.createIssuer }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "preflight.fullname" . }}-ca
+    {{- else }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ .Values.webhook.caCertificateName }}
+    {{- end }}
 webhooks:
   - name: {{ include "preflight.webhookName" . }}
     clientConfig:

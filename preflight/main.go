@@ -30,6 +30,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 )
 
 var (
@@ -81,9 +82,10 @@ func run() error {
 	certPath := filepath.Join(certDir, "tls.crt")
 	keyPath := filepath.Join(certDir, "tls.key")
 
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	// Use certwatcher for automatic certificate rotation
+	certWatcher, err := certwatcher.New(certPath, keyPath)
 	if err != nil {
-		return fmt.Errorf("failed to load TLS certificates: %w", err)
+		return fmt.Errorf("failed to create certificate watcher: %w", err)
 	}
 
 	server := &http.Server{
@@ -92,8 +94,8 @@ func run() error {
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
+			GetCertificate: certWatcher.GetCertificate,
+			MinVersion:     tls.VersionTLS12,
 		},
 	}
 
@@ -101,7 +103,14 @@ func run() error {
 	defer stop()
 
 	go func() {
+		if err := certWatcher.Start(ctx); err != nil {
+			slog.Error("Certificate watcher failed", "error", err)
+		}
+	}()
+
+	go func() {
 		slog.Info("Starting HTTPS server", "port", port)
+
 		if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 			slog.Error("Server failed", "error", err)
 		}
