@@ -50,6 +50,7 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/transport/spdy"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
@@ -152,7 +153,7 @@ This workaround can be removed after KACE-1703 is completed.
 */
 //nolint:cyclop,gocognit // Test helper with complex state machine logic
 func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, nodeName string,
-	labelValueSequence []string, success chan bool) error {
+	labelValueSequence []string, waitForLabelRemoval bool, success chan bool) error {
 	currentLabelIndex := 0
 	prevLabelValue := ""
 
@@ -203,6 +204,11 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 
 					currentLabelIndex++
 					if currentLabelIndex == len(labelValueSequence) {
+						if !waitForLabelRemoval {
+							t.Logf("[LabelWatcher] ✓ All labels observed, not waiting for removal. Sending SUCCESS to channel")
+							sendNodeLabelResult(ctx, success, true)
+						}
+
 						t.Logf("[LabelWatcher] ✓ All %d labels matched! Waiting for label removal...", len(labelValueSequence))
 					}
 				} else if actualValue != labelValueSequence[currentLabelIndex] && prevLabelValue != actualValue {
@@ -992,6 +998,21 @@ func UpdateConfigMapTOMLField[T any](
 	return nil
 }
 
+func ScaleDeployment(ctx context.Context, t *testing.T, c klient.Client, name, namespace string, replicas int32) error {
+	t.Logf("Scaling deployment %s/%s to %d", namespace, name, replicas)
+
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current := &appsv1.Deployment{}
+		if err := c.Resources().Get(ctx, name, namespace, current); err != nil {
+			return err
+		}
+
+		current.Spec.Replicas = ptr.To(replicas)
+
+		return c.Resources().Update(ctx, current)
+	})
+}
+
 //nolint:cyclop,gocognit // Test helper with complex deployment rollout logic
 func WaitForDeploymentRollout(
 	ctx context.Context, t *testing.T, c klient.Client, name, namespace string,
@@ -1399,6 +1420,36 @@ func PatchServicePort(ctx context.Context, c klient.Client, namespace, serviceNa
 
 // SetNodeManagedByNVSentinel sets the ManagedByNVSentinel label on a node.
 func SetNodeManagedByNVSentinel(ctx context.Context, c klient.Client, nodeName string, managed bool) error {
+	labelValue := "false"
+	if managed {
+		labelValue = "true"
+	}
+
+	return SetNodeLabel(ctx, c, nodeName, "k8saas.nvidia.com/ManagedByNVSentinel", labelValue)
+}
+
+// RemoveNodeManagedByNVSentinelLabel removes the ManagedByNVSentinel label from a node.
+func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, nodeName string) error {
+	return RemoveNodeLabel(ctx, c, nodeName, "k8saas.nvidia.com/ManagedByNVSentinel")
+}
+
+func RemoveNodeLabel(ctx context.Context, c klient.Client, nodeName, labelKey string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			return err
+		}
+
+		if node.Labels != nil {
+			delete(node.Labels, labelKey)
+			return c.Resources().Update(ctx, node)
+		}
+
+		return nil
+	})
+}
+
+func SetNodeLabel(ctx context.Context, c klient.Client, nodeName, labelKey, labelValue string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		node, err := GetNodeByName(ctx, c, nodeName)
 		if err != nil {
@@ -1409,30 +1460,9 @@ func SetNodeManagedByNVSentinel(ctx context.Context, c klient.Client, nodeName s
 			node.Labels = make(map[string]string)
 		}
 
-		if managed {
-			node.Labels["k8saas.nvidia.com/ManagedByNVSentinel"] = "true"
-		} else {
-			node.Labels["k8saas.nvidia.com/ManagedByNVSentinel"] = "false"
-		}
+		node.Labels[labelKey] = labelValue
 
 		return c.Resources().Update(ctx, node)
-	})
-}
-
-// RemoveNodeManagedByNVSentinelLabel removes the ManagedByNVSentinel label from a node.
-func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, nodeName string) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		node, err := GetNodeByName(ctx, c, nodeName)
-		if err != nil {
-			return err
-		}
-
-		if node.Labels != nil {
-			delete(node.Labels, "k8saas.nvidia.com/ManagedByNVSentinel")
-			return c.Resources().Update(ctx, node)
-		}
-
-		return nil
 	})
 }
 
@@ -2447,44 +2477,86 @@ func setArgsOnContainer(t *testing.T, container *v1.Container, args map[string]s
 	}
 }
 
+// isPodRunningAndReady checks if a pod is running, ready, and not being deleted.
+func isPodRunningAndReady(pod *v1.Pod) bool {
+	if pod.DeletionTimestamp != nil {
+		return false
+	}
+
+	if pod.Status.Phase != v1.PodRunning {
+		return false
+	}
+
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == v1.PodReady {
+			return cond.Status == v1.ConditionTrue
+		}
+	}
+
+	return false
+}
+
+// buildNodePattern returns a regex pattern for node matching.
+// If nodeName is empty, matches any node containing "worker".
+// If nodeName is specified, matches exactly that node.
+func buildNodePattern(nodeName string) string {
+	if nodeName == "" {
+		return "^.*worker.*$"
+	}
+
+	return "^" + regexp.QuoteMeta(nodeName) + "$"
+}
+
+// GetDaemonSetPodOnWorkerNode returns the running and ready pod for a daemonset.
+// If nodeName is empty, it finds a pod on any worker node (node name containing "worker").
+// If nodeName is specified, it finds the pod on that exact node.
 func GetDaemonSetPodOnWorkerNode(ctx context.Context, t *testing.T, client klient.Client,
-	daemonsetName string, podNamePattern string) (*v1.Pod, error) {
+	daemonsetName string, podNamePattern string, nodeName ...string) (*v1.Pod, error) {
 	t.Helper()
+
+	specificNode := ""
+	if len(nodeName) > 0 {
+		specificNode = nodeName[0]
+	}
+
+	nodePattern := regexp.MustCompile(buildNodePattern(specificNode))
+	podPattern := regexp.MustCompile(podNamePattern)
 
 	var resultPod *v1.Pod
 
 	require.Eventually(t, func() bool {
-		// Get the pod
-		pod, err := GetPodOnWorkerNode(ctx, t, client, NVSentinelNamespace, podNamePattern)
+		pods := &v1.PodList{}
+
+		err := client.Resources().List(ctx, pods, func(opts *metav1.ListOptions) {
+			opts.FieldSelector = fmt.Sprintf("metadata.namespace=%s", NVSentinelNamespace)
+		})
 		if err != nil {
-			t.Logf("Failed to get pod: %v", err)
+			t.Logf("Failed to list pods: %v", err)
 			return false
 		}
 
-		// Verify pod is not being deleted
-		if pod.DeletionTimestamp != nil {
-			t.Logf("Pod %s is being deleted, waiting for replacement", pod.Name)
-			return false
-		}
+		for i := range pods.Items {
+			pod := &pods.Items[i]
+			if !podPattern.MatchString(pod.Name) || !nodePattern.MatchString(pod.Spec.NodeName) {
+				continue
+			}
 
-		// Verify pod is running and ready
-		if pod.Status.Phase != v1.PodRunning {
-			t.Logf("Pod %s is not in Running phase: %s", pod.Name, pod.Status.Phase)
-			return false
-		}
+			if !isPodRunningAndReady(pod) {
+				t.Logf("Pod %s not ready yet (phase=%s)", pod.Name, pod.Status.Phase)
 
-		// Check all containers are ready
-		for _, cond := range pod.Status.Conditions {
-			if cond.Type == v1.PodReady && cond.Status != v1.ConditionTrue {
-				t.Logf("Pod %s is not ready yet", pod.Name)
 				return false
 			}
+
+			t.Logf("Found pod %s on node %s", pod.Name, pod.Spec.NodeName)
+			resultPod = pod
+
+			return true
 		}
 
-		resultPod = pod
+		t.Logf("No matching pod found for daemonset %s", daemonsetName)
 
-		return true
-	}, EventuallyWaitTimeout, WaitInterval, "daemonset pod from current rollout should be running and ready")
+		return false
+	}, EventuallyWaitTimeout, WaitInterval, "daemonset pod should be running and ready")
 
 	if resultPod == nil {
 		return nil, fmt.Errorf("failed to get ready pod for daemonset %s", daemonsetName)

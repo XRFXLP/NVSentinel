@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-apiVersion: v1
-kind: ConfigMap
+apiVersion: {{.ApiGroup}}/{{.Version}}
+kind: GPUReset
 metadata:
-  name: {{ include "health-events-analyzer.fullname" . }}-config
-  annotations:
-    argocd.argoproj.io/sync-wave: "-1"
-data:
-  config.toml: |
-    {{ tpl .Values.config . | nindent 6 }}
+  name: maintenance-{{.NodeName}}-{{.HealthEventID}}
+spec:
+  nodeName: {{.NodeName}}
+  selector:
+    uuids:
+      - {{.ImpactedEntityScopeValue}}
+

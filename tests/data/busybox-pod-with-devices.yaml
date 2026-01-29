@@ -13,11 +13,15 @@
 # limitations under the License.
 
 apiVersion: v1
-kind: ConfigMap
+kind: Pod
 metadata:
-  name: {{ include "health-events-analyzer.fullname" . }}-config
+  name: test-gpu-pod
+  namespace: test-namespace
   annotations:
-    argocd.argoproj.io/sync-wave: "-1"
-data:
-  config.toml: |
-    {{ tpl .Values.config . | nindent 6 }}
+    dgxc.nvidia.com/devices: '{"devices":{"nvidia.com/gpu":["GPU-123"]}}'
+spec:
+  nodeName: NODE_NAME
+  containers:
+    - name: busybox
+      image: busybox:latest
+      command: ["sleep", "3600"]
