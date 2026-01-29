@@ -43,16 +43,19 @@ is_node_ready_and_uncordoned() {
         return 1
     fi
 
-    # Check if node is Ready
     local is_ready
     is_ready=$(echo "$node_info" | jq -r '.status.conditions[] | select(.type == "Ready" and .status == "True") | .status')
     if [[ "$is_ready" != "True" ]]; then
         return 1
     fi
 
-    # Check if node is uncordoned (unschedulable should not be true)
-    # Using jq -e which exits 0 if expression is true, non-zero otherwise
     if echo "$node_info" | jq -e '.spec.unschedulable == true' > /dev/null 2>&1; then
+        return 1
+    fi
+
+    local managed_label
+    managed_label=$(echo "$node_info" | jq -r '.metadata.labels["k8saas.nvidia.com/ManagedByNVSentinel"] // ""')
+    if [[ "$managed_label" == "false" ]]; then
         return 1
     fi
 
