@@ -318,6 +318,11 @@ test_sxid_monitoring_syslog() {
 
     log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
 
+    local original_boot_id
+    original_boot_id=$(get_boot_id "$gpu_node")
+    log "Original boot ID: $original_boot_id"
+
+
     local dcgm_pod
     dcgm_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-dcgm -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
 
@@ -399,7 +404,11 @@ test_sxid_monitoring_syslog() {
 
 main() {
     log "Starting NVSentinel UAT tests..."
-
+    
+    log "Checking if circuit breaker is TRIPPED..."
+    if kubectl get cm circuit-breaker -n nvsentinel -o jsonpath='{.data.status}' | grep -q "TRIPPED"; then
+        error "Circuit breaker is TRIPPED, please reset it manually"
+    fi
 
     test_gpu_monitoring_dcgm
 
