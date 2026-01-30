@@ -27,10 +27,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 var (
@@ -41,6 +43,9 @@ var (
 
 func main() {
 	logger.SetDefaultStructuredLogger("preflight", version)
+
+	ctrllog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
+
 	slog.Info("Starting preflight", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {
