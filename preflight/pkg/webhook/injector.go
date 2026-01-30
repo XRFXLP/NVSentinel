@@ -37,18 +37,13 @@ func NewInjector(cfg *config.Config) *Injector {
 }
 
 func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, error) {
-	if !i.hasGPUResources(pod) {
-		slog.Debug("Pod does not request GPU resources, skipping injection")
+	maxResources := i.findMaxResources(pod)
+	if len(maxResources) == 0 {
+		slog.Debug("Pod does not request GPU/network resources, skipping injection")
 		return nil, nil
 	}
 
-	gpuContainer := i.findGPUContainer(pod)
-	if gpuContainer == nil {
-		slog.Debug("No GPU container found, skipping injection")
-		return nil, nil
-	}
-
-	initContainers := i.buildInitContainers(gpuContainer)
+	initContainers := i.buildInitContainers(maxResources)
 	if len(initContainers) == 0 {
 		return nil, nil
 	}
@@ -62,11 +57,14 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, erro
 			Value: initContainers,
 		})
 	} else {
-		for idx, container := range initContainers {
+		// Prepend in reverse order so they end up in correct order at the front
+		// If preflight containers are [A, B] and existing are [C, D],
+		// result will be [A, B, C, D]
+		for idx := len(initContainers) - 1; idx >= 0; idx-- {
 			patches = append(patches, PatchOperation{
 				Op:    "add",
-				Path:  "/spec/initContainers/" + string(rune('0'+idx)),
-				Value: container,
+				Path:  "/spec/initContainers/0",
+				Value: initContainers[idx],
 			})
 		}
 	}
@@ -74,48 +72,50 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, erro
 	return patches, nil
 }
 
-func (i *Injector) hasGPUResources(pod *corev1.Pod) bool {
+// findMaxResources scans all containers and returns the maximum quantity
+// for each GPU and network resource. Returns empty map if no GPU resources found.
+func (i *Injector) findMaxResources(pod *corev1.Pod) corev1.ResourceList {
+	maxResources := make(corev1.ResourceList)
+
+	allResourceNames := append([]string{}, i.cfg.GPUResourceNames...)
+	allResourceNames = append(allResourceNames, i.cfg.NetworkResourceNames...)
+
 	for _, container := range pod.Spec.Containers {
-		for _, resourceName := range i.cfg.GPUResourceNames {
-			if quantity, ok := container.Resources.Requests[corev1.ResourceName(resourceName)]; ok {
-				if !quantity.IsZero() {
-					return true
-				}
-			}
+		for _, name := range allResourceNames {
+			resName := corev1.ResourceName(name)
 
-			if quantity, ok := container.Resources.Limits[corev1.ResourceName(resourceName)]; ok {
-				if !quantity.IsZero() {
-					return true
-				}
-			}
+			i.updateMax(maxResources, resName, container.Resources.Limits[resName])
+			i.updateMax(maxResources, resName, container.Resources.Requests[resName])
 		}
 	}
 
-	return false
-}
+	hasGPU := false
 
-func (i *Injector) findGPUContainer(pod *corev1.Pod) *corev1.Container {
-	for idx := range pod.Spec.Containers {
-		container := &pod.Spec.Containers[idx]
-		for _, resourceName := range i.cfg.GPUResourceNames {
-			if quantity, ok := container.Resources.Requests[corev1.ResourceName(resourceName)]; ok {
-				if !quantity.IsZero() {
-					return container
-				}
-			}
-
-			if quantity, ok := container.Resources.Limits[corev1.ResourceName(resourceName)]; ok {
-				if !quantity.IsZero() {
-					return container
-				}
-			}
+	for _, name := range i.cfg.GPUResourceNames {
+		if qty, ok := maxResources[corev1.ResourceName(name)]; ok && !qty.IsZero() {
+			hasGPU = true
+			break
 		}
 	}
 
-	return nil
+	if !hasGPU {
+		return nil
+	}
+
+	return maxResources
 }
 
-func (i *Injector) buildInitContainers(gpuContainer *corev1.Container) []corev1.Container {
+func (i *Injector) updateMax(resources corev1.ResourceList, name corev1.ResourceName, qty resource.Quantity) {
+	if qty.IsZero() {
+		return
+	}
+
+	if current, exists := resources[name]; !exists || qty.Cmp(current) > 0 {
+		resources[name] = qty
+	}
+}
+
+func (i *Injector) buildInitContainers(maxResources corev1.ResourceList) []corev1.Container {
 	var initContainers []corev1.Container
 
 	for _, tmpl := range i.cfg.InitContainers {
@@ -129,8 +129,10 @@ func (i *Injector) buildInitContainers(gpuContainer *corev1.Container) []corev1.
 			container.Resources.Limits = make(corev1.ResourceList)
 		}
 
-		copyResources(&container.Resources, &gpuContainer.Resources, i.cfg.GPUResourceNames)
-		copyResources(&container.Resources, &gpuContainer.Resources, i.cfg.NetworkResourceNames)
+		for name, qty := range maxResources {
+			container.Resources.Requests[name] = qty
+			container.Resources.Limits[name] = qty
+		}
 
 		if _, ok := container.Resources.Requests[corev1.ResourceCPU]; !ok {
 			container.Resources.Requests[corev1.ResourceCPU] = resource.MustParse("100m")
@@ -144,17 +146,4 @@ func (i *Injector) buildInitContainers(gpuContainer *corev1.Container) []corev1.
 	}
 
 	return initContainers
-}
-
-func copyResources(dst, src *corev1.ResourceRequirements, resourceNames []string) {
-	for _, name := range resourceNames {
-		resName := corev1.ResourceName(name)
-		if quantity, ok := src.Requests[resName]; ok {
-			dst.Requests[resName] = quantity
-		}
-
-		if quantity, ok := src.Limits[resName]; ok {
-			dst.Limits[resName] = quantity
-		}
-	}
 }
