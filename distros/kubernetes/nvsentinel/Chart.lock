@@ -35,16 +35,10 @@ dependencies:
 - name: janitor
   repository: ""
   version: 0.1.0
-- name: janitor-provider
-  repository: ""
-  version: 0.1.0
 - name: metadata-collector
   repository: ""
   version: 0.1.0
 - name: kubernetes-object-monitor
-  repository: ""
-  version: 0.1.0
-- name: event-exporter
   repository: ""
   version: 0.1.0
 - name: preflight
