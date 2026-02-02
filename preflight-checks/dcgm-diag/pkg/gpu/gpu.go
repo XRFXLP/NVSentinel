@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+// Package gpu provides GPU discovery functionality using NVML.
+package gpu
 
 import (
 	"fmt"
@@ -23,13 +24,13 @@ import (
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
 )
 
-// gpuIndexToUUID maps GPU index to UUID, populated during GPU discovery.
-var gpuIndexToUUID = make(map[uint]string)
+// indexToUUID maps GPU index to UUID, populated during GPU discovery.
+var indexToUUID = make(map[uint]string)
 
-// getGPUGroup returns a DCGM group containing only the GPUs allocated to this container.
+// GetGroup returns a DCGM group containing only the GPUs allocated to this container.
 // Uses go-nvml to discover allocated GPUs (respects NVIDIA_VISIBLE_DEVICES automatically).
-func getGPUGroup() (dcgm.GroupHandle, func(), error) {
-	gpuIndices, err := getAllocatedGPUs()
+func GetGroup() (dcgm.GroupHandle, func(), error) {
+	gpuIndices, err := discoverAllocatedGPUs()
 	if err != nil {
 		return dcgm.GroupHandle{}, nil, fmt.Errorf("failed to discover GPUs via NVML: %w", err)
 	}
@@ -40,13 +41,12 @@ func getGPUGroup() (dcgm.GroupHandle, func(), error) {
 
 	slog.Info("Checking allocated GPUs", "count", len(gpuIndices), "indices", gpuIndices)
 
-	return createGPUGroup(gpuIndices)
+	return createGroup(gpuIndices)
 }
 
-// getAllocatedGPUs uses go-nvml to get GPU indices and UUIDs visible to this container.
+// discoverAllocatedGPUs uses go-nvml to get GPU indices and UUIDs visible to this container.
 // NVML respects NVIDIA_VISIBLE_DEVICES, so it only returns GPUs allocated to this container.
-// It populates the gpuIndexToUUID map for later use in health reporting.
-func getAllocatedGPUs() ([]uint, error) {
+func discoverAllocatedGPUs() ([]uint, error) {
 	ret := nvml.Init()
 	if ret != nvml.SUCCESS {
 		return nil, fmt.Errorf("failed to initialize NVML: %v", nvml.ErrorString(ret))
@@ -84,7 +84,7 @@ func getAllocatedGPUs() ([]uint, error) {
 		idx := uint(i)
 
 		indices = append(indices, idx)
-		gpuIndexToUUID[idx] = uuid
+		indexToUUID[idx] = uuid
 
 		slog.Debug("Discovered GPU", "index", idx, "uuid", uuid)
 	}
@@ -92,18 +92,18 @@ func getAllocatedGPUs() ([]uint, error) {
 	return indices, nil
 }
 
-// GetGPUUUID returns the UUID for a GPU index.
+// GetUUID returns the UUID for a GPU index.
 // Returns error if UUID is not found (indicates GPU discovery issue).
-func GetGPUUUID(gpuIndex uint) (string, error) {
-	if uuid, ok := gpuIndexToUUID[gpuIndex]; ok {
+func GetUUID(gpuIndex uint) (string, error) {
+	if uuid, ok := indexToUUID[gpuIndex]; ok {
 		return uuid, nil
 	}
 
 	return "", fmt.Errorf("GPU UUID not found for index %d", gpuIndex)
 }
 
-// createGPUGroup creates a DCGM group with the specified GPU indices.
-func createGPUGroup(gpuIndices []uint) (dcgm.GroupHandle, func(), error) {
+// createGroup creates a DCGM group with the specified GPU indices.
+func createGroup(gpuIndices []uint) (dcgm.GroupHandle, func(), error) {
 	groupName := fmt.Sprintf("preflight-%d", os.Getpid())
 
 	group, err := dcgm.CreateGroup(groupName)

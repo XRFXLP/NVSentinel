@@ -29,5 +29,6 @@ data:
       hostengineAddr: {{ include "preflight.dcgmHostengineAddr" . | quote }}
       diagLevel: {{ include "preflight.dcgmDiagLevel" . }}
       timeout: {{ include "preflight.dcgmTimeout" . | quote }}
+      connectorSocket: {{ include "preflight.connectorSocket" . | quote }}
     initContainers:
       {{- toYaml .Values.initContainers | nindent 6 }}

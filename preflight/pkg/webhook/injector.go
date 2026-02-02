@@ -70,6 +70,10 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, erro
 		}
 	}
 
+	// Inject volumes required by init containers
+	volumePatches := i.injectVolumes(pod)
+	patches = append(patches, volumePatches...)
+
 	return patches, nil
 }
 
@@ -151,6 +155,52 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList) []corev
 	return initContainers
 }
 
+const nvsentinelSocketVolumeName = "nvsentinel-socket"
+
+// injectVolumes adds required volumes to the pod for init container communication
+func (i *Injector) injectVolumes(pod *corev1.Pod) []PatchOperation {
+	var patches []PatchOperation
+
+	// Only inject socket volume if connector socket is configured
+	if i.cfg.DCGM.ConnectorSocket == "" {
+		return patches
+	}
+
+	// Check if volume already exists
+	for _, vol := range pod.Spec.Volumes {
+		if vol.Name == nvsentinelSocketVolumeName {
+			return patches
+		}
+	}
+
+	hostPathType := corev1.HostPathDirectory
+	socketVolume := corev1.Volume{
+		Name: nvsentinelSocketVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: "/var/run/nvsentinel",
+				Type: &hostPathType,
+			},
+		},
+	}
+
+	if len(pod.Spec.Volumes) == 0 {
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  "/spec/volumes",
+			Value: []corev1.Volume{socketVolume},
+		})
+	} else {
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  "/spec/volumes/-",
+			Value: socketVolume,
+		})
+	}
+
+	return patches
+}
+
 // injectDCGMEnv adds DCGM-related environment variables to the container
 func (i *Injector) injectDCGMEnv(container *corev1.Container) {
 	if container.Name != "preflight-dcgm-diag" {
@@ -180,6 +230,13 @@ func (i *Injector) injectDCGMEnv(container *corev1.Container) {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "DCGM_HOSTENGINE_ADDR",
 			Value: i.cfg.DCGM.HostengineAddr,
+		})
+	}
+
+	if i.cfg.DCGM.ConnectorSocket != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PLATFORM_CONNECTOR_SOCKET",
+			Value: i.cfg.DCGM.ConnectorSocket,
 		})
 	}
 

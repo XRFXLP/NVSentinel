@@ -29,7 +29,7 @@ replicaCount: 1
 image:
   repository: xrfxlp/preflight
   pullPolicy: IfNotPresent
-  tag: "10420202"
+  tag: "20180202"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -102,7 +102,7 @@ dcgm:
   #   1 = Quick (~30 seconds) - basic health check
   #   2 = Medium (~2 minutes) - more thorough
   #   3 = Long (~15 minutes) - comprehensive
-  diagLevel: 1
+  diagLevel: 2
   # Timeout for diagnostic execution
   timeout: "5m"
 
@@ -113,17 +113,14 @@ dcgm:
 # The webhook injects GPU/network resources from the pod into these containers.
 initContainers:
   - name: preflight-dcgm-diag
-    image: xrfxlp/preflight-dcgm-diag:14460202
-    env:
-    - name: DCGM_DIAG_VERBOSE
-      value: "true"
+    image: xrfxlp/preflight-dcgm-diag:20180202
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
     # Full corev1.Container fields supported:
     # resources:
     #   limits:
     #     memory: 512Mi
-    # volumeMounts:
-    #   - name: platform-connector-socket
-    #     mountPath: /var/run
 
 # =============================================================================
 # GPU Resource Detection

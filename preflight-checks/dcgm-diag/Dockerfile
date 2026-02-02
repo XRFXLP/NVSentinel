@@ -42,7 +42,7 @@ WORKDIR /workspace
 
 # Copy go.mod files first for better caching
 COPY data-models/go.mod data-models/go.sum ./data-models/
-COPY preflight-checks/dcgm-diag/go.mod ./preflight-checks/dcgm-diag/
+COPY preflight-checks/dcgm-diag/go.mod preflight-checks/dcgm-diag/go.sum ./preflight-checks/dcgm-diag/
 
 # Download dependencies
 WORKDIR /workspace/preflight-checks/dcgm-diag

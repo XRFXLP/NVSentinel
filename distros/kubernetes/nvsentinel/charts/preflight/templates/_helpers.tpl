@@ -123,3 +123,12 @@ DCGM diagnostic timeout
 {{- define "preflight.dcgmTimeout" -}}
 {{- .Values.dcgm.timeout | default "5m" }}
 {{- end }}
+
+{{/*
+Platform connector socket path for health event reporting
+Uses global.socketPath with unix:// prefix
+*/}}
+{{- define "preflight.connectorSocket" -}}
+{{- $socketPath := ((.Values.global).socketPath) | default "/var/run/nvsentinel.sock" }}
+{{- printf "unix://%s" $socketPath }}
+{{- end }}

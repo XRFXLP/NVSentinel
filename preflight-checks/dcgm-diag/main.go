@@ -21,6 +21,9 @@ import (
 	"log/slog"
 	"os"
 	"time"
+
+	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/diag"
+	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/health"
 )
 
 var (
@@ -52,14 +55,14 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancel()
 
-	results, err := runDCGMDiag(ctx, cfg.diagLevel, cfg.hostengineAddr)
+	results, err := diag.Run(ctx, cfg.diagLevel, cfg.hostengineAddr)
 	if err != nil {
-		reportError(cfg.connectorSocket, err.Error())
+		health.ReportError(cfg.connectorSocket, err.Error())
 
 		return err
 	}
 
-	return processResults(results, cfg.connectorSocket)
+	return diag.ProcessResults(results, cfg.connectorSocket)
 }
 
 type config struct {
@@ -67,7 +70,6 @@ type config struct {
 	hostengineAddr  string
 	connectorSocket string
 	timeout         time.Duration
-	verbose         bool
 }
 
 func parseConfig() config {
@@ -77,7 +79,6 @@ func parseConfig() config {
 	hostengineDefault := getEnv("DCGM_HOSTENGINE_ADDR", "")
 	connectorDefault := getEnv("PLATFORM_CONNECTOR_SOCKET", "")
 	timeoutDefault := getEnvDuration("DCGM_DIAG_TIMEOUT", 5*time.Minute)
-	verboseDefault := getEnv("DCGM_DIAG_VERBOSE", "false") == "true"
 
 	flag.IntVar(&cfg.diagLevel, "level", diagLevelDefault,
 		"DCGM diagnostic level (1=quick ~30s, 2=medium ~2min, 3=long ~15min, 4=extended)")
@@ -87,16 +88,36 @@ func parseConfig() config {
 		"Platform connector socket path for health event reporting")
 	flag.DurationVar(&cfg.timeout, "timeout", timeoutDefault,
 		"Timeout for DCGM diagnostic")
-	flag.BoolVar(&cfg.verbose, "verbose", verboseDefault,
-		"Enable verbose logging of individual test results")
 	flag.Parse()
 
-	// Set log level based on verbose flag
-	if cfg.verbose {
-		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		})))
+	return cfg
+}
+
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
 	}
 
-	return cfg
+	return defaultValue
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		var result int
+		if _, err := fmt.Sscanf(value, "%d", &result); err == nil {
+			return result
+		}
+	}
+
+	return defaultValue
+}
+
+func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
+	if value := os.Getenv(key); value != "" {
+		if d, err := time.ParseDuration(value); err == nil {
+			return d
+		}
+	}
+
+	return defaultValue
 }

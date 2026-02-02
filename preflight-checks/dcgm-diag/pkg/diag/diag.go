@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+// Package diag provides DCGM diagnostic functionality.
+package diag
 
 import (
 	"context"
@@ -21,13 +22,16 @@ import (
 	"strings"
 
 	"github.com/NVIDIA/go-dcgm/pkg/dcgm"
+
+	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/gpu"
+	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/health"
 )
 
-// runDCGMDiag runs DCGM diagnostics using the go-dcgm bindings.
+// Run executes DCGM diagnostics using the go-dcgm bindings.
+//
 // Note: go-dcgm requires CGO and links against libdcgm.so at compile time.
 // The binary must be built with DCGM 4.2.3+ which introduced dcgmDiagResponse_version12.
-// This should be compatible with DCGM hostengines 4.2.3 and newer.
-func runDCGMDiag(ctx context.Context, level int, hostengineAddr string) (*dcgm.DiagResults, error) {
+func Run(ctx context.Context, level int, hostengineAddr string) (*dcgm.DiagResults, error) {
 	cleanup, err := initDCGM(hostengineAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize DCGM: %w", err)
@@ -37,7 +41,7 @@ func runDCGMDiag(ctx context.Context, level int, hostengineAddr string) (*dcgm.D
 
 	diagType := levelToDiagType(level)
 
-	group, groupCleanup, err := getGPUGroup()
+	group, groupCleanup, err := gpu.GetGroup()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create GPU group: %w", err)
 	}
@@ -68,18 +72,16 @@ func runDCGMDiag(ctx context.Context, level int, hostengineAddr string) (*dcgm.D
 	case err := <-errCh:
 		return nil, fmt.Errorf("diagnostic failed: %w", err)
 	case results := <-resultCh:
-		logDiagResults(&results)
+		logResults(&results)
 
 		return &results, nil
 	}
 }
 
 func initDCGM(hostengineAddr string) (func(), error) {
-	// Initialize DCGM - either embedded or connect to standalone hostengine
 	if hostengineAddr != "" {
 		slog.Info("Connecting to DCGM hostengine", "address", hostengineAddr)
-		// Parse address - format is "host:port"
-		// The second arg "0" means it's a TCP connection, not unix socket
+
 		return dcgm.Init(dcgm.Standalone, hostengineAddr, "0")
 	}
 
@@ -103,7 +105,8 @@ func levelToDiagType(level int) dcgm.DiagType {
 	}
 }
 
-func processResults(results *dcgm.DiagResults, connectorSocket string) error {
+// ProcessResults processes diagnostic results and reports health events.
+func ProcessResults(results *dcgm.DiagResults, connectorSocket string) error {
 	var failures, warnings []dcgm.DiagResult
 
 	for _, result := range results.Software {
@@ -116,9 +119,9 @@ func processResults(results *dcgm.DiagResults, connectorSocket string) error {
 	}
 
 	if len(failures) > 0 {
-		msg := formatDiagFailures(failures)
+		msg := formatFailures(failures)
 
-		if reportErr := reportHealthEvent(connectorSocket, failures, true, msg); reportErr != nil {
+		if reportErr := health.ReportEvent(connectorSocket, failures, true, msg); reportErr != nil {
 			slog.Warn("Failed to report health event", "error", reportErr)
 		}
 
@@ -126,10 +129,10 @@ func processResults(results *dcgm.DiagResults, connectorSocket string) error {
 	}
 
 	if len(warnings) > 0 {
-		msg := formatDiagWarnings(warnings)
+		msg := formatWarnings(warnings)
 		slog.Warn("DCGM diagnostic warnings", "message", msg)
 
-		if reportErr := reportHealthEvent(connectorSocket, warnings, false, msg); reportErr != nil {
+		if reportErr := health.ReportEvent(connectorSocket, warnings, false, msg); reportErr != nil {
 			slog.Warn("Failed to report health event", "error", reportErr)
 		}
 	}
@@ -138,10 +141,14 @@ func processResults(results *dcgm.DiagResults, connectorSocket string) error {
 		"tests_run", len(results.Software),
 		"warnings", len(warnings))
 
+	if len(warnings) == 0 {
+		slog.Info("No health event reported (all tests passed)")
+	}
+
 	return nil
 }
 
-func logDiagResults(results *dcgm.DiagResults) {
+func logResults(results *dcgm.DiagResults) {
 	var passed, failed, warned, skipped int
 
 	for _, r := range results.Software {
@@ -156,18 +163,12 @@ func logDiagResults(results *dcgm.DiagResults) {
 			skipped++
 		}
 
-		if r.Status != "pass" {
-			slog.Info("Test result",
-				"test", r.TestName,
-				"status", r.Status,
-				"gpu", r.EntityID,
-				"error", r.ErrorMessage)
-		} else {
-			slog.Debug("Test result",
-				"test", r.TestName,
-				"status", r.Status,
-				"gpu", r.EntityID)
-		}
+		slog.Info("Test result",
+			"test", r.TestName,
+			"status", r.Status,
+			"gpu", r.EntityID,
+			"error", r.ErrorMessage,
+			"output", r.TestOutput)
 	}
 
 	slog.Info("Diagnostic summary",
@@ -178,7 +179,7 @@ func logDiagResults(results *dcgm.DiagResults) {
 		"total", len(results.Software))
 }
 
-func formatDiagFailures(failures []dcgm.DiagResult) string {
+func formatFailures(failures []dcgm.DiagResult) string {
 	var parts []string
 
 	for _, f := range failures {
@@ -193,7 +194,7 @@ func formatDiagFailures(failures []dcgm.DiagResult) string {
 	return strings.Join(parts, "; ")
 }
 
-func formatDiagWarnings(warnings []dcgm.DiagResult) string {
+func formatWarnings(warnings []dcgm.DiagResult) string {
 	var parts []string
 
 	for _, w := range warnings {

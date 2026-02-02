@@ -18,8 +18,8 @@ import (
 	"fmt"
 	"os"
 
-	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 )
 
 type Config struct {
@@ -37,9 +37,10 @@ type FileConfig struct {
 }
 
 type DCGMConfig struct {
-	HostengineAddr string `yaml:"hostengineAddr"`
-	DiagLevel      int    `yaml:"diagLevel"`
-	Timeout        string `yaml:"timeout"`
+	HostengineAddr  string `yaml:"hostengineAddr"`
+	DiagLevel       int    `yaml:"diagLevel"`
+	Timeout         string `yaml:"timeout"`
+	ConnectorSocket string `yaml:"connectorSocket"`
 }
 
 func Load(path string) (*Config, error) {
