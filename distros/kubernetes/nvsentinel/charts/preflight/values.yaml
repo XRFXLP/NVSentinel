@@ -12,12 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# =============================================================================
+# Global Configuration
+# =============================================================================
+# These values are typically set in the parent chart (nvsentinel/values.yaml)
+# but can be overridden here for standalone deployment
+global:
+  dcgm:
+    service:
+      # DCGM hostengine service endpoint (GPU Operator's DCGM service)
+      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      port: 5555
+
 replicaCount: 1
 
 image:
-  repository: ghcr.io/nvidia/nvsentinel/preflight
+  repository: xrfxlp/preflight
   pullPolicy: IfNotPresent
-  tag: ""
+  tag: "10420202"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -81,25 +93,63 @@ webhook:
   certIssuer: ""
   caCertificateName: ""
 
-# Init containers to inject into GPU pods
-initContainers:
-  - name: preflight-ping
-    image: ghcr.io/nvidia/nvsentinel/ping:latest
+# =============================================================================
+# DCGM Configuration
+# =============================================================================
+# Local fallback values - global.dcgm takes precedence when set
+dcgm:
+  # Diagnostic level:
+  #   1 = Quick (~30 seconds) - basic health check
+  #   2 = Medium (~2 minutes) - more thorough
+  #   3 = Long (~15 minutes) - comprehensive
+  diagLevel: 1
+  # Timeout for diagnostic execution
+  timeout: "5m"
 
-# GPU resource names that trigger preflight injection
+# =============================================================================
+# Init Containers to inject into GPU pods
+# =============================================================================
+# These containers run as init containers before the main workload starts.
+# The webhook injects GPU/network resources from the pod into these containers.
+initContainers:
+  - name: preflight-dcgm-diag
+    image: xrfxlp/preflight-dcgm-diag:14460202
+    env:
+    - name: DCGM_DIAG_VERBOSE
+      value: "true"
+    # Full corev1.Container fields supported:
+    # resources:
+    #   limits:
+    #     memory: 512Mi
+    # volumeMounts:
+    #   - name: platform-connector-socket
+    #     mountPath: /var/run
+
+# =============================================================================
+# GPU Resource Detection
+# =============================================================================
+# Resource names that trigger preflight injection
 gpuResourceNames:
   - "nvidia.com/gpu"
 
+# =============================================================================
+# Network Resource Detection
+# =============================================================================
 # Network resource names to copy to init containers (RDMA, InfiniBand, etc.)
 networkResourceNames:
   - "nvidia.com/mlnxnics"
 
+# =============================================================================
+# Namespace Selector
+# =============================================================================
 # Label-based namespace selection
 # Enable preflight in a namespace: kubectl label namespace <name> nvsentinel.nvidia.com/preflight=enabled
 namespaceSelector:
   matchLabels:
     nvsentinel.nvidia.com/preflight: "enabled"
 
+# =============================================================================
+# Network Policy
+# =============================================================================
 networkPolicy:
   enabled: true
-

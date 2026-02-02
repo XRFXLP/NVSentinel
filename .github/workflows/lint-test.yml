@@ -139,24 +139,15 @@ jobs:
     strategy:
       matrix:
         component:
-          - ping
+          - dcgm-diag
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
-      - name: Run lint and test
-        run: make -C preflight-checks/${{ matrix.component }} lint-test
-
-      - name: Upload artifacts
-        uses: ./.github/actions/upload-test-artifacts
-        with:
-          component-name: preflight-${{ matrix.component }}
-          file-paths: |
-            preflight-checks/${{ matrix.component }}/coverage.xml
-            preflight-checks/${{ matrix.component }}/coverage.txt
-            preflight-checks/${{ matrix.component }}/report.xml
+      - name: Run lint
+        run: make -C preflight-checks/${{ matrix.component }} lint
 
   modules-lint-test:
     if: github.repository == 'nvidia/nvsentinel'

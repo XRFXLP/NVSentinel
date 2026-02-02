@@ -33,6 +33,13 @@ type FileConfig struct {
 	InitContainers       []corev1.Container `yaml:"initContainers"`
 	GPUResourceNames     []string           `yaml:"gpuResourceNames"`
 	NetworkResourceNames []string           `yaml:"networkResourceNames"`
+	DCGM                 DCGMConfig         `yaml:"dcgm"`
+}
+
+type DCGMConfig struct {
+	HostengineAddr string `yaml:"hostengineAddr"`
+	DiagLevel      int    `yaml:"diagLevel"`
+	Timeout        string `yaml:"timeout"`
 }
 
 func Load(path string) (*Config, error) {
@@ -48,6 +55,14 @@ func Load(path string) (*Config, error) {
 
 	if len(fileConfig.GPUResourceNames) == 0 {
 		fileConfig.GPUResourceNames = []string{"nvidia.com/gpu"}
+	}
+
+	if fileConfig.DCGM.DiagLevel == 0 {
+		fileConfig.DCGM.DiagLevel = 1
+	}
+
+	if fileConfig.DCGM.Timeout == "" {
+		fileConfig.DCGM.Timeout = "5m"
 	}
 
 	return &Config{FileConfig: fileConfig}, nil

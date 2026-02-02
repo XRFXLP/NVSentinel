@@ -15,6 +15,7 @@
 package webhook
 
 import (
+	"fmt"
 	"log/slog"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
@@ -142,8 +143,55 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList) []corev
 			container.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("500Mi")
 		}
 
+		i.injectDCGMEnv(container)
+
 		initContainers = append(initContainers, *container)
 	}
 
 	return initContainers
+}
+
+// injectDCGMEnv adds DCGM-related environment variables to the container
+func (i *Injector) injectDCGMEnv(container *corev1.Container) {
+	if container.Name != "preflight-dcgm-diag" {
+		return
+	}
+
+	envVars := []corev1.EnvVar{
+		{
+			Name:  "DCGM_DIAG_LEVEL",
+			Value: fmt.Sprintf("%d", i.cfg.DCGM.DiagLevel),
+		},
+		{
+			Name:  "DCGM_DIAG_TIMEOUT",
+			Value: i.cfg.DCGM.Timeout,
+		},
+		{
+			Name: "NODE_NAME",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "spec.nodeName",
+				},
+			},
+		},
+	}
+
+	if i.cfg.DCGM.HostengineAddr != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "DCGM_HOSTENGINE_ADDR",
+			Value: i.cfg.DCGM.HostengineAddr,
+		})
+	}
+
+	// Merge with existing env vars (user-defined take precedence)
+	existingEnvNames := make(map[string]bool)
+	for _, env := range container.Env {
+		existingEnvNames[env.Name] = true
+	}
+
+	for _, env := range envVars {
+		if !existingEnvNames[env.Name] {
+			container.Env = append(container.Env, env)
+		}
+	}
 }

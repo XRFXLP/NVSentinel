@@ -99,3 +99,27 @@ Certificate DNS names
 - {{ include "preflight.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
 {{- end }}
 
+{{/*
+DCGM hostengine address - uses global.dcgm.service with fallback
+*/}}
+{{- define "preflight.dcgmHostengineAddr" -}}
+{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service }}
+{{- printf "%s:%v" .Values.global.dcgm.service.endpoint .Values.global.dcgm.service.port }}
+{{- else }}
+{{- "" }}
+{{- end }}
+{{- end }}
+
+{{/*
+DCGM diagnostic level
+*/}}
+{{- define "preflight.dcgmDiagLevel" -}}
+{{- .Values.dcgm.diagLevel | default 1 }}
+{{- end }}
+
+{{/*
+DCGM diagnostic timeout
+*/}}
+{{- define "preflight.dcgmTimeout" -}}
+{{- .Values.dcgm.timeout | default "5m" }}
+{{- end }}

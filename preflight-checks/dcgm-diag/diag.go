@@ -1,0 +1,209 @@
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strings"
+
+	"github.com/NVIDIA/go-dcgm/pkg/dcgm"
+)
+
+// runDCGMDiag runs DCGM diagnostics using the go-dcgm bindings.
+// Note: go-dcgm requires CGO and links against libdcgm.so at compile time.
+// The binary must be built with DCGM 4.2.3+ which introduced dcgmDiagResponse_version12.
+// This should be compatible with DCGM hostengines 4.2.3 and newer.
+func runDCGMDiag(ctx context.Context, level int, hostengineAddr string) (*dcgm.DiagResults, error) {
+	cleanup, err := initDCGM(hostengineAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize DCGM: %w", err)
+	}
+
+	defer cleanup()
+
+	diagType := levelToDiagType(level)
+
+	group, groupCleanup, err := getGPUGroup()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GPU group: %w", err)
+	}
+
+	if groupCleanup != nil {
+		defer groupCleanup()
+	}
+
+	slog.Info("Running DCGM diagnostic", "level", level, "diagType", diagType)
+
+	resultCh := make(chan dcgm.DiagResults, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		results, diagErr := dcgm.RunDiag(diagType, group)
+		if diagErr != nil {
+			errCh <- diagErr
+
+			return
+		}
+
+		resultCh <- results
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("diagnostic timed out")
+	case err := <-errCh:
+		return nil, fmt.Errorf("diagnostic failed: %w", err)
+	case results := <-resultCh:
+		logDiagResults(&results)
+
+		return &results, nil
+	}
+}
+
+func initDCGM(hostengineAddr string) (func(), error) {
+	// Initialize DCGM - either embedded or connect to standalone hostengine
+	if hostengineAddr != "" {
+		slog.Info("Connecting to DCGM hostengine", "address", hostengineAddr)
+		// Parse address - format is "host:port"
+		// The second arg "0" means it's a TCP connection, not unix socket
+		return dcgm.Init(dcgm.Standalone, hostengineAddr, "0")
+	}
+
+	slog.Info("Starting DCGM in embedded mode")
+
+	return dcgm.Init(dcgm.Embedded)
+}
+
+func levelToDiagType(level int) dcgm.DiagType {
+	switch level {
+	case 1:
+		return dcgm.DiagQuick
+	case 2:
+		return dcgm.DiagMedium
+	case 3:
+		return dcgm.DiagLong
+	case 4:
+		return dcgm.DiagExtended
+	default:
+		return dcgm.DiagQuick
+	}
+}
+
+func processResults(results *dcgm.DiagResults, connectorSocket string) error {
+	var failures, warnings []dcgm.DiagResult
+
+	for _, result := range results.Software {
+		switch result.Status {
+		case "fail":
+			failures = append(failures, result)
+		case "warn":
+			warnings = append(warnings, result)
+		}
+	}
+
+	if len(failures) > 0 {
+		msg := formatDiagFailures(failures)
+
+		if reportErr := reportHealthEvent(connectorSocket, failures, true, msg); reportErr != nil {
+			slog.Warn("Failed to report health event", "error", reportErr)
+		}
+
+		return fmt.Errorf("DCGM diagnostic failed: %s", msg)
+	}
+
+	if len(warnings) > 0 {
+		msg := formatDiagWarnings(warnings)
+		slog.Warn("DCGM diagnostic warnings", "message", msg)
+
+		if reportErr := reportHealthEvent(connectorSocket, warnings, false, msg); reportErr != nil {
+			slog.Warn("Failed to report health event", "error", reportErr)
+		}
+	}
+
+	slog.Info("DCGM diagnostic completed successfully",
+		"tests_run", len(results.Software),
+		"warnings", len(warnings))
+
+	return nil
+}
+
+func logDiagResults(results *dcgm.DiagResults) {
+	var passed, failed, warned, skipped int
+
+	for _, r := range results.Software {
+		switch r.Status {
+		case "pass":
+			passed++
+		case "fail":
+			failed++
+		case "warn":
+			warned++
+		case "skip":
+			skipped++
+		}
+
+		if r.Status != "pass" {
+			slog.Info("Test result",
+				"test", r.TestName,
+				"status", r.Status,
+				"gpu", r.EntityID,
+				"error", r.ErrorMessage)
+		} else {
+			slog.Debug("Test result",
+				"test", r.TestName,
+				"status", r.Status,
+				"gpu", r.EntityID)
+		}
+	}
+
+	slog.Info("Diagnostic summary",
+		"passed", passed,
+		"failed", failed,
+		"warned", warned,
+		"skipped", skipped,
+		"total", len(results.Software))
+}
+
+func formatDiagFailures(failures []dcgm.DiagResult) string {
+	var parts []string
+
+	for _, f := range failures {
+		msg := fmt.Sprintf("%s (GPU %d): %s", f.TestName, f.EntityID, f.ErrorMessage)
+		if f.ErrorMessage == "" {
+			msg = fmt.Sprintf("%s (GPU %d): failed", f.TestName, f.EntityID)
+		}
+
+		parts = append(parts, msg)
+	}
+
+	return strings.Join(parts, "; ")
+}
+
+func formatDiagWarnings(warnings []dcgm.DiagResult) string {
+	var parts []string
+
+	for _, w := range warnings {
+		msg := fmt.Sprintf("%s (GPU %d): %s", w.TestName, w.EntityID, w.ErrorMessage)
+		if w.ErrorMessage == "" {
+			msg = fmt.Sprintf("%s (GPU %d): warning", w.TestName, w.EntityID)
+		}
+
+		parts = append(parts, msg)
+	}
+
+	return strings.Join(parts, "; ")
+}
