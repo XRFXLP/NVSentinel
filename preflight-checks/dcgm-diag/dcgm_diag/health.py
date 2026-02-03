@@ -59,7 +59,7 @@ class HealthReporter:
         )
 
         if not self._send_with_retries(health_events):
-            log.error(f"Failed to send health event after {MAX_RETRIES} retries")
+            raise RuntimeError(f"Failed to send health event after {MAX_RETRIES} retries")
 
     def _build_event(
         self,
