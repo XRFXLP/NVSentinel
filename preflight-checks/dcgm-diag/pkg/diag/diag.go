@@ -96,6 +96,7 @@ func levelToDiagType(level int) dcgm.DiagType {
 func ProcessResults(
 	results *dcgm.DiagResults,
 	connectorSocket string,
+	nodeName string,
 	processingStrategy pb.ProcessingStrategy,
 ) error {
 	var failures, warnings []dcgm.DiagResult
@@ -113,7 +114,7 @@ func ProcessResults(
 		msg := formatResults(failures)
 		uuids := resultsToUUIDs(failures)
 
-		reportErr := health.SendHealthEvent(connectorSocket, uuids, false, true, msg, processingStrategy)
+		reportErr := health.SendHealthEvent(connectorSocket, nodeName, uuids, false, true, msg, processingStrategy)
 		if reportErr != nil {
 			slog.Warn("Failed to report health event", "error", reportErr)
 		}
@@ -127,7 +128,7 @@ func ProcessResults(
 
 		slog.Warn("DCGM diagnostic warnings", "message", msg)
 
-		reportErr := health.SendHealthEvent(connectorSocket, uuids, false, false, msg, processingStrategy)
+		reportErr := health.SendHealthEvent(connectorSocket, nodeName, uuids, false, false, msg, processingStrategy)
 		if reportErr != nil {
 			slog.Warn("Failed to report health event", "error", reportErr)
 		}
@@ -140,7 +141,8 @@ func ProcessResults(
 	if len(warnings) == 0 {
 		uuids := gpu.GetAllUUIDs()
 
-		reportErr := health.SendHealthEvent(connectorSocket, uuids, true, false, "DCGM diagnostic passed", processingStrategy)
+		reportErr := health.SendHealthEvent(connectorSocket,
+			nodeName, uuids, true, false, "DCGM diagnostic passed", processingStrategy)
 		if reportErr != nil {
 			slog.Warn("Failed to report healthy event", "error", reportErr)
 		}

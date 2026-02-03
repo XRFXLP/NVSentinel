@@ -50,6 +50,10 @@ func run() error {
 		return fmt.Errorf("platform connector socket is required (set PLATFORM_CONNECTOR_SOCKET or --connector-socket)")
 	}
 
+	if cfg.nodeName == "" {
+		return fmt.Errorf("node name is required (set NODE_NAME environment variable)")
+	}
+
 	if cfg.diagLevel < 1 || cfg.diagLevel > 4 {
 		return fmt.Errorf("invalid diagnostic level %d: must be 1, 2, 3, or 4", cfg.diagLevel)
 	}
@@ -66,7 +70,8 @@ func run() error {
 	results, err := diag.Run(cfg.diagLevel, cfg.hostengineAddr)
 	if err != nil {
 		// Report error without specific GPU UUIDs (we don't know which GPU failed)
-		reportErr := health.SendHealthEvent(cfg.connectorSocket, nil, false, false, err.Error(), processingStrategy)
+		reportErr := health.SendHealthEvent(cfg.connectorSocket,
+			cfg.nodeName, nil, false, false, err.Error(), processingStrategy)
 		if reportErr != nil {
 			slog.Warn("Failed to report error health event", "error", reportErr)
 		}
@@ -74,7 +79,7 @@ func run() error {
 		return err
 	}
 
-	return diag.ProcessResults(results, cfg.connectorSocket, processingStrategy)
+	return diag.ProcessResults(results, cfg.connectorSocket, cfg.nodeName, processingStrategy)
 }
 
 type config struct {
@@ -82,6 +87,7 @@ type config struct {
 	hostengineAddr     string
 	connectorSocket    string
 	processingStrategy string
+	nodeName           string
 }
 
 func parseConfig() config {
@@ -101,6 +107,9 @@ func parseConfig() config {
 	flag.StringVar(&cfg.processingStrategy, "processing-strategy", strategyDefault,
 		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY")
 	flag.Parse()
+
+	// NODE_NAME is injected by Kubernetes downward API - not a flag
+	cfg.nodeName = os.Getenv("NODE_NAME")
 
 	return cfg
 }

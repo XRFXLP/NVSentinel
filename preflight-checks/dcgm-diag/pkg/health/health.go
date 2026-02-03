@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -61,12 +60,13 @@ func ParseProcessingStrategy(strategy string) (pb.ProcessingStrategy, error) {
 // SendHealthEvent sends a health event to the platform connector.
 func SendHealthEvent(
 	socketPath string,
+	nodeName string,
 	gpuUUIDs []string,
 	isHealthy, isFatal bool,
 	message string,
 	processingStrategy pb.ProcessingStrategy,
 ) error {
-	event := buildHealthEvent(gpuUUIDs, isHealthy, isFatal, message, processingStrategy)
+	event := buildHealthEvent(nodeName, gpuUUIDs, isHealthy, isFatal, message, processingStrategy)
 	healthEvents := &pb.HealthEvents{
 		Version: 1,
 		Events:  []*pb.HealthEvent{event},
@@ -115,6 +115,7 @@ func SendHealthEvent(
 }
 
 func buildHealthEvent(
+	nodeName string,
 	gpuUUIDs []string,
 	isHealthy, isFatal bool,
 	message string,
@@ -128,12 +129,7 @@ func buildHealthEvent(
 		})
 	}
 
-	nodeName := os.Getenv("NODE_NAME")
-	if nodeName == "" {
-		nodeName = "unknown"
-	}
-
-	recommendedAction := pb.RecommendedAction_RUN_FIELDDIAG
+	recommendedAction := pb.RecommendedAction_CONTACT_SUPPORT
 	if isHealthy {
 		recommendedAction = pb.RecommendedAction_NONE
 	}
