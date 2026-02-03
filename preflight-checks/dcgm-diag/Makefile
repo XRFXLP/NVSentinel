@@ -12,47 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-IS_DOCKER_MODULE := 1
+IS_GO_MODULE := 0
+HAS_DOCKER := 1
+
+PYTHON_PACKAGE_NAME := dcgm_diag
 
 include ../../make/common.mk
+include ../../make/python.mk
+include ../../make/docker.mk
 
 DCGM_VERSION ?= 4.2.3-1-ubuntu22.04
 IMAGE_NAME := preflight-dcgm-diag
-IMAGE_TAG ?= $(VERSION)
-FULL_IMAGE := $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(IMAGE_NAME)
 
-.PHONY: lint-test build test lint clean docker-build docker-publish
+.PHONY: all
+all: lint-test
 
-lint-test: lint test
+.PHONY: setup
+setup:
+	@echo "Setting up Poetry environment for $(MODULE_NAME)..."
+	poetry config virtualenvs.in-project true
+	poetry install
 
-build:
-	cd $(REPO_ROOT) && poetry -C $(MODULE_PATH) install
-
-test:
-	cd $(REPO_ROOT) && poetry -C $(MODULE_PATH) run pytest $(MODULE_PATH)
-
-lint:
-	cd $(REPO_ROOT) && poetry -C $(MODULE_PATH) run ruff check $(MODULE_PATH)/dcgm_diag
-	cd $(REPO_ROOT) && poetry -C $(MODULE_PATH) run black --check $(MODULE_PATH)/dcgm_diag
-
-clean:
-	rm -rf .pytest_cache
-	rm -rf dcgm_diag/__pycache__
-	rm -rf dist
-
-docker-build:
+docker-build: setup-buildx
+	@echo "Building Docker image for $(MODULE_NAME)..."
 	cd $(REPO_ROOT) && docker buildx build \
 		-f $(MODULE_PATH)/Dockerfile \
-		-t $(IMAGE_NAME):$(IMAGE_TAG) \
+		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(IMAGE_NAME):$(SAFE_REF_NAME) \
 		--build-arg DCGM_VERSION=$(DCGM_VERSION) \
 		--network=host \
-		--load \
+		$(DOCKER_LOAD_ARG) \
 		.
 
-docker-publish:
+docker-publish: setup-buildx
+	@echo "Publishing Docker image for $(MODULE_NAME)..."
 	cd $(REPO_ROOT) && docker buildx build \
 		-f $(MODULE_PATH)/Dockerfile \
-		-t $(FULL_IMAGE):$(IMAGE_TAG) \
+		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(IMAGE_NAME):$(SAFE_REF_NAME) \
 		--build-arg DCGM_VERSION=$(DCGM_VERSION) \
 		--network=host \
 		--push \
