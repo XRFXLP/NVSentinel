@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,60 +12,58 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Build stage - uses DCGM image as base because go-dcgm requires CGO and libdcgm.so
-# The go-dcgm bindings use dcgmDiagResponse_version12 introduced in DCGM 4.2.3
 ARG DCGM_VERSION="4.2.3-1-ubuntu22.04"
-ARG GOLANG_VERSION="1.25.0"
-ARG VERSION="dev"
+ARG VERSION="0.1.0"
 ARG GIT_COMMIT="none"
 ARG BUILD_DATE=$(date -u +%FT%TZ)
 
-FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS builder
+FROM public.ecr.aws/docker/library/python:3.10-bookworm AS build
 
-ARG GOLANG_VERSION
+ARG VERSION
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install poetry==1.8.2
+
+ENV POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_IN_PROJECT=1 \
+    POETRY_VIRTUALENVS_CREATE=1 \
+    POETRY_CACHE_DIR=/tmp/poetry_cache
+
+WORKDIR /app
+
+COPY preflight-checks/dcgm-diag/ .
+RUN poetry version $(echo "${VERSION}" | sed 's/^v//')
+RUN --mount=type=cache,target=/tmp/poetry_cache \
+    poetry build --format wheel
+RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
+
+
+FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS runtime
+
+RUN echo "Acquire::https::Verify-Peer \"false\";" > /etc/apt/apt.conf.d/99disable-cert-check
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
-    wget ca-certificates gcc libc6-dev \
-    && rm -rf /var/lib/apt/lists/*
+    echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        apt-transport-https \
+        ca-certificates \
+        gnupg \
+        python3-pip && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN wget -q https://go.dev/dl/go${GOLANG_VERSION}.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go${GOLANG_VERSION}.linux-amd64.tar.gz \
-    && rm go${GOLANG_VERSION}.linux-amd64.tar.gz
+ARG PYTHONPATH="/usr/share/datacenter-gpu-manager-4/bindings/python3"
 
-ENV PATH="/usr/local/go/bin:${PATH}" \
-    GOPATH="/go" \
-    CGO_ENABLED=1
+ENV PYTHONPATH=${PYTHONPATH} \
+    PYTHONUNBUFFERED=1
 
-WORKDIR /workspace
-
-# Copy go.mod files first for better caching
-COPY data-models/go.mod data-models/go.sum ./data-models/
-COPY preflight-checks/dcgm-diag/go.mod preflight-checks/dcgm-diag/go.sum ./preflight-checks/dcgm-diag/
-
-RUN --mount=type=cache,target=/go/pkg/mod \
-    cd preflight-checks/dcgm-diag && go mod download
-
-# Copy source code
-COPY data-models/ ./data-models/
-COPY preflight-checks/dcgm-diag/ ./preflight-checks/dcgm-diag/
-
-ARG VERSION
-ARG GIT_COMMIT
-ARG BUILD_DATE
-
-RUN cd preflight-checks/dcgm-diag && \
-    go build -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" \
-    -o /dcgm-diag .
-
-# Runtime stage - same DCGM version for libdcgm.so compatibility
-FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION}
+COPY --from=build /app/dist/*.whl ./
+COPY --from=build /app/constraints.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install ./dcgm_diag*.whl --constraint constraints.txt
 
 RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
-
-COPY --from=builder /dcgm-diag /usr/local/bin/dcgm-diag
-
 USER nvsentinel
 
-ENTRYPOINT ["/usr/local/bin/dcgm-diag"]
+ENTRYPOINT ["python3", "-m", "dcgm_diag"]
