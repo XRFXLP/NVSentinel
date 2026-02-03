@@ -32,3 +32,4 @@ data:
       processingStrategy: {{ include "preflight.processingStrategy" . | quote }}
     initContainers:
       {{- toYaml .Values.initContainers | nindent 6 }}
+{{ (.Files.Glob "files/dcgmerrorsmapping.csv").AsConfig | indent 2 }}

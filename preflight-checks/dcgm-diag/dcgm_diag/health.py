@@ -18,6 +18,7 @@ from time import sleep
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 
+from .errors import get_recommended_action
 from .protos import health_event_pb2 as pb
 from .protos import health_event_pb2_grpc as pb_grpc
 
@@ -32,7 +33,7 @@ RPC_TIMEOUT = 30.0
 class HealthReporter:
     AGENT = "preflight-dcgm-diag"
     COMPONENT_CLASS = "GPU"
-    CHECK_NAME = "DCGM_DIAGNOSTIC"
+    CHECK_NAME = "DcgmDiagnostic"
 
     def __init__(
         self,
@@ -46,17 +47,32 @@ class HealthReporter:
 
     def send_event(
         self,
-        gpu_uuids: list[str],
+        gpu_uuid: str,
         is_healthy: bool,
         is_fatal: bool,
         message: str,
+        error_code: int = 0,
     ) -> None:
-        event = self._build_event(gpu_uuids, is_healthy, is_fatal, message)
+        """Send a single health event for one GPU."""
+        if is_healthy:
+            recommended_action = pb.RecommendedAction.NONE
+        elif error_code:
+            recommended_action = get_recommended_action(error_code)
+        else:
+            recommended_action = pb.RecommendedAction.CONTACT_SUPPORT
+
+        event = self._build_event(gpu_uuid, is_healthy, is_fatal, message, recommended_action)
         health_events = pb.HealthEvents(version=1, events=[event])
 
         log.info(
-            f"Sending health event is_healthy={is_healthy} is_fatal={is_fatal} "
-            f"gpu_count={len(gpu_uuids)} processing_strategy={self._processing_strategy} message={message}"
+            "Sending health event",
+            extra={
+                "gpu": gpu_uuid,
+                "is_healthy": is_healthy,
+                "is_fatal": is_fatal,
+                "recommended_action": pb.RecommendedAction.Name(recommended_action),
+                "message": message,
+            },
         )
 
         if not self._send_with_retries(health_events):
@@ -64,14 +80,13 @@ class HealthReporter:
 
     def _build_event(
         self,
-        gpu_uuids: list[str],
+        gpu_uuid: str,
         is_healthy: bool,
         is_fatal: bool,
         message: str,
+        recommended_action: int,
     ) -> pb.HealthEvent:
-        entities = [pb.Entity(entityType="GPU_UUID", entityValue=uuid) for uuid in gpu_uuids]
-
-        recommended_action = pb.NONE if is_healthy else pb.CONTACT_SUPPORT
+        entities = [pb.Entity(entityType="GPU_UUID", entityValue=gpu_uuid)] if gpu_uuid else []
 
         timestamp = Timestamp()
         timestamp.GetCurrentTime()
@@ -102,7 +117,10 @@ class HealthReporter:
                     log.info("Health event sent successfully")
                     return True
             except grpc.RpcError as e:
-                log.warning(f"Failed to send health event (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
+                log.warning(
+                    "Failed to send health event",
+                    extra={"attempt": attempt + 1, "max_retries": MAX_RETRIES, "error": str(e)},
+                )
                 if attempt < MAX_RETRIES - 1:
                     sleep(delay)
                     delay *= BACKOFF_FACTOR

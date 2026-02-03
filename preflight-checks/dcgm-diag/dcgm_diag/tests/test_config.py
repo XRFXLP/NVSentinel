@@ -23,7 +23,7 @@ class TestConfigFromEnv:
         cfg = Config.from_env()
         assert cfg.connector_socket == "/var/run/nvsentinel.sock"
         assert cfg.node_name == "test-node"
-        assert cfg.diag_level == 1
+        assert cfg.diag_level == 2
         assert cfg.hostengine_addr == ""
         assert cfg.processing_strategy == pb.ProcessingStrategy.Value("EXECUTE_REMEDIATION")
 

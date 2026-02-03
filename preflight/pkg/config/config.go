@@ -37,10 +37,11 @@ type FileConfig struct {
 }
 
 type DCGMConfig struct {
-	HostengineAddr     string `yaml:"hostengineAddr"`
-	DiagLevel          int    `yaml:"diagLevel"`
-	ConnectorSocket    string `yaml:"connectorSocket"`
-	ProcessingStrategy string `yaml:"processingStrategy"`
+	HostengineAddr        string `yaml:"hostengineAddr"`
+	DiagLevel             int    `yaml:"diagLevel"`
+	ConnectorSocket       string `yaml:"connectorSocket"`
+	ProcessingStrategy    string `yaml:"processingStrategy"`
+	ErrorMappingConfigMap string // From PREFLIGHT_CONFIGMAP_NAME env var
 }
 
 func Load(path string) (*Config, error) {
@@ -65,6 +66,8 @@ func Load(path string) (*Config, error) {
 	if fileConfig.DCGM.ProcessingStrategy == "" {
 		fileConfig.DCGM.ProcessingStrategy = "EXECUTE_REMEDIATION"
 	}
+
+	fileConfig.DCGM.ErrorMappingConfigMap = os.Getenv("PREFLIGHT_CONFIGMAP_NAME")
 
 	return &Config{FileConfig: fileConfig}, nil
 }

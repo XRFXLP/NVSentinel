@@ -96,4 +96,4 @@ class TestSendEvent:
     @patch.object(HealthReporter, "_send_with_retries", return_value=False)
     def test_raises_on_failure(self, mock_send: MagicMock, reporter: HealthReporter) -> None:
         with pytest.raises(RuntimeError, match="Failed to send health event"):
-            reporter.send_event(["GPU-0"], is_healthy=False, is_fatal=True, message="Error")
+            reporter.send_event(gpu_uuid="GPU-0", is_healthy=False, is_fatal=True, message="Error")

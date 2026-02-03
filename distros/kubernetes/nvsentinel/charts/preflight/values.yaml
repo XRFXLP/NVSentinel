@@ -101,6 +101,9 @@ initContainers:
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run
+      - name: dcgm-error-mapping
+        mountPath: /etc/dcgm
+        readOnly: true
     # Full corev1.Container fields supported:
     # resources:
     #   limits:

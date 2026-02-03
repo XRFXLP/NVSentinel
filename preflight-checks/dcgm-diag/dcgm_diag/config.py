@@ -28,7 +28,7 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        diag_level = int(os.getenv("DCGM_DIAG_LEVEL", "1"))
+        diag_level = int(os.getenv("DCGM_DIAG_LEVEL", "2"))
         hostengine_addr = os.getenv("DCGM_HOSTENGINE_ADDR", "")
         connector_socket = os.getenv("PLATFORM_CONNECTOR_SOCKET", "")
         node_name = os.getenv("NODE_NAME", "")

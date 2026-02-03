@@ -25,7 +25,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-const nvsentinelSocketVolumeName = "nvsentinel-socket"
+const (
+	nvsentinelSocketVolumeName = "nvsentinel-socket"
+	dcgmErrorMappingVolumeName = "dcgm-error-mapping"
+)
 
 type PatchOperation struct {
 	Op    string `json:"op"`
@@ -160,45 +163,60 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList) []corev
 
 func (i *Injector) injectVolumes(pod *corev1.Pod) []PatchOperation {
 	var patches []PatchOperation
+	var volumesToAdd []corev1.Volume
 
-	// Only inject socket volume if connector socket is configured
-	if i.cfg.DCGM.ConnectorSocket == "" {
-		return patches
-	}
-
-	// Check if volume already exists
+	existingVolumes := make(map[string]bool)
 	for _, vol := range pod.Spec.Volumes {
-		if vol.Name == nvsentinelSocketVolumeName {
-			return patches
-		}
+		existingVolumes[vol.Name] = true
 	}
 
-	socketPath := strings.TrimPrefix(i.cfg.DCGM.ConnectorSocket, "unix://")
-	hostPathDir := filepath.Dir(socketPath)
+	if i.cfg.DCGM.ConnectorSocket != "" && !existingVolumes[nvsentinelSocketVolumeName] {
+		socketPath := strings.TrimPrefix(i.cfg.DCGM.ConnectorSocket, "unix://")
+		hostPathDir := filepath.Dir(socketPath)
+		hostPathType := corev1.HostPathDirectoryOrCreate
 
-	hostPathType := corev1.HostPathDirectoryOrCreate
-	socketVolume := corev1.Volume{
-		Name: nvsentinelSocketVolumeName,
-		VolumeSource: corev1.VolumeSource{
-			HostPath: &corev1.HostPathVolumeSource{
-				Path: hostPathDir,
-				Type: &hostPathType,
+		volumesToAdd = append(volumesToAdd, corev1.Volume{
+			Name: nvsentinelSocketVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: hostPathDir,
+					Type: &hostPathType,
+				},
 			},
-		},
+		})
+	}
+
+	if i.cfg.DCGM.ErrorMappingConfigMap != "" && !existingVolumes[dcgmErrorMappingVolumeName] {
+		volumesToAdd = append(volumesToAdd, corev1.Volume{
+			Name: dcgmErrorMappingVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: i.cfg.DCGM.ErrorMappingConfigMap,
+					},
+				},
+			},
+		})
+	}
+
+	if len(volumesToAdd) == 0 {
+		return patches
 	}
 
 	if len(pod.Spec.Volumes) == 0 {
 		patches = append(patches, PatchOperation{
 			Op:    "add",
 			Path:  "/spec/volumes",
-			Value: []corev1.Volume{socketVolume},
+			Value: volumesToAdd,
 		})
 	} else {
-		patches = append(patches, PatchOperation{
-			Op:    "add",
-			Path:  "/spec/volumes/-",
-			Value: socketVolume,
-		})
+		for _, vol := range volumesToAdd {
+			patches = append(patches, PatchOperation{
+				Op:    "add",
+				Path:  "/spec/volumes/-",
+				Value: vol,
+			})
+		}
 	}
 
 	return patches
@@ -242,6 +260,13 @@ func (i *Injector) injectDCGMEnv(container *corev1.Container) {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PROCESSING_STRATEGY",
 			Value: i.cfg.DCGM.ProcessingStrategy,
+		})
+	}
+
+	if i.cfg.DCGM.ErrorMappingConfigMap != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "DCGM_ERROR_MAPPING_PATH",
+			Value: "/etc/dcgm/dcgmerrorsmapping.csv",
 		})
 	}
 

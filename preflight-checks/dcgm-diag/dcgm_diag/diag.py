@@ -29,6 +29,7 @@ class DiagResult:
     status: str
     gpu_index: int
     gpu_uuid: str
+    error_code: int
     error_message: str
 
 
@@ -92,7 +93,7 @@ class DCGMDiagnostic:
     def _create_gpu_group(self, gpu_indices: list[int]) -> pydcgm.DcgmGroup:
         group = pydcgm.DcgmGroup(
             self._handle,
-            groupName="preflight-diag",
+            groupName="nvsentinel-preflight-diag",
             groupType=dcgm_structs.DCGM_GROUP_EMPTY,
         )
         for idx in gpu_indices:
@@ -112,11 +113,11 @@ class DCGMDiagnostic:
         results = []
         gpu_set = set(gpu_indices)
 
-        error_lookup = {}
+        error_lookup: dict[tuple[int, int], tuple[int, str]] = {}
         for i in range(response.numErrors):
             err = response.errors[i]
             key = (err.testId, err.entity.entityId)
-            error_lookup[key] = self._decode_string(err.msg)
+            error_lookup[key] = (err.code, self._decode_string(err.msg))
 
         for test_idx in range(response.numTests):
             test = response.tests[test_idx]
@@ -131,7 +132,7 @@ class DCGMDiagnostic:
                     continue
 
                 status = self._status_to_string(entity_result.result)
-                error_msg = error_lookup.get((entity_result.testId, gpu_idx), "")
+                error_code, error_msg = error_lookup.get((entity_result.testId, gpu_idx), (0, ""))
 
                 results.append(
                     DiagResult(
@@ -139,6 +140,7 @@ class DCGMDiagnostic:
                         status=status,
                         gpu_index=gpu_idx,
                         gpu_uuid=self._gpu_discovery.get_uuid(gpu_idx),
+                        error_code=error_code,
                         error_message=error_msg,
                     )
                 )
