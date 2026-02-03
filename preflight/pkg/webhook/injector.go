@@ -25,6 +25,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+const nvsentinelSocketVolumeName = "nvsentinel-socket"
+
 type PatchOperation struct {
 	Op    string `json:"op"`
 	Path  string `json:"path"`
@@ -156,9 +158,6 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList) []corev
 	return initContainers
 }
 
-const nvsentinelSocketVolumeName = "nvsentinel-socket"
-
-// injectVolumes adds required volumes to the pod for init container communication
 func (i *Injector) injectVolumes(pod *corev1.Pod) []PatchOperation {
 	var patches []PatchOperation
 
@@ -205,7 +204,6 @@ func (i *Injector) injectVolumes(pod *corev1.Pod) []PatchOperation {
 	return patches
 }
 
-// injectDCGMEnv adds DCGM-related environment variables to the container
 func (i *Injector) injectDCGMEnv(container *corev1.Container) {
 	if container.Name != "preflight-dcgm-diag" {
 		return

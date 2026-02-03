@@ -46,18 +46,6 @@ const (
 	sendTimeout = 10 * time.Second
 )
 
-// ParseProcessingStrategy parses a processing strategy string into a protobuf value.
-func ParseProcessingStrategy(strategy string) (pb.ProcessingStrategy, error) {
-	value, ok := pb.ProcessingStrategy_value[strategy]
-	if !ok {
-		return pb.ProcessingStrategy_UNSPECIFIED, fmt.Errorf(
-			"invalid processing strategy %q, valid options: EXECUTE_REMEDIATION, STORE_ONLY", strategy)
-	}
-
-	return pb.ProcessingStrategy(value), nil
-}
-
-// SendHealthEvent sends a health event to the platform connector.
 func SendHealthEvent(
 	socketPath string,
 	nodeName string,
@@ -79,7 +67,6 @@ func SendHealthEvent(
 		"processingStrategy", processingStrategy.String(),
 		"message", message)
 
-	// Handle unix:// prefix
 	socketPath = strings.TrimPrefix(socketPath, "unix://")
 
 	backoff := wait.Backoff{
@@ -174,7 +161,6 @@ func sendToConnector(socketPath string, healthEvents *pb.HealthEvents) error {
 	return nil
 }
 
-// isRetryableError determines if an error is retryable.
 func isRetryableError(err error) bool {
 	if s, ok := status.FromError(err); ok {
 		if s.Code() == codes.Unavailable || s.Code() == codes.DeadlineExceeded {

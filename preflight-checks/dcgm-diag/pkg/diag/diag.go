@@ -92,7 +92,6 @@ func levelToDiagType(level int) dcgm.DiagType {
 	}
 }
 
-// ProcessResults processes diagnostic results and reports health events.
 func ProcessResults(
 	results *dcgm.DiagResults,
 	connectorSocket string,

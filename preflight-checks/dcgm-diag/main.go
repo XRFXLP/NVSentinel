@@ -15,11 +15,10 @@
 package main
 
 import (
-	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 
+	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/diag"
 	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/health"
 )
@@ -44,34 +43,19 @@ func main() {
 }
 
 func run() error {
-	cfg := parseConfig()
-
-	if cfg.connectorSocket == "" {
-		return fmt.Errorf("platform connector socket is required (set PLATFORM_CONNECTOR_SOCKET or --connector-socket)")
-	}
-
-	if cfg.nodeName == "" {
-		return fmt.Errorf("node name is required (set NODE_NAME environment variable)")
-	}
-
-	if cfg.diagLevel < 1 || cfg.diagLevel > 4 {
-		return fmt.Errorf("invalid diagnostic level %d: must be 1, 2, 3, or 4", cfg.diagLevel)
-	}
-
-	processingStrategy, err := health.ParseProcessingStrategy(cfg.processingStrategy)
+	cfg, err := config.Parse()
 	if err != nil {
 		return err
 	}
 
-	slog.Info("Event handling strategy configured", "processingStrategy", cfg.processingStrategy)
+	slog.Info("Configuration loaded",
+		"diagLevel", cfg.DiagLevel,
+		"processingStrategy", cfg.ProcessingStrategy.String())
 
-	// Note: dcgm.RunDiag() is synchronous with no cancellation support.
-	// Timeout is enforced by Kubernetes init container timeout instead.
-	results, err := diag.Run(cfg.diagLevel, cfg.hostengineAddr)
+	results, err := diag.Run(cfg.DiagLevel, cfg.HostengineAddr)
 	if err != nil {
-		// Report error without specific GPU UUIDs (we don't know which GPU failed)
-		reportErr := health.SendHealthEvent(cfg.connectorSocket,
-			cfg.nodeName, nil, false, false, err.Error(), processingStrategy)
+		reportErr := health.SendHealthEvent(cfg.ConnectorSocket,
+			cfg.NodeName, nil, false, false, err.Error(), cfg.ProcessingStrategy)
 		if reportErr != nil {
 			slog.Warn("Failed to report error health event", "error", reportErr)
 		}
@@ -79,56 +63,5 @@ func run() error {
 		return err
 	}
 
-	return diag.ProcessResults(results, cfg.connectorSocket, cfg.nodeName, processingStrategy)
-}
-
-type config struct {
-	diagLevel          int
-	hostengineAddr     string
-	connectorSocket    string
-	processingStrategy string
-	nodeName           string
-}
-
-func parseConfig() config {
-	var cfg config
-
-	diagLevelDefault := getEnvInt("DCGM_DIAG_LEVEL", 1)
-	hostengineDefault := getEnv("DCGM_HOSTENGINE_ADDR", "")
-	connectorDefault := getEnv("PLATFORM_CONNECTOR_SOCKET", "")
-	strategyDefault := getEnv("PROCESSING_STRATEGY", "EXECUTE_REMEDIATION")
-
-	flag.IntVar(&cfg.diagLevel, "level", diagLevelDefault,
-		"DCGM diagnostic level (1=quick ~30s, 2=medium ~2min, 3=long ~15min, 4=extended)")
-	flag.StringVar(&cfg.hostengineAddr, "hostengine", hostengineDefault,
-		"DCGM hostengine address (e.g., localhost:5555). If empty, uses embedded mode.")
-	flag.StringVar(&cfg.connectorSocket, "connector-socket", connectorDefault,
-		"Platform connector socket path for health event reporting")
-	flag.StringVar(&cfg.processingStrategy, "processing-strategy", strategyDefault,
-		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY")
-	flag.Parse()
-
-	// NODE_NAME is injected by Kubernetes downward API - not a flag
-	cfg.nodeName = os.Getenv("NODE_NAME")
-
-	return cfg
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-
-	return defaultValue
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		var result int
-		if _, err := fmt.Sscanf(value, "%d", &result); err == nil {
-			return result
-		}
-	}
-
-	return defaultValue
+	return diag.ProcessResults(results, cfg.ConnectorSocket, cfg.NodeName, cfg.ProcessingStrategy)
 }
