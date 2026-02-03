@@ -101,7 +101,7 @@ class DCGMDiagnostic:
 
     def _parse_response(self, response, gpu_indices: list[int]) -> list[DiagResult]:
         """Parse DCGM v12 diagnostic response structure.
-        
+
         v12 structure:
         - tests[0..numTests-1]: c_dcgmDiagTestRun_v2 with name, result, resultIndices
         - results[0..numResults-1]: c_dcgmDiagEntityResult_v1 with entity.entityId, result, testId
@@ -131,13 +131,15 @@ class DCGMDiagnostic:
                 status = self._status_to_string(entity_result.result)
                 error_msg = error_lookup.get((test_idx, gpu_idx), "")
 
-                results.append(DiagResult(
-                    test_name=test_name,
-                    status=status,
-                    gpu_index=gpu_idx,
-                    gpu_uuid=self._gpu_discovery.get_uuid(gpu_idx),
-                    error_message=error_msg,
-                ))
+                results.append(
+                    DiagResult(
+                        test_name=test_name,
+                        status=status,
+                        gpu_index=gpu_idx,
+                        gpu_uuid=self._gpu_discovery.get_uuid(gpu_idx),
+                        error_message=error_msg,
+                    )
+                )
 
         return results
 
