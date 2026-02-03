@@ -23,7 +23,6 @@ dcgm:
   dcgmK8sServiceEnabled: true
   service:
     # DCGM service endpoint in the cluster
-    # Uses global.dcgm.service.endpoint if set
     endpoint: "nvidia-dcgm.gpu-operator.svc"
     # DCGM service port
     port: 5555
