@@ -48,6 +48,10 @@ func main() {
 func run() error {
 	cfg := parseConfig()
 
+	if cfg.connectorSocket == "" {
+		return fmt.Errorf("platform connector socket is required (set PLATFORM_CONNECTOR_SOCKET or --connector-socket)")
+	}
+
 	if cfg.diagLevel < 1 || cfg.diagLevel > 4 {
 		return fmt.Errorf("invalid diagnostic level %d: must be 1, 2, 3, or 4", cfg.diagLevel)
 	}
@@ -57,7 +61,10 @@ func run() error {
 
 	results, err := diag.Run(ctx, cfg.diagLevel, cfg.hostengineAddr)
 	if err != nil {
-		health.ReportError(cfg.connectorSocket, err.Error())
+		// Report error without specific GPU UUIDs (we don't know which GPU failed)
+		if reportErr := health.SendHealthEvent(cfg.connectorSocket, nil, false, false, err.Error()); reportErr != nil {
+			slog.Warn("Failed to report error health event", "error", reportErr)
+		}
 
 		return err
 	}

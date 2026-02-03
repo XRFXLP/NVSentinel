@@ -119,9 +119,10 @@ func ProcessResults(results *dcgm.DiagResults, connectorSocket string) error {
 	}
 
 	if len(failures) > 0 {
-		msg := formatFailures(failures)
+		msg := formatResults(failures)
+		uuids := resultsToUUIDs(failures)
 
-		if reportErr := health.ReportEvent(connectorSocket, failures, true, msg); reportErr != nil {
+		if reportErr := health.SendHealthEvent(connectorSocket, uuids, false, true, msg); reportErr != nil {
 			slog.Warn("Failed to report health event", "error", reportErr)
 		}
 
@@ -129,10 +130,11 @@ func ProcessResults(results *dcgm.DiagResults, connectorSocket string) error {
 	}
 
 	if len(warnings) > 0 {
-		msg := formatWarnings(warnings)
+		msg := formatResults(warnings)
+		uuids := resultsToUUIDs(warnings)
 		slog.Warn("DCGM diagnostic warnings", "message", msg)
 
-		if reportErr := health.ReportEvent(connectorSocket, warnings, false, msg); reportErr != nil {
+		if reportErr := health.SendHealthEvent(connectorSocket, uuids, false, false, msg); reportErr != nil {
 			slog.Warn("Failed to report health event", "error", reportErr)
 		}
 	}
@@ -142,10 +144,30 @@ func ProcessResults(results *dcgm.DiagResults, connectorSocket string) error {
 		"warnings", len(warnings))
 
 	if len(warnings) == 0 {
-		slog.Info("No health event reported (all tests passed)")
+		uuids := gpu.GetAllUUIDs()
+		if reportErr := health.SendHealthEvent(connectorSocket, uuids, true, false, "DCGM diagnostic passed"); reportErr != nil {
+			slog.Warn("Failed to report healthy event", "error", reportErr)
+		}
 	}
 
 	return nil
+}
+
+func resultsToUUIDs(results []dcgm.DiagResult) []string {
+	var uuids []string
+
+	for _, r := range results {
+		uuid, err := gpu.GetUUID(r.EntityID)
+		if err != nil {
+			slog.Warn("Failed to get GPU UUID", "gpuIndex", r.EntityID, "error", err)
+
+			continue
+		}
+
+		uuids = append(uuids, uuid)
+	}
+
+	return uuids
 }
 
 func logResults(results *dcgm.DiagResults) {
@@ -179,28 +201,13 @@ func logResults(results *dcgm.DiagResults) {
 		"total", len(results.Software))
 }
 
-func formatFailures(failures []dcgm.DiagResult) string {
+func formatResults(results []dcgm.DiagResult) string {
 	var parts []string
 
-	for _, f := range failures {
-		msg := fmt.Sprintf("%s (GPU %d): %s", f.TestName, f.EntityID, f.ErrorMessage)
-		if f.ErrorMessage == "" {
-			msg = fmt.Sprintf("%s (GPU %d): failed", f.TestName, f.EntityID)
-		}
-
-		parts = append(parts, msg)
-	}
-
-	return strings.Join(parts, "; ")
-}
-
-func formatWarnings(warnings []dcgm.DiagResult) string {
-	var parts []string
-
-	for _, w := range warnings {
-		msg := fmt.Sprintf("%s (GPU %d): %s", w.TestName, w.EntityID, w.ErrorMessage)
-		if w.ErrorMessage == "" {
-			msg = fmt.Sprintf("%s (GPU %d): warning", w.TestName, w.EntityID)
+	for _, r := range results {
+		msg := fmt.Sprintf("%s (GPU %d): %s", r.TestName, r.EntityID, r.ErrorMessage)
+		if r.ErrorMessage == "" {
+			msg = fmt.Sprintf("%s (GPU %d): %s", r.TestName, r.EntityID, r.Status)
 		}
 
 		parts = append(parts, msg)

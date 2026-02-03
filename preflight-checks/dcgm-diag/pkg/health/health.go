@@ -18,87 +18,85 @@ package health
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/NVIDIA/go-dcgm/pkg/dcgm"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/gpu"
 )
 
 const (
 	agentName      = "preflight-dcgm-diag"
 	componentClass = "GPU"
 	checkName      = "DCGM_DIAGNOSTIC"
+
+	maxRetries  = 5
+	retryDelay  = 2 * time.Second
+	retryFactor = 1.5
+	retryJitter = 0.1
+	sendTimeout = 10 * time.Second
 )
 
-// ReportError reports a fatal error without specific GPU entities.
-func ReportError(connectorSocket, message string) {
-	if connectorSocket == "" {
-		slog.Info("Skipping health event reporting (no connector socket configured)")
-
-		return
+// SendHealthEvent sends a health event to the platform connector.
+func SendHealthEvent(socketPath string, gpuUUIDs []string, isHealthy, isFatal bool, message string) error {
+	event := buildHealthEvent(gpuUUIDs, isHealthy, isFatal, message)
+	healthEvents := &pb.HealthEvents{
+		Version: 1,
+		Events:  []*pb.HealthEvent{event},
 	}
 
-	slog.Info("Reporting error health event",
-		"socket", connectorSocket,
-		"message", message)
-
-	if err := sendHealthEvent(connectorSocket, nil, true, message); err != nil {
-		slog.Warn("Failed to report health event", "error", err)
-	}
-}
-
-// ReportEvent reports a health event for the given diagnostic results.
-func ReportEvent(connectorSocket string, results []dcgm.DiagResult, isFatal bool, message string) error {
-	if connectorSocket == "" {
-		slog.Info("Skipping health event reporting (no connector socket configured)")
-
-		return nil
-	}
-
-	var gpuUUIDs []string
-
-	for _, r := range results {
-		uuid, err := gpu.GetUUID(r.EntityID)
-		if err != nil {
-			slog.Error("Failed to get GPU UUID for health event", "gpuIndex", r.EntityID, "error", err)
-
-			return err
-		}
-
-		gpuUUIDs = append(gpuUUIDs, uuid)
-	}
-
-	slog.Info("Reporting health event",
-		"socket", connectorSocket,
+	slog.Info("Sending health event",
+		"isHealthy", isHealthy,
 		"isFatal", isFatal,
 		"gpuCount", len(gpuUUIDs),
-		"gpuUUIDs", gpuUUIDs,
 		"message", message)
 
-	if err := sendHealthEvent(connectorSocket, gpuUUIDs, isFatal, message); err != nil {
-		slog.Error("Failed to report health event", "error", err)
+	// Handle unix:// prefix
+	socketPath = strings.TrimPrefix(socketPath, "unix://")
 
-		return err
+	backoff := wait.Backoff{
+		Steps:    maxRetries,
+		Duration: retryDelay,
+		Factor:   retryFactor,
+		Jitter:   retryJitter,
 	}
 
-	slog.Info("Health event reported successfully")
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		sendErr := sendToConnector(socketPath, healthEvents)
+		if sendErr == nil {
+			slog.Info("Health event sent successfully")
+
+			return true, nil
+		}
+
+		if isRetryableError(sendErr) {
+			slog.Warn("Retryable error sending health event, will retry", "error", sendErr)
+
+			return false, nil
+		}
+
+		slog.Error("Non-retryable error sending health event", "error", sendErr)
+
+		return false, fmt.Errorf("non-retryable error: %w", sendErr)
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to send health event after %d retries: %w", maxRetries, err)
+	}
 
 	return nil
 }
 
-func sendHealthEvent(socketPath string, gpuUUIDs []string, isFatal bool, message string) error {
-	// Handle unix:// prefix
-	socketPath = strings.TrimPrefix(socketPath, "unix://")
-
-	// Build entities
+func buildHealthEvent(gpuUUIDs []string, isHealthy, isFatal bool, message string) *pb.HealthEvent {
 	entities := make([]*pb.Entity, 0, len(gpuUUIDs))
 	for _, uuid := range gpuUUIDs {
 		entities = append(entities, &pb.Entity{
@@ -112,24 +110,33 @@ func sendHealthEvent(socketPath string, gpuUUIDs []string, isFatal bool, message
 		nodeName = "unknown"
 	}
 
-	event := &pb.HealthEvent{
+	// For healthy events, just store the result without triggering remediation
+	recommendedAction := pb.RecommendedAction_RUN_FIELDDIAG
+	processingStrategy := pb.ProcessingStrategy_EXECUTE_REMEDIATION
+
+	if isHealthy {
+		recommendedAction = pb.RecommendedAction_NONE
+		processingStrategy = pb.ProcessingStrategy_STORE_ONLY
+	}
+
+	return &pb.HealthEvent{
 		Version:            1,
 		Agent:              agentName,
 		ComponentClass:     componentClass,
 		CheckName:          checkName,
 		IsFatal:            isFatal,
-		IsHealthy:          !isFatal,
+		IsHealthy:          isHealthy,
 		Message:            message,
-		RecommendedAction:  pb.RecommendedAction_RUN_FIELDDIAG,
+		RecommendedAction:  recommendedAction,
 		EntitiesImpacted:   entities,
 		GeneratedTimestamp: timestamppb.Now(),
 		NodeName:           nodeName,
-		ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		ProcessingStrategy: processingStrategy,
 	}
+}
 
-	slog.Info("Sending health event", "event", event)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func sendToConnector(socketPath string, healthEvents *pb.HealthEvents) error {
+	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
 	defer cancel()
 
 	conn, err := grpc.NewClient(
@@ -144,15 +151,31 @@ func sendHealthEvent(socketPath string, gpuUUIDs []string, isFatal bool, message
 
 	client := pb.NewPlatformConnectorClient(conn)
 
-	healthEvents := &pb.HealthEvents{
-		Version: 1,
-		Events:  []*pb.HealthEvent{event},
-	}
-
 	_, err = client.HealthEventOccurredV1(ctx, healthEvents)
 	if err != nil {
 		return fmt.Errorf("failed to send health event: %w", err)
 	}
 
 	return nil
+}
+
+// isRetryableError determines if an error is retryable.
+func isRetryableError(err error) bool {
+	if s, ok := status.FromError(err); ok {
+		switch s.Code() {
+		case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted:
+			return true
+		}
+	}
+
+	//nolint:errorlint // checking for specific error types
+	if err == io.EOF {
+		return true
+	}
+
+	errStr := err.Error()
+
+	return strings.Contains(errStr, "connection reset by peer") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "connection refused")
 }

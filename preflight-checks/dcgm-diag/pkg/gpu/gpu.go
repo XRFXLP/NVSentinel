@@ -102,6 +102,17 @@ func GetUUID(gpuIndex uint) (string, error) {
 	return "", fmt.Errorf("GPU UUID not found for index %d", gpuIndex)
 }
 
+// GetAllUUIDs returns all discovered GPU UUIDs.
+func GetAllUUIDs() []string {
+	uuids := make([]string, 0, len(indexToUUID))
+
+	for _, uuid := range indexToUUID {
+		uuids = append(uuids, uuid)
+	}
+
+	return uuids
+}
+
 // createGroup creates a DCGM group with the specified GPU indices.
 func createGroup(gpuIndices []uint) (dcgm.GroupHandle, func(), error) {
 	groupName := fmt.Sprintf("preflight-%d", os.Getpid())
