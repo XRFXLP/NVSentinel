@@ -39,7 +39,6 @@ type FileConfig struct {
 type DCGMConfig struct {
 	HostengineAddr  string `yaml:"hostengineAddr"`
 	DiagLevel       int    `yaml:"diagLevel"`
-	Timeout         string `yaml:"timeout"`
 	ConnectorSocket string `yaml:"connectorSocket"`
 }
 
@@ -60,10 +59,6 @@ func Load(path string) (*Config, error) {
 
 	if fileConfig.DCGM.DiagLevel == 0 {
 		fileConfig.DCGM.DiagLevel = 1
-	}
-
-	if fileConfig.DCGM.Timeout == "" {
-		fileConfig.DCGM.Timeout = "5m"
 	}
 
 	return &Config{FileConfig: fileConfig}, nil

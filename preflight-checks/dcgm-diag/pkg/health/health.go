@@ -17,6 +17,7 @@ package health
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -88,7 +89,6 @@ func SendHealthEvent(socketPath string, gpuUUIDs []string, isHealthy, isFatal bo
 
 		return false, fmt.Errorf("non-retryable error: %w", sendErr)
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to send health event after %d retries: %w", maxRetries, err)
 	}
@@ -162,14 +162,16 @@ func sendToConnector(socketPath string, healthEvents *pb.HealthEvents) error {
 // isRetryableError determines if an error is retryable.
 func isRetryableError(err error) bool {
 	if s, ok := status.FromError(err); ok {
-		switch s.Code() {
-		case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted:
+		if s.Code() == codes.Unavailable || s.Code() == codes.DeadlineExceeded {
 			return true
 		}
 	}
 
-	//nolint:errorlint // checking for specific error types
-	if err == io.EOF {
+	if _, ok := err.(interface{ Temporary() bool }); ok {
+		return true
+	}
+
+	if errors.Is(err, io.EOF) {
 		return true
 	}
 

@@ -27,9 +27,9 @@ global:
 replicaCount: 1
 
 image:
-  repository: xrfxlp/preflight
+  repository: ghcr.io/nvidia/nvsentinel/preflight
   pullPolicy: IfNotPresent
-  tag: "20180202"
+  tag: "latest"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -98,13 +98,15 @@ webhook:
 # =============================================================================
 # Local fallback values - global.dcgm takes precedence when set
 dcgm:
+  service:
+    # DCGM hostengine service endpoint (fallback when global.dcgm.service not set)
+    endpoint: "nvidia-dcgm.gpu-operator.svc"
+    port: 5555
   # Diagnostic level:
   #   1 = Quick (~30 seconds) - basic health check
   #   2 = Medium (~2 minutes) - more thorough
   #   3 = Long (~15 minutes) - comprehensive
   diagLevel: 2
-  # Timeout for diagnostic execution
-  timeout: "5m"
 
 # =============================================================================
 # Init Containers to inject into GPU pods
@@ -113,7 +115,7 @@ dcgm:
 # The webhook injects GPU/network resources from the pod into these containers.
 initContainers:
   - name: preflight-dcgm-diag
-    image: xrfxlp/preflight-dcgm-diag:20180202
+    image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:latest
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run

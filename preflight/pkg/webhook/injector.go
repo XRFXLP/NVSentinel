@@ -70,7 +70,6 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, erro
 		}
 	}
 
-	// Inject volumes required by init containers
 	volumePatches := i.injectVolumes(pod)
 	patches = append(patches, volumePatches...)
 
@@ -211,10 +210,6 @@ func (i *Injector) injectDCGMEnv(container *corev1.Container) {
 		{
 			Name:  "DCGM_DIAG_LEVEL",
 			Value: fmt.Sprintf("%d", i.cfg.DCGM.DiagLevel),
-		},
-		{
-			Name:  "DCGM_DIAG_TIMEOUT",
-			Value: i.cfg.DCGM.Timeout,
 		},
 		{
 			Name: "NODE_NAME",

@@ -12,31 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Build stage - uses DCGM 4.2.3+ image as base because go-dcgm requires CGO and libdcgm.so
-# The go-dcgm bindings use dcgmDiagResponse_version12 which was introduced in DCGM 4.2.3.
-# Building against 4.2.3+ should be compatible with hostengines 4.2.3 and newer.
-ARG DCGM_VERSION=4.2.3-1-ubuntu22.04
-ARG GOLANG_VERSION=1.25.0
+# Build stage - uses DCGM image as base because go-dcgm requires CGO and libdcgm.so
+# The go-dcgm bindings use dcgmDiagResponse_version12 introduced in DCGM 4.2.3
+ARG DCGM_VERSION="4.2.3-1-ubuntu22.04"
+ARG GOLANG_VERSION="1.25.0"
+ARG VERSION="dev"
+ARG GIT_COMMIT="none"
+ARG BUILD_DATE=$(date -u +%FT%TZ)
 
 FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS builder
 
 ARG GOLANG_VERSION
 
-# Install Go and build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget \
-    ca-certificates \
-    gcc \
-    libc6-dev \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    wget ca-certificates gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN wget -q https://go.dev/dl/go${GOLANG_VERSION}.linux-amd64.tar.gz \
     && tar -C /usr/local -xzf go${GOLANG_VERSION}.linux-amd64.tar.gz \
     && rm go${GOLANG_VERSION}.linux-amd64.tar.gz
 
-ENV PATH="/usr/local/go/bin:${PATH}"
-ENV GOPATH="/go"
-ENV CGO_ENABLED=1
+ENV PATH="/usr/local/go/bin:${PATH}" \
+    GOPATH="/go" \
+    CGO_ENABLED=1
 
 WORKDIR /workspace
 
@@ -44,46 +44,28 @@ WORKDIR /workspace
 COPY data-models/go.mod data-models/go.sum ./data-models/
 COPY preflight-checks/dcgm-diag/go.mod preflight-checks/dcgm-diag/go.sum ./preflight-checks/dcgm-diag/
 
-# Download dependencies
-WORKDIR /workspace/preflight-checks/dcgm-diag
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd preflight-checks/dcgm-diag && go mod download
 
 # Copy source code
-WORKDIR /workspace
 COPY data-models/ ./data-models/
 COPY preflight-checks/dcgm-diag/ ./preflight-checks/dcgm-diag/
-
-# Build the binary with CGO enabled (required for go-dcgm bindings)
-WORKDIR /workspace/preflight-checks/dcgm-diag
-ARG VERSION=dev
-ARG GIT_COMMIT=none
-ARG BUILD_DATE=unknown
-RUN go build \
-    -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" \
-    -o /dcgm-diag .
-
-# Runtime stage - same DCGM version to ensure library compatibility
-# The binary is dynamically linked to libdcgm.so, so we need the same version at runtime
-FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION}
 
 ARG VERSION
 ARG GIT_COMMIT
 ARG BUILD_DATE
 
-LABEL org.opencontainers.image.source="https://github.com/nvidia/nvsentinel" \
-      org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.title="NVSentinel Preflight DCGM Diag" \
-      org.opencontainers.image.description="Preflight check for running DCGM diagnostics on GPUs" \
-      org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.revision="${GIT_COMMIT}" \
-      org.opencontainers.image.created="${BUILD_DATE}"
+RUN cd preflight-checks/dcgm-diag && \
+    go build -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" \
+    -o /dcgm-diag .
 
-# Copy the Go binary
+# Runtime stage - same DCGM version for libdcgm.so compatibility
+FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION}
+
+RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
+
 COPY --from=builder /dcgm-diag /usr/local/bin/dcgm-diag
 
-# Create non-root user
-RUN useradd -r -u 65532 -g nogroup preflight || true
-
-USER 65532
+USER nvsentinel
 
 ENTRYPOINT ["/usr/local/bin/dcgm-diag"]

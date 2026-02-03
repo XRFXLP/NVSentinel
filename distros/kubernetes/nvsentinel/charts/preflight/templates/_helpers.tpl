@@ -100,14 +100,32 @@ Certificate DNS names
 {{- end }}
 
 {{/*
-DCGM hostengine address - uses global.dcgm.service with fallback
+DCGM service endpoint - uses global.dcgm.service.endpoint with fallback to local
+*/}}
+{{- define "preflight.dcgmEndpoint" -}}
+{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service }}
+{{- .Values.global.dcgm.service.endpoint | default .Values.dcgm.service.endpoint }}
+{{- else }}
+{{- .Values.dcgm.service.endpoint }}
+{{- end }}
+{{- end }}
+
+{{/*
+DCGM service port - uses global.dcgm.service.port with fallback to local
+*/}}
+{{- define "preflight.dcgmPort" -}}
+{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service }}
+{{- .Values.global.dcgm.service.port | default .Values.dcgm.service.port }}
+{{- else }}
+{{- .Values.dcgm.service.port }}
+{{- end }}
+{{- end }}
+
+{{/*
+DCGM hostengine address - combines endpoint and port
 */}}
 {{- define "preflight.dcgmHostengineAddr" -}}
-{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service }}
-{{- printf "%s:%v" .Values.global.dcgm.service.endpoint .Values.global.dcgm.service.port }}
-{{- else }}
-{{- "" }}
-{{- end }}
+{{- printf "%s:%v" (include "preflight.dcgmEndpoint" .) (include "preflight.dcgmPort" .) }}
 {{- end }}
 
 {{/*
@@ -115,13 +133,6 @@ DCGM diagnostic level
 */}}
 {{- define "preflight.dcgmDiagLevel" -}}
 {{- .Values.dcgm.diagLevel | default 1 }}
-{{- end }}
-
-{{/*
-DCGM diagnostic timeout
-*/}}
-{{- define "preflight.dcgmTimeout" -}}
-{{- .Values.dcgm.timeout | default "5m" }}
 {{- end }}
 
 {{/*

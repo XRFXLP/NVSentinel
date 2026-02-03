@@ -15,12 +15,10 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
-	"time"
 
 	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/diag"
 	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/health"
@@ -56,10 +54,9 @@ func run() error {
 		return fmt.Errorf("invalid diagnostic level %d: must be 1, 2, 3, or 4", cfg.diagLevel)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
-	defer cancel()
-
-	results, err := diag.Run(ctx, cfg.diagLevel, cfg.hostengineAddr)
+	// Note: dcgm.RunDiag() is synchronous with no cancellation support.
+	// Timeout is enforced by Kubernetes init container timeout instead.
+	results, err := diag.Run(cfg.diagLevel, cfg.hostengineAddr)
 	if err != nil {
 		// Report error without specific GPU UUIDs (we don't know which GPU failed)
 		if reportErr := health.SendHealthEvent(cfg.connectorSocket, nil, false, false, err.Error()); reportErr != nil {
@@ -76,7 +73,6 @@ type config struct {
 	diagLevel       int
 	hostengineAddr  string
 	connectorSocket string
-	timeout         time.Duration
 }
 
 func parseConfig() config {
@@ -85,7 +81,6 @@ func parseConfig() config {
 	diagLevelDefault := getEnvInt("DCGM_DIAG_LEVEL", 1)
 	hostengineDefault := getEnv("DCGM_HOSTENGINE_ADDR", "")
 	connectorDefault := getEnv("PLATFORM_CONNECTOR_SOCKET", "")
-	timeoutDefault := getEnvDuration("DCGM_DIAG_TIMEOUT", 5*time.Minute)
 
 	flag.IntVar(&cfg.diagLevel, "level", diagLevelDefault,
 		"DCGM diagnostic level (1=quick ~30s, 2=medium ~2min, 3=long ~15min, 4=extended)")
@@ -93,8 +88,6 @@ func parseConfig() config {
 		"DCGM hostengine address (e.g., localhost:5555). If empty, uses embedded mode.")
 	flag.StringVar(&cfg.connectorSocket, "connector-socket", connectorDefault,
 		"Platform connector socket path for health event reporting")
-	flag.DurationVar(&cfg.timeout, "timeout", timeoutDefault,
-		"Timeout for DCGM diagnostic")
 	flag.Parse()
 
 	return cfg
@@ -113,16 +106,6 @@ func getEnvInt(key string, defaultValue int) int {
 		var result int
 		if _, err := fmt.Sscanf(value, "%d", &result); err == nil {
 			return result
-		}
-	}
-
-	return defaultValue
-}
-
-func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
-	if value := os.Getenv(key); value != "" {
-		if d, err := time.ParseDuration(value); err == nil {
-			return d
 		}
 	}
 

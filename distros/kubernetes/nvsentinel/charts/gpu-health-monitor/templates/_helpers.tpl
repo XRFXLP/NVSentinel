@@ -43,7 +43,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 DCGM service enabled - uses global.dcgm.enabled with fallback to local
 */}}
 {{- define "gpu-health-monitor.dcgmEnabled" -}}
-{{- if .Values.global }}
+{{- if and .Values.global .Values.global.dcgm }}
 {{- .Values.global.dcgm.enabled | default .Values.dcgm.dcgmK8sServiceEnabled }}
 {{- else }}
 {{- .Values.dcgm.dcgmK8sServiceEnabled }}

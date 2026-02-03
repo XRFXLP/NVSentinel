@@ -18,18 +18,14 @@ image:
   tag: ""
 
 # DCGM (Data Center GPU Manager) integration configuration
-# These values are used as fallback if global.dcgm is not set
-# Prefer setting global.dcgm in the parent chart for shared configuration
 dcgm:
   # Enable DCGM Kubernetes service for GPU metrics collection
-  # Uses global.dcgm.enabled if set, otherwise defaults to true
   dcgmK8sServiceEnabled: true
   service:
     # DCGM service endpoint in the cluster
     # Uses global.dcgm.service.endpoint if set
     endpoint: "nvidia-dcgm.gpu-operator.svc"
     # DCGM service port
-    # Uses global.dcgm.service.port if set
     port: 5555
 
 # Use host networking for GPU health monitor pods

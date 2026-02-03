@@ -16,7 +16,6 @@
 package diag
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -31,7 +30,10 @@ import (
 //
 // Note: go-dcgm requires CGO and links against libdcgm.so at compile time.
 // The binary must be built with DCGM 4.2.3+ which introduced dcgmDiagResponse_version12.
-func Run(ctx context.Context, level int, hostengineAddr string) (*dcgm.DiagResults, error) {
+//
+// dcgm.RunDiag() is synchronous with no cancellation support, so timeout enforcement
+// is delegated to the Kubernetes init container timeout rather than handled here.
+func Run(level int, hostengineAddr string) (*dcgm.DiagResults, error) {
 	cleanup, err := initDCGM(hostengineAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize DCGM: %w", err)
@@ -52,30 +54,14 @@ func Run(ctx context.Context, level int, hostengineAddr string) (*dcgm.DiagResul
 
 	slog.Info("Running DCGM diagnostic", "level", level, "diagType", diagType)
 
-	resultCh := make(chan dcgm.DiagResults, 1)
-	errCh := make(chan error, 1)
-
-	go func() {
-		results, diagErr := dcgm.RunDiag(diagType, group)
-		if diagErr != nil {
-			errCh <- diagErr
-
-			return
-		}
-
-		resultCh <- results
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("diagnostic timed out")
-	case err := <-errCh:
+	results, err := dcgm.RunDiag(diagType, group)
+	if err != nil {
 		return nil, fmt.Errorf("diagnostic failed: %w", err)
-	case results := <-resultCh:
-		logResults(&results)
-
-		return &results, nil
 	}
+
+	logResults(&results)
+
+	return &results, nil
 }
 
 func initDCGM(hostengineAddr string) (func(), error) {
@@ -132,6 +118,7 @@ func ProcessResults(results *dcgm.DiagResults, connectorSocket string) error {
 	if len(warnings) > 0 {
 		msg := formatResults(warnings)
 		uuids := resultsToUUIDs(warnings)
+
 		slog.Warn("DCGM diagnostic warnings", "message", msg)
 
 		if reportErr := health.SendHealthEvent(connectorSocket, uuids, false, false, msg); reportErr != nil {
@@ -145,7 +132,8 @@ func ProcessResults(results *dcgm.DiagResults, connectorSocket string) error {
 
 	if len(warnings) == 0 {
 		uuids := gpu.GetAllUUIDs()
-		if reportErr := health.SendHealthEvent(connectorSocket, uuids, true, false, "DCGM diagnostic passed"); reportErr != nil {
+		if reportErr := health.SendHealthEvent(connectorSocket,
+			uuids, true, false, "DCGM diagnostic passed"); reportErr != nil {
 			slog.Warn("Failed to report healthy event", "error", reportErr)
 		}
 	}
