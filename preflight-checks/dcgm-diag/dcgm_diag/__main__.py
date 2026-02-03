@@ -16,7 +16,7 @@ import logging
 import sys
 
 from .config import Config
-from .diag import DCGMDiagnostic
+from .diag import DCGMDiagnostic, DiagResult
 from .health import HealthReporter
 from .protos import health_event_pb2 as pb
 
@@ -26,6 +26,13 @@ logging.basicConfig(
     datefmt="%Y/%m/%d %H:%M:%S",
 )
 log = logging.getLogger(__name__)
+
+
+def _build_message(results: list[DiagResult]) -> tuple[list[str], str]:
+    """Extract UUIDs and build message from diagnostic results."""
+    uuids = [r.gpu_uuid for r in results if r.gpu_uuid]
+    message = "; ".join(f"{r.test_name} (GPU {r.gpu_index}): {r.error_message}" for r in results)
+    return uuids, message
 
 
 def main() -> None:
@@ -67,15 +74,13 @@ def main() -> None:
     )
 
     if failures:
-        uuids = [r.gpu_uuid for r in failures if r.gpu_uuid]
-        message = "; ".join(f"{r.test_name} (GPU {r.gpu_index}): {r.error_message}" for r in failures)
+        uuids, message = _build_message(failures)
         log.error(f"DCGM diagnostic failed: {message}")
         reporter.send_event(gpu_uuids=uuids, is_healthy=False, is_fatal=True, message=message)
         sys.exit(1)
 
     if warnings:
-        uuids = [r.gpu_uuid for r in warnings if r.gpu_uuid]
-        message = "; ".join(f"{r.test_name} (GPU {r.gpu_index}): {r.error_message}" for r in warnings)
+        uuids, message = _build_message(warnings)
         log.warning(f"DCGM diagnostic warnings: {message}")
         reporter.send_event(gpu_uuids=uuids, is_healthy=False, is_fatal=False, message=message)
     else:
