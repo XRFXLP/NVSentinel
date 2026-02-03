@@ -107,6 +107,8 @@ dcgm:
   #   2 = Medium (~2 minutes) - more thorough
   #   3 = Long (~15 minutes) - comprehensive
   diagLevel: 2
+  # Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY
+  processingStrategy: "EXECUTE_REMEDIATION"
 
 # =============================================================================
 # Init Containers to inject into GPU pods

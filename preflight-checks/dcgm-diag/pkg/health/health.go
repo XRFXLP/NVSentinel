@@ -47,9 +47,26 @@ const (
 	sendTimeout = 10 * time.Second
 )
 
+// ParseProcessingStrategy parses a processing strategy string into a protobuf value.
+func ParseProcessingStrategy(strategy string) (pb.ProcessingStrategy, error) {
+	value, ok := pb.ProcessingStrategy_value[strategy]
+	if !ok {
+		return pb.ProcessingStrategy_UNSPECIFIED, fmt.Errorf(
+			"invalid processing strategy %q, valid options: EXECUTE_REMEDIATION, STORE_ONLY", strategy)
+	}
+
+	return pb.ProcessingStrategy(value), nil
+}
+
 // SendHealthEvent sends a health event to the platform connector.
-func SendHealthEvent(socketPath string, gpuUUIDs []string, isHealthy, isFatal bool, message string) error {
-	event := buildHealthEvent(gpuUUIDs, isHealthy, isFatal, message)
+func SendHealthEvent(
+	socketPath string,
+	gpuUUIDs []string,
+	isHealthy, isFatal bool,
+	message string,
+	processingStrategy pb.ProcessingStrategy,
+) error {
+	event := buildHealthEvent(gpuUUIDs, isHealthy, isFatal, message, processingStrategy)
 	healthEvents := &pb.HealthEvents{
 		Version: 1,
 		Events:  []*pb.HealthEvent{event},
@@ -59,6 +76,7 @@ func SendHealthEvent(socketPath string, gpuUUIDs []string, isHealthy, isFatal bo
 		"isHealthy", isHealthy,
 		"isFatal", isFatal,
 		"gpuCount", len(gpuUUIDs),
+		"processingStrategy", processingStrategy.String(),
 		"message", message)
 
 	// Handle unix:// prefix
@@ -96,7 +114,12 @@ func SendHealthEvent(socketPath string, gpuUUIDs []string, isHealthy, isFatal bo
 	return nil
 }
 
-func buildHealthEvent(gpuUUIDs []string, isHealthy, isFatal bool, message string) *pb.HealthEvent {
+func buildHealthEvent(
+	gpuUUIDs []string,
+	isHealthy, isFatal bool,
+	message string,
+	processingStrategy pb.ProcessingStrategy,
+) *pb.HealthEvent {
 	entities := make([]*pb.Entity, 0, len(gpuUUIDs))
 	for _, uuid := range gpuUUIDs {
 		entities = append(entities, &pb.Entity{
@@ -110,13 +133,9 @@ func buildHealthEvent(gpuUUIDs []string, isHealthy, isFatal bool, message string
 		nodeName = "unknown"
 	}
 
-	// For healthy events, just store the result without triggering remediation
 	recommendedAction := pb.RecommendedAction_RUN_FIELDDIAG
-	processingStrategy := pb.ProcessingStrategy_EXECUTE_REMEDIATION
-
 	if isHealthy {
 		recommendedAction = pb.RecommendedAction_NONE
-		processingStrategy = pb.ProcessingStrategy_STORE_ONLY
 	}
 
 	return &pb.HealthEvent{
@@ -165,10 +184,6 @@ func isRetryableError(err error) bool {
 		if s.Code() == codes.Unavailable || s.Code() == codes.DeadlineExceeded {
 			return true
 		}
-	}
-
-	if _, ok := err.(interface{ Temporary() bool }); ok {
-		return true
 	}
 
 	if errors.Is(err, io.EOF) {

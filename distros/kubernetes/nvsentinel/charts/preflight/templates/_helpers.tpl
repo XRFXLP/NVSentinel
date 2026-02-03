@@ -136,10 +136,20 @@ DCGM diagnostic level
 {{- end }}
 
 {{/*
+Event processing strategy
+*/}}
+{{- define "preflight.processingStrategy" -}}
+{{- .Values.dcgm.processingStrategy | default "EXECUTE_REMEDIATION" }}
+{{- end }}
+
+{{/*
 Platform connector socket path for health event reporting
 Uses global.socketPath with unix:// prefix
 */}}
 {{- define "preflight.connectorSocket" -}}
-{{- $socketPath := ((.Values.global).socketPath) | default "/var/run/nvsentinel.sock" }}
-{{- printf "unix://%s" $socketPath }}
+{{- if and .Values.global .Values.global.socketPath }}
+{{- printf "unix://%s" .Values.global.socketPath }}
+{{- else }}
+{{- "unix:///var/run/nvsentinel.sock" }}
+{{- end }}
 {{- end }}

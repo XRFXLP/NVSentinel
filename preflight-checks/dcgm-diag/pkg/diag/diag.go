@@ -22,6 +22,7 @@ import (
 
 	"github.com/NVIDIA/go-dcgm/pkg/dcgm"
 
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/gpu"
 	"github.com/nvidia/nvsentinel/preflight-checks/dcgm-diag/pkg/health"
 )
@@ -92,7 +93,11 @@ func levelToDiagType(level int) dcgm.DiagType {
 }
 
 // ProcessResults processes diagnostic results and reports health events.
-func ProcessResults(results *dcgm.DiagResults, connectorSocket string) error {
+func ProcessResults(
+	results *dcgm.DiagResults,
+	connectorSocket string,
+	processingStrategy pb.ProcessingStrategy,
+) error {
 	var failures, warnings []dcgm.DiagResult
 
 	for _, result := range results.Software {
@@ -108,7 +113,8 @@ func ProcessResults(results *dcgm.DiagResults, connectorSocket string) error {
 		msg := formatResults(failures)
 		uuids := resultsToUUIDs(failures)
 
-		if reportErr := health.SendHealthEvent(connectorSocket, uuids, false, true, msg); reportErr != nil {
+		reportErr := health.SendHealthEvent(connectorSocket, uuids, false, true, msg, processingStrategy)
+		if reportErr != nil {
 			slog.Warn("Failed to report health event", "error", reportErr)
 		}
 
@@ -121,7 +127,8 @@ func ProcessResults(results *dcgm.DiagResults, connectorSocket string) error {
 
 		slog.Warn("DCGM diagnostic warnings", "message", msg)
 
-		if reportErr := health.SendHealthEvent(connectorSocket, uuids, false, false, msg); reportErr != nil {
+		reportErr := health.SendHealthEvent(connectorSocket, uuids, false, false, msg, processingStrategy)
+		if reportErr != nil {
 			slog.Warn("Failed to report health event", "error", reportErr)
 		}
 	}
@@ -132,8 +139,9 @@ func ProcessResults(results *dcgm.DiagResults, connectorSocket string) error {
 
 	if len(warnings) == 0 {
 		uuids := gpu.GetAllUUIDs()
-		if reportErr := health.SendHealthEvent(connectorSocket,
-			uuids, true, false, "DCGM diagnostic passed"); reportErr != nil {
+
+		reportErr := health.SendHealthEvent(connectorSocket, uuids, true, false, "DCGM diagnostic passed", processingStrategy)
+		if reportErr != nil {
 			slog.Warn("Failed to report healthy event", "error", reportErr)
 		}
 	}

@@ -54,25 +54,34 @@ func run() error {
 		return fmt.Errorf("invalid diagnostic level %d: must be 1, 2, 3, or 4", cfg.diagLevel)
 	}
 
+	processingStrategy, err := health.ParseProcessingStrategy(cfg.processingStrategy)
+	if err != nil {
+		return err
+	}
+
+	slog.Info("Event handling strategy configured", "processingStrategy", cfg.processingStrategy)
+
 	// Note: dcgm.RunDiag() is synchronous with no cancellation support.
 	// Timeout is enforced by Kubernetes init container timeout instead.
 	results, err := diag.Run(cfg.diagLevel, cfg.hostengineAddr)
 	if err != nil {
 		// Report error without specific GPU UUIDs (we don't know which GPU failed)
-		if reportErr := health.SendHealthEvent(cfg.connectorSocket, nil, false, false, err.Error()); reportErr != nil {
+		reportErr := health.SendHealthEvent(cfg.connectorSocket, nil, false, false, err.Error(), processingStrategy)
+		if reportErr != nil {
 			slog.Warn("Failed to report error health event", "error", reportErr)
 		}
 
 		return err
 	}
 
-	return diag.ProcessResults(results, cfg.connectorSocket)
+	return diag.ProcessResults(results, cfg.connectorSocket, processingStrategy)
 }
 
 type config struct {
-	diagLevel       int
-	hostengineAddr  string
-	connectorSocket string
+	diagLevel          int
+	hostengineAddr     string
+	connectorSocket    string
+	processingStrategy string
 }
 
 func parseConfig() config {
@@ -81,6 +90,7 @@ func parseConfig() config {
 	diagLevelDefault := getEnvInt("DCGM_DIAG_LEVEL", 1)
 	hostengineDefault := getEnv("DCGM_HOSTENGINE_ADDR", "")
 	connectorDefault := getEnv("PLATFORM_CONNECTOR_SOCKET", "")
+	strategyDefault := getEnv("PROCESSING_STRATEGY", "EXECUTE_REMEDIATION")
 
 	flag.IntVar(&cfg.diagLevel, "level", diagLevelDefault,
 		"DCGM diagnostic level (1=quick ~30s, 2=medium ~2min, 3=long ~15min, 4=extended)")
@@ -88,6 +98,8 @@ func parseConfig() config {
 		"DCGM hostengine address (e.g., localhost:5555). If empty, uses embedded mode.")
 	flag.StringVar(&cfg.connectorSocket, "connector-socket", connectorDefault,
 		"Platform connector socket path for health event reporting")
+	flag.StringVar(&cfg.processingStrategy, "processing-strategy", strategyDefault,
+		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY")
 	flag.Parse()
 
 	return cfg

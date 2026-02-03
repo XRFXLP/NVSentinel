@@ -44,7 +44,7 @@ DCGM service enabled - uses global.dcgm.enabled with fallback to local
 */}}
 {{- define "gpu-health-monitor.dcgmEnabled" -}}
 {{- if and .Values.global .Values.global.dcgm }}
-{{- .Values.global.dcgm.enabled | default .Values.dcgm.dcgmK8sServiceEnabled }}
+{{- .Values.global.dcgm.enabled }}
 {{- else }}
 {{- .Values.dcgm.dcgmK8sServiceEnabled }}
 {{- end }}

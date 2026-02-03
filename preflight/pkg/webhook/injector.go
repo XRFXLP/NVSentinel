@@ -17,6 +17,8 @@ package webhook
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	corev1 "k8s.io/api/core/v1"
@@ -172,12 +174,15 @@ func (i *Injector) injectVolumes(pod *corev1.Pod) []PatchOperation {
 		}
 	}
 
-	hostPathType := corev1.HostPathDirectory
+	socketPath := strings.TrimPrefix(i.cfg.DCGM.ConnectorSocket, "unix://")
+	hostPathDir := filepath.Dir(socketPath)
+
+	hostPathType := corev1.HostPathDirectoryOrCreate
 	socketVolume := corev1.Volume{
 		Name: nvsentinelSocketVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			HostPath: &corev1.HostPathVolumeSource{
-				Path: "/var/run/nvsentinel",
+				Path: hostPathDir,
 				Type: &hostPathType,
 			},
 		},
@@ -232,6 +237,13 @@ func (i *Injector) injectDCGMEnv(container *corev1.Container) {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PLATFORM_CONNECTOR_SOCKET",
 			Value: i.cfg.DCGM.ConnectorSocket,
+		})
+	}
+
+	if i.cfg.DCGM.ProcessingStrategy != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PROCESSING_STRATEGY",
+			Value: i.cfg.DCGM.ProcessingStrategy,
 		})
 	}
 
