@@ -22,6 +22,10 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry.scripts]
 dcgm-diag = "dcgm_diag.__main__:main"
 
+[tool.pytest.ini_options]
+testpaths = ["dcgm_diag/tests"]
+pythonpath = ["."]
+
 [tool.black]
 line-length = 120
 exclude = '''

@@ -40,7 +40,7 @@ class DCGMDiagnostic:
         4: dcgm_structs.DCGM_DIAG_LVL_XLONG,
     }
 
-    def __init__(self, hostengine_addr: str = ""):
+    def __init__(self, hostengine_addr: str = "") -> None:
         self._hostengine_addr = hostengine_addr
         self._handle: pydcgm.DcgmHandle | None = None
         self._gpu_discovery = GPUDiscovery()
@@ -99,7 +99,7 @@ class DCGMDiagnostic:
             group.AddGpu(idx)
         return group
 
-    def _parse_response(self, response, gpu_indices: list[int]) -> list[DiagResult]:
+    def _parse_response(self, response: dcgm_structs.c_dcgmDiagResponse_v12, gpu_indices: list[int]) -> list[DiagResult]:
         """Parse DCGM v12 diagnostic response structure.
 
         v12 structure:
@@ -129,7 +129,7 @@ class DCGMDiagnostic:
                     continue
 
                 status = self._status_to_string(entity_result.result)
-                error_msg = error_lookup.get((test_idx, gpu_idx), "")
+                error_msg = error_lookup.get((entity_result.testId, gpu_idx), "")
 
                 results.append(
                     DiagResult(

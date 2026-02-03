@@ -16,6 +16,7 @@ IS_GO_MODULE := 0
 HAS_DOCKER := 1
 
 PYTHON_PACKAGE_NAME := dcgm_diag
+MODULE_NAME := $(PYTHON_PACKAGE_NAME)
 
 include ../../make/common.mk
 include ../../make/python.mk
