@@ -99,7 +99,9 @@ class DCGMDiagnostic:
             group.AddGpu(idx)
         return group
 
-    def _parse_response(self, response: dcgm_structs.c_dcgmDiagResponse_v12, gpu_indices: list[int]) -> list[DiagResult]:
+    def _parse_response(
+        self, response: dcgm_structs.c_dcgmDiagResponse_v12, gpu_indices: list[int]
+    ) -> list[DiagResult]:
         """Parse DCGM v12 diagnostic response structure.
 
         v12 structure:

@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 MAX_RETRIES = 5
 INITIAL_DELAY = 2.0
 BACKOFF_FACTOR = 1.5
+RPC_TIMEOUT = 30.0
 
 
 class HealthReporter:
@@ -38,7 +39,7 @@ class HealthReporter:
         socket_path: str,
         node_name: str,
         processing_strategy: pb.ProcessingStrategy,
-    ):
+    ) -> None:
         self._socket_path = socket_path.removeprefix("unix://")
         self._node_name = node_name
         self._processing_strategy = processing_strategy
@@ -97,7 +98,7 @@ class HealthReporter:
             try:
                 with grpc.insecure_channel(f"unix://{self._socket_path}") as channel:
                     stub = pb_grpc.PlatformConnectorStub(channel)
-                    stub.HealthEventOccurredV1(health_events)
+                    stub.HealthEventOccurredV1(health_events, timeout=RPC_TIMEOUT)
                     log.info("Health event sent successfully")
                     return True
             except grpc.RpcError as e:
