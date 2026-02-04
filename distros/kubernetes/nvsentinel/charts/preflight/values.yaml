@@ -15,9 +15,9 @@
 replicaCount: 1
 
 image:
-  repository: xrfxlp/preflight
+  repository: ghcr.io/nvidia/nvsentinel/preflight
   pullPolicy: IfNotPresent
-  tag: 09550402
+  tag: latest
 
 imagePullSecrets: []
 nameOverride: ""
@@ -97,7 +97,7 @@ dcgm:
 
 initContainers:
   - name: preflight-dcgm-diag
-    image: xrfxlp/preflight-dcgm-diag:09550402
+    image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:latest
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run
