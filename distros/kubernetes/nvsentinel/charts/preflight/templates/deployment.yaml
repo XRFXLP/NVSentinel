@@ -42,9 +42,6 @@ spec:
             - --port={{ .Values.webhook.port }}
             - --cert-dir=/certs
             - --config=/etc/preflight/config.yaml
-          env:
-            - name: PREFLIGHT_CONFIGMAP_NAME
-              value: {{ include "preflight.fullname" . }}-config
           ports:
             - name: https
               containerPort: {{ .Values.webhook.port }}

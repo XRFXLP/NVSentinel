@@ -69,46 +69,45 @@ def main() -> None:
 
     failures = [r for r in results if r.status == "fail"]
     warnings = [r for r in results if r.status == "warn"]
-
-    for r in results:
-        log.info(
-            "Test result",
-            extra={
-                "test": r.test_name,
-                "status": r.status,
-                "gpu": r.gpu_index,
-                "error_code": r.error_code,
-                "error": r.error_message,
-            },
-        )
+    passes = [r for r in results if r.status == "pass"]
 
     log.info(
         "Diagnostic summary",
         extra={
-            "passed": len(results) - len(failures) - len(warnings),
+            "passed": len(passes),
             "failed": len(failures),
             "warned": len(warnings),
+            "skipped": len(results) - len(passes) - len(failures) - len(warnings),
             "total": len(results),
         },
     )
 
-    for r in failures:
-        msg = f"{r.test_name} (GPU {r.gpu_index}): {r.error_message}"
-        log.error("DCGM diagnostic failed", extra={"gpu": r.gpu_uuid, "message": msg})
-        reporter.send_event(gpu_uuid=r.gpu_uuid, is_healthy=False, is_fatal=True, message=msg, error_code=r.error_code)
+    # Send one event per test result with specific test name
+    for r in results:
+        if r.status not in ("pass", "warn", "fail"):
+            continue
+
+        is_pass = r.status == "pass"
+        is_fatal = r.status == "fail"
+        message = "Test passed" if is_pass else r.error_message
+
+        log.log(
+            logging.INFO if is_pass else (logging.ERROR if is_fatal else logging.WARNING),
+            f"Test {r.status}",
+            extra={"gpu": r.gpu_uuid, "test": r.test_name, "error_code": r.error_code, "detail": message},
+        )
+        reporter.send_event(
+            gpu_uuid=r.gpu_uuid,
+            is_healthy=is_pass,
+            is_fatal=is_fatal,
+            message=message,
+            error_code=r.error_code if not is_pass else 0,
+            test_name=r.test_name,
+        )
 
     if failures:
+        log.error("DCGM diagnostic check failed")
         sys.exit(1)
-
-    for r in warnings:
-        msg = f"{r.test_name} (GPU {r.gpu_index}): {r.error_message}"
-        log.warning("DCGM diagnostic warning", extra={"gpu": r.gpu_uuid, "message": msg})
-        reporter.send_event(gpu_uuid=r.gpu_uuid, is_healthy=False, is_fatal=False, message=msg, error_code=r.error_code)
-
-    failed_gpus = {r.gpu_uuid for r in failures + warnings}
-    for uuid in diag.get_all_gpu_uuids():
-        if uuid not in failed_gpus:
-            reporter.send_event(gpu_uuid=uuid, is_healthy=True, is_fatal=False, message="DCGM diagnostic passed")
 
     log.info("DCGM diagnostic check passed")
     sys.exit(0)

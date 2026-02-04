@@ -59,7 +59,10 @@ ENV PYTHONPATH=${PYTHONPATH} \
 COPY --from=build /app/dist/*.whl ./
 COPY --from=build /app/constraints.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install ./dcgm_diag*.whl --constraint constraints.txt
+    pip install ./nvsentinel_dcgm_diag*.whl --constraint constraints.txt
+
+# Bundle error mapping file (static release data, not runtime config)
+COPY distros/kubernetes/nvsentinel/charts/gpu-health-monitor/files/dcgmerrorsmapping.csv /etc/dcgm/dcgmerrorsmapping.csv
 
 RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
 USER nvsentinel

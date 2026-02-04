@@ -46,7 +46,11 @@ class MockDCGMStructs:
     DCGM_OPERATION_MODE_AUTO = 0
 
     class c_dcgmDiagResponse_v12:
-        """Mock diagnostic response structure."""
+        """Mock diagnostic response structure.
+
+        Note: Initialized empty - tests must populate tests/results/errors
+        arrays along with their counts for meaningful output.
+        """
 
         def __init__(self) -> None:
             self.numTests = 0
@@ -60,31 +64,20 @@ class MockDCGMStructs:
 class MockDCGMTestRun:
     """Mock c_dcgmDiagTestRun_v2 structure."""
 
-    def __init__(self, name: str = "", num_results: int = 0, result_indices: list | None = None) -> None:
+    def __init__(self, name: str, num_results: int, result_indices: list[int]) -> None:
         self.name = name.encode() if isinstance(name, str) else name
         self.numResults = num_results
-        self.resultIndices = result_indices or []
+        self.resultIndices = result_indices
 
 
 class MockDCGMEntityResult:
     """Mock c_dcgmDiagEntityResult_v1 structure."""
 
-    def __init__(self, entity_id: int = 0, result: int = 0, test_id: int = 0) -> None:
+    def __init__(self, entity_id: int, result: int, test_id: int) -> None:
         self.entity = MagicMock()
         self.entity.entityId = entity_id
         self.result = result
         self.testId = test_id
-
-
-class MockDCGMError:
-    """Mock c_dcgmDiagError_v1 structure."""
-
-    def __init__(self, test_id: int = 0, entity_id: int = 0, code: int = 0, msg: str = "") -> None:
-        self.testId = test_id
-        self.entity = MagicMock()
-        self.entity.entityId = entity_id
-        self.code = code
-        self.msg = msg.encode() if isinstance(msg, str) else msg
 
 
 class MockPyNVML:
@@ -111,7 +104,6 @@ class MockPyNVML:
 
     @staticmethod
     def nvmlDeviceGetUUID(handle: MagicMock) -> str:
-        # Return different UUIDs for different handles
         return f"GPU-test-uuid-{id(handle) % 100}"
 
 
@@ -158,13 +150,6 @@ sys.modules["pynvml"] = pynvml_mock
 # ============================================================================
 
 
-@pytest.fixture(scope="session", autouse=True)
-def mock_dcgm_modules() -> None:
-    """Ensure DCGM modules are mocked for all tests."""
-    # Already installed above, but this fixture documents the dependency
-    pass
-
-
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove all DCGM-related env vars."""
@@ -178,85 +163,3 @@ def valid_env(monkeypatch: pytest.MonkeyPatch, clean_env: None) -> None:
     """Set minimum valid environment."""
     monkeypatch.setenv("PLATFORM_CONNECTOR_SOCKET", "/var/run/nvsentinel.sock")
     monkeypatch.setenv("NODE_NAME", "test-node")
-
-
-@pytest.fixture
-def mock_gpu_discovery() -> MagicMock:
-    """Create a mock GPUDiscovery instance."""
-    discovery = MagicMock()
-    discovery.get_allocated_gpus.return_value = [0, 1]
-    discovery.get_uuid.side_effect = lambda idx: f"GPU-uuid-{idx}"
-    discovery.get_all_uuids.return_value = ["GPU-uuid-0", "GPU-uuid-1"]
-    return discovery
-
-
-@pytest.fixture
-def mock_diag_response_pass() -> MockDCGMStructs.c_dcgmDiagResponse_v12:
-    """Create a mock diagnostic response with all tests passing."""
-    response = MockDCGMStructs.c_dcgmDiagResponse_v12()
-    response.numTests = 2
-    response.numResults = 4
-    response.numErrors = 0
-
-    # Test 1: Memory test
-    response.tests = [
-        MockDCGMTestRun(name="memory", num_results=2, result_indices=[0, 1]),
-        MockDCGMTestRun(name="diagnostic", num_results=2, result_indices=[2, 3]),
-    ]
-
-    # Results: all pass
-    response.results = [
-        MockDCGMEntityResult(entity_id=0, result=dcgm_structs_mock.DCGM_DIAG_RESULT_PASS, test_id=0),
-        MockDCGMEntityResult(entity_id=1, result=dcgm_structs_mock.DCGM_DIAG_RESULT_PASS, test_id=0),
-        MockDCGMEntityResult(entity_id=0, result=dcgm_structs_mock.DCGM_DIAG_RESULT_PASS, test_id=1),
-        MockDCGMEntityResult(entity_id=1, result=dcgm_structs_mock.DCGM_DIAG_RESULT_PASS, test_id=1),
-    ]
-
-    response.errors = []
-    return response
-
-
-@pytest.fixture
-def mock_diag_response_fail() -> MockDCGMStructs.c_dcgmDiagResponse_v12:
-    """Create a mock diagnostic response with a failure."""
-    response = MockDCGMStructs.c_dcgmDiagResponse_v12()
-    response.numTests = 1
-    response.numResults = 2
-    response.numErrors = 1
-
-    response.tests = [
-        MockDCGMTestRun(name="memory", num_results=2, result_indices=[0, 1]),
-    ]
-
-    response.results = [
-        MockDCGMEntityResult(entity_id=0, result=dcgm_structs_mock.DCGM_DIAG_RESULT_PASS, test_id=0),
-        MockDCGMEntityResult(entity_id=1, result=dcgm_structs_mock.DCGM_DIAG_RESULT_FAIL, test_id=0),
-    ]
-
-    response.errors = [
-        MockDCGMError(test_id=0, entity_id=1, code=100, msg="Memory error detected on GPU 1"),
-    ]
-    return response
-
-
-@pytest.fixture
-def mock_diag_response_warn() -> MockDCGMStructs.c_dcgmDiagResponse_v12:
-    """Create a mock diagnostic response with a warning."""
-    response = MockDCGMStructs.c_dcgmDiagResponse_v12()
-    response.numTests = 1
-    response.numResults = 2
-    response.numErrors = 1
-
-    response.tests = [
-        MockDCGMTestRun(name="pcie", num_results=2, result_indices=[0, 1]),
-    ]
-
-    response.results = [
-        MockDCGMEntityResult(entity_id=0, result=dcgm_structs_mock.DCGM_DIAG_RESULT_WARN, test_id=0),
-        MockDCGMEntityResult(entity_id=1, result=dcgm_structs_mock.DCGM_DIAG_RESULT_PASS, test_id=0),
-    ]
-
-    response.errors = [
-        MockDCGMError(test_id=0, entity_id=0, code=50, msg="PCIe replay rate elevated"),
-    ]
-    return response

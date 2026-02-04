@@ -24,6 +24,9 @@ from .protos import health_event_pb2 as pb
 log = logging.getLogger(__name__)
 
 
+DEFAULT_ERROR_MAPPING_PATH = "/etc/dcgm/dcgmerrorsmapping.csv"
+
+
 @lru_cache(maxsize=1)
 def _load_code_to_name() -> dict[int, str]:
     """Load DCGM error code → name mapping from dcgm_errors module."""
@@ -39,9 +42,9 @@ def _load_code_to_name() -> dict[int, str]:
 @lru_cache(maxsize=1)
 def _load_name_to_action() -> dict[str, int]:
     """Load DCGM error name → action mapping from CSV file."""
-    path = os.getenv("DCGM_ERROR_MAPPING_PATH", "")
-    if not path or not os.path.exists(path):
-        log.warning("DCGM_ERROR_MAPPING_PATH not set or file not found, using CONTACT_SUPPORT fallback")
+    path = os.getenv("DCGM_ERROR_MAPPING_PATH", DEFAULT_ERROR_MAPPING_PATH)
+    if not os.path.exists(path):
+        log.warning(f"Error mapping file not found at {path}, using CONTACT_SUPPORT fallback")
         return {}
 
     mapping = {}
@@ -54,9 +57,14 @@ def _load_name_to_action() -> dict[str, int]:
     return mapping
 
 
+def get_error_name(error_code: int) -> str:
+    """Get DCGM error mnemonic name for an error code."""
+    return _load_code_to_name().get(error_code, "")
+
+
 def get_recommended_action(error_code: int) -> int:
     """Get recommended action for a DCGM error code."""
-    name = _load_code_to_name().get(error_code)
+    name = get_error_name(error_code)
     if name:
         return _load_name_to_action().get(name, pb.RecommendedAction.CONTACT_SUPPORT)
     return pb.RecommendedAction.CONTACT_SUPPORT

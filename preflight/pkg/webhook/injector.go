@@ -17,8 +17,6 @@ package webhook
 import (
 	"fmt"
 	"log/slog"
-	"path/filepath"
-	"strings"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	corev1 "k8s.io/api/core/v1"
@@ -27,7 +25,6 @@ import (
 
 const (
 	nvsentinelSocketVolumeName = "nvsentinel-socket"
-	dcgmErrorMappingVolumeName = "dcgm-error-mapping"
 )
 
 type PatchOperation struct {
@@ -163,6 +160,7 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList) []corev
 
 func (i *Injector) injectVolumes(pod *corev1.Pod) []PatchOperation {
 	var patches []PatchOperation
+
 	var volumesToAdd []corev1.Volume
 
 	existingVolumes := make(map[string]bool)
@@ -171,29 +169,17 @@ func (i *Injector) injectVolumes(pod *corev1.Pod) []PatchOperation {
 	}
 
 	if i.cfg.DCGM.ConnectorSocket != "" && !existingVolumes[nvsentinelSocketVolumeName] {
-		socketPath := strings.TrimPrefix(i.cfg.DCGM.ConnectorSocket, "unix://")
-		hostPathDir := filepath.Dir(socketPath)
+		// Platform-connector mounts /var/run/nvsentinel (host) -> /var/run (container)
+		// and creates socket at /var/run/nvsentinel.sock inside its container.
+		// This is the same hostPath used by gpu-health-monitor.
 		hostPathType := corev1.HostPathDirectoryOrCreate
 
 		volumesToAdd = append(volumesToAdd, corev1.Volume{
 			Name: nvsentinelSocketVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				HostPath: &corev1.HostPathVolumeSource{
-					Path: hostPathDir,
+					Path: "/var/run/nvsentinel",
 					Type: &hostPathType,
-				},
-			},
-		})
-	}
-
-	if i.cfg.DCGM.ErrorMappingConfigMap != "" && !existingVolumes[dcgmErrorMappingVolumeName] {
-		volumesToAdd = append(volumesToAdd, corev1.Volume{
-			Name: dcgmErrorMappingVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: i.cfg.DCGM.ErrorMappingConfigMap,
-					},
 				},
 			},
 		})
@@ -260,13 +246,6 @@ func (i *Injector) injectDCGMEnv(container *corev1.Container) {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "PROCESSING_STRATEGY",
 			Value: i.cfg.DCGM.ProcessingStrategy,
-		})
-	}
-
-	if i.cfg.DCGM.ErrorMappingConfigMap != "" {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "DCGM_ERROR_MAPPING_PATH",
-			Value: "/etc/dcgm/dcgmerrorsmapping.csv",
 		})
 	}
 

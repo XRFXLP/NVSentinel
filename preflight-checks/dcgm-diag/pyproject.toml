@@ -3,6 +3,7 @@ name = "nvsentinel-dcgm-diag"
 version = "0.1.0"
 description = "DCGM preflight diagnostic check"
 authors = ["NVIDIA"]
+packages = [{include = "dcgm_diag"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"

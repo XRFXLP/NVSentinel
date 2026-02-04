@@ -41,6 +41,7 @@ def setup_logging(module: str, version: str, level: str = "info") -> None:
         structlog.stdlib.ProcessorFormatter(
             foreign_pre_chain=[
                 structlog.stdlib.add_log_level,
+                structlog.stdlib.ExtraAdder(),  # Include extra={} fields in output
                 structlog.processors.TimeStamper(fmt="iso"),
                 add_module_version,
             ],
