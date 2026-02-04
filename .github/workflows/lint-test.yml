@@ -150,8 +150,8 @@ jobs:
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
-      - name: Run lint
-        run: make -C preflight-checks/${{ matrix.component }} lint
+      - name: Run lint and test
+        run: make -C preflight-checks/${{ matrix.component }} lint-test
 
   modules-lint-test:
     if: github.repository == 'nvidia/nvsentinel'
