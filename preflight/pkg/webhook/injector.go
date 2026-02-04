@@ -150,12 +150,45 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList) []corev
 			container.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("500Mi")
 		}
 
+		i.injectCommonEnv(container)
 		i.injectDCGMEnv(container)
 
 		initContainers = append(initContainers, *container)
 	}
 
 	return initContainers
+}
+
+// injectCommonEnv injects environment variables common to all preflight init containers.
+// These include NODE_NAME, PLATFORM_CONNECTOR_SOCKET, and PROCESSING_STRATEGY which are
+// needed by any preflight check that publishes health events.
+func (i *Injector) injectCommonEnv(container *corev1.Container) {
+	envVars := []corev1.EnvVar{
+		{
+			Name: "NODE_NAME",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "spec.nodeName",
+				},
+			},
+		},
+	}
+
+	if i.cfg.DCGM.ConnectorSocket != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PLATFORM_CONNECTOR_SOCKET",
+			Value: i.cfg.DCGM.ConnectorSocket,
+		})
+	}
+
+	if i.cfg.DCGM.ProcessingStrategy != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PROCESSING_STRATEGY",
+			Value: i.cfg.DCGM.ProcessingStrategy,
+		})
+	}
+
+	i.mergeEnvVars(container, envVars)
 }
 
 func (i *Injector) injectVolumes(pod *corev1.Pod) []PatchOperation {
@@ -208,6 +241,7 @@ func (i *Injector) injectVolumes(pod *corev1.Pod) []PatchOperation {
 	return patches
 }
 
+// injectDCGMEnv injects DCGM-specific environment variables for the dcgm-diag check.
 func (i *Injector) injectDCGMEnv(container *corev1.Container) {
 	if container.Name != "preflight-dcgm-diag" {
 		return
@@ -218,14 +252,6 @@ func (i *Injector) injectDCGMEnv(container *corev1.Container) {
 			Name:  "DCGM_DIAG_LEVEL",
 			Value: fmt.Sprintf("%d", i.cfg.DCGM.DiagLevel),
 		},
-		{
-			Name: "NODE_NAME",
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: "spec.nodeName",
-				},
-			},
-		},
 	}
 
 	if i.cfg.DCGM.HostengineAddr != "" {
@@ -235,21 +261,12 @@ func (i *Injector) injectDCGMEnv(container *corev1.Container) {
 		})
 	}
 
-	if i.cfg.DCGM.ConnectorSocket != "" {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "PLATFORM_CONNECTOR_SOCKET",
-			Value: i.cfg.DCGM.ConnectorSocket,
-		})
-	}
+	i.mergeEnvVars(container, envVars)
+}
 
-	if i.cfg.DCGM.ProcessingStrategy != "" {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "PROCESSING_STRATEGY",
-			Value: i.cfg.DCGM.ProcessingStrategy,
-		})
-	}
-
-	// Merge with existing env vars (user-defined take precedence)
+// mergeEnvVars merges the provided env vars into the container.
+// User-defined env vars (already present in container) take precedence.
+func (i *Injector) mergeEnvVars(container *corev1.Container, envVars []corev1.EnvVar) {
 	existingEnvNames := make(map[string]bool)
 	for _, env := range container.Env {
 		existingEnvNames[env.Name] = true
