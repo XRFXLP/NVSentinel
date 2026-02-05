@@ -91,9 +91,14 @@ func (r *Runner) Run(ctx context.Context, numGPUs, testSizeMB int) (*Result, err
 			return nil, fmt.Errorf("all_reduce_perf timed out after %s", benchmarkTimeout)
 		}
 
-		slog.Error("NCCL benchmark failed", "error", err, "stderr", stderr.String())
+		// NCCL errors often go to stdout, so log both
+		slog.Error("NCCL benchmark failed",
+			"error", err,
+			"stdout", stdout.String(),
+			"stderr", stderr.String())
 
-		return nil, fmt.Errorf("all_reduce_perf failed: %w\nstderr: %s", err, stderr.String())
+		return nil, fmt.Errorf("all_reduce_perf failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout.String(), stderr.String())
 	}
 
 	output := stdout.String()
