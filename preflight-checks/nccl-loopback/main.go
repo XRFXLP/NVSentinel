@@ -61,6 +61,7 @@ func run() int {
 
 	slog.Info("Configuration loaded",
 		"bw_threshold_gbps", cfg.BWThresholdGbps,
+		"skip_bandwidth_check", cfg.SkipBandwidthCheck,
 		"test_size_mb", cfg.TestSizeMB,
 		"num_gpus", cfg.NumGPUs,
 		"binary", cfg.NCCLTestBinaryPath,
@@ -96,6 +97,23 @@ func run() int {
 		"algo_bandwidth_gbps", result.AlgoBandwidthGbps,
 		"num_gpus", result.NumGPUs,
 		"test_size_bytes", result.TestSizeBytes)
+
+	if cfg.SkipBandwidthCheck {
+		slog.Info("NCCL loopback test PASSED (bandwidth check skipped)",
+			"measured_gbps", result.BusBandwidthGbps)
+
+		message := fmt.Sprintf(
+			"NCCL all-reduce completed successfully with bus bandwidth %.2f GB/s (threshold check skipped)",
+			result.BusBandwidthGbps,
+		)
+
+		if sendErr := reporter.SendEvent(ctx, true, false, message, ""); sendErr != nil {
+			slog.Error("Failed to send health event", "error", sendErr)
+			return exitSendEventError
+		}
+
+		return exitSuccess
+	}
 
 	if result.BusBandwidthGbps < cfg.BWThresholdGbps {
 		slog.Error("NCCL loopback test FAILED: bandwidth below threshold",

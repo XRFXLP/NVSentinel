@@ -111,9 +111,17 @@ initContainers:
     image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:latest
     env:
       - name: BW_THRESHOLD_GBPS
+      # Minimum acceptable bus bandwidth
+      # Valid for NVLink GPU-to-GPU interconnect
+      # If using PCIe GPU-interconnnect, this threshold should be set to ~15 GB
         value: "150"  # Minimum acceptable bus bandwidth in GB/s
       - name: TEST_SIZE_MB
         value: "256"  # Message size for all-reduce test
+      # To skip the bandwidth check, set SKIP_BANDWIDTH_CHECK to true
+      # By default, the bandwidth check is enabled
+      # Checks if the loopback test passes without checking the bandwidth
+      # - name: SKIP_BANDWIDTH_CHECK
+      #   value: "true" 
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run

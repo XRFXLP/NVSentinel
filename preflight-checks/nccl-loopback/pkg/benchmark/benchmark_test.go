@@ -15,122 +15,168 @@
 package benchmark
 
 import (
+	"strings"
 	"testing"
 )
 
-// Sample output from all_reduce_perf on 8x A100 GPUs
-const sampleNCCLOutput = `# nThread 1 nGpus 8 minBytes 268435456 maxBytes 268435456 step: 2(factor) warmup iters: 5 iters: 20 agg iters: 1 validation: 1 graph: 0
-#
-# Using devices
-#  Rank  0 Group  0 Pid     12 on nccl-test-1 device  0 [0001:00:00] NVIDIA A100-SXM4-80GB
-#  Rank  1 Group  0 Pid     12 on nccl-test-1 device  1 [0002:00:00] NVIDIA A100-SXM4-80GB
-#  Rank  2 Group  0 Pid     12 on nccl-test-1 device  2 [0003:00:00] NVIDIA A100-SXM4-80GB
-#  Rank  3 Group  0 Pid     12 on nccl-test-1 device  3 [0004:00:00] NVIDIA A100-SXM4-80GB
-#  Rank  4 Group  0 Pid     12 on nccl-test-1 device  4 [000b:00:00] NVIDIA A100-SXM4-80GB
-#  Rank  5 Group  0 Pid     12 on nccl-test-1 device  5 [000c:00:00] NVIDIA A100-SXM4-80GB
-#  Rank  6 Group  0 Pid     12 on nccl-test-1 device  6 [000d:00:00] NVIDIA A100-SXM4-80GB
-#  Rank  7 Group  0 Pid     12 on nccl-test-1 device  7 [000e:00:00] NVIDIA A100-SXM4-80GB
-#
-#                                                              out-of-place                       in-place          
-#       size         count      type   redop    root     time   algbw   busbw #wrong     time   algbw   busbw #wrong
-#        (B)    (elements)                               (us)  (GB/s)  (GB/s)            (us)  (GB/s)  (GB/s)       
-   268435456      67108864     float     sum      -1   2374.1  113.07  197.87      0   2375.8  112.99  197.73      0
-# Out of bounds values : 0 OK
-# Avg bus bandwidth    : 197.8 
+// Sample outputs for testing.
+const (
+	sample8GPU = `# nThread 1 nGpus 8 minBytes 268435456 maxBytes 268435456
+#  Rank  0 Group  0 Pid 12 on test device  0 [0001:00:00] NVIDIA A100-SXM4-80GB
+#  Rank  1 Group  0 Pid 12 on test device  1 [0002:00:00] NVIDIA A100-SXM4-80GB
+#  Rank  2 Group  0 Pid 12 on test device  2 [0003:00:00] NVIDIA A100-SXM4-80GB
+#  Rank  3 Group  0 Pid 12 on test device  3 [0004:00:00] NVIDIA A100-SXM4-80GB
+#  Rank  4 Group  0 Pid 12 on test device  4 [000b:00:00] NVIDIA A100-SXM4-80GB
+#  Rank  5 Group  0 Pid 12 on test device  5 [000c:00:00] NVIDIA A100-SXM4-80GB
+#  Rank  6 Group  0 Pid 12 on test device  6 [000d:00:00] NVIDIA A100-SXM4-80GB
+#  Rank  7 Group  0 Pid 12 on test device  7 [000e:00:00] NVIDIA A100-SXM4-80GB
+   268435456  67108864  float  sum  -1  2374.1  113.07  197.87  0
 `
-
-const sampleNCCLOutput4GPU = `# nThread 1 nGpus 4 minBytes 268435456 maxBytes 268435456 step: 2(factor) warmup iters: 5 iters: 20 agg iters: 1 validation: 1 graph: 0
-#
-# Using devices
-#  Rank  0 Group  0 Pid     12 on nccl-test-1 device  0 [0001:00:00] NVIDIA A100-SXM4-80GB
-#  Rank  1 Group  0 Pid     12 on nccl-test-1 device  1 [0002:00:00] NVIDIA A100-SXM4-80GB
-#  Rank  2 Group  0 Pid     12 on nccl-test-1 device  2 [0003:00:00] NVIDIA A100-SXM4-80GB
-#  Rank  3 Group  0 Pid     12 on nccl-test-1 device  3 [0004:00:00] NVIDIA A100-SXM4-80GB
-#
-#                                                              out-of-place                       in-place          
-#       size         count      type   redop    root     time   algbw   busbw #wrong     time   algbw   busbw #wrong
-#        (B)    (elements)                               (us)  (GB/s)  (GB/s)            (us)  (GB/s)  (GB/s)       
-   268435456      67108864     float     sum      -1   2500.0  107.37  161.06      0   2510.0  106.95  160.42      0
-# Out of bounds values : 0 OK
-# Avg bus bandwidth    : 160.74
+	sample4GPU = `# nThread 1 nGpus 4
+#  Rank  0 Group  0 Pid 12 on test device  0 NVIDIA A100
+#  Rank  1 Group  0 Pid 12 on test device  1 NVIDIA A100
+#  Rank  2 Group  0 Pid 12 on test device  2 NVIDIA A100
+#  Rank  3 Group  0 Pid 12 on test device  3 NVIDIA A100
+   268435456  67108864  float  sum  -1  2500.0  107.37  161.06  0
 `
+	sampleWithNCCLDebug = `NCCL INFO NET/Plugin: Could not find: libnccl-net.so.
+NCCL INFO Using network Socket
+#  Rank  0 Group  0 Pid 12 on test device  0 NVIDIA A100
+#  Rank  1 Group  0 Pid 12 on test device  1 NVIDIA A100
+NCCL INFO Channel 00/02: 0 1
+   268435456  67108864  float  sum  -1  2374.1  113.07  197.87  0
+NCCL INFO Destroying communicator
+`
+	sample1GPU = `#  Rank  0 Group  0 Pid 12 on test device  0 NVIDIA A100
+   268435456  67108864  float  sum  -1  1000.0  268.44  0.00  0
+`
+	sampleWithTabs = `#  Rank  0 Group  0 Pid 12 on test device  0 NVIDIA A100
+#  Rank  1 Group  0 Pid 12 on test device  1 NVIDIA A100
+		268435456		67108864		float		sum		-1		2374.1		113.07		197.87		0
+`
+)
 
-func TestParseOutput_8GPUs(t *testing.T) {
-	result, err := parseOutput(sampleNCCLOutput, 256)
-	if err != nil {
-		t.Fatalf("parseOutput failed: %v", err)
+func TestParseOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		output     string
+		sizeMB     int
+		wantGPUs   int
+		wantAlgbw  float64
+		wantBusbw  float64
+		wantErr    bool
+		errContain string
+	}{
+		// Valid cases
+		{"8 GPUs", sample8GPU, 256, 8, 113.07, 197.87, false, ""},
+		{"4 GPUs", sample4GPU, 256, 4, 107.37, 161.06, false, ""},
+		{"with NCCL_DEBUG", sampleWithNCCLDebug, 256, 2, 113.07, 197.87, false, ""},
+		{"single GPU", sample1GPU, 256, 1, 268.44, 0.00, false, ""},
+		{"whitespace/tabs", sampleWithTabs, 256, 2, 113.07, 197.87, false, ""},
+		// Error cases
+		{"empty output", "", 256, 0, 0, 0, true, "could not determine number of GPUs"},
+		{"wrong size", sample8GPU, 128, 0, 0, 0, true, "could not find results for size"},
+		{"no GPUs detected", "   268435456  67108864  float  sum  -1  2374.1  113.07  197.87  0\n", 256, 0, 0, 0, true, "could not determine number of GPUs"},
+		{"only comments", "# comment\n#  Rank  0 Group  0 Pid 12 on test\n", 256, 0, 0, 0, true, "could not find results"},
+		{"too few fields", "#  Rank  0 Group  0 Pid 12 on test\n268435456 67108864 float\n", 256, 0, 0, 0, true, "could not find results"},
+		{"invalid algbw", "#  Rank  0 Group  0 Pid 12 on test\n268435456 67108864 float sum -1 2374.1 xxx 197.87 0\n", 256, 0, 0, 0, true, "failed to parse algbw"},
+		{"invalid busbw", "#  Rank  0 Group  0 Pid 12 on test\n268435456 67108864 float sum -1 2374.1 113.07 BAD 0\n", 256, 0, 0, 0, true, "failed to parse busbw"},
 	}
 
-	if result.NumGPUs != 8 {
-		t.Errorf("expected 8 GPUs, got %d", result.NumGPUs)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseOutput(tt.output, tt.sizeMB)
 
-	if result.TestSizeBytes != 268435456 {
-		t.Errorf("expected test size 268435456, got %d", result.TestSizeBytes)
-	}
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errContain != "" && !strings.Contains(err.Error(), tt.errContain) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.errContain)
+				}
+				return
+			}
 
-	// Check busbw is approximately 197.87
-	if result.BusBandwidthGbps < 197.0 || result.BusBandwidthGbps > 198.0 {
-		t.Errorf("expected busbw ~197.87, got %f", result.BusBandwidthGbps)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.NumGPUs != tt.wantGPUs {
+				t.Errorf("NumGPUs = %d, want %d", result.NumGPUs, tt.wantGPUs)
+			}
+			if result.AlgoBandwidthGbps != tt.wantAlgbw {
+				t.Errorf("AlgoBW = %v, want %v", result.AlgoBandwidthGbps, tt.wantAlgbw)
+			}
+			if result.BusBandwidthGbps != tt.wantBusbw {
+				t.Errorf("BusBW = %v, want %v", result.BusBandwidthGbps, tt.wantBusbw)
+			}
+		})
 	}
-
-	// Check algbw is approximately 113.07
-	if result.AlgoBandwidthGbps < 113.0 || result.AlgoBandwidthGbps > 114.0 {
-		t.Errorf("expected algbw ~113.07, got %f", result.AlgoBandwidthGbps)
-	}
-
-	t.Logf("Parsed result: NumGPUs=%d, BusBW=%.2f GB/s, AlgoBW=%.2f GB/s",
-		result.NumGPUs, result.BusBandwidthGbps, result.AlgoBandwidthGbps)
 }
 
-func TestParseOutput_4GPUs(t *testing.T) {
-	result, err := parseOutput(sampleNCCLOutput4GPU, 256)
-	if err != nil {
-		t.Fatalf("parseOutput failed: %v", err)
+func TestCountGPUs(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   int
+	}{
+		{"empty", "", 0},
+		{"no rank lines", "# Some header\n", 0},
+		{"single GPU", "#  Rank  0 Group  0 Pid 12 on test device 0\n", 1},
+		{"multiple GPUs", "#  Rank  0 Group  0 Pid 12\n#  Rank  1 Group  0 Pid 12\n#  Rank  2 Group  0 Pid 12\n", 3},
+		{"wrong format", "# mentions Rank but wrong format\n", 0},
 	}
 
-	if result.NumGPUs != 4 {
-		t.Errorf("expected 4 GPUs, got %d", result.NumGPUs)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := countGPUs(tt.output); got != tt.want {
+				t.Errorf("countGPUs() = %d, want %d", got, tt.want)
+			}
+		})
 	}
-
-	if result.BusBandwidthGbps < 161.0 || result.BusBandwidthGbps > 162.0 {
-		t.Errorf("expected busbw ~161.06, got %f", result.BusBandwidthGbps)
-	}
-
-	t.Logf("Parsed result: NumGPUs=%d, BusBW=%.2f GB/s", result.NumGPUs, result.BusBandwidthGbps)
 }
 
-func TestParseOutput_WrongSize(t *testing.T) {
-	_, err := parseOutput(sampleNCCLOutput, 128) // Looking for 128MB, but output has 256MB
-	if err == nil {
-		t.Error("expected error for wrong size, got nil")
+func TestExtractBandwidth(t *testing.T) {
+	const size256MB int64 = 268435456
+
+	tests := []struct {
+		name      string
+		output    string
+		size      int64
+		wantAlgbw float64
+		wantBusbw float64
+		wantErr   bool
+	}{
+		{"valid", "268435456 67108864 float sum -1 2374.1 113.07 197.87 0\n", size256MB, 113.07, 197.87, false},
+		{"size mismatch", "134217728 33554432 float sum -1 1200.0 111.85 195.74 0\n", size256MB, 0, 0, true},
+		{"empty", "", size256MB, 0, 0, true},
+		{"only comments", "# header\n", size256MB, 0, 0, true},
+		{"too few fields", "268435456 67108864 float sum -1 2374.1\n", size256MB, 0, 0, true},
+		{"invalid algbw", "268435456 67108864 float sum -1 2374.1 BAD 197.87 0\n", size256MB, 0, 0, true},
+		{"invalid busbw", "268435456 67108864 float sum -1 2374.1 113.07 BAD 0\n", size256MB, 0, 0, true},
+		{"finds correct line", "# header\n134217728 x y\n268435456 67108864 float sum -1 2374.1 113.07 197.87 0\n", size256MB, 113.07, 197.87, false},
+		{"skips NCCL debug", "NCCL INFO test\n268435456 67108864 float sum -1 2374.1 113.07 197.87 0\n", size256MB, 113.07, 197.87, false},
 	}
 
-	t.Logf("Got expected error: %v", err)
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			algbw, busbw, err := extractBandwidth(tt.output, tt.size)
 
-func TestParseOutput_NoGPUs(t *testing.T) {
-	badOutput := `# Some header
-# No GPU rank lines here
-   268435456      67108864     float     sum      -1   2374.1  113.07  197.87      0
-`
-	_, err := parseOutput(badOutput, 256)
-	if err == nil {
-		t.Error("expected error for no GPUs detected, got nil")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if algbw != tt.wantAlgbw {
+				t.Errorf("algbw = %v, want %v", algbw, tt.wantAlgbw)
+			}
+			if busbw != tt.wantBusbw {
+				t.Errorf("busbw = %v, want %v", busbw, tt.wantBusbw)
+			}
+		})
 	}
-
-	t.Logf("Got expected error: %v", err)
-}
-
-func TestParseOutput_MalformedData(t *testing.T) {
-	badOutput := `# Using devices
-#  Rank  0 Group  0 Pid     12 on nccl-test-1 device  0 [0001:00:00] NVIDIA A100
-   not_a_number      67108864     float     sum      -1   2374.1  113.07  197.87      0
-`
-	_, err := parseOutput(badOutput, 256)
-	if err == nil {
-		t.Error("expected error for malformed data, got nil")
-	}
-
-	t.Logf("Got expected error: %v", err)
 }

@@ -175,16 +175,19 @@ func extractBandwidth(output string, expectedSize int64) (algbw, busbw float64, 
 			continue
 		}
 
+		// Column 0: size
 		size, parseErr := strconv.ParseInt(fields[0], 10, 64)
 		if parseErr != nil || size != expectedSize {
 			continue
 		}
 
+		// Column 6: algbw
 		algbw, err = strconv.ParseFloat(fields[6], 64)
 		if err != nil {
 			return 0, 0, fmt.Errorf("failed to parse algbw: %w", err)
 		}
 
+		// Column 7: busbw
 		busbw, err = strconv.ParseFloat(fields[7], 64)
 		if err != nil {
 			return 0, 0, fmt.Errorf("failed to parse busbw: %w", err)

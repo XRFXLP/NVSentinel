@@ -34,6 +34,10 @@ type Config struct {
 	// Test fails if measured bandwidth is below this threshold.
 	BWThresholdGbps float64
 
+	// SkipBandwidthCheck skips the bandwidth threshold validation.
+	// When true, the test passes as long as the NCCL benchmark completes successfully.
+	SkipBandwidthCheck bool
+
 	// TestSizeMB is the message size for the all-reduce test in megabytes.
 	TestSizeMB int
 
@@ -60,6 +64,8 @@ func FromEnv(ctx context.Context) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	skipBWCheck := parseBool("SKIP_BANDWIDTH_CHECK", false)
 
 	testSize, err := parsePositiveInt("TEST_SIZE_MB", 256)
 	if err != nil {
@@ -93,6 +99,7 @@ func FromEnv(ctx context.Context) (*Config, error) {
 
 	return &Config{
 		BWThresholdGbps:    bwThreshold,
+		SkipBandwidthCheck: skipBWCheck,
 		TestSizeMB:         testSize,
 		NumGPUs:            numGPUs,
 		NCCLTestBinaryPath: binaryPath,
@@ -146,6 +153,24 @@ func parsePositiveInt(envKey string, defaultVal int) (int, error) {
 	slog.Debug("Parsed env var", "key", envKey, "value", i)
 
 	return i, nil
+}
+
+func parseBool(envKey string, defaultVal bool) bool {
+	v := os.Getenv(envKey)
+	if v == "" {
+		slog.Debug("Using default value for env var", "key", envKey, "default", defaultVal)
+		return defaultVal
+	}
+
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		slog.Warn("Failed to parse env var as bool, using default", "key", envKey, "value", v, "default", defaultVal)
+		return defaultVal
+	}
+
+	slog.Debug("Parsed env var", "key", envKey, "value", b)
+
+	return b
 }
 
 func parseBinaryPath() (string, error) {
