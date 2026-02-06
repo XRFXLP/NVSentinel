@@ -113,7 +113,7 @@ initContainers:
       - name: BW_THRESHOLD_GBPS
       # Minimum acceptable bus bandwidth
       # Valid for NVLink GPU-to-GPU interconnect
-      # If using PCIe GPU-interconnect, this threshold should be set to ~15 GB
+      # If using PCIe GPU-interconnect, this threshold should be set to ~15 GB/s
         value: "150"  # Minimum acceptable bus bandwidth in GB/s
       - name: TEST_SIZE_MB
         value: "256"  # Message size for all-reduce test
