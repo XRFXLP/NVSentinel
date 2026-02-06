@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/preflight-checks/nccl-loopback/pkg/benchmark"
 	"github.com/nvidia/nvsentinel/preflight-checks/nccl-loopback/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight-checks/nccl-loopback/pkg/health"
@@ -39,13 +40,9 @@ const (
 )
 
 func main() {
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})
-	slog.SetDefault(slog.New(handler))
+	logger.SetDefaultStructuredLogger("nccl-loopback", version)
 
 	slog.Info("Starting preflight NCCL loopback check",
-		"version", version,
 		"commit", commit,
 		"date", date)
 
