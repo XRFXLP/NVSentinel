@@ -32,6 +32,7 @@ ENV CGO_ENABLED=0
 WORKDIR /go/src
 
 # Copy go.mod and go.sum files for all dependencies first (layer caching)
+COPY commons/go.mod commons/go.sum ./commons/
 COPY data-models/go.mod data-models/go.sum ./data-models/
 COPY preflight-checks/nccl-loopback/go.mod preflight-checks/nccl-loopback/go.sum ./preflight-checks/nccl-loopback/
 
@@ -42,6 +43,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # Copy source code after go mod download
 COPY preflight-checks/nccl-loopback/ .
+COPY commons/ ../../commons/
 COPY data-models/ ../../data-models/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
