@@ -23,6 +23,10 @@
 IS_GO_MODULE := 1
 HAS_DOCKER := 1
 
+# Override MODULE_NAME to match workflow container_name (preflight-* convention)
+# Must be set before including common.mk which auto-detects from directory name
+MODULE_NAME := preflight-nccl-loopback
+
 # nccl-loopback specific settings
 CLEAN_EXTRA_FILES := nccl-loopback-check
 
