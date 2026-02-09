@@ -86,6 +86,20 @@ runs:
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
         fi
+
+    - name: Free disk space for SBOM generation
+      shell: bash
+      run: |
+        echo "Disk usage before cleanup:"
+        df -h /tmp
+        # Clean up Docker buildx cache and unused images
+        docker buildx prune -f --all || true
+        docker image prune -f || true
+        docker system prune -f || true
+        # Clean up temp files
+        rm -rf /tmp/.buildx-cache || true
+        echo "Disk usage after cleanup:"
+        df -h /tmp
     
     - name: Generate SBOM and Attest
       uses: ./.github/actions/sbom-and-attest
