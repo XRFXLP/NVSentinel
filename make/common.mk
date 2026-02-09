@@ -12,7 +12,8 @@
 REPO_ROOT := $(shell git rev-parse --show-toplevel)
 
 # Auto-detect current module name from directory
-MODULE_NAME := $(shell basename $(CURDIR))
+# if not set, use the directory name
+MODULE_NAME ?= $(shell basename $(CURDIR))
 
 # Auto-detect module path relative to repo root
 MODULE_PATH := $(subst $(REPO_ROOT)/,,$(CURDIR))
