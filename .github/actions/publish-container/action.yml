@@ -87,17 +87,15 @@ runs:
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
         fi
 
-    - name: Free disk space for SBOM generation
+    - name: Workaround for freeing up more disk space
       shell: bash
       run: |
-        echo "Disk usage before cleanup:"
-        df -h /tmp
-        # Clean up Docker buildx cache and unused images
-        docker buildx prune -f --all || true
-        docker image prune -f || true
-        docker system prune -f || true
-        echo "Disk usage after cleanup:"
-        df -h /tmp
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        sudo docker system prune -f
     
     - name: Generate SBOM and Attest
       uses: ./.github/actions/sbom-and-attest
