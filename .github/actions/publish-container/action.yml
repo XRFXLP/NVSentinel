@@ -96,8 +96,6 @@ runs:
         docker buildx prune -f --all || true
         docker image prune -f || true
         docker system prune -f || true
-        # Clean up temp files
-        rm -rf /tmp/.buildx-cache || true
         echo "Disk usage after cleanup:"
         df -h /tmp
     
