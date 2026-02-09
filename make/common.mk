@@ -11,8 +11,7 @@
 # Repository root path calculation (works from any subdirectory depth)
 REPO_ROOT := $(shell git rev-parse --show-toplevel)
 
-# Auto-detect current module name from directory
-# if not set, use the directory name
+# Auto-detect current module name from directory (use ?= to allow override)
 MODULE_NAME ?= $(shell basename $(CURDIR))
 
 # Auto-detect module path relative to repo root
