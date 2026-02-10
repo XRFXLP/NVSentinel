@@ -96,6 +96,22 @@ runs:
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
         fi
+
+    - name: Free disk space for SBOM generation
+      shell: bash
+      run: |
+        echo "=== Disk usage BEFORE cleanup ==="
+        df -h
+        # Remove pre-installed tools (if they exist on this runner)
+        sudo rm -rf /usr/local/lib/android || true
+        sudo rm -rf /usr/share/dotnet || true
+        sudo rm -rf /opt/ghc || true
+        # Thorough Docker cleanup - build cache no longer needed after push
+        docker buildx prune -f --all || true
+        docker system prune -af --volumes || true
+        rm -rf /tmp/.buildx-cache || true
+        echo "=== Disk usage AFTER cleanup ==="
+        df -h
     
     - name: Generate SBOM and Attest
       uses: ./.github/actions/sbom-and-attest
