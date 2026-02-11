@@ -46,7 +46,7 @@ func TestGangController_Reconcile(t *testing.T) {
 	}{
 		{
 			name:            "pod with IP belonging to gang registers peer",
-			pod:             newTestPod("gang-pod-0", "default", "10.0.0.1"),
+			pod:             newGangPod("gang-pod-0", "default", "10.0.0.1"),
 			discoverer:      newGangDiscoverer("test-gang", 2),
 			expectConfigMap: true,
 		},
@@ -236,7 +236,15 @@ func (te *testEnv) assertNoConfigMaps(t *testing.T, ctx context.Context, namespa
 }
 
 func newTestPod(name, namespace, ip string) *corev1.Pod {
-	return &corev1.Pod{
+	return newTestPodWithGangVolume(name, namespace, ip, false)
+}
+
+func newGangPod(name, namespace, ip string) *corev1.Pod {
+	return newTestPodWithGangVolume(name, namespace, ip, true)
+}
+
+func newTestPodWithGangVolume(name, namespace, ip string, withGangVolume bool) *corev1.Pod {
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
@@ -250,6 +258,23 @@ func newTestPod(name, namespace, ip string) *corev1.Pod {
 			PodIP: ip,
 		},
 	}
+
+	if withGangVolume {
+		pod.Spec.Volumes = []corev1.Volume{
+			{
+				Name: gangConfigVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "preflight-test-gang",
+						},
+					},
+				},
+			},
+		}
+	}
+
+	return pod
 }
 
 func newGangDiscoverer(gangID string, minCount int) *mockDiscoverer {
