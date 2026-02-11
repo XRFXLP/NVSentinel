@@ -27,7 +27,7 @@ import (
 
 const (
 	nvsentinelSocketVolumeName = "nvsentinel-socket"
-	gangConfigVolumeName       = "preflight-gang-config"
+	gangConfigVolumeName       = "nvsentinel-preflight-gang-config"
 )
 
 type PatchOperation struct {

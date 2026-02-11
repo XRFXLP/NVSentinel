@@ -58,7 +58,7 @@ func (c *GangController) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // gangConfigVolumeName is the volume name injected by the webhook for gang coordination.
-const gangConfigVolumeName = "preflight-gang-config"
+const gangConfigVolumeName = "nvsentinel-preflight-gang-config"
 
 // podIPChangedPredicate returns a predicate that filters for gang pods with IP changes.
 func (c *GangController) podIPChangedPredicate() predicate.Predicate {
