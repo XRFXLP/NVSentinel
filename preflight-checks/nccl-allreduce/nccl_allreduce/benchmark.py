@@ -1,0 +1,289 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""NCCL All-Reduce benchmark implementation.
+
+This module runs NCCL all-reduce benchmarks using PyTorch distributed.
+It measures bus bandwidth and compares against a configurable threshold.
+"""
+
+import logging
+import os
+import time
+from dataclasses import dataclass
+
+import torch
+import torch.distributed as dist
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class TestResult:
+    """Result of a single all-reduce test.
+
+    Attributes:
+        size_bytes: Message size in bytes.
+        size_human: Human-readable size string.
+        time_ms: Average time per iteration in milliseconds.
+        algo_bw_gbps: Algorithm bandwidth in GB/s.
+        bus_bw_gbps: Bus bandwidth in GB/s.
+        passed: Whether the test met the bandwidth threshold.
+    """
+
+    size_bytes: int
+    size_human: str
+    time_ms: float
+    algo_bw_gbps: float
+    bus_bw_gbps: float
+    passed: bool
+
+
+@dataclass
+class BenchmarkResult:
+    """Result of the complete benchmark run.
+
+    Attributes:
+        world_size: Total number of distributed processes.
+        num_nodes: Number of nodes in the test.
+        gpus_per_node: GPUs per node.
+        threshold_gbps: Bandwidth threshold used.
+        tests: Results for each message size tested.
+        passed: Overall pass/fail status.
+        min_bus_bw: Minimum bus bandwidth observed.
+    """
+
+    world_size: int
+    num_nodes: int
+    gpus_per_node: int
+    threshold_gbps: float
+    tests: list[TestResult]
+    passed: bool
+    min_bus_bw: float
+
+
+def parse_size(size_str: str) -> int:
+    """Parse a size string to bytes.
+
+    Args:
+        size_str: Size string like "4G", "4GB", "512M", or "512MB".
+
+    Returns:
+        Size in bytes.
+
+    Raises:
+        ValueError: If the size string is invalid.
+    """
+    size_str = size_str.strip().upper()
+
+    if size_str.endswith("GB"):
+        return int(float(size_str[:-2]) * 1024**3)
+    if size_str.endswith("G"):
+        return int(float(size_str[:-1]) * 1024**3)
+    if size_str.endswith("MB"):
+        return int(float(size_str[:-2]) * 1024**2)
+    if size_str.endswith("M"):
+        return int(float(size_str[:-1]) * 1024**2)
+
+    raise ValueError(f"Invalid size format: {size_str}. Use G/GB or M/MB suffix.")
+
+
+def format_size(size_bytes: int) -> str:
+    """Format bytes to human-readable string.
+
+    Args:
+        size_bytes: Size in bytes.
+
+    Returns:
+        Human-readable size string (MB or GB).
+    """
+    if size_bytes >= 1024**3:
+        return f"{size_bytes / 1024**3:.2f} GB"
+    return f"{size_bytes / 1024**2:.2f} MB"
+
+
+class Benchmark:
+    """NCCL All-Reduce benchmark runner."""
+
+    def __init__(
+        self,
+        threshold_gbps: float,
+        iters: int = 20,
+        warmup: int = 5,
+    ) -> None:
+        """Initialize the benchmark.
+
+        Args:
+            threshold_gbps: Minimum acceptable bus bandwidth in GB/s.
+            iters: Number of timed iterations per test.
+            warmup: Number of warmup iterations before timing.
+        """
+        self._threshold = threshold_gbps
+        self._iters = iters
+        self._warmup = warmup
+
+    def run(self, message_sizes: list[int]) -> BenchmarkResult:
+        """Run the benchmark with the given message sizes.
+
+        Must be called after dist.init_process_group().
+
+        Args:
+            message_sizes: List of message sizes in bytes to test.
+
+        Returns:
+            BenchmarkResult with all test results.
+
+        Raises:
+            RuntimeError: If distributed is not initialized.
+        """
+        if not dist.is_initialized():
+            raise RuntimeError("Distributed not initialized")
+
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        gpus_per_node = int(os.environ.get("NPROCS_PER_NODE", 8))
+        num_nodes = world_size // gpus_per_node if gpus_per_node > 0 else 1
+
+        torch.cuda.set_device(local_rank)
+
+        if rank == 0:
+            self._log_header(num_nodes, gpus_per_node, world_size)
+
+        tests: list[TestResult] = []
+        min_bus_bw = float("inf")
+        all_passed = True
+
+        for size in message_sizes:
+            result = self._run_single(size, world_size, local_rank)
+            tests.append(result)
+
+            if result.bus_bw_gbps < min_bus_bw:
+                min_bus_bw = result.bus_bw_gbps
+
+            if not result.passed:
+                all_passed = False
+
+            if rank == 0:
+                self._log_result(result)
+
+        if rank == 0:
+            self._log_summary(all_passed, min_bus_bw)
+
+        return BenchmarkResult(
+            world_size=world_size,
+            num_nodes=num_nodes,
+            gpus_per_node=gpus_per_node,
+            threshold_gbps=self._threshold,
+            tests=tests,
+            passed=all_passed,
+            min_bus_bw=min_bus_bw,
+        )
+
+    def _run_single(
+        self,
+        size_bytes: int,
+        world_size: int,
+        local_rank: int,
+    ) -> TestResult:
+        """Run a single all-reduce test.
+
+        Args:
+            size_bytes: Message size in bytes.
+            world_size: Total number of distributed processes.
+            local_rank: Local GPU index.
+
+        Returns:
+            TestResult for this message size.
+        """
+        num_elements = size_bytes // 4  # float32 = 4 bytes
+        tensor = torch.randn(
+            num_elements,
+            dtype=torch.float32,
+            device=f"cuda:{local_rank}",
+        )
+
+        # Warmup iterations (not timed)
+        for _ in range(self._warmup):
+            dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+        torch.cuda.synchronize()
+
+        # Timed iterations
+        start = time.perf_counter()
+        for _ in range(self._iters):
+            dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+        torch.cuda.synchronize()
+        elapsed = time.perf_counter() - start
+
+        # Calculate bandwidth metrics
+        avg_time = elapsed / self._iters
+        algo_bw = size_bytes / avg_time / 1e9  # GB/s
+
+        # Bus bandwidth accounts for ring/tree algorithm overhead
+        bus_bw = algo_bw * (2 * (world_size - 1) / world_size)
+
+        passed = bus_bw >= self._threshold
+
+        return TestResult(
+            size_bytes=size_bytes,
+            size_human=format_size(size_bytes),
+            time_ms=avg_time * 1000,
+            algo_bw_gbps=algo_bw,
+            bus_bw_gbps=bus_bw,
+            passed=passed,
+        )
+
+    def _log_header(
+        self,
+        num_nodes: int,
+        gpus_per_node: int,
+        world_size: int,
+    ) -> None:
+        """Log benchmark header information."""
+        log.info(
+            "Starting NCCL All-Reduce benchmark",
+            extra={
+                "num_nodes": num_nodes,
+                "gpus_per_node": gpus_per_node,
+                "world_size": world_size,
+                "threshold_gbps": self._threshold,
+                "iters": self._iters,
+                "warmup": self._warmup,
+            },
+        )
+
+    def _log_result(self, result: TestResult) -> None:
+        """Log a single test result."""
+        log.info(
+            "Test result",
+            extra={
+                "size": result.size_human,
+                "time_ms": round(result.time_ms, 2),
+                "algo_bw_gbps": round(result.algo_bw_gbps, 2),
+                "bus_bw_gbps": round(result.bus_bw_gbps, 2),
+                "passed": result.passed,
+            },
+        )
+
+    def _log_summary(self, passed: bool, min_bus_bw: float) -> None:
+        """Log benchmark summary."""
+        log.info(
+            "Benchmark complete",
+            extra={
+                "passed": passed,
+                "min_bus_bw_gbps": round(min_bus_bw, 2),
+                "threshold_gbps": self._threshold,
+            },
+        )
+
