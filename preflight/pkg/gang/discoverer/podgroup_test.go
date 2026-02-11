@@ -19,6 +19,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func testConfig() PodGroupConfig {
@@ -26,7 +27,12 @@ func testConfig() PodGroupConfig {
 		Name:           "test-scheduler",
 		AnnotationKeys: []string{"test.io/pod-group", "scheduling.k8s.io/group-name"},
 		LabelKeys:      []string{"test.io/job-name"},
-		MinCountExpr:   DefaultMinCountExpr,
+		MinCountExpr:   "podGroup.spec.minMember",
+		PodGroupGVK: schema.GroupVersionKind{
+			Group:   "scheduling.test.io",
+			Version: "v1",
+			Kind:    "PodGroup",
+		},
 	}
 }
 
@@ -71,7 +77,7 @@ func TestPodGroupDiscoverer_CanHandle(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := NewPodGroupDiscoverer(nil, nil, tt.config)
+			d, err := NewPodGroupDiscoverer(nil, tt.config)
 			if err != nil {
 				t.Fatalf("NewPodGroupDiscoverer() error = %v", err)
 			}
@@ -113,7 +119,7 @@ func TestPodGroupDiscoverer_ExtractGangID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := NewPodGroupDiscoverer(nil, nil, tt.config)
+			d, err := NewPodGroupDiscoverer(nil, tt.config)
 			if err != nil {
 				t.Fatalf("NewPodGroupDiscoverer() error = %v", err)
 			}

@@ -24,10 +24,9 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // PodGroupConfig defines the configuration for a PodGroup-based gang discoverer.
@@ -41,36 +40,27 @@ type PodGroupConfig struct {
 	// LabelKeys are optional label keys to check as fallback (in order).
 	LabelKeys []string
 
-	// PodGroupGVR is the GroupVersionResource for the PodGroup CRD.
-	PodGroupGVR schema.GroupVersionResource
+	// PodGroupGVK is the GroupVersionKind for the PodGroup CRD (resolved from GVR via RESTMapper).
+	PodGroupGVK schema.GroupVersionKind
 
 	// MinCountExpr is a CEL expression to extract minCount from PodGroup.
-	// Receives 'podGroup' as map[string]any. Default: "podGroup.spec.minMember"
+	// Receives 'podGroup' as map[string]any.
 	MinCountExpr string
 }
-
-// DefaultMinCountExpr is the default CEL expression for extracting minCount.
-const DefaultMinCountExpr = "podGroup.spec.minMember"
 
 // PodGroupDiscoverer discovers gang members using PodGroup CRDs.
 // This is a generic implementation that works with Volcano and similar PodGroup-based schedulers.
 type PodGroupDiscoverer struct {
-	kubeClient      kubernetes.Interface
-	dynamicClient   dynamic.Interface
+	client          client.Client
 	config          PodGroupConfig
 	minCountProgram cel.Program
 }
 
 // NewPodGroupDiscoverer creates a new PodGroup-based gang discoverer.
 func NewPodGroupDiscoverer(
-	kubeClient kubernetes.Interface,
-	dynamicClient dynamic.Interface,
+	c client.Client,
 	config PodGroupConfig,
 ) (*PodGroupDiscoverer, error) {
-	if config.MinCountExpr == "" {
-		config.MinCountExpr = DefaultMinCountExpr
-	}
-
 	// Compile CEL expression for minCount extraction
 	env, err := cel.NewEnv(
 		cel.Variable("podGroup", cel.MapType(cel.StringType, cel.DynType)),
@@ -90,8 +80,7 @@ func NewPodGroupDiscoverer(
 	}
 
 	return &PodGroupDiscoverer{
-		kubeClient:      kubeClient,
-		dynamicClient:   dynamicClient,
+		client:          c,
 		config:          config,
 		minCountProgram: program,
 	}, nil
@@ -168,16 +157,15 @@ func (d *PodGroupDiscoverer) DiscoverPeers(ctx context.Context, pod *corev1.Pod)
 			pod.Namespace, podGroupName, err)
 	}
 
-	// List all pods in the namespace
-	pods, err := d.kubeClient.CoreV1().Pods(pod.Namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
+	var podList corev1.PodList
+	if err := d.client.List(ctx, &podList, client.InNamespace(pod.Namespace)); err != nil {
 		return nil, fmt.Errorf("failed to list pods in namespace %s: %w", pod.Namespace, err)
 	}
 
 	var peers []types.PeerInfo
 
-	for i := range pods.Items {
-		p := &pods.Items[i]
+	for i := range podList.Items {
+		p := &podList.Items[i]
 
 		// Check if this pod belongs to the same gang
 		if d.getPodGroupName(p) != podGroupName {
@@ -226,14 +214,10 @@ func (d *PodGroupDiscoverer) getPodGroupMinMember(
 	ctx context.Context,
 	namespace, name string,
 ) (int, error) {
-	if d.dynamicClient == nil {
-		return 0, fmt.Errorf("dynamic client not configured")
-	}
+	podGroup := &unstructured.Unstructured{}
+	podGroup.SetGroupVersionKind(d.config.PodGroupGVK)
 
-	gvr := d.config.PodGroupGVR
-
-	podGroup, err := d.dynamicClient.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
+	if err := d.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, podGroup); err != nil {
 		return 0, fmt.Errorf("failed to get PodGroup %s/%s: %w", namespace, name, err)
 	}
 

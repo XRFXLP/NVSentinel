@@ -17,6 +17,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
@@ -56,7 +57,10 @@ func (c *GangController) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(c)
 }
 
-// podIPChangedPredicate returns a predicate that filters for pods with IP changes.
+// gangConfigVolumeName is the volume name injected by the webhook for gang coordination.
+const gangConfigVolumeName = "preflight-gang-config"
+
+// podIPChangedPredicate returns a predicate that filters for gang pods with IP changes.
 func (c *GangController) podIPChangedPredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
@@ -64,8 +68,9 @@ func (c *GangController) podIPChangedPredicate() predicate.Predicate {
 			if !ok {
 				return false
 			}
-			// Only process if pod has an IP
-			return pod.Status.PodIP != ""
+
+			// Only process gang pods (injected by webhook) with an IP
+			return hasGangConfigVolume(pod) && pod.Status.PodIP != ""
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldPod, ok := e.ObjectOld.(*corev1.Pod)
@@ -78,8 +83,9 @@ func (c *GangController) podIPChangedPredicate() predicate.Predicate {
 				return false
 			}
 
-			// Only process if IP changed and new pod has an IP
-			return oldPod.Status.PodIP != newPod.Status.PodIP && newPod.Status.PodIP != ""
+			return hasGangConfigVolume(newPod) &&
+				oldPod.Status.PodIP != newPod.Status.PodIP &&
+				newPod.Status.PodIP != ""
 		},
 		DeleteFunc: func(_ event.DeleteEvent) bool {
 			return false
@@ -88,6 +94,17 @@ func (c *GangController) podIPChangedPredicate() predicate.Predicate {
 			return false
 		},
 	}
+}
+
+// hasGangConfigVolume checks if the pod was injected by the webhook for gang coordination.
+func hasGangConfigVolume(pod *corev1.Pod) bool {
+	for _, vol := range pod.Spec.Volumes {
+		if vol.Name == gangConfigVolumeName {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Reconcile handles pod events to register gang peers.
@@ -124,7 +141,7 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			"gangID", gangID,
 			"error", err)
 
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to discover gang peers: %w", err)
 	}
 
 	if gangInfo == nil {
@@ -146,7 +163,7 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			"gangID", gangID,
 			"error", err)
 
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to register peer: %w", err)
 	}
 
 	slog.Info("Registered gang peer",
@@ -168,8 +185,10 @@ func (c *GangController) RegisterPod(ctx context.Context, reg webhook.GangRegist
 	}
 
 	// Create ConfigMap immediately (with empty peer list).
-	// This ensures it exists before the scheduler tries to validate it.
 	// Peer IPs will be added later when pods get scheduled and receive IPs.
+	// This is needed as one of the schedulers (KAI) that we were targeting
+	// validates the configmap before scheduling even for optional configmap volumes.
+	// https://github.com/NVIDIA/KAI-Scheduler/issues/988
 	if err := c.coordinator.EnsureConfigMap(ctx, reg.Namespace, reg.GangID, 0); err != nil {
 		slog.Error("Failed to ensure gang ConfigMap",
 			"namespace", reg.Namespace,

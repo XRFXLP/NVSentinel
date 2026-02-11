@@ -23,9 +23,17 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// WorkloadGVK is the GroupVersionKind for K8s 1.35+ Workload resources.
+var WorkloadGVK = schema.GroupVersionKind{
+	Group:   "scheduling.k8s.io",
+	Version: "v1alpha1",
+	Kind:    "Workload",
+}
 
 // WorkloadRefDiscoverer discovers gang members using K8s 1.35+ native workloadRef.
 // Pods are linked to Workloads via spec.workloadRef:
@@ -35,13 +43,13 @@ import (
 //	    name: training-job-workload
 //	    podGroup: workers
 type WorkloadRefDiscoverer struct {
-	kubeClient kubernetes.Interface
+	client client.Client
 }
 
 // NewWorkloadRefDiscoverer creates a new workloadRef gang discoverer.
-func NewWorkloadRefDiscoverer(kubeClient kubernetes.Interface) *WorkloadRefDiscoverer {
+func NewWorkloadRefDiscoverer(c client.Client) *WorkloadRefDiscoverer {
 	return &WorkloadRefDiscoverer{
-		kubeClient: kubeClient,
+		client: c,
 	}
 }
 
@@ -141,15 +149,15 @@ func (w *WorkloadRefDiscoverer) findPeers(
 	ctx context.Context,
 	namespace, workloadName, podGroup string,
 ) ([]types.PeerInfo, error) {
-	pods, err := w.kubeClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
+	var podList corev1.PodList
+	if err := w.client.List(ctx, &podList, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("failed to list pods in namespace %s: %w", namespace, err)
 	}
 
 	var peers []types.PeerInfo
 
-	for i := range pods.Items {
-		p := &pods.Items[i]
+	for i := range podList.Items {
+		p := &podList.Items[i]
 
 		if !w.isPeerMatch(p, workloadName, podGroup) {
 			continue
@@ -185,19 +193,37 @@ func (w *WorkloadRefDiscoverer) getWorkloadMinCount(
 	ctx context.Context,
 	namespace, name, podGroup string,
 ) (int, error) {
-	workload, err := w.kubeClient.SchedulingV1alpha1().Workloads(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
+	workload := &unstructured.Unstructured{}
+	workload.SetGroupVersionKind(WorkloadGVK)
+
+	if err := w.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, workload); err != nil {
 		return 0, fmt.Errorf("failed to get Workload %s/%s: %w", namespace, name, err)
 	}
 
-	for _, pg := range workload.Spec.PodGroups {
-		// If podGroup specified, match it; otherwise take first one
-		if podGroup != "" && pg.Name != podGroup {
+	podGroups, found, err := unstructured.NestedSlice(workload.Object, "spec", "podGroups")
+	if err != nil {
+		return 0, fmt.Errorf("failed to get podGroups from Workload %s/%s: %w", namespace, name, err)
+	}
+
+	if !found {
+		return 0, nil
+	}
+
+	for _, pgRaw := range podGroups {
+		pg, ok := pgRaw.(map[string]any)
+		if !ok {
 			continue
 		}
 
-		if pg.Policy.Gang != nil {
-			return int(pg.Policy.Gang.MinCount), nil
+		// If podGroup specified, match it; otherwise take first one
+		pgName, _, _ := unstructured.NestedString(pg, "name")
+		if podGroup != "" && pgName != podGroup {
+			continue
+		}
+
+		minCount, found, _ := unstructured.NestedInt64(pg, "policy", "gang", "minCount")
+		if found {
+			return int(minCount), nil
 		}
 	}
 

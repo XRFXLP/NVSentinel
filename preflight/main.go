@@ -33,8 +33,6 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/controller"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
@@ -112,20 +110,15 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 		return fmt.Errorf("failed to get in-cluster config: %w", err)
 	}
 
-	kubeClient, err := kubernetes.NewForConfig(restConfig)
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{})
 	if err != nil {
-		return fmt.Errorf("failed to create Kubernetes client: %w", err)
-	}
-
-	dynamicClient, err := dynamic.NewForConfig(restConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create dynamic client: %w", err)
+		return fmt.Errorf("failed to create controller manager: %w", err)
 	}
 
 	discoverer, err = gang.NewDiscovererFromConfig(
 		cfg.GangDiscovery,
-		kubeClient,
-		dynamicClient,
+		mgr.GetClient(),
+		mgr.GetRESTMapper(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create gang discoverer: %w", err)
@@ -134,12 +127,7 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 	coordinatorConfig := gang.CoordinatorConfig{
 		MasterPort: cfg.GangCoordination.MasterPort,
 	}
-	coordinator := gang.NewCoordinator(kubeClient, coordinatorConfig)
-
-	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{})
-	if err != nil {
-		return fmt.Errorf("failed to create controller manager: %w", err)
-	}
+	coordinator := gang.NewCoordinator(mgr.GetClient(), coordinatorConfig)
 
 	gangController := controller.NewGangController(
 		mgr.GetClient(),

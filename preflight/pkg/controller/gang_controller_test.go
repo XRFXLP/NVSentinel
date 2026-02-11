@@ -153,7 +153,7 @@ func setupTestEnv(t *testing.T, ctx context.Context, discoverer *mockDiscoverer)
 	})
 	require.NoError(t, err, "failed to create manager")
 
-	coord := gang.NewCoordinator(kubeClient, gang.DefaultCoordinatorConfig())
+	coord := gang.NewCoordinator(mgr.GetClient(), gang.DefaultCoordinatorConfig())
 	gangCtrl := NewGangController(mgr.GetClient(), coord, discoverer)
 
 	skipValidation := true

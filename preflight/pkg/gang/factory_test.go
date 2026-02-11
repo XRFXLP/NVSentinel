@@ -19,9 +19,34 @@ import (
 	"testing"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
+
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestNewDiscovererFromConfig(t *testing.T) {
+	// Create fake client
+	fakeClient := fake.NewClientBuilder().Build()
+
+	// Create REST mapper with required GVKs registered
+	restMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{
+		{Group: "scheduling.k8s.io", Version: "v1alpha1"},
+		{Group: "scheduling.volcano.sh", Version: "v1beta1"},
+	})
+	// K8s 1.35+ native Workload API
+	restMapper.Add(schema.GroupVersionKind{
+		Group:   "scheduling.k8s.io",
+		Version: "v1alpha1",
+		Kind:    "Workload",
+	}, meta.RESTScopeNamespace)
+	// Volcano PodGroup
+	restMapper.Add(schema.GroupVersionKind{
+		Group:   "scheduling.volcano.sh",
+		Version: "v1beta1",
+		Kind:    "PodGroup",
+	}, meta.RESTScopeNamespace)
+
 	tests := []struct {
 		name      string
 		cfg       config.GangDiscoveryConfig
@@ -38,6 +63,7 @@ func TestNewDiscovererFromConfig(t *testing.T) {
 			cfg: config.GangDiscoveryConfig{
 				Name:           "volcano",
 				AnnotationKeys: []string{"volcano.sh/pod-group"},
+				MinCountExpr:   "podGroup.spec.minMember",
 				PodGroupGVR: config.GVRConfig{
 					Group:    "scheduling.volcano.sh",
 					Version:  "v1beta1",
@@ -64,11 +90,36 @@ func TestNewDiscovererFromConfig(t *testing.T) {
 			},
 			wantError: true,
 		},
+		{
+			name: "GVR not found in cluster",
+			cfg: config.GangDiscoveryConfig{
+				Name:           "unknown-scheduler",
+				AnnotationKeys: []string{"unknown.io/pod-group"},
+				PodGroupGVR: config.GVRConfig{
+					Group:    "unknown.io",
+					Version:  "v1",
+					Resource: "podgroups",
+				},
+			},
+			wantError: true,
+		},
+		{
+			name: "PodGroup fields without name",
+			cfg: config.GangDiscoveryConfig{
+				AnnotationKeys: []string{"volcano.sh/pod-group"},
+				PodGroupGVR: config.GVRConfig{
+					Group:    "scheduling.volcano.sh",
+					Version:  "v1beta1",
+					Resource: "podgroups",
+				},
+			},
+			wantError: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := NewDiscovererFromConfig(tt.cfg, nil, nil)
+			got, err := NewDiscovererFromConfig(tt.cfg, fakeClient, restMapper)
 
 			if tt.wantError {
 				if err == nil {
