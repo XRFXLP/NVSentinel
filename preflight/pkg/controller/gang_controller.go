@@ -21,6 +21,7 @@ import (
 	"log/slog"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
+	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -56,9 +57,6 @@ func (c *GangController) SetupWithManager(mgr ctrl.Manager) error {
 		WithEventFilter(c.podIPChangedPredicate()).
 		Complete(c)
 }
-
-// gangConfigVolumeName is the volume name injected by the webhook for gang coordination.
-const gangConfigVolumeName = "nvsentinel-preflight-gang-config"
 
 // podIPChangedPredicate returns a predicate that filters for gang pods with IP changes.
 func (c *GangController) podIPChangedPredicate() predicate.Predicate {
@@ -99,7 +97,7 @@ func (c *GangController) podIPChangedPredicate() predicate.Predicate {
 // hasGangConfigVolume checks if the pod was injected by the webhook for gang coordination.
 func hasGangConfigVolume(pod *corev1.Pod) bool {
 	for _, vol := range pod.Spec.Volumes {
-		if vol.Name == gangConfigVolumeName {
+		if vol.Name == types.GangConfigVolumeName {
 			return true
 		}
 	}

@@ -21,14 +21,12 @@ import (
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
+	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-const (
-	nvsentinelSocketVolumeName = "nvsentinel-socket"
-	gangConfigVolumeName       = "nvsentinel-preflight-gang-config"
-)
+const nvsentinelSocketVolumeName = "nvsentinel-socket"
 
 type PatchOperation struct {
 	Op    string `json:"op"`
@@ -199,7 +197,7 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList, gangCtx
 		// Add gang ConfigMap volume mount if this pod is part of a gang
 		if gangCtx != nil {
 			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-				Name:      gangConfigVolumeName,
+				Name:      types.GangConfigVolumeName,
 				MountPath: i.cfg.GangCoordination.ConfigMapMountPath,
 				ReadOnly:  true,
 			})
@@ -271,14 +269,14 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 	}
 
 	// Add gang ConfigMap volume if pod is part of a gang
-	if gangCtx != nil && !existingVolumes[gangConfigVolumeName] {
+	if gangCtx != nil && !existingVolumes[types.GangConfigVolumeName] {
 		// ConfigMap is optional because it may not exist yet when the pod is created.
 		// The controller creates it when it discovers the gang.
 		// Init containers poll the mounted path until peers are registered.
 		optional := true
 
 		volumesToAdd = append(volumesToAdd, corev1.Volume{
-			Name: gangConfigVolumeName,
+			Name: types.GangConfigVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{

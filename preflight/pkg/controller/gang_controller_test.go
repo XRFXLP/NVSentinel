@@ -262,7 +262,7 @@ func newTestPodWithGangVolume(name, namespace, ip string, withGangVolume bool) *
 	if withGangVolume {
 		pod.Spec.Volumes = []corev1.Volume{
 			{
-				Name: gangConfigVolumeName,
+				Name: types.GangConfigVolumeName,
 				VolumeSource: corev1.VolumeSource{
 					ConfigMap: &corev1.ConfigMapVolumeSource{
 						LocalObjectReference: corev1.LocalObjectReference{

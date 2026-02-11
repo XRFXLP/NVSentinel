@@ -21,6 +21,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+// GangConfigVolumeName is the volume name injected by the webhook for gang coordination.
+// The controller uses this to identify pods that belong to a gang.
+const GangConfigVolumeName = "nvsentinel-preflight-gang-config"
+
 type PeerInfo struct {
 	PodName   string
 	PodIP     string
