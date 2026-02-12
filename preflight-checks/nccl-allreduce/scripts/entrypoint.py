@@ -30,7 +30,7 @@ contains:
 
 Environment variables:
     Required:
-        - POD_NAME: This pod's name (used to determine rank)
+        - POD_NAME: This pod's name (injected by webhook)
 
     Optional:
         - GANG_CONFIG_DIR: ConfigMap mount path (default: /etc/preflight)

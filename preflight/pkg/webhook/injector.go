@@ -340,6 +340,8 @@ func (i *Injector) injectGangEnv(container *corev1.Container, gangCtx *GangConte
 		return
 	}
 
+	slog.Info("Injecting gang environment variables", "gangID", gangCtx.GangID, "configMap", gangCtx.ConfigMapName)
+
 	envVars := []corev1.EnvVar{
 		{
 			Name:  "GANG_ID",
@@ -358,7 +360,7 @@ func (i *Injector) injectGangEnv(container *corev1.Container, gangCtx *GangConte
 			Value: strconv.Itoa(i.cfg.GangCoordination.MasterPort),
 		},
 		{
-			Name: "MY_POD_NAME",
+			Name: "POD_NAME",
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
 					FieldPath: "metadata.name",
@@ -366,7 +368,7 @@ func (i *Injector) injectGangEnv(container *corev1.Container, gangCtx *GangConte
 			},
 		},
 		{
-			Name: "MY_POD_IP",
+			Name: "POD_IP",
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
 					FieldPath: "status.podIP",

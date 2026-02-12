@@ -140,9 +140,6 @@ initContainers:
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run
-      - name: gang-config
-        mountPath: /etc/preflight
-        readOnly: true
 
 gpuResourceNames:
   - "nvidia.com/gpu"

@@ -73,10 +73,11 @@ COPY --from=build /app/dist/*.whl /tmp/
 COPY --from=build /app/constraints.txt /tmp/
 
 RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --force-reinstall --no-deps "protobuf>=5.26.0" && \
     pip install /tmp/nvsentinel_nccl_allreduce*.whl \
         --constraint /tmp/constraints.txt \
         --no-deps && \
-    pip install grpcio protobuf structlog && \
+    pip install --upgrade "grpcio>=1.60.0" structlog && \
     rm -rf /tmp/*.whl /tmp/constraints.txt
 
 # Copy entrypoint script
