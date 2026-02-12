@@ -26,7 +26,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-const nvsentinelSocketVolumeName = "nvsentinel-socket"
+const (
+	nvsentinelSocketVolumeName = "nvsentinel-socket"
+	// dshmVolumeName is the name for the shared memory volume needed by NCCL
+	dshmVolumeName = "dshm"
+	// ncclTopoVolumeName is the name for the NCCL topology ConfigMap volume
+	ncclTopoVolumeName = "nccl-topo"
+)
 
 type PatchOperation struct {
 	Op    string `json:"op"`
@@ -201,6 +207,22 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList, gangCtx
 				MountPath: i.cfg.GangCoordination.ConfigMapMountPath,
 				ReadOnly:  true,
 			})
+
+			// Add /dev/shm mount for NCCL shared memory communication.
+			// NCCL requires a larger shared memory segment than the default 64MB.
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+				Name:      dshmVolumeName,
+				MountPath: "/dev/shm",
+			})
+
+			// Add NCCL topology ConfigMap mount if configured.
+			if i.cfg.GangCoordination.NCCLTopoConfigMap != "" {
+				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+					Name:      ncclTopoVolumeName,
+					MountPath: "/etc/nccl",
+					ReadOnly:  true,
+				})
+			}
 		}
 
 		initContainers = append(initContainers, *container)
@@ -281,6 +303,37 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: gangCtx.ConfigMapName,
+					},
+					Optional: &optional,
+				},
+			},
+		})
+	}
+
+	// Add shared memory volume for NCCL multi-GPU communication.
+	// NCCL requires a larger /dev/shm than the default 64MB container limit.
+	// Using emptyDir with Memory medium provides RAM-backed storage.
+	if gangCtx != nil && !existingVolumes[dshmVolumeName] {
+		volumesToAdd = append(volumesToAdd, corev1.Volume{
+			Name: dshmVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					Medium: corev1.StorageMediumMemory,
+				},
+			},
+		})
+	}
+
+	// Add NCCL topology ConfigMap volume if configured.
+	// Required for Azure NDv4/v5 - NCCL needs this to map GPUs to IB NICs.
+	if gangCtx != nil && i.cfg.GangCoordination.NCCLTopoConfigMap != "" && !existingVolumes[ncclTopoVolumeName] {
+		optional := true
+		volumesToAdd = append(volumesToAdd, corev1.Volume{
+			Name: ncclTopoVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: i.cfg.GangCoordination.NCCLTopoConfigMap,
 					},
 					Optional: &optional,
 				},

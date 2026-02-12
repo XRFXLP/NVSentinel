@@ -160,7 +160,7 @@ class HealthReporter:
                 "recommended_action": pb.RecommendedAction.Name(
                     event.recommendedAction
                 ),
-                "message": event.message,
+                "event_message": event.message,
             },
         )
 

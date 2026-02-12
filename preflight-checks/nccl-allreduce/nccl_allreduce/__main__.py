@@ -189,7 +189,7 @@ def _handle_success(cfg: Config, result) -> int:
         f"meets threshold {cfg.bw_threshold_gbps:.2f} GB/s"
     )
 
-    log.info("NCCL all-reduce check PASSED", extra={"message": message})
+    log.info("NCCL all-reduce check PASSED", extra={"details": message})
 
     if cfg.skip_health_report:
         log.info("Skipping health report (SKIP_HEALTH_REPORT=true)")
@@ -223,7 +223,7 @@ def _handle_failure(cfg: Config, error: NCCLError, message: str) -> int:
     Returns:
         Exit code.
     """
-    log.error("NCCL all-reduce check FAILED", extra={"message": message})
+    log.error("NCCL all-reduce check FAILED", extra={"details": message})
 
     if cfg.skip_health_report:
         log.info("Skipping health report (SKIP_HEALTH_REPORT=true)")

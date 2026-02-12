@@ -95,6 +95,10 @@ type GangCoordinationConfig struct {
 	// ConfigMapMountPath is the path where gang ConfigMap is mounted in init containers.
 	// Default: /etc/preflight
 	ConfigMapMountPath string `yaml:"configMapMountPath,omitempty"`
+
+	// NCCLTopoConfigMap is the name of the ConfigMap containing the NCCL topology file.
+	// Required for Azure NDv4/v5 - without it, NCCL cannot map GPUs to IB NICs.
+	NCCLTopoConfigMap string `yaml:"ncclTopoConfigMap,omitempty"`
 }
 
 func Load(path string) (*Config, error) {

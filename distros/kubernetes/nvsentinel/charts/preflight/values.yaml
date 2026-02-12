@@ -17,7 +17,7 @@ replicaCount: 1
 image:
   repository: xrfxlp/preflight
   pullPolicy: IfNotPresent
-  tag: "22411002"
+  tag: "15271202"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -129,14 +129,42 @@ initContainers:
   # NCCL all-reduce test - validates multi-node GPU communication (InfiniBand/RoCE)
   # Requires gangCoordination.enabled=true and gang-aware scheduler (Volcano, Kueue, etc.)
   - name: preflight-nccl-allreduce
-    image: xrfxlp/preflight-nccl-allreduce:11451102
+    image: xrfxlp/preflight-nccl-allreduce:15341202
+    securityContext:
+      capabilities:
+        add: ["IPC_LOCK"]  # Required for RDMA memory registration (InfiniBand/RoCE)
     env:
+      # Benchmark configuration
       - name: BW_THRESHOLD_GBPS
         value: "100"  # Minimum acceptable bus bandwidth in GB/s
       - name: MESSAGE_SIZES
         value: "4G,8G"  # Message sizes to test
       - name: GANG_TIMEOUT_SECONDS
         value: "600"  # Timeout waiting for gang formation
+      # NCCL configuration
+      - name: NCCL_SOCKET_IFNAME
+        value: "eth0"
+      - name: NCCL_DEBUG
+        value: "WARN"  # Use INFO for detailed troubleshooting
+      # Azure InfiniBand (NDv4/v5) - topology file required for NCCL to use IB
+      - name: NCCL_TOPO_FILE
+        value: "/etc/nccl/topo.xml"
+      - name: NCCL_IB_PCI_RELAXED_ORDERING
+        value: "1"
+      - name: UCX_IB_PCI_RELAXED_ORDERING
+        value: "on"
+      - name: UCX_NET_DEVICES
+        value: "eth0"
+      - name: UCX_TLS
+        value: "tcp"
+      - name: UCX_MEM_EVENTS
+        value: "n"
+      # Provider-specific settings (uncomment as needed):
+      # AWS EFA:
+      # - name: FI_EFA_USE_DEVICE_RDMA
+      #   value: "1"
+      # - name: FI_PROVIDER
+      #   value: "efa"
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run
@@ -151,15 +179,15 @@ networkResourceNames:
 # Gang discovery configuration for multi-node preflight checks.
 # Default (empty): K8s 1.35+ native WorkloadRef API
 # For PodGroup-based schedulers, set name and other fields:
-gangDiscovery: {}
-  # name: "volcano"
-  # annotationKeys: ["volcano.sh/pod-group"]
-  # labelKeys: ["volcano.sh/job-name"]  # optional fallback
-  # podGroupGVR:
-  #   group: "scheduling.volcano.sh"
-  #   version: "v1beta1"
-  #   resource: "podgroups"
-  # minCountExpr: "podGroup.spec.minMember"  # CEL expression
+gangDiscovery:
+  name: "volcano"
+  annotationKeys: ["scheduling.k8s.io/group-name"]
+  labelKeys: []  # optional fallback
+  podGroupGVR:
+    group: "scheduling.volcano.sh"
+    version: "v1beta1"
+    resource: "podgroups"
+  minCountExpr: "podGroup.spec.minMember"  # CEL expression
 
 # Gang coordination configuration for multi-node checks (e.g., nccl-allreduce)
 gangCoordination:
@@ -171,6 +199,9 @@ gangCoordination:
   masterPort: 29500
   # Path where gang ConfigMap is mounted in init containers
   configMapMountPath: "/etc/preflight"
+  # NCCL topology ConfigMap name - required for Azure NDv4/v5 InfiniBand
+  # Without this, NCCL cannot map GPUs to IB NICs and falls back to TCP
+  ncclTopoConfigMap: "nccl-topo-ndv4"
 
 # Label-based namespace selection
 # Enable preflight in a namespace: kubectl label namespace <name> nvsentinel.nvidia.com/preflight=enabled

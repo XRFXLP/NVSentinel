@@ -291,7 +291,10 @@ class GangWaiter:
             try:
                 config = self._reader.read(pod_name)
 
-                if len(config.peers) >= config.expected_count:
+                # Wait until expected_count is set (> 0) AND all peers registered.
+                # The ConfigMap may be created empty initially and populated later
+                # by the controller, so we must wait for expected_count > 0.
+                if config.expected_count > 0 and len(config.peers) >= config.expected_count:
                     log.info(
                         "Gang formation complete",
                         extra={
@@ -303,14 +306,20 @@ class GangWaiter:
                     )
                     return config
 
-                log.info(
-                    "Waiting for more peers",
-                    extra={
-                        "expected": config.expected_count,
-                        "current": len(config.peers),
-                        "remaining": config.expected_count - len(config.peers),
-                    },
-                )
+                if config.expected_count == 0:
+                    log.info(
+                        "Waiting for gang configuration",
+                        extra={"status": "expected_count not set yet"},
+                    )
+                else:
+                    log.info(
+                        "Waiting for more peers",
+                        extra={
+                            "expected": config.expected_count,
+                            "current": len(config.peers),
+                            "remaining": config.expected_count - len(config.peers),
+                        },
+                    )
 
             except FileNotFoundError as err:
                 log.debug(
