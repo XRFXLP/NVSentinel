@@ -26,6 +26,16 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+var supportedHostPathTypes = map[string]corev1.HostPathType{
+	string(corev1.HostPathDirectory):         corev1.HostPathDirectory,
+	string(corev1.HostPathDirectoryOrCreate): corev1.HostPathDirectoryOrCreate,
+	string(corev1.HostPathFile):              corev1.HostPathFile,
+	string(corev1.HostPathFileOrCreate):      corev1.HostPathFileOrCreate,
+	string(corev1.HostPathSocket):            corev1.HostPathSocket,
+	string(corev1.HostPathCharDev):           corev1.HostPathCharDev,
+	string(corev1.HostPathBlockDev):          corev1.HostPathBlockDev,
+}
+
 const (
 	nvsentinelSocketVolumeName = "nvsentinel-socket"
 	// dshmVolumeName is the name for the shared memory volume needed by NCCL
@@ -223,6 +233,23 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList, gangCtx
 					ReadOnly:  true,
 				})
 			}
+
+			for _, m := range i.cfg.GangCoordination.ExtraHostPathMounts {
+				if m.Name == "" || m.MountPath == "" {
+					continue
+				}
+
+				readOnly := true
+				if m.ReadOnly != nil {
+					readOnly = *m.ReadOnly
+				}
+
+				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+					Name:      m.Name,
+					MountPath: m.MountPath,
+					ReadOnly:  readOnly,
+				})
+			}
 		}
 
 		initContainers = append(initContainers, *container)
@@ -341,6 +368,33 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 		})
 	}
 
+	// Add optional hostPath volumes configured for this environment.
+	if gangCtx != nil {
+		for _, m := range i.cfg.GangCoordination.ExtraHostPathMounts {
+			if m.Name == "" || m.HostPath == "" || existingVolumes[m.Name] {
+				continue
+			}
+
+			hostPathType, ok := parseHostPathType(m.HostPathType)
+			if !ok {
+				slog.Warn("Ignoring unsupported hostPathType in extraHostPathMount",
+					"name", m.Name,
+					"hostPathType", m.HostPathType)
+				continue
+			}
+
+			volumesToAdd = append(volumesToAdd, corev1.Volume{
+				Name: m.Name,
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: m.HostPath,
+						Type: hostPathType,
+					},
+				},
+			})
+		}
+	}
+
 	if len(volumesToAdd) == 0 {
 		return patches
 	}
@@ -362,6 +416,19 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 	}
 
 	return patches
+}
+
+func parseHostPathType(hostPathType string) (*corev1.HostPathType, bool) {
+	if hostPathType == "" {
+		return nil, true
+	}
+
+	t, ok := supportedHostPathTypes[hostPathType]
+	if !ok {
+		return nil, false
+	}
+
+	return &t, true
 }
 
 // injectDCGMEnv injects DCGM-specific environment variables for the dcgm-diag check.

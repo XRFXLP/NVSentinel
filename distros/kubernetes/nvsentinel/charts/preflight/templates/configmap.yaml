@@ -40,5 +40,9 @@ data:
       {{- if .Values.gangCoordination.ncclTopoConfigMap }}
       ncclTopoConfigMap: {{ .Values.gangCoordination.ncclTopoConfigMap | quote }}
       {{- end }}
+      {{- if .Values.gangCoordination.extraHostPathMounts }}
+      extraHostPathMounts:
+      {{ toYaml .Values.gangCoordination.extraHostPathMounts | nindent 8 }}
+      {{- end }}
     initContainers:
       {{- toYaml .Values.initContainers | nindent 6 }}

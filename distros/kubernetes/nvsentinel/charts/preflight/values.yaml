@@ -17,7 +17,7 @@ replicaCount: 1
 image:
   repository: xrfxlp/preflight
   pullPolicy: IfNotPresent
-  tag: "15271202"
+  tag: "10581602"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -129,7 +129,7 @@ initContainers:
   # NCCL all-reduce test - validates multi-node GPU communication (InfiniBand/RoCE)
   # Requires gangCoordination.enabled=true and gang-aware scheduler (Volcano, Kueue, etc.)
   - name: preflight-nccl-allreduce
-    image: xrfxlp/preflight-nccl-allreduce:15341202
+    image: xrfxlp/preflight-nccl-allreduce:11131602
     securityContext:
       capabilities:
         add: ["IPC_LOCK"]  # Required for RDMA memory registration (InfiniBand/RoCE)
@@ -138,33 +138,36 @@ initContainers:
       - name: BW_THRESHOLD_GBPS
         value: "100"  # Minimum acceptable bus bandwidth in GB/s
       - name: MESSAGE_SIZES
-        value: "4G,8G"  # Message sizes to test
+        value: "4G"  # Message size for bandwidth test
       - name: GANG_TIMEOUT_SECONDS
         value: "600"  # Timeout waiting for gang formation
-      # NCCL configuration
-      - name: NCCL_SOCKET_IFNAME
-        value: "eth0"
       - name: NCCL_DEBUG
         value: "WARN"  # Use INFO for detailed troubleshooting
-      # Azure InfiniBand (NDv4/v5) - topology file required for NCCL to use IB
-      - name: NCCL_TOPO_FILE
-        value: "/etc/nccl/topo.xml"
-      - name: NCCL_IB_PCI_RELAXED_ORDERING
-        value: "1"
-      - name: UCX_IB_PCI_RELAXED_ORDERING
-        value: "on"
-      - name: UCX_NET_DEVICES
-        value: "eth0"
-      - name: UCX_TLS
-        value: "tcp"
-      - name: UCX_MEM_EVENTS
-        value: "n"
-      # Provider-specific settings (uncomment as needed):
-      # AWS EFA:
-      # - name: FI_EFA_USE_DEVICE_RDMA
+      #
+      # Provider-specific NCCL settings (uncomment as needed):
+      #
+      # Generic multi-NIC pinning (set to your data NIC):
+      # - name: NCCL_SOCKET_IFNAME
+      #   value: "eth0"
+      # - name: GLOO_SOCKET_IFNAME
+      #   value: "eth0"
+      # - name: TP_SOCKET_IFNAME
+      #   value: "eth0"
+      #
+      # Azure InfiniBand (NDv4/v5):
+      # - name: NCCL_TOPO_FILE
+      #   value: "/etc/nccl/topo.xml"
+      # - name: NCCL_IB_PCI_RELAXED_ORDERING
       #   value: "1"
-      # - name: FI_PROVIDER
-      #   value: "efa"
+      #
+      # AWS EFA:
+      - name: FI_EFA_USE_DEVICE_RDMA
+        value: "1"
+      - name: FI_PROVIDER
+        value: "efa"
+      # Keep container libc first; avoid prepending host /usr/lib paths here.
+      - name: LD_LIBRARY_PATH
+        value: "/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64"
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run
@@ -175,6 +178,7 @@ gpuResourceNames:
 # Network resource names to copy to init containers (RDMA, InfiniBand, etc.)
 networkResourceNames:
   - "nvidia.com/mlnxnics"
+  - "vpc.amazonaws.com/efa"
 
 # Gang discovery configuration for multi-node preflight checks.
 # Default (empty): K8s 1.35+ native WorkloadRef API
@@ -201,7 +205,18 @@ gangCoordination:
   configMapMountPath: "/etc/preflight"
   # NCCL topology ConfigMap name - required for Azure NDv4/v5 InfiniBand
   # Without this, NCCL cannot map GPUs to IB NICs and falls back to TCP
-  ncclTopoConfigMap: "nccl-topo-ndv4"
+  ncclTopoConfigMap: ""
+
+  # Optional hostPath mounts injected into all gang-aware preflight init containers.
+  # Keep empty by default for CSP/GPU-type agnostic behavior.
+  # extraHostPathMounts: []
+  # # Example for AWS EFA userspace compatibility (uncomment when needed):
+  extraHostPathMounts:
+    - name: host-opt-amazon
+      hostPath: /opt/amazon
+      mountPath: /opt/amazon
+      readOnly: true
+      hostPathType: Directory
 
 # Label-based namespace selection
 # Enable preflight in a namespace: kubectl label namespace <name> nvsentinel.nvidia.com/preflight=enabled

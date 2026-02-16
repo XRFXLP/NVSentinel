@@ -56,8 +56,6 @@ class BenchmarkResult:
 
     Attributes:
         world_size: Total number of distributed processes.
-        num_nodes: Number of nodes in the test.
-        gpus_per_node: GPUs per node.
         threshold_gbps: Bandwidth threshold used.
         tests: Results for each message size tested.
         passed: Overall pass/fail status.
@@ -65,8 +63,6 @@ class BenchmarkResult:
     """
 
     world_size: int
-    num_nodes: int
-    gpus_per_node: int
     threshold_gbps: float
     tests: list[TestResult]
     passed: bool
@@ -158,8 +154,25 @@ class Benchmark:
 
         torch.cuda.set_device(local_rank)
 
+        # Synchronize all processes before starting benchmark
         if rank == 0:
-            self._log_header(num_nodes, gpus_per_node, world_size)
+            log.info("Synchronizing all processes before benchmark")
+        dist.barrier()
+        if rank == 0:
+            log.info("All processes synchronized, starting benchmark")
+
+        if rank == 0:
+            log.info(
+                "Starting NCCL All-Reduce benchmark",
+                extra={
+                    "num_nodes": num_nodes,
+                    "gpus_per_node": gpus_per_node,
+                    "world_size": world_size,
+                    "threshold_gbps": self._threshold,
+                    "iters": self._iters,
+                    "warmup": self._warmup,
+                },
+            )
 
         tests: list[TestResult] = []
         min_bus_bw = float("inf")
@@ -176,19 +189,34 @@ class Benchmark:
                 all_passed = False
 
             if rank == 0:
-                self._log_result(result)
+                log.info(
+                    "Test result",
+                    extra={
+                        "size": result.size_human,
+                        "time_ms": round(result.time_ms, 2),
+                        "algo_bw_gbps": round(result.algo_bw_gbps, 2),
+                        "bus_bw_gbps": round(result.bus_bw_gbps, 2),
+                        "passed": result.passed,
+                    },
+                )
 
         if rank == 0:
-            self._log_summary(all_passed, min_bus_bw)
+            status = "PASSED" if all_passed else "FAILED"
+            log.info(
+                f"Benchmark {status}",
+                extra={
+                    "passed": all_passed,
+                    "min_bus_bw_gbps": round(min_bus_bw, 2),
+                    "threshold_gbps": self._threshold,
+                },
+            )
 
         return BenchmarkResult(
             world_size=world_size,
-            num_nodes=num_nodes,
-            gpus_per_node=gpus_per_node,
             threshold_gbps=self._threshold,
             tests=tests,
             passed=all_passed,
-            min_bus_bw=min_bus_bw,
+            min_bus_bw=min_bus_bw if min_bus_bw != float("inf") else 0.0,
         )
 
     def _run_single(
@@ -207,6 +235,7 @@ class Benchmark:
         Returns:
             TestResult for this message size.
         """
+        rank = dist.get_rank()
         num_elements = size_bytes // 4  # float32 = 4 bytes
         tensor = torch.randn(
             num_elements,
@@ -215,16 +244,36 @@ class Benchmark:
         )
 
         # Warmup iterations (not timed)
-        for _ in range(self._warmup):
+        if rank == 0:
+            log.info(
+                "Starting warmup iterations",
+                extra={
+                    "size_bytes": size_bytes,
+                    "warmup_iters": self._warmup,
+                },
+            )
+        for i in range(self._warmup):
             dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         torch.cuda.synchronize()
+        if rank == 0:
+            log.info("Warmup iterations complete")
 
         # Timed iterations
+        if rank == 0:
+            log.info(
+                "Starting timed iterations",
+                extra={"iters": self._iters},
+            )
         start = time.perf_counter()
-        for _ in range(self._iters):
+        for i in range(self._iters):
             dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - start
+        if rank == 0:
+            log.info(
+                "Timed iterations complete",
+                extra={"elapsed_seconds": round(elapsed, 2)},
+            )
 
         # Calculate bandwidth metrics
         avg_time = elapsed / self._iters
@@ -243,47 +292,3 @@ class Benchmark:
             bus_bw_gbps=bus_bw,
             passed=passed,
         )
-
-    def _log_header(
-        self,
-        num_nodes: int,
-        gpus_per_node: int,
-        world_size: int,
-    ) -> None:
-        """Log benchmark header information."""
-        log.info(
-            "Starting NCCL All-Reduce benchmark",
-            extra={
-                "num_nodes": num_nodes,
-                "gpus_per_node": gpus_per_node,
-                "world_size": world_size,
-                "threshold_gbps": self._threshold,
-                "iters": self._iters,
-                "warmup": self._warmup,
-            },
-        )
-
-    def _log_result(self, result: TestResult) -> None:
-        """Log a single test result."""
-        log.info(
-            "Test result",
-            extra={
-                "size": result.size_human,
-                "time_ms": round(result.time_ms, 2),
-                "algo_bw_gbps": round(result.algo_bw_gbps, 2),
-                "bus_bw_gbps": round(result.bus_bw_gbps, 2),
-                "passed": result.passed,
-            },
-        )
-
-    def _log_summary(self, passed: bool, min_bus_bw: float) -> None:
-        """Log benchmark summary."""
-        log.info(
-            "Benchmark complete",
-            extra={
-                "passed": passed,
-                "min_bus_bw_gbps": round(min_bus_bw, 2),
-                "threshold_gbps": self._threshold,
-            },
-        )
-

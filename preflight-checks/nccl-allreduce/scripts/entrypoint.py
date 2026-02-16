@@ -37,7 +37,7 @@ Environment variables:
         - GANG_TIMEOUT_SECONDS: Timeout for gang formation (default: 600)
         - NPROCS_PER_NODE: GPUs per node (default: auto-detect)
         - BW_THRESHOLD_GBPS: Bandwidth threshold (default: 100)
-        - MESSAGE_SIZES: Sizes to test (default: 4G,8G)
+        - MESSAGE_SIZES: Sizes to test (default: 4G)
         - LOG_LEVEL: Logging level (default: info)
 """
 

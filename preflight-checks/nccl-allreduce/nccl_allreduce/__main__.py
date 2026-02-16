@@ -86,9 +86,27 @@ def run() -> int:
         log.error("Configuration error", extra={"error": str(err)})
         return NCCLError.GANG_CONFIG_ERROR.value.exit_code
 
+    # Set NCCL timeout environment variables if not already set
+    # This helps fail faster if there are network connectivity issues
+    if "NCCL_TIMEOUT" not in os.environ:
+        os.environ["NCCL_TIMEOUT"] = "1800"  # 30 minutes default
+    if "NCCL_ASYNC_ERROR_HANDLING" not in os.environ:
+        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+    if "NCCL_DEBUG" not in os.environ:
+        os.environ["NCCL_DEBUG"] = "INFO"  # Enable NCCL debug logging
+
     # Initialize distributed
     try:
+        log.info("Initializing NCCL process group", extra={"backend": "nccl"})
         dist.init_process_group(backend="nccl")
+        rank = dist.get_rank()
+        log.info(
+            "NCCL process group initialized",
+            extra={
+                "rank": rank,
+                "world_size": dist.get_world_size(),
+            },
+        )
     except Exception as err:
         log.error(
             "Failed to initialize distributed",
@@ -100,12 +118,27 @@ def run() -> int:
             f"Failed to initialize NCCL: {err}",
         )
 
-    rank = dist.get_rank()
-
     try:
         return _run_benchmark(cfg, rank)
+    except RuntimeError as err:
+        # Catch NCCL errors that occur during execution (e.g., from watchdog)
+        error_str = str(err)
+        if "NCCL" in error_str or "nccl" in error_str.lower():
+            log.error(
+                "NCCL error during benchmark execution",
+                extra={"error": error_str},
+            )
+            return _handle_failure(
+                cfg,
+                NCCLError.ALLREDUCE_TIMEOUT,
+                f"NCCL communication error: {error_str}",
+            )
+        raise  # Re-raise if not an NCCL error
     finally:
-        dist.destroy_process_group()
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass  # Ignore cleanup errors
 
 
 def _run_benchmark(cfg: Config, rank: int) -> int:

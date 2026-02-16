@@ -99,6 +99,31 @@ type GangCoordinationConfig struct {
 	// NCCLTopoConfigMap is the name of the ConfigMap containing the NCCL topology file.
 	// Required for Azure NDv4/v5 - without it, NCCL cannot map GPUs to IB NICs.
 	NCCLTopoConfigMap string `yaml:"ncclTopoConfigMap,omitempty"`
+
+	// ExtraHostPathMounts defines optional hostPath mounts to inject into
+	// gang-aware preflight init containers. This is useful for environments
+	// where NCCL/OFI/CUDA libraries must be sourced from host paths.
+	ExtraHostPathMounts []HostPathMount `yaml:"extraHostPathMounts,omitempty"`
+}
+
+// HostPathMount defines a hostPath volume and corresponding container mount.
+type HostPathMount struct {
+	// Name is the Kubernetes volume name.
+	Name string `yaml:"name"`
+
+	// HostPath is the node filesystem path to mount.
+	HostPath string `yaml:"hostPath"`
+
+	// MountPath is the path inside the init container.
+	MountPath string `yaml:"mountPath"`
+
+	// ReadOnly controls whether the mount is read-only. Defaults to true.
+	ReadOnly *bool `yaml:"readOnly,omitempty"`
+
+	// HostPathType is an optional Kubernetes HostPathType string.
+	// Supported values include: Directory, DirectoryOrCreate, File, FileOrCreate,
+	// Socket, CharDevice, and BlockDevice.
+	HostPathType string `yaml:"hostPathType,omitempty"`
 }
 
 func Load(path string) (*Config, error) {
