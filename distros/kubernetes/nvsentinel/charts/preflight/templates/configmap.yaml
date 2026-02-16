@@ -44,5 +44,9 @@ data:
       extraHostPathMounts:
       {{ toYaml .Values.gangCoordination.extraHostPathMounts | nindent 8 }}
       {{- end }}
+      {{- if .Values.gangCoordination.extraVolumeMounts }}
+      extraVolumeMounts:
+      {{ toYaml .Values.gangCoordination.extraVolumeMounts | nindent 8 }}
+      {{- end }}
     initContainers:
       {{- toYaml .Values.initContainers | nindent 6 }}

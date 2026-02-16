@@ -17,7 +17,7 @@ replicaCount: 1
 image:
   repository: xrfxlp/preflight
   pullPolicy: IfNotPresent
-  tag: "10581602"
+  tag: "15261602"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -142,7 +142,9 @@ initContainers:
       - name: GANG_TIMEOUT_SECONDS
         value: "600"  # Timeout waiting for gang formation
       - name: NCCL_DEBUG
-        value: "WARN"  # Use INFO for detailed troubleshooting
+        value: "INFO"  # Set to WARN after transport selection is validated
+      - name: NCCL_DEBUG_SUBSYS
+        value: "INIT,NET"
       #
       # Provider-specific NCCL settings (uncomment as needed):
       #
@@ -161,13 +163,75 @@ initContainers:
       #   value: "1"
       #
       # AWS EFA:
-      - name: FI_EFA_USE_DEVICE_RDMA
-        value: "1"
-      - name: FI_PROVIDER
-        value: "efa"
-      # Keep container libc first; avoid prepending host /usr/lib paths here.
-      - name: LD_LIBRARY_PATH
-        value: "/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64"
+      # - name: FI_EFA_USE_DEVICE_RDMA
+      #   value: "1"
+      # - name: FI_PROVIDER
+      #   value: "efa"
+      # - name: LD_LIBRARY_PATH
+      #   value: "/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64"
+      #
+      # GCP TCPXO (A3+/A4): The guest config checker shim validates env vars
+      # against a3plus_guest_config.textproto. It checks sequentially and
+      # exits on the first enforced/required mismatch (fail-fast).
+      # Categories:
+      #   "user must populate" → we MUST set (NCCL_FASTRAK_CTRL_DEV, _IFNAME)
+      #   "enforced"           → we MUST set exact value (NCCL_BUFFSIZE, etc.)
+      #   "recommended unset"  → non-fatal warning if set (PyTorch internals)
+      # DO NOT set: NCCL_IB_DISABLE, NCCL_COLLNET_ENABLE, NCCL_ALGO, NCCL_PROTO,
+      #   NCCL_DYNAMIC_CHUNK_SIZE, NCCL_P2P_*_CHUNKSIZE — shim/tuner manages.
+      # - name: NCCL_SOCKET_IFNAME
+      #   value: "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8"
+      # - name: NCCL_CROSS_NIC
+      #   value: "0"
+      # - name: NCCL_NVLS_ENABLE
+      #   value: "0"
+      # # Required (user must populate):
+      # - name: NCCL_FASTRAK_CTRL_DEV
+      #   value: "eth0"
+      # - name: NCCL_FASTRAK_IFNAME
+      #   value: "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8"
+      # # Enforced (exact values required by shim):
+      # - name: NCCL_BUFFSIZE
+      #   value: "8388608"
+      # - name: NCCL_FASTRAK_NUM_FLOWS
+      #   value: "2"
+      # - name: NCCL_FASTRAK_USE_SNAP
+      #   value: "1"
+      # - name: NCCL_FASTRAK_USE_LLCM
+      #   value: "1"
+      # - name: NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY
+      #   value: "/dev/aperture_devices"
+      # - name: NCCL_FASTRAK_ENABLE_CONTROL_CHANNEL
+      #   value: "0"
+      # - name: NCCL_FASTRAK_ENABLE_HOTPATH_LOGGING
+      #   value: "0"
+      # - name: NCCL_FASTRAK_PLUGIN_ACCEPT_TIMEOUT_MS
+      #   value: "600000"
+      # - name: NCCL_NET_GDR_LEVEL
+      #   value: "PIX"
+      # # Shim/tuner plugin config:
+      # - name: NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE
+      #   value: "/usr/local/nvidia/lib64/a3plus_guest_config.textproto"
+      # - name: NCCL_TUNER_PLUGIN
+      #   value: "libnccl-tuner.so"
+      # - name: NCCL_TUNER_CONFIG_PATH
+      #   value: "/usr/local/nvidia/lib64/a3plus_tuner_config.textproto"
+      # - name: LD_LIBRARY_PATH
+      #   value: "/usr/local/nvidia/lib64:/usr/lib/x86_64-linux-gnu"
+      # - name: NCCL_PROTO
+      #   value: "Simple"
+      # - name: NCCL_P2P_NVL_CHUNKSIZE
+      #   value: "1048576"
+      # - name: NCCL_ALGO
+      #   value: "Ring,Tree"
+      # - name: NCCL_MIN_NCHANNELS
+      #   value: "4"
+      # - name: NCCL_DYNAMIC_CHUNK_SIZE
+      #   value: "524288"
+      # - name: NCCL_P2P_NET_CHUNKSIZE
+      #   value: "524288"
+      # - name: NCCL_P2P_PCI_CHUNKSIZE
+      #   value: "524288"
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run
@@ -179,6 +243,23 @@ gpuResourceNames:
 networkResourceNames:
   - "nvidia.com/mlnxnics"
   - "vpc.amazonaws.com/efa"
+  # GCP multi-network resources (TCPXO)
+  - "networking.gke.io.networks/gpu-nic0"
+  - "networking.gke.io.networks/gpu-nic0.IP"
+  - "networking.gke.io.networks/gpu-nic1"
+  - "networking.gke.io.networks/gpu-nic1.IP"
+  - "networking.gke.io.networks/gpu-nic2"
+  - "networking.gke.io.networks/gpu-nic2.IP"
+  - "networking.gke.io.networks/gpu-nic3"
+  - "networking.gke.io.networks/gpu-nic3.IP"
+  - "networking.gke.io.networks/gpu-nic4"
+  - "networking.gke.io.networks/gpu-nic4.IP"
+  - "networking.gke.io.networks/gpu-nic5"
+  - "networking.gke.io.networks/gpu-nic5.IP"
+  - "networking.gke.io.networks/gpu-nic6"
+  - "networking.gke.io.networks/gpu-nic6.IP"
+  - "networking.gke.io.networks/gpu-nic7"
+  - "networking.gke.io.networks/gpu-nic7.IP"
 
 # Gang discovery configuration for multi-node preflight checks.
 # Default (empty): K8s 1.35+ native WorkloadRef API
@@ -209,14 +290,29 @@ gangCoordination:
 
   # Optional hostPath mounts injected into all gang-aware preflight init containers.
   # Keep empty by default for CSP/GPU-type agnostic behavior.
-  # extraHostPathMounts: []
+  extraHostPathMounts: []
   # # Example for AWS EFA userspace compatibility (uncomment when needed):
-  extraHostPathMounts:
-    - name: host-opt-amazon
-      hostPath: /opt/amazon
-      mountPath: /opt/amazon
-      readOnly: true
-      hostPathType: Directory
+  # extraHostPathMounts:
+  #   - name: host-opt-amazon
+  #     hostPath: /opt/amazon
+  #     mountPath: /opt/amazon
+  #     readOnly: true
+  #     hostPathType: Directory
+
+  # Mount pre-existing pod volumes into preflight init containers.
+  # Unlike extraHostPathMounts, this does NOT create new volumes — it adds
+  # volumeMounts for volumes already present in the pod (e.g. injected by
+  # a platform webhook like GCP's tcpxo-daemon).
+  extraVolumeMounts: []
+  # GCP TCPXO: mount the FastRak NCCL plugin and aperture devices injected
+  # by GKE's tcpxo-daemon webhook. These volumes already exist in the pod;
+  # this only adds volumeMounts to preflight init containers.
+  # extraVolumeMounts:
+  #   - name: nvtcpxo-libraries
+  #     mountPath: /usr/local/nvidia
+  #     readOnly: true
+  #   - name: nvtcpxo-aperture-devices
+  #     mountPath: /dev/aperture_devices
 
 # Label-based namespace selection
 # Enable preflight in a namespace: kubectl label namespace <name> nvsentinel.nvidia.com/preflight=enabled

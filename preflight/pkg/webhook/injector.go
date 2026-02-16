@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
@@ -118,13 +119,14 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 			Value: initContainers,
 		})
 	} else {
-		// Prepend in reverse order so they end up in correct order at the front
-		// If preflight containers are [A, B] and existing are [C, D],
-		// result will be [A, B, C, D]
-		for idx := len(initContainers) - 1; idx >= 0; idx-- {
+		// Append preflight init containers after existing init containers.
+		// This preserves platform/user init ordering and ensures any
+		// provider-injected setup init containers (e.g., GCP TCPXO daemon)
+		// complete before running preflight checks.
+		for idx := 0; idx < len(initContainers); idx++ {
 			patches = append(patches, PatchOperation{
 				Op:    "add",
-				Path:  "/spec/initContainers/0",
+				Path:  "/spec/initContainers/-",
 				Value: initContainers[idx],
 			})
 		}
@@ -150,6 +152,26 @@ func (i *Injector) findMaxResources(pod *corev1.Pod) corev1.ResourceList {
 
 			i.updateMax(maxResources, resName, container.Resources.Limits[resName])
 			i.updateMax(maxResources, resName, container.Resources.Requests[resName])
+		}
+	}
+
+	// Some platforms inject companion IP resources (e.g. ".../gpu-nicX.IP")
+	// into workload containers in a later admission step. If an IP companion
+	// resource is configured but missing here, mirror the base NIC quantity
+	// so init containers request the same network footprint.
+	for _, name := range i.cfg.NetworkResourceNames {
+		if !strings.HasSuffix(name, ".IP") {
+			continue
+		}
+
+		ipRes := corev1.ResourceName(name)
+		if qty, ok := maxResources[ipRes]; ok && !qty.IsZero() {
+			continue
+		}
+
+		baseRes := corev1.ResourceName(strings.TrimSuffix(name, ".IP"))
+		if baseQty, ok := maxResources[baseRes]; ok && !baseQty.IsZero() {
+			maxResources[ipRes] = baseQty
 		}
 	}
 
@@ -235,6 +257,25 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList, gangCtx
 			}
 
 			for _, m := range i.cfg.GangCoordination.ExtraHostPathMounts {
+				if m.Name == "" || m.MountPath == "" {
+					continue
+				}
+
+				readOnly := true
+				if m.ReadOnly != nil {
+					readOnly = *m.ReadOnly
+				}
+
+				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+					Name:      m.Name,
+					MountPath: m.MountPath,
+					ReadOnly:  readOnly,
+				})
+			}
+
+			// Mount pre-existing pod volumes (e.g. GCP TCPXO plugin volume
+			// written by the tcpxo-daemon init container).
+			for _, m := range i.cfg.GangCoordination.ExtraVolumeMounts {
 				if m.Name == "" || m.MountPath == "" {
 					continue
 				}

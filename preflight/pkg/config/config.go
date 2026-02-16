@@ -104,6 +104,14 @@ type GangCoordinationConfig struct {
 	// gang-aware preflight init containers. This is useful for environments
 	// where NCCL/OFI/CUDA libraries must be sourced from host paths.
 	ExtraHostPathMounts []HostPathMount `yaml:"extraHostPathMounts,omitempty"`
+
+	// ExtraVolumeMounts references volumes that already exist in the pod
+	// (e.g. injected by another webhook) and adds mounts to init containers.
+	// Unlike ExtraHostPathMounts, this does NOT create new volumes — it only
+	// adds volumeMounts for volumes that are expected to be present.
+	// Primary use-case: GCP TCPXO daemon writes the FastRak NCCL plugin into
+	// a shared emptyDir; this option lets preflight init containers access it.
+	ExtraVolumeMounts []ExtraVolumeMount `yaml:"extraVolumeMounts,omitempty"`
 }
 
 // HostPathMount defines a hostPath volume and corresponding container mount.
@@ -124,6 +132,20 @@ type HostPathMount struct {
 	// Supported values include: Directory, DirectoryOrCreate, File, FileOrCreate,
 	// Socket, CharDevice, and BlockDevice.
 	HostPathType string `yaml:"hostPathType,omitempty"`
+}
+
+// ExtraVolumeMount references an existing pod volume and defines where
+// to mount it inside preflight init containers. The volume itself must
+// already exist in the pod spec (typically injected by a platform webhook).
+type ExtraVolumeMount struct {
+	// Name is the volume name that already exists in the pod spec.
+	Name string `yaml:"name"`
+
+	// MountPath is the path inside the init container.
+	MountPath string `yaml:"mountPath"`
+
+	// ReadOnly controls whether the mount is read-only. Defaults to true.
+	ReadOnly *bool `yaml:"readOnly,omitempty"`
 }
 
 func Load(path string) (*Config, error) {
