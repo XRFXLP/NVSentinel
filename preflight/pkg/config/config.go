@@ -112,6 +112,14 @@ type GangCoordinationConfig struct {
 	// Primary use-case: GCP TCPXO daemon writes the FastRak NCCL plugin into
 	// a shared emptyDir; this option lets preflight init containers access it.
 	ExtraVolumeMounts []ExtraVolumeMount `yaml:"extraVolumeMounts,omitempty"`
+
+	// MirrorResourceClaims controls whether pod-level DRA resource claims
+	// (spec.resourceClaims) are automatically copied to preflight init
+	// containers' resources.claims. This ensures init containers get the
+	// same device access as the main containers (GPUs, RDMA, IMEX channels).
+	// Defaults to true when gang coordination is enabled.
+	// See ADR-026 §DRA Integration.
+	MirrorResourceClaims *bool `yaml:"mirrorResourceClaims,omitempty"`
 }
 
 // HostPathMount defines a hostPath volume and corresponding container mount.
@@ -202,6 +210,14 @@ func (c *GangCoordinationConfig) setDefaults() {
 
 	if c.ConfigMapMountPath == "" {
 		c.ConfigMapMountPath = "/etc/preflight"
+	}
+
+	// Default to mirroring DRA claims when gang coordination is enabled.
+	// Init containers need the same device access (GPUs, RDMA, IMEX) as
+	// main containers for multi-node NCCL tests.
+	if c.MirrorResourceClaims == nil {
+		t := true
+		c.MirrorResourceClaims = &t
 	}
 }
 

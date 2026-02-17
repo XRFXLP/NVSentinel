@@ -1,0 +1,44 @@
+# Fabric overlay: InfiniBand (Azure NDv4/v5, on-prem IB clusters)
+# Usage: helm upgrade preflight . -f values.yaml -f values-ib.yaml
+#
+# Tested: Azure A100 NDv4 — 161 GB/s bus bandwidth
+#
+# Requirements:
+#   - IPC_LOCK capability (set in base values.yaml)
+#   - NCCL topology ConfigMap (ncclTopoConfigMap) for GPU↔HCA mapping
+#   - nvidia.com/mlnxnics in networkResourceNames (set in base values.yaml)
+
+initContainers:
+  - name: preflight-nccl-allreduce
+    image: xrfxlp/preflight-nccl-allreduce:10241702
+    securityContext:
+      capabilities:
+        add: ["IPC_LOCK"]
+    env:
+      - name: BW_THRESHOLD_GBPS
+        value: "100"
+      - name: MESSAGE_SIZES
+        value: "4G"
+      - name: GANG_TIMEOUT_SECONDS
+        value: "600"
+      - name: NCCL_DEBUG
+        value: "INFO"
+      - name: NCCL_DEBUG_SUBSYS
+        value: "INIT,NET"
+      # InfiniBand-specific
+      - name: NCCL_TOPO_FILE
+        value: "/etc/nccl/topo.xml"
+      - name: NCCL_IB_PCI_RELAXED_ORDERING
+        value: "1"
+      - name: NCCL_SOCKET_IFNAME
+        value: "eth0"
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
+
+gangCoordination:
+  # Topology ConfigMap name — REQUIRED for IB.
+  # Without this, NCCL cannot map GPUs to IB HCAs and gets vendor errors.
+  # Create a ConfigMap with the node's topo.xml (varies by VM shape).
+  ncclTopoConfigMap: "nccl-topo-ndv4"  # Change to match your cluster
+

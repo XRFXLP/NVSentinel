@@ -48,5 +48,8 @@ data:
       extraVolumeMounts:
       {{ toYaml .Values.gangCoordination.extraVolumeMounts | nindent 8 }}
       {{- end }}
+      {{- if ne (toString .Values.gangCoordination.mirrorResourceClaims) "" }}
+      mirrorResourceClaims: {{ .Values.gangCoordination.mirrorResourceClaims }}
+      {{- end }}
     initContainers:
       {{- toYaml .Values.initContainers | nindent 6 }}

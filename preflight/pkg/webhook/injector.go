@@ -103,7 +103,7 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 		}
 	}
 
-	initContainers := i.buildInitContainers(maxResources, gangCtx)
+	initContainers := i.buildInitContainers(maxResources, gangCtx, pod.Spec.ResourceClaims)
 	if len(initContainers) == 0 {
 		// No init containers to inject, but still return gangCtx
 		// so the controller can track gang membership
@@ -201,8 +201,15 @@ func (i *Injector) updateMax(resources corev1.ResourceList, name corev1.Resource
 	}
 }
 
-func (i *Injector) buildInitContainers(maxResources corev1.ResourceList, gangCtx *GangContext) []corev1.Container {
+func (i *Injector) buildInitContainers(maxResources corev1.ResourceList, gangCtx *GangContext, podResourceClaims []corev1.PodResourceClaim) []corev1.Container {
 	var initContainers []corev1.Container
+
+	// Determine whether to mirror pod-level DRA claims to init containers.
+	// Per ADR-026 §DRA Integration: "the webhook copies resource claim
+	// references to the init container" so init containers get the same
+	// device access (GPUs, RDMA, IMEX channels) as main containers.
+	mirrorClaims := i.cfg.GangCoordination.MirrorResourceClaims != nil &&
+		*i.cfg.GangCoordination.MirrorResourceClaims
 
 	for _, tmpl := range i.cfg.InitContainers {
 		container := tmpl.DeepCopy()
@@ -290,6 +297,17 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList, gangCtx
 					MountPath: m.MountPath,
 					ReadOnly:  readOnly,
 				})
+			}
+
+			// Mirror all pod-level DRA resource claims to init containers.
+			// This ensures init containers get the same device access as main
+			// containers: GPUs, RDMA NICs, IMEX channels (GB200 MNNVL), etc.
+			if mirrorClaims {
+				for _, podClaim := range podResourceClaims {
+					container.Resources.Claims = append(container.Resources.Claims, corev1.ResourceClaim{
+						Name: podClaim.Name,
+					})
+				}
 			}
 		}
 

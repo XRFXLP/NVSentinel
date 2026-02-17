@@ -1,0 +1,48 @@
+# Fabric overlay: AWS EFA (H100 p5 instances, no MNNVL)
+# Usage: helm upgrade preflight . -f values.yaml -f values-efa.yaml
+#
+# Tested: AWS H100 p5 — 292 GB/s bus bandwidth
+#
+# Requirements:
+#   - IPC_LOCK capability (set in base values.yaml)
+#   - vpc.amazonaws.com/efa in networkResourceNames (set in base values.yaml)
+#   - EFA device plugin installed on nodes
+
+initContainers:
+  - name: preflight-nccl-allreduce
+    image: xrfxlp/preflight-nccl-allreduce:10241702
+    securityContext:
+      capabilities:
+        add: ["IPC_LOCK"]
+    env:
+      - name: BW_THRESHOLD_GBPS
+        value: "200"
+      - name: MESSAGE_SIZES
+        value: "4G"
+      - name: GANG_TIMEOUT_SECONDS
+        value: "600"
+      - name: NCCL_DEBUG
+        value: "INFO"
+      - name: NCCL_DEBUG_SUBSYS
+        value: "INIT,NET"
+      # EFA-specific
+      - name: FI_EFA_USE_DEVICE_RDMA
+        value: "1"
+      - name: FI_PROVIDER
+        value: "efa"
+      - name: NCCL_SOCKET_IFNAME
+        value: "eth0"
+      - name: LD_LIBRARY_PATH
+        value: "/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64"
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
+
+gangCoordination:
+  extraHostPathMounts:
+    - name: host-opt-amazon
+      hostPath: /opt/amazon
+      mountPath: /opt/amazon
+      readOnly: true
+      hostPathType: Directory
+
