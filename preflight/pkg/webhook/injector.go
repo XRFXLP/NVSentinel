@@ -155,10 +155,21 @@ func (i *Injector) findMaxResources(pod *corev1.Pod) corev1.ResourceList {
 		}
 	}
 
-	// Some platforms inject companion IP resources (e.g. ".../gpu-nicX.IP")
-	// into workload containers in a later admission step. If an IP companion
-	// resource is configured but missing here, mirror the base NIC quantity
-	// so init containers request the same network footprint.
+	i.mirrorIPCompanionResources(maxResources)
+
+	if !i.hasGPUResources(maxResources) {
+		return nil
+	}
+
+	return maxResources
+}
+
+// mirrorIPCompanionResources mirrors base NIC quantities to their IP companion
+// resources. Some platforms inject companion IP resources (e.g. ".../gpu-nicX.IP")
+// into workload containers in a later admission step. If an IP companion resource
+// is configured but missing, mirror the base NIC quantity so init containers
+// request the same network footprint.
+func (i *Injector) mirrorIPCompanionResources(maxResources corev1.ResourceList) {
 	for _, name := range i.cfg.NetworkResourceNames {
 		if !strings.HasSuffix(name, ".IP") {
 			continue
@@ -174,21 +185,18 @@ func (i *Injector) findMaxResources(pod *corev1.Pod) corev1.ResourceList {
 			maxResources[ipRes] = baseQty
 		}
 	}
+}
 
-	hasGPU := false
-
+// hasGPUResources returns true if maxResources contains at least one
+// non-zero GPU resource.
+func (i *Injector) hasGPUResources(maxResources corev1.ResourceList) bool {
 	for _, name := range i.cfg.GPUResourceNames {
 		if qty, ok := maxResources[corev1.ResourceName(name)]; ok && !qty.IsZero() {
-			hasGPU = true
-			break
+			return true
 		}
 	}
 
-	if !hasGPU {
-		return nil
-	}
-
-	return maxResources
+	return false
 }
 
 func (i *Injector) updateMax(resources corev1.ResourceList, name corev1.ResourceName, qty resource.Quantity) {
@@ -201,7 +209,11 @@ func (i *Injector) updateMax(resources corev1.ResourceList, name corev1.Resource
 	}
 }
 
-func (i *Injector) buildInitContainers(maxResources corev1.ResourceList, gangCtx *GangContext, podResourceClaims []corev1.PodResourceClaim) []corev1.Container {
+func (i *Injector) buildInitContainers(
+	maxResources corev1.ResourceList,
+	gangCtx *GangContext,
+	podResourceClaims []corev1.PodResourceClaim,
+) []corev1.Container {
 	var initContainers []corev1.Container
 
 	// Determine whether to mirror pod-level DRA claims to init containers.
@@ -239,82 +251,90 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList, gangCtx
 		i.injectDCGMEnv(container)
 		i.injectGangEnv(container, gangCtx)
 
-		// Add gang ConfigMap volume mount if this pod is part of a gang
 		if gangCtx != nil {
-			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-				Name:      types.GangConfigVolumeName,
-				MountPath: i.cfg.GangCoordination.ConfigMapMountPath,
-				ReadOnly:  true,
-			})
-
-			// Add /dev/shm mount for NCCL shared memory communication.
-			// NCCL requires a larger shared memory segment than the default 64MB.
-			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-				Name:      dshmVolumeName,
-				MountPath: "/dev/shm",
-			})
-
-			// Add NCCL topology ConfigMap mount if configured.
-			if i.cfg.GangCoordination.NCCLTopoConfigMap != "" {
-				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-					Name:      ncclTopoVolumeName,
-					MountPath: "/etc/nccl",
-					ReadOnly:  true,
-				})
-			}
-
-			for _, m := range i.cfg.GangCoordination.ExtraHostPathMounts {
-				if m.Name == "" || m.MountPath == "" {
-					continue
-				}
-
-				readOnly := true
-				if m.ReadOnly != nil {
-					readOnly = *m.ReadOnly
-				}
-
-				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-					Name:      m.Name,
-					MountPath: m.MountPath,
-					ReadOnly:  readOnly,
-				})
-			}
-
-			// Mount pre-existing pod volumes (e.g. GCP TCPXO plugin volume
-			// written by the tcpxo-daemon init container).
-			for _, m := range i.cfg.GangCoordination.ExtraVolumeMounts {
-				if m.Name == "" || m.MountPath == "" {
-					continue
-				}
-
-				readOnly := true
-				if m.ReadOnly != nil {
-					readOnly = *m.ReadOnly
-				}
-
-				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-					Name:      m.Name,
-					MountPath: m.MountPath,
-					ReadOnly:  readOnly,
-				})
-			}
-
-			// Mirror all pod-level DRA resource claims to init containers.
-			// This ensures init containers get the same device access as main
-			// containers: GPUs, RDMA NICs, IMEX channels (GB200 MNNVL), etc.
-			if mirrorClaims {
-				for _, podClaim := range podResourceClaims {
-					container.Resources.Claims = append(container.Resources.Claims, corev1.ResourceClaim{
-						Name: podClaim.Name,
-					})
-				}
-			}
+			i.injectGangMounts(container, mirrorClaims, podResourceClaims)
 		}
 
 		initContainers = append(initContainers, *container)
 	}
 
 	return initContainers
+}
+
+// injectGangMounts adds gang-related volume mounts and DRA resource claims
+// to an init container.
+func (i *Injector) injectGangMounts(
+	container *corev1.Container,
+	mirrorClaims bool,
+	podResourceClaims []corev1.PodResourceClaim,
+) {
+	// Gang ConfigMap and /dev/shm mounts are always needed for gang members.
+	container.VolumeMounts = append(container.VolumeMounts,
+		corev1.VolumeMount{
+			Name:      types.GangConfigVolumeName,
+			MountPath: i.cfg.GangCoordination.ConfigMapMountPath,
+			ReadOnly:  true,
+		},
+		// NCCL requires a larger shared memory segment than the default 64MB.
+		corev1.VolumeMount{
+			Name:      dshmVolumeName,
+			MountPath: "/dev/shm",
+		},
+	)
+
+	// Add NCCL topology ConfigMap mount if configured.
+	if i.cfg.GangCoordination.NCCLTopoConfigMap != "" {
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      ncclTopoVolumeName,
+			MountPath: "/etc/nccl",
+			ReadOnly:  true,
+		})
+	}
+
+	i.appendExtraHostPathMounts(container)
+	i.appendExtraVolumeMounts(container)
+
+	// Mirror all pod-level DRA resource claims to init containers.
+	// This ensures init containers get the same device access as main
+	// containers: GPUs, RDMA NICs, IMEX channels (GB200 MNNVL), etc.
+	if mirrorClaims {
+		for _, podClaim := range podResourceClaims {
+			container.Resources.Claims = append(container.Resources.Claims, corev1.ResourceClaim{
+				Name: podClaim.Name,
+			})
+		}
+	}
+}
+
+// appendExtraHostPathMounts appends configured extra hostPath mounts to the container.
+func (i *Injector) appendExtraHostPathMounts(container *corev1.Container) {
+	for _, m := range i.cfg.GangCoordination.ExtraHostPathMounts {
+		if m.Name == "" || m.MountPath == "" {
+			continue
+		}
+
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      m.Name,
+			MountPath: m.MountPath,
+			ReadOnly:  boolDefault(m.ReadOnly, true),
+		})
+	}
+}
+
+// appendExtraVolumeMounts appends configured extra volume mounts (for pre-existing
+// pod volumes such as GCP TCPXO plugin volumes) to the container.
+func (i *Injector) appendExtraVolumeMounts(container *corev1.Container) {
+	for _, m := range i.cfg.GangCoordination.ExtraVolumeMounts {
+		if m.Name == "" || m.MountPath == "" {
+			continue
+		}
+
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      m.Name,
+			MountPath: m.MountPath,
+			ReadOnly:  boolDefault(m.ReadOnly, true),
+		})
+	}
 }
 
 // injectCommonEnv injects environment variables common to all preflight init containers.
@@ -376,82 +396,8 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 		})
 	}
 
-	// Add gang ConfigMap volume if pod is part of a gang
-	if gangCtx != nil && !existingVolumes[types.GangConfigVolumeName] {
-		// ConfigMap is optional because it may not exist yet when the pod is created.
-		// The controller creates it when it discovers the gang.
-		// Init containers poll the mounted path until peers are registered.
-		optional := true
-
-		volumesToAdd = append(volumesToAdd, corev1.Volume{
-			Name: types.GangConfigVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: gangCtx.ConfigMapName,
-					},
-					Optional: &optional,
-				},
-			},
-		})
-	}
-
-	// Add shared memory volume for NCCL multi-GPU communication.
-	// NCCL requires a larger /dev/shm than the default 64MB container limit.
-	// Using emptyDir with Memory medium provides RAM-backed storage.
-	if gangCtx != nil && !existingVolumes[dshmVolumeName] {
-		volumesToAdd = append(volumesToAdd, corev1.Volume{
-			Name: dshmVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{
-					Medium: corev1.StorageMediumMemory,
-				},
-			},
-		})
-	}
-
-	// Add NCCL topology ConfigMap volume if configured.
-	// Required for Azure NDv4/v5 - NCCL needs this to map GPUs to IB NICs.
-	if gangCtx != nil && i.cfg.GangCoordination.NCCLTopoConfigMap != "" && !existingVolumes[ncclTopoVolumeName] {
-		optional := true
-		volumesToAdd = append(volumesToAdd, corev1.Volume{
-			Name: ncclTopoVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: i.cfg.GangCoordination.NCCLTopoConfigMap,
-					},
-					Optional: &optional,
-				},
-			},
-		})
-	}
-
-	// Add optional hostPath volumes configured for this environment.
 	if gangCtx != nil {
-		for _, m := range i.cfg.GangCoordination.ExtraHostPathMounts {
-			if m.Name == "" || m.HostPath == "" || existingVolumes[m.Name] {
-				continue
-			}
-
-			hostPathType, ok := parseHostPathType(m.HostPathType)
-			if !ok {
-				slog.Warn("Ignoring unsupported hostPathType in extraHostPathMount",
-					"name", m.Name,
-					"hostPathType", m.HostPathType)
-				continue
-			}
-
-			volumesToAdd = append(volumesToAdd, corev1.Volume{
-				Name: m.Name,
-				VolumeSource: corev1.VolumeSource{
-					HostPath: &corev1.HostPathVolumeSource{
-						Path: m.HostPath,
-						Type: hostPathType,
-					},
-				},
-			})
-		}
+		volumesToAdd = append(volumesToAdd, i.collectGangVolumes(gangCtx, existingVolumes)...)
 	}
 
 	if len(volumesToAdd) == 0 {
@@ -475,6 +421,103 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 	}
 
 	return patches
+}
+
+// collectGangVolumes gathers all gang-related volumes (ConfigMap, shared memory,
+// NCCL topology, extra hostPath) that are not already present in the pod.
+func (i *Injector) collectGangVolumes(
+	gangCtx *GangContext,
+	existingVolumes map[string]bool,
+) []corev1.Volume {
+	var volumes []corev1.Volume
+
+	// ConfigMap is optional because it may not exist yet when the pod is created.
+	// The controller creates it when it discovers the gang.
+	// Init containers poll the mounted path until peers are registered.
+	if !existingVolumes[types.GangConfigVolumeName] {
+		optional := true
+
+		volumes = append(volumes, corev1.Volume{
+			Name: types.GangConfigVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: gangCtx.ConfigMapName,
+					},
+					Optional: &optional,
+				},
+			},
+		})
+	}
+
+	// Add shared memory volume for NCCL multi-GPU communication.
+	// NCCL requires a larger /dev/shm than the default 64MB container limit.
+	// Using emptyDir with Memory medium provides RAM-backed storage.
+	if !existingVolumes[dshmVolumeName] {
+		volumes = append(volumes, corev1.Volume{
+			Name: dshmVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					Medium: corev1.StorageMediumMemory,
+				},
+			},
+		})
+	}
+
+	// Add NCCL topology ConfigMap volume if configured.
+	// Required for Azure NDv4/v5 - NCCL needs this to map GPUs to IB NICs.
+	if i.cfg.GangCoordination.NCCLTopoConfigMap != "" && !existingVolumes[ncclTopoVolumeName] {
+		optional := true
+
+		volumes = append(volumes, corev1.Volume{
+			Name: ncclTopoVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: i.cfg.GangCoordination.NCCLTopoConfigMap,
+					},
+					Optional: &optional,
+				},
+			},
+		})
+	}
+
+	volumes = append(volumes, i.collectExtraHostPathVolumes(existingVolumes)...)
+
+	return volumes
+}
+
+// collectExtraHostPathVolumes builds volumes for configured extra hostPath mounts
+// that are not already present in the pod.
+func (i *Injector) collectExtraHostPathVolumes(existingVolumes map[string]bool) []corev1.Volume {
+	var volumes []corev1.Volume
+
+	for _, m := range i.cfg.GangCoordination.ExtraHostPathMounts {
+		if m.Name == "" || m.HostPath == "" || existingVolumes[m.Name] {
+			continue
+		}
+
+		hostPathType, ok := parseHostPathType(m.HostPathType)
+		if !ok {
+			slog.Warn("Ignoring unsupported hostPathType in extraHostPathMount",
+				"name", m.Name,
+				"hostPathType", m.HostPathType)
+
+			continue
+		}
+
+		volumes = append(volumes, corev1.Volume{
+			Name: m.Name,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: m.HostPath,
+					Type: hostPathType,
+				},
+			},
+		})
+	}
+
+	return volumes
 }
 
 func parseHostPathType(hostPathType string) (*corev1.HostPathType, bool) {
@@ -572,4 +615,13 @@ func (i *Injector) mergeEnvVars(container *corev1.Container, envVars []corev1.En
 			container.Env = append(container.Env, env)
 		}
 	}
+}
+
+// boolDefault returns *ptr if non-nil, or def otherwise.
+func boolDefault(ptr *bool, def bool) bool {
+	if ptr != nil {
+		return *ptr
+	}
+
+	return def
 }

@@ -15,9 +15,9 @@
 replicaCount: 1
 
 image:
-  repository: xrfxlp/preflight
+  repository: ghcr.io/nvidia/nvsentinel/preflight
   pullPolicy: IfNotPresent
-  tag: "11251702"
+  tag: "latest"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -96,35 +96,35 @@ dcgm:
   processingStrategy: "EXECUTE_REMEDIATION"
 
 initContainers:
-  # - name: preflight-dcgm-diag
-  #   image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:latest
-  #   volumeMounts:
-  #     - name: nvsentinel-socket
-  #       mountPath: /var/run
-  #   # Full corev1.Container fields supported:
-  #   # resources:
-  #   #   limits:
-  #   #     memory: 512Mi
+  - name: preflight-dcgm-diag
+    image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:latest
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
+    # Full corev1.Container fields supported:
+    # resources:
+    #   limits:
+    #     memory: 512Mi
 
   # # NCCL loopback test - validates intra-node GPU-to-GPU communication (NVLink/PCIe)
-  # - name: preflight-nccl-loopback
-  #   image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:latest
-  #   env:
-  #     - name: BW_THRESHOLD_GBPS
-  #     # Minimum acceptable bus bandwidth
-  #     # Valid for NVLink GPU-to-GPU interconnect
-  #     # If using PCIe GPU-interconnect, this threshold should be set to ~15 GB/s
-  #       value: "150"  # Minimum acceptable bus bandwidth in GB/s
-  #     - name: TEST_SIZE_MB
-  #       value: "256"  # Message size for all-reduce test
-  #     # To skip the bandwidth check, set SKIP_BANDWIDTH_CHECK to true
-  #     # By default, the bandwidth check is enabled
-  #     # Checks if the loopback test passes without checking the bandwidth
-  #     # - name: SKIP_BANDWIDTH_CHECK
-  #     #   value: "true" 
-  #   volumeMounts:
-  #     - name: nvsentinel-socket
-  #       mountPath: /var/run
+  - name: preflight-nccl-loopback
+    image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:latest
+    env:
+      - name: BW_THRESHOLD_GBPS
+      # Minimum acceptable bus bandwidth
+      # Valid for NVLink GPU-to-GPU interconnect
+      # If using PCIe GPU-interconnect, this threshold should be set to ~15 GB/s
+        value: "150"  # Minimum acceptable bus bandwidth in GB/s
+      - name: TEST_SIZE_MB
+        value: "256"  # Message size for all-reduce test
+      # To skip the bandwidth check, set SKIP_BANDWIDTH_CHECK to true
+      # By default, the bandwidth check is enabled
+      # Checks if the loopback test passes without checking the bandwidth
+      # - name: SKIP_BANDWIDTH_CHECK
+      #   value: "true" 
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
 
   # NCCL all-reduce test - validates multi-node GPU communication
   # Requires gangCoordination.enabled=true and gang-aware scheduler (Volcano, Kueue, etc.)
@@ -132,7 +132,7 @@ initContainers:
   #   helm upgrade preflight . -f values.yaml -f values-<fabric>.yaml
   # See values-ib.yaml, values-efa.yaml, values-mnnvl-efa.yaml, values-tcpxo.yaml
   - name: preflight-nccl-allreduce
-    image: xrfxlp/preflight-nccl-allreduce:10241702
+    image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:latest
     securityContext:
       capabilities:
         add: ["IPC_LOCK"]  # Required for RDMA memory registration
@@ -180,15 +180,15 @@ networkResourceNames:
 # Gang discovery configuration for multi-node preflight checks.
 # Default (empty): K8s 1.35+ native WorkloadRef API
 # For PodGroup-based schedulers, set name and other fields:
-gangDiscovery:
-  name: "volcano"
-  annotationKeys: ["scheduling.k8s.io/group-name"]
-  labelKeys: []  # optional fallback
-  podGroupGVR:
-    group: "scheduling.volcano.sh"
-    version: "v1beta1"
-    resource: "podgroups"
-  minCountExpr: "podGroup.spec.minMember"  # CEL expression
+gangDiscovery: {}
+  # name: "volcano"
+  # annotationKeys: ["scheduling.k8s.io/group-name"]
+  # labelKeys: []  # optional fallback
+  # podGroupGVR:
+  #   group: "scheduling.volcano.sh"
+  #   version: "v1beta1"
+  #   resource: "podgroups"
+  # minCountExpr: "podGroup.spec.minMember"  # CEL expression
 
 # Gang coordination configuration for multi-node checks (e.g., nccl-allreduce)
 gangCoordination:

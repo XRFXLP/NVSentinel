@@ -42,7 +42,7 @@ data:
       {{- end }}
       {{- if .Values.gangCoordination.extraHostPathMounts }}
       extraHostPathMounts:
-      {{ toYaml .Values.gangCoordination.extraHostPathMounts | nindent 8 }}
+      {{- toYaml .Values.gangCoordination.extraHostPathMounts | nindent 8 }}
       {{- end }}
       {{- if .Values.gangCoordination.extraVolumeMounts }}
       extraVolumeMounts:
