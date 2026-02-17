@@ -46,10 +46,21 @@ data:
       {{- end }}
       {{- if .Values.gangCoordination.extraVolumeMounts }}
       extraVolumeMounts:
-      {{ toYaml .Values.gangCoordination.extraVolumeMounts | nindent 8 }}
+      {{- toYaml .Values.gangCoordination.extraVolumeMounts | nindent 8 }}
       {{- end }}
-      {{- if ne (toString .Values.gangCoordination.mirrorResourceClaims) "" }}
+      {{- if not (kindIs "invalid" .Values.gangCoordination.mirrorResourceClaims) }}
       mirrorResourceClaims: {{ .Values.gangCoordination.mirrorResourceClaims }}
       {{- end }}
     initContainers:
-      {{- toYaml .Values.initContainers | nindent 6 }}
+      {{- $extraEnv := .Values.ncclAllreduceExtraEnv | default list }}
+      {{- $result := list }}
+      {{- range .Values.initContainers }}
+      {{- if and (eq .name "preflight-nccl-allreduce") $extraEnv }}
+      {{- $container := deepCopy . }}
+      {{- $_ := set $container "env" (concat (.env | default list) $extraEnv) }}
+      {{- $result = append $result $container }}
+      {{- else }}
+      {{- $result = append $result . }}
+      {{- end }}
+      {{- end }}
+      {{- toYaml $result | nindent 6 }}

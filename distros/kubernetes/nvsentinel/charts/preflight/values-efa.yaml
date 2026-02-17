@@ -19,35 +19,18 @@
 #   - vpc.amazonaws.com/efa in networkResourceNames (set in base values.yaml)
 #   - EFA device plugin installed on nodes
 
-initContainers:
-  - name: preflight-nccl-allreduce
-    image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:latest
-    securityContext:
-      capabilities:
-        add: ["IPC_LOCK"]
-    env:
-      - name: BW_THRESHOLD_GBPS
-        value: "200"
-      - name: MESSAGE_SIZES
-        value: "4G"
-      - name: GANG_TIMEOUT_SECONDS
-        value: "600"
-      - name: NCCL_DEBUG
-        value: "INFO"
-      - name: NCCL_DEBUG_SUBSYS
-        value: "INIT,NET"
-      # EFA-specific
-      - name: FI_EFA_USE_DEVICE_RDMA
-        value: "1"
-      - name: FI_PROVIDER
-        value: "efa"
-      - name: NCCL_SOCKET_IFNAME
-        value: "eth0"
-      - name: LD_LIBRARY_PATH
-        value: "/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64"
-    volumeMounts:
-      - name: nvsentinel-socket
-        mountPath: /var/run
+ncclAllreduceExtraEnv:
+  - name: BW_THRESHOLD_GBPS
+    value: "200"
+  # EFA-specific NCCL configuration
+  - name: FI_EFA_USE_DEVICE_RDMA
+    value: "1"
+  - name: FI_PROVIDER
+    value: "efa"
+  - name: NCCL_SOCKET_IFNAME
+    value: "eth0"
+  - name: LD_LIBRARY_PATH
+    value: "/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64"
 
 gangCoordination:
   extraHostPathMounts:
@@ -56,4 +39,3 @@ gangCoordination:
       mountPath: /opt/amazon
       readOnly: true
       hostPathType: Directory
-

@@ -31,9 +31,9 @@ Environment variables set by torchrun:
 Environment variables set by entrypoint/container:
     - BW_THRESHOLD_GBPS: Minimum acceptable bus bandwidth
     - MESSAGE_SIZES: Comma-separated message sizes to test
+    - SKIP_BANDWIDTH_CHECK: Skip bandwidth threshold; pass if benchmark completes
     - PLATFORM_CONNECTOR_SOCKET: gRPC socket for health events
     - NODE_NAME: Kubernetes node name
-    - SKIP_HEALTH_REPORT: Skip sending health events (for testing)
 """
 
 import logging
@@ -74,12 +74,20 @@ def main() -> None:
 
 
 def run() -> int:
-    """Run the NCCL all-reduce benchmark.
+    """Run the multi-node NCCL all-reduce bandwidth benchmark.
+
+    Initialises a NCCL process group (one process per GPU across all gang
+    members), executes all-reduce operations at the configured message sizes,
+    and compares the measured bus bandwidth against the threshold.
+
+    On rank 0 the result is reported to the platform-connector via gRPC so
+    that NVSentinel can quarantine unhealthy nodes.  Non-zero ranks still
+    return an appropriate exit code but do not send health events.
 
     Returns:
-        Exit code (0 for success, non-zero for failure).
+        Exit code: 0 when all message sizes meet the bandwidth threshold,
+        or a non-zero :class:`NCCLError` exit code on failure.
     """
-    # Load configuration
     try:
         cfg = Config.from_env()
     except ValueError as err:
@@ -95,7 +103,6 @@ def run() -> int:
     if "NCCL_DEBUG" not in os.environ:
         os.environ["NCCL_DEBUG"] = "INFO"  # Enable NCCL debug logging
 
-    # Initialize distributed
     try:
         log.info("Initializing NCCL process group", extra={"backend": "nccl"})
         dist.init_process_group(backend="nccl")
@@ -121,7 +128,6 @@ def run() -> int:
     try:
         return _run_benchmark(cfg, rank)
     except RuntimeError as err:
-        # Catch NCCL errors that occur during execution (e.g., from watchdog)
         error_str = str(err)
         if "NCCL" in error_str or "nccl" in error_str.lower():
             log.error(
@@ -133,7 +139,7 @@ def run() -> int:
                 NCCLError.ALLREDUCE_TIMEOUT,
                 f"NCCL communication error: {error_str}",
             )
-        raise  # Re-raise if not an NCCL error
+        raise
     finally:
         try:
             dist.destroy_process_group()
@@ -151,7 +157,6 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
     Returns:
         Exit code.
     """
-    # Parse message sizes
     try:
         message_sizes = [parse_size(s) for s in cfg.message_sizes.split(",")]
     except ValueError as err:
@@ -164,11 +169,11 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
             "rank": rank,
             "world_size": dist.get_world_size(),
             "threshold_gbps": cfg.bw_threshold_gbps,
+            "skip_bandwidth_check": cfg.skip_bandwidth_check,
             "message_sizes": cfg.message_sizes,
         },
     )
 
-    # Run benchmark
     benchmark = Benchmark(
         threshold_gbps=cfg.bw_threshold_gbps,
         iters=cfg.benchmark_iters,
@@ -187,24 +192,27 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
             )
         return NCCLError.ALLREDUCE_TIMEOUT.value.exit_code
 
+    passed = result.passed or cfg.skip_bandwidth_check
+
     # Only rank 0 reports results and determines exit code
     if rank != 0:
-        return (
-            NCCLError.SUCCESS.value.exit_code
-            if result.passed
-            else NCCLError.ALLREDUCE_BW_DEGRADED.value.exit_code
+        return NCCLError.SUCCESS.value.exit_code if passed else NCCLError.ALLREDUCE_BW_DEGRADED.value.exit_code
+
+    if cfg.skip_bandwidth_check and not result.passed:
+        log.info(
+            "NCCL all-reduce check PASSED (bandwidth check skipped)",
+            extra={"measured_gbps": round(result.min_bus_bw, 2)},
         )
 
-    # Report results
-    if result.passed:
+    if passed:
         return _handle_success(cfg, result)
-    else:
-        return _handle_failure(
-            cfg,
-            NCCLError.ALLREDUCE_BW_DEGRADED,
-            f"NCCL all-reduce bus bandwidth {result.min_bus_bw:.2f} GB/s "
-            f"is below threshold {cfg.bw_threshold_gbps:.2f} GB/s",
-        )
+
+    return _handle_failure(
+        cfg,
+        NCCLError.ALLREDUCE_BW_DEGRADED,
+        f"NCCL all-reduce bus bandwidth {result.min_bus_bw:.2f} GB/s "
+        f"is below threshold {cfg.bw_threshold_gbps:.2f} GB/s",
+    )
 
 
 def _handle_success(cfg: Config, result) -> int:
@@ -223,10 +231,6 @@ def _handle_success(cfg: Config, result) -> int:
     )
 
     log.info("NCCL all-reduce check PASSED", extra={"details": message})
-
-    if cfg.skip_health_report:
-        log.info("Skipping health report (SKIP_HEALTH_REPORT=true)")
-        return NCCLError.SUCCESS.value.exit_code
 
     try:
         reporter = HealthReporter(
@@ -257,10 +261,6 @@ def _handle_failure(cfg: Config, error: NCCLError, message: str) -> int:
         Exit code.
     """
     log.error("NCCL all-reduce check FAILED", extra={"details": message})
-
-    if cfg.skip_health_report:
-        log.info("Skipping health report (SKIP_HEALTH_REPORT=true)")
-        return error.value.exit_code
 
     try:
         reporter = HealthReporter(

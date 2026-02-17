@@ -37,6 +37,7 @@ Environment variables:
         - GANG_TIMEOUT_SECONDS: Timeout for gang formation (default: 600)
         - NPROCS_PER_NODE: GPUs per node (default: auto-detect)
         - BW_THRESHOLD_GBPS: Bandwidth threshold (default: 100)
+        - SKIP_BANDWIDTH_CHECK: Skip bandwidth threshold; pass if benchmark completes
         - MESSAGE_SIZES: Sizes to test (default: 4G)
         - LOG_LEVEL: Logging level (default: info)
 """
@@ -45,6 +46,7 @@ import logging
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 
 # Add parent directory to path for imports when running as script
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -63,8 +65,154 @@ DEFAULT_GANG_TIMEOUT = 600
 DEFAULT_NPROCS_PER_NODE = 8
 
 
-def detect_gpu_count() -> int:
-    """Detect the number of GPUs using nvidia-smi.
+def main() -> int:
+    """Main entrypoint: load config → wait for gang → exec torchrun.
+
+    Returns:
+        Exit code.
+    """
+    log_level = os.getenv("LOG_LEVEL", "info")
+    set_default_structured_logger("preflight-nccl-allreduce", "0.1.0", log_level)
+
+    # 1. Load configuration from environment
+    cfg = _load_config()
+    if cfg is None:
+        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
+
+    log.info(
+        "Starting NCCL all-reduce preflight check",
+        extra={
+            "pod_name": cfg.pod_name,
+            "gang_config_dir": cfg.gang_config_dir,
+            "gang_timeout": cfg.gang_timeout,
+            "nprocs_per_node": cfg.nprocs_per_node,
+        },
+    )
+
+    # 2. Wait for gang formation and validate
+    gang_config = _wait_for_gang(cfg)
+    if gang_config is None:
+        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
+
+    # 3. Launch torchrun (replaces this process)
+    _launch_torchrun(gang_config, cfg.nprocs_per_node)
+
+    # Should never reach here (os.execvp replaces the process)
+    return NCCLError.GANG_CONFIG_ERROR.value.exit_code
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _EntrypointConfig:
+    """Parsed environment configuration for the entrypoint."""
+
+    pod_name: str
+    gang_config_dir: str
+    gang_timeout: int
+    nprocs_per_node: int
+
+
+def _load_config() -> _EntrypointConfig | None:
+    """Load entrypoint configuration from environment variables.
+
+    Returns:
+        Parsed configuration, or None if required variables are missing.
+    """
+    pod_name = os.getenv("POD_NAME", "")
+    if not pod_name:
+        log.error("POD_NAME environment variable is required")
+        return None
+
+    gang_config_dir = os.getenv("GANG_CONFIG_DIR", DEFAULT_GANG_CONFIG_DIR)
+    gang_timeout = int(os.getenv("GANG_TIMEOUT_SECONDS", str(DEFAULT_GANG_TIMEOUT)))
+
+    nprocs_env = os.getenv("NPROCS_PER_NODE", "")
+    if nprocs_env:
+        nprocs_per_node = int(nprocs_env)
+    else:
+        nprocs_per_node = _detect_gpu_count()
+
+    return _EntrypointConfig(
+        pod_name=pod_name,
+        gang_config_dir=gang_config_dir,
+        gang_timeout=gang_timeout,
+        nprocs_per_node=nprocs_per_node,
+    )
+
+
+def _wait_for_gang(cfg: _EntrypointConfig):
+    """Wait for gang formation and validate the resulting configuration.
+
+    Returns:
+        The gang configuration on success, or None on failure (error already reported).
+    """
+    waiter = GangWaiter(cfg.gang_config_dir)
+
+    try:
+        gang_config = waiter.wait(cfg.pod_name, cfg.gang_timeout)
+    except TimeoutError as err:
+        log.error("Gang formation timeout", extra={"error": str(err)})
+        _report_error(NCCLError.GANG_TIMEOUT, str(err))
+        return None
+    except ValueError as err:
+        log.error("Invalid gang configuration", extra={"error": str(err)})
+        _report_error(NCCLError.GANG_CONFIG_ERROR, str(err))
+        return None
+
+    if gang_config.my_rank < 0:
+        error_msg = f"Pod {cfg.pod_name} not found in peers list"
+        log.error(error_msg)
+        _report_error(NCCLError.GANG_CONFIG_ERROR, error_msg)
+        return None
+
+    if not gang_config.master_addr:
+        error_msg = "Master address not set in ConfigMap"
+        log.error(error_msg)
+        _report_error(NCCLError.GANG_CONFIG_ERROR, error_msg)
+        return None
+
+    return gang_config
+
+
+def _launch_torchrun(gang_config, nprocs_per_node: int) -> None:
+    """Build the torchrun command and exec it (replaces current process).
+
+    Args:
+        gang_config: Validated gang configuration from the ConfigMap.
+        nprocs_per_node: Number of GPUs (processes) per node.
+    """
+    log.info(
+        "Gang formation complete, launching torchrun",
+        extra={
+            "gang_id": gang_config.gang_id,
+            "expected_count": gang_config.expected_count,
+            "my_rank": gang_config.my_rank,
+            "master_addr": gang_config.master_addr,
+            "master_port": gang_config.master_port,
+        },
+    )
+
+    cmd = gang_config.get_torchrun_args(nprocs_per_node, "-m")
+    cmd.append("nccl_allreduce")
+
+    log.info("Executing torchrun", extra={"command": " ".join(cmd)})
+
+    # Export for the benchmark module
+    os.environ["NPROCS_PER_NODE"] = str(nprocs_per_node)
+
+    os.execvp(cmd[0], cmd)
+
+
+def _detect_gpu_count() -> int:
+    """Detect the number of GPUs visible to this container using nvidia-smi.
+
+    Falls back to DEFAULT_NPROCS_PER_NODE if detection fails.
+    We shell out to nvidia-smi (already present in the PyTorch base image)
+    rather than pulling in pynvml as a Python dependency.
 
     Returns:
         Number of GPUs visible to this container.
@@ -87,111 +235,13 @@ def detect_gpu_count() -> int:
         return DEFAULT_NPROCS_PER_NODE
 
 
-def main() -> int:
-    """Main entrypoint function.
-
-    Returns:
-        Exit code.
-    """
-    log_level = os.getenv("LOG_LEVEL", "info")
-    set_default_structured_logger("preflight-nccl-allreduce", "0.1.0", log_level)
-
-    # Get configuration from environment
-    pod_name = os.getenv("POD_NAME", "")
-    if not pod_name:
-        log.error("POD_NAME environment variable is required")
-        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
-
-    gang_config_dir = os.getenv("GANG_CONFIG_DIR", DEFAULT_GANG_CONFIG_DIR)
-    gang_timeout = int(os.getenv("GANG_TIMEOUT_SECONDS", str(DEFAULT_GANG_TIMEOUT)))
-
-    nprocs_env = os.getenv("NPROCS_PER_NODE", "")
-    if nprocs_env:
-        nprocs_per_node = int(nprocs_env)
-    else:
-        nprocs_per_node = detect_gpu_count()
-
-    log.info(
-        "Starting NCCL all-reduce preflight check",
-        extra={
-            "pod_name": pod_name,
-            "gang_config_dir": gang_config_dir,
-            "gang_timeout": gang_timeout,
-            "nprocs_per_node": nprocs_per_node,
-        },
-    )
-
-    # Wait for gang formation
-    waiter = GangWaiter(gang_config_dir)
-
-    try:
-        gang_config = waiter.wait(pod_name, gang_timeout)
-    except TimeoutError as err:
-        log.error("Gang formation timeout", extra={"error": str(err)})
-        _report_error(NCCLError.GANG_TIMEOUT, str(err))
-        return NCCLError.GANG_TIMEOUT.value.exit_code
-    except ValueError as err:
-        log.error("Invalid gang configuration", extra={"error": str(err)})
-        _report_error(NCCLError.GANG_CONFIG_ERROR, str(err))
-        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
-
-    # Validate configuration
-    if gang_config.my_rank < 0:
-        error_msg = f"Pod {pod_name} not found in peers list"
-        log.error(error_msg)
-        _report_error(NCCLError.GANG_CONFIG_ERROR, error_msg)
-        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
-
-    if not gang_config.master_addr:
-        error_msg = "Master address not set in ConfigMap"
-        log.error(error_msg)
-        _report_error(NCCLError.GANG_CONFIG_ERROR, error_msg)
-        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
-
-    log.info(
-        "Gang formation complete, launching torchrun",
-        extra={
-            "gang_id": gang_config.gang_id,
-            "expected_count": gang_config.expected_count,
-            "my_rank": gang_config.my_rank,
-            "master_addr": gang_config.master_addr,
-            "master_port": gang_config.master_port,
-        },
-    )
-
-    # Build torchrun command
-    cmd = gang_config.get_torchrun_args(nprocs_per_node, "-m")
-    cmd.append("nccl_allreduce")
-
-    log.info("Executing torchrun", extra={"command": " ".join(cmd)})
-
-    # Export NPROCS_PER_NODE for the benchmark
-    os.environ["NPROCS_PER_NODE"] = str(nprocs_per_node)
-
-    # Exec torchrun (replaces this process)
-    os.execvp(cmd[0], cmd)
-
-    # Should never reach here
-    return NCCLError.GANG_CONFIG_ERROR.value.exit_code
-
-
 def _report_error(error: NCCLError, message: str) -> None:
-    """Report an error as a health event.
+    """Report a pre-torchrun error as a health event to the platform-connector.
 
     Args:
         error: The NCCL error type.
         message: Error message.
     """
-    skip_report = os.getenv("SKIP_HEALTH_REPORT", "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
-    if skip_report:
-        log.info("Skipping health report (SKIP_HEALTH_REPORT=true)")
-        return
-
-    # Don't try to send events for errors that don't support them
     if error.value.error_code is None:
         return
 
@@ -199,9 +249,7 @@ def _report_error(error: NCCLError, message: str) -> None:
     node_name = os.getenv("NODE_NAME", "")
 
     if not connector_socket or not node_name:
-        log.warning(
-            "Cannot send health event: missing PLATFORM_CONNECTOR_SOCKET or NODE_NAME"
-        )
+        log.warning("Cannot send health event: missing PLATFORM_CONNECTOR_SOCKET or NODE_NAME")
         return
 
     strategy_str = os.getenv("PROCESSING_STRATEGY", "EXECUTE_REMEDIATION")

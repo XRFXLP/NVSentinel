@@ -128,7 +128,8 @@ initContainers:
 
   # NCCL all-reduce test - validates multi-node GPU communication
   # Requires gangCoordination.enabled=true and gang-aware scheduler (Volcano, Kueue, etc.)
-  # Fabric-specific NCCL env vars should be provided via overlay files:
+  # Fabric-specific NCCL env vars are set via ncclAllreduceExtraEnv below, NOT by
+  # overriding this container.  Use overlay files to set them:
   #   helm upgrade preflight . -f values.yaml -f values-<fabric>.yaml
   # See values-ib.yaml, values-efa.yaml, values-mnnvl-efa.yaml, values-tcpxo.yaml
   - name: preflight-nccl-allreduce
@@ -137,7 +138,7 @@ initContainers:
       capabilities:
         add: ["IPC_LOCK"]  # Required for RDMA memory registration
     env:
-      # Benchmark configuration (fabric-agnostic)
+      # Benchmark configuration (fabric-agnostic defaults)
       - name: BW_THRESHOLD_GBPS
         value: "100"  # Minimum acceptable bus bandwidth in GB/s
       - name: MESSAGE_SIZES
@@ -151,6 +152,16 @@ initContainers:
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run
+
+# Fabric-specific environment variables appended to the preflight-nccl-allreduce
+# init container.  Set via overlay files (e.g. values-ib.yaml, values-efa.yaml).
+# These are concatenated after the base env vars above.  If a variable name
+# appears in both lists, the overlay value takes precedence (Kubernetes last-wins
+# semantics for duplicate env entries).
+ncclAllreduceExtraEnv: []
+  # Example (InfiniBand):
+  # - name: NCCL_TOPO_FILE
+  #   value: "/etc/nccl/topo.xml"
 
 gpuResourceNames:
   - "nvidia.com/gpu"

@@ -36,6 +36,7 @@ class Config:
     Attributes:
         gang_config_dir: Directory where gang ConfigMap is mounted.
         bw_threshold_gbps: Minimum acceptable bus bandwidth in GB/s.
+        skip_bandwidth_check: Skip bandwidth threshold validation; pass if benchmark completes.
         gang_timeout_seconds: Timeout for gang formation in seconds.
         message_sizes: Comma-separated message sizes to test (e.g., "4G,8G").
         benchmark_iters: Number of benchmark iterations per size.
@@ -44,11 +45,11 @@ class Config:
         node_name: Kubernetes node name for health events.
         pod_name: Pod name (used to determine rank).
         processing_strategy: How downstream modules handle the event.
-        skip_health_report: Skip sending health events (for testing).
     """
 
     gang_config_dir: str
     bw_threshold_gbps: float
+    skip_bandwidth_check: bool
     gang_timeout_seconds: int
     message_sizes: str
     benchmark_iters: int
@@ -57,7 +58,6 @@ class Config:
     node_name: str
     pod_name: str
     processing_strategy: int
-    skip_health_report: bool
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -74,6 +74,10 @@ class Config:
             "BW_THRESHOLD_GBPS",
             DEFAULT_BW_THRESHOLD_GBPS,
         )
+        skip_bandwidth_check = os.getenv(
+            "SKIP_BANDWIDTH_CHECK",
+            "false",
+        ).lower() in ("true", "1", "yes")
         gang_timeout_seconds = _parse_int(
             "GANG_TIMEOUT_SECONDS",
             DEFAULT_GANG_TIMEOUT_SECONDS,
@@ -86,18 +90,10 @@ class Config:
         node_name = os.getenv("NODE_NAME", "")
         pod_name = os.getenv("POD_NAME", "")
 
-        skip_health_report = os.getenv(
-            "SKIP_HEALTH_REPORT",
-            "false",
-        ).lower() in ("true", "1", "yes")
-
-        # Validate required fields (unless skipping health report)
-        if not skip_health_report:
-            if not connector_socket:
-                raise ValueError("PLATFORM_CONNECTOR_SOCKET is required")
-            if not node_name:
-                raise ValueError("NODE_NAME is required")
-
+        if not connector_socket:
+            raise ValueError("PLATFORM_CONNECTOR_SOCKET is required")
+        if not node_name:
+            raise ValueError("NODE_NAME is required")
         if not pod_name:
             raise ValueError("POD_NAME is required")
 
@@ -110,6 +106,7 @@ class Config:
         return cls(
             gang_config_dir=gang_config_dir,
             bw_threshold_gbps=bw_threshold_gbps,
+            skip_bandwidth_check=skip_bandwidth_check,
             gang_timeout_seconds=gang_timeout_seconds,
             message_sizes=message_sizes,
             benchmark_iters=benchmark_iters,
@@ -118,7 +115,6 @@ class Config:
             node_name=node_name,
             pod_name=pod_name,
             processing_strategy=processing_strategy,
-            skip_health_report=skip_health_report,
         )
 
 
@@ -176,4 +172,3 @@ def _parse_int(env_key: str, default: int) -> int:
         raise ValueError(f"{env_key} must be positive, got {parsed}")
 
     return parsed
-

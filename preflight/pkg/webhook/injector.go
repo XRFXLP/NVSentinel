@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
@@ -155,36 +154,11 @@ func (i *Injector) findMaxResources(pod *corev1.Pod) corev1.ResourceList {
 		}
 	}
 
-	i.mirrorIPCompanionResources(maxResources)
-
 	if !i.hasGPUResources(maxResources) {
 		return nil
 	}
 
 	return maxResources
-}
-
-// mirrorIPCompanionResources mirrors base NIC quantities to their IP companion
-// resources. Some platforms inject companion IP resources (e.g. ".../gpu-nicX.IP")
-// into workload containers in a later admission step. If an IP companion resource
-// is configured but missing, mirror the base NIC quantity so init containers
-// request the same network footprint.
-func (i *Injector) mirrorIPCompanionResources(maxResources corev1.ResourceList) {
-	for _, name := range i.cfg.NetworkResourceNames {
-		if !strings.HasSuffix(name, ".IP") {
-			continue
-		}
-
-		ipRes := corev1.ResourceName(name)
-		if qty, ok := maxResources[ipRes]; ok && !qty.IsZero() {
-			continue
-		}
-
-		baseRes := corev1.ResourceName(strings.TrimSuffix(name, ".IP"))
-		if baseQty, ok := maxResources[baseRes]; ok && !baseQty.IsZero() {
-			maxResources[ipRes] = baseQty
-		}
-	}
 }
 
 // hasGPUResources returns true if maxResources contains at least one

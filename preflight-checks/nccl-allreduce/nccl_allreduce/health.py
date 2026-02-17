@@ -157,17 +157,13 @@ class HealthReporter:
                 "is_healthy": event.isHealthy,
                 "is_fatal": event.isFatal,
                 "error_code": event.errorCode[0] if event.errorCode else None,
-                "recommended_action": pb.RecommendedAction.Name(
-                    event.recommendedAction
-                ),
+                "recommended_action": pb.RecommendedAction.Name(event.recommendedAction),
                 "event_message": event.message,
             },
         )
 
         if not self._send_with_retries(health_events):
-            raise RuntimeError(
-                f"Failed to send health event after {MAX_RETRIES} retries"
-            )
+            raise RuntimeError(f"Failed to send health event after {MAX_RETRIES} retries")
 
     def _send_with_retries(self, health_events: pb.HealthEvents) -> bool:
         """Send health events with exponential backoff retries.
@@ -182,9 +178,7 @@ class HealthReporter:
 
         for attempt in range(MAX_RETRIES):
             try:
-                with grpc.insecure_channel(
-                    f"unix://{self._socket_path}"
-                ) as channel:
+                with grpc.insecure_channel(f"unix://{self._socket_path}") as channel:
                     stub = pb_grpc.PlatformConnectorStub(channel)
                     stub.HealthEventOccurredV1(
                         health_events,

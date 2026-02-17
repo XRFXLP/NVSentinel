@@ -333,9 +333,6 @@ class GangWaiter:
                 )
 
             if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"Gang formation timeout after {timeout_seconds}s"
-                )
+                raise TimeoutError(f"Gang formation timeout after {timeout_seconds}s")
 
             time.sleep(self._poll_interval)
-

@@ -19,37 +19,17 @@
 #   - NCCL topology ConfigMap (ncclTopoConfigMap) for GPU↔HCA mapping
 #   - nvidia.com/mlnxnics in networkResourceNames (set in base values.yaml)
 
-initContainers:
-  - name: preflight-nccl-allreduce
-    image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:latest
-    securityContext:
-      capabilities:
-        add: ["IPC_LOCK"]
-    env:
-      - name: BW_THRESHOLD_GBPS
-        value: "100"
-      - name: MESSAGE_SIZES
-        value: "4G"
-      - name: GANG_TIMEOUT_SECONDS
-        value: "600"
-      - name: NCCL_DEBUG
-        value: "INFO"
-      - name: NCCL_DEBUG_SUBSYS
-        value: "INIT,NET"
-      # InfiniBand-specific
-      - name: NCCL_TOPO_FILE
-        value: "/etc/nccl/topo.xml"
-      - name: NCCL_IB_PCI_RELAXED_ORDERING
-        value: "1"
-      - name: NCCL_SOCKET_IFNAME
-        value: "eth0"
-    volumeMounts:
-      - name: nvsentinel-socket
-        mountPath: /var/run
+ncclAllreduceExtraEnv:
+  # InfiniBand-specific NCCL configuration
+  - name: NCCL_TOPO_FILE
+    value: "/etc/nccl/topo.xml"
+  - name: NCCL_IB_PCI_RELAXED_ORDERING
+    value: "1"
+  - name: NCCL_SOCKET_IFNAME
+    value: "eth0"
 
 gangCoordination:
   # Topology ConfigMap name — REQUIRED for IB.
   # Without this, NCCL cannot map GPUs to IB HCAs and gets vendor errors.
   # Create a ConfigMap with the node's topo.xml (varies by VM shape).
   ncclTopoConfigMap: "nccl-topo-ndv4"  # Change to match your cluster
-
