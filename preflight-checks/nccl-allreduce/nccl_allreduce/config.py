@@ -19,7 +19,6 @@ from dataclasses import dataclass
 
 from .protos import health_event_pb2 as pb
 
-
 # Default values
 DEFAULT_GANG_CONFIG_DIR = "/etc/preflight"
 DEFAULT_BW_THRESHOLD_GBPS = 100.0
