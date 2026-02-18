@@ -39,14 +39,12 @@ from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
-# ConfigMap data keys
 KEY_EXPECTED_COUNT = "expected_count"
 KEY_GANG_ID = "gang_id"
 KEY_MASTER_ADDR = "master_addr"
 KEY_MASTER_PORT = "master_port"
 KEY_PEERS = "peers"
 
-# Default values
 DEFAULT_MASTER_PORT = "29500"
 DEFAULT_POLL_INTERVAL = 5.0
 

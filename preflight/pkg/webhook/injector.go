@@ -122,11 +122,11 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 		// This preserves platform/user init ordering and ensures any
 		// provider-injected setup init containers (e.g., GCP TCPXO daemon)
 		// complete before running preflight checks.
-		for idx := 0; idx < len(initContainers); idx++ {
+		for _, c := range initContainers {
 			patches = append(patches, PatchOperation{
 				Op:    "add",
 				Path:  "/spec/initContainers/-",
-				Value: initContainers[idx],
+				Value: c,
 			})
 		}
 	}

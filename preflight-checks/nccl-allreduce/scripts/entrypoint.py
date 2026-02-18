@@ -59,7 +59,6 @@ from nccl_allreduce.protos import health_event_pb2 as pb
 
 log = logging.getLogger(__name__)
 
-# Default values
 DEFAULT_GANG_CONFIG_DIR = "/etc/preflight"
 DEFAULT_GANG_TIMEOUT = 600
 DEFAULT_NPROCS_PER_NODE = 8
@@ -201,7 +200,6 @@ def _launch_torchrun(gang_config: GangConfig, nprocs_per_node: int) -> None:
 
     log.info("Executing torchrun", extra={"command": " ".join(cmd)})
 
-    # Export for the benchmark module
     os.environ["NPROCS_PER_NODE"] = str(nprocs_per_node)
 
     os.execvp(cmd[0], cmd)

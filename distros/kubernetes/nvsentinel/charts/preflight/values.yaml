@@ -169,6 +169,104 @@ networkFabric: ""
 # Use this to override or extend the fabric profile.
 ncclAllreduceExtraEnv: []
 
+# Per-fabric mount profiles. Keyed by networkFabric name.
+# The selected profile's extraHostPathMounts and extraVolumeMounts are
+# merged into gangCoordination at render time (see _helpers.tpl).
+fabricProfiles:
+  ib:
+    env:
+      - name: NCCL_TOPO_FILE
+        value: "/etc/nccl/topo.xml"
+      - name: NCCL_IB_PCI_RELAXED_ORDERING
+        value: "1"
+      - name: NCCL_SOCKET_IFNAME
+        value: "eth0"
+    extraHostPathMounts: []
+    extraVolumeMounts: []
+  efa:
+    env:
+      - name: FI_EFA_USE_DEVICE_RDMA
+        value: "1"
+      - name: FI_PROVIDER
+        value: "efa"
+      - name: NCCL_SOCKET_IFNAME
+        value: "eth0"
+      - name: LD_LIBRARY_PATH
+        value: "/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64"
+    extraHostPathMounts:
+      - name: host-opt-amazon
+        hostPath: /opt/amazon
+        mountPath: /opt/amazon
+        readOnly: true
+        hostPathType: Directory
+    extraVolumeMounts: []
+  mnnvl-efa:
+    env:
+      - name: FI_EFA_USE_DEVICE_RDMA
+        value: "1"
+      - name: NCCL_MNNVL_ENABLE
+        value: "1"
+      - name: NCCL_NVLS_ENABLE
+        value: "0"
+      - name: NCCL_NET_GDR_LEVEL
+        value: "PHB"
+      - name: NCCL_P2P_NET_CHUNKSIZE
+        value: "2097152"
+      - name: LD_LIBRARY_PATH
+        value: "/opt/amazon-efa-ofi/ofi/lib:/opt/amazon-efa-ofi/efa/lib:/usr/local/nvidia/lib64:/usr/lib:/usr/lib64:/usr/local/cuda/lib64"
+    extraHostPathMounts:
+      - name: amazon-efa
+        hostPath: /opt/amazon-efa-ofi
+        mountPath: /opt/amazon-efa-ofi
+        readOnly: true
+        hostPathType: Directory
+    extraVolumeMounts: []
+  tcpxo:
+    env:
+      - name: NCCL_SOCKET_IFNAME
+        value: "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8"
+      - name: NCCL_CROSS_NIC
+        value: "0"
+      - name: NCCL_NVLS_ENABLE
+        value: "0"
+      - name: NCCL_FASTRAK_CTRL_DEV
+        value: "eth0"
+      - name: NCCL_FASTRAK_IFNAME
+        value: "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8"
+      - name: NCCL_BUFFSIZE
+        value: "8388608"
+      - name: NCCL_FASTRAK_NUM_FLOWS
+        value: "2"
+      - name: NCCL_FASTRAK_USE_SNAP
+        value: "1"
+      - name: NCCL_FASTRAK_USE_LLCM
+        value: "1"
+      - name: NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY
+        value: "/dev/aperture_devices"
+      - name: NCCL_FASTRAK_ENABLE_CONTROL_CHANNEL
+        value: "0"
+      - name: NCCL_FASTRAK_ENABLE_HOTPATH_LOGGING
+        value: "0"
+      - name: NCCL_FASTRAK_PLUGIN_ACCEPT_TIMEOUT_MS
+        value: "600000"
+      - name: NCCL_NET_GDR_LEVEL
+        value: "PIX"
+      - name: NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE
+        value: "/usr/local/nvidia/lib64/a3plus_guest_config.textproto"
+      - name: NCCL_TUNER_PLUGIN
+        value: "libnccl-tuner.so"
+      - name: NCCL_TUNER_CONFIG_PATH
+        value: "/usr/local/nvidia/lib64/a3plus_tuner_config.textproto"
+      - name: LD_LIBRARY_PATH
+        value: "/usr/local/nvidia/lib64:/usr/lib/x86_64-linux-gnu"
+    extraHostPathMounts: []
+    extraVolumeMounts:
+      - name: nvtcpxo-libraries
+        mountPath: /usr/local/nvidia
+        readOnly: true
+      - name: nvtcpxo-aperture-devices
+        mountPath: /dev/aperture_devices
+
 gpuResourceNames:
   - "nvidia.com/gpu"
 
