@@ -427,12 +427,15 @@ func (i *Injector) collectGangVolumes(
 	// Add shared memory volume for NCCL multi-GPU communication.
 	// NCCL requires a larger /dev/shm than the default 64MB container limit.
 	// Using emptyDir with Memory medium provides RAM-backed storage.
+	// Cap at 64Gi to prevent unbounded RAM consumption on the node.
 	if !existingVolumes[dshmVolumeName] {
+		dshmSizeLimit := resource.MustParse("64Gi")
 		volumes = append(volumes, corev1.Volume{
 			Name: dshmVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{
-					Medium: corev1.StorageMediumMemory,
+					Medium:    corev1.StorageMediumMemory,
+					SizeLimit: &dshmSizeLimit,
 				},
 			},
 		})
@@ -544,11 +547,11 @@ func (i *Injector) injectGangEnv(container *corev1.Container, gangCtx *GangConte
 			Value: gangCtx.GangID,
 		},
 		{
-			Name:  "GANG_CONFIG_PATH",
+			Name:  "GANG_CONFIG_DIR",
 			Value: i.cfg.GangCoordination.ConfigMapMountPath,
 		},
 		{
-			Name:  "GANG_TIMEOUT",
+			Name:  "GANG_TIMEOUT_SECONDS",
 			Value: i.cfg.GangCoordination.Timeout,
 		},
 		{

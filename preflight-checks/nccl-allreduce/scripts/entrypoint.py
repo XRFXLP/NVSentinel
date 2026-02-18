@@ -52,7 +52,7 @@ from dataclasses import dataclass
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from nccl_allreduce.errors import NCCLError
-from nccl_allreduce.gang import GangWaiter
+from nccl_allreduce.gang import GangConfig, GangWaiter
 from nccl_allreduce.health import HealthReporter
 from nccl_allreduce.logger import set_default_structured_logger
 from nccl_allreduce.protos import health_event_pb2 as pb
@@ -144,7 +144,7 @@ def _load_config() -> _EntrypointConfig | None:
     )
 
 
-def _wait_for_gang(cfg: _EntrypointConfig):
+def _wait_for_gang(cfg: _EntrypointConfig) -> GangConfig | None:
     """Wait for gang formation and validate the resulting configuration.
 
     Returns:
@@ -178,7 +178,7 @@ def _wait_for_gang(cfg: _EntrypointConfig):
     return gang_config
 
 
-def _launch_torchrun(gang_config, nprocs_per_node: int) -> None:
+def _launch_torchrun(gang_config: GangConfig, nprocs_per_node: int) -> None:
     """Build the torchrun command and exec it (replaces current process).
 
     Args:

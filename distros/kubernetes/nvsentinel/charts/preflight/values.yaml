@@ -153,15 +153,21 @@ initContainers:
       - name: nvsentinel-socket
         mountPath: /var/run
 
-# Fabric-specific environment variables appended to the preflight-nccl-allreduce
-# init container.  Set via overlay files (e.g. values-ib.yaml, values-efa.yaml).
-# These are concatenated after the base env vars above.  If a variable name
-# appears in both lists, the overlay value takes precedence (Kubernetes last-wins
-# semantics for duplicate env entries).
+# Interconnect fabric for NCCL all-reduce.
+# Determines which NCCL environment variables, hostPath mounts, and volume
+# mounts are injected into the preflight-nccl-allreduce init container.
+# Supported values:
+#   ""           - No fabric-specific config (manual via ncclAllreduceExtraEnv)
+#   "ib"         - InfiniBand (Azure NDv4/v5)
+#   "efa"        - AWS EFA (H100 p5)
+#   "mnnvl-efa"  - MNNVL + EFA (GB200, GB300)
+#   "tcpxo"      - GCP TCPXO/FastRak (A3+, A4)
+networkFabric: ""
+
+# Additional fabric-specific environment variables appended to the
+# preflight-nccl-allreduce init container AFTER the networkFabric defaults.
+# Use this to override or extend the fabric profile.
 ncclAllreduceExtraEnv: []
-  # Example (InfiniBand):
-  # - name: NCCL_TOPO_FILE
-  #   value: "/etc/nccl/topo.xml"
 
 gpuResourceNames:
   - "nvidia.com/gpu"
@@ -229,7 +235,7 @@ gangCoordination:
   # to preflight init containers' resources.claims. This ensures init
   # containers get the same device access as main containers: GPUs, RDMA
   # NICs, IMEX channels (GB200 MNNVL), etc. See ADR-026 §DRA Integration.
-  # Defaults to true when gangCoordination is enabled.
+  # Defaults to true when omitted.
   # mirrorResourceClaims: true
 
 # Label-based namespace selection

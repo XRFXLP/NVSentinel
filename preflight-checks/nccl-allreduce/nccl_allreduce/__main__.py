@@ -43,7 +43,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 import torch.distributed as dist
 
-from .benchmark import Benchmark, parse_size
+from .benchmark import Benchmark, BenchmarkResult, parse_size
 from .config import Config
 from .errors import NCCLError
 from .health import HealthReporter
@@ -215,7 +215,7 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
     )
 
 
-def _handle_success(cfg: Config, result) -> int:
+def _handle_success(cfg: Config, result: BenchmarkResult) -> int:
     """Handle successful benchmark completion.
 
     Args:

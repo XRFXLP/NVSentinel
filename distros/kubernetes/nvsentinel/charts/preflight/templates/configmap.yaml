@@ -37,27 +37,40 @@ data:
       timeout: {{ .Values.gangCoordination.timeout | quote }}
       masterPort: {{ .Values.gangCoordination.masterPort }}
       configMapMountPath: {{ .Values.gangCoordination.configMapMountPath | quote }}
-      {{- if .Values.gangCoordination.ncclTopoConfigMap }}
-      ncclTopoConfigMap: {{ .Values.gangCoordination.ncclTopoConfigMap | quote }}
+      {{- /* Resolve ncclTopoConfigMap: explicit value or fabric default */}}
+      {{- $topoConfigMap := .Values.gangCoordination.ncclTopoConfigMap | default (include "preflight.fabric.ncclTopoConfigMap" .) }}
+      {{- if $topoConfigMap }}
+      ncclTopoConfigMap: {{ $topoConfigMap | quote }}
       {{- end }}
-      {{- if .Values.gangCoordination.extraHostPathMounts }}
+      {{- /* Merge explicit extraHostPathMounts with fabric defaults */}}
+      {{- $fabricHPM := include "preflight.fabric.extraHostPathMounts" . | fromYamlArray | default list }}
+      {{- $explicitHPM := .Values.gangCoordination.extraHostPathMounts | default list }}
+      {{- $allHPM := concat $fabricHPM $explicitHPM }}
+      {{- if $allHPM }}
       extraHostPathMounts:
-      {{- toYaml .Values.gangCoordination.extraHostPathMounts | nindent 8 }}
+      {{- toYaml $allHPM | nindent 8 }}
       {{- end }}
-      {{- if .Values.gangCoordination.extraVolumeMounts }}
+      {{- /* Merge explicit extraVolumeMounts with fabric defaults */}}
+      {{- $fabricVM := include "preflight.fabric.extraVolumeMounts" . | fromYamlArray | default list }}
+      {{- $explicitVM := .Values.gangCoordination.extraVolumeMounts | default list }}
+      {{- $allVM := concat $fabricVM $explicitVM }}
+      {{- if $allVM }}
       extraVolumeMounts:
-      {{- toYaml .Values.gangCoordination.extraVolumeMounts | nindent 8 }}
+      {{- toYaml $allVM | nindent 8 }}
       {{- end }}
       {{- if not (kindIs "invalid" .Values.gangCoordination.mirrorResourceClaims) }}
       mirrorResourceClaims: {{ .Values.gangCoordination.mirrorResourceClaims }}
       {{- end }}
     initContainers:
+      {{- /* Build fabric env vars + explicit extra env vars */}}
+      {{- $fabricEnv := include "preflight.fabric.env" . | fromYamlArray | default list }}
       {{- $extraEnv := .Values.ncclAllreduceExtraEnv | default list }}
+      {{- $allExtraEnv := concat $fabricEnv $extraEnv }}
       {{- $result := list }}
       {{- range .Values.initContainers }}
-      {{- if and (eq .name "preflight-nccl-allreduce") $extraEnv }}
+      {{- if and (eq .name "preflight-nccl-allreduce") $allExtraEnv }}
       {{- $container := deepCopy . }}
-      {{- $_ := set $container "env" (concat (.env | default list) $extraEnv) }}
+      {{- $_ := set $container "env" (concat (.env | default list) $allExtraEnv) }}
       {{- $result = append $result $container }}
       {{- else }}
       {{- $result = append $result . }}

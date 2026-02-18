@@ -221,7 +221,16 @@ class GangConfigReader:
 
             pod_name = parts[0].strip()
             pod_ip = parts[1].strip()
-            rank = int(parts[2].strip()) if len(parts) >= 3 else -1
+
+            rank = -1
+            if len(parts) >= 3:
+                try:
+                    rank = int(parts[2].strip())
+                except ValueError:
+                    log.warning(
+                        "Invalid rank in peer line, defaulting to -1",
+                        extra={"line": line, "bad_rank": parts[2].strip()},
+                    )
 
             peers.append(PeerInfo(pod_name=pod_name, pod_ip=pod_ip, rank=rank))
 

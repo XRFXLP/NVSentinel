@@ -219,6 +219,18 @@ func (c *GangCoordinationConfig) setDefaults() {
 		t := true
 		c.MirrorResourceClaims = &t
 	}
+
+	trueVal := true
+	for i := range c.ExtraHostPathMounts {
+		if c.ExtraHostPathMounts[i].ReadOnly == nil {
+			c.ExtraHostPathMounts[i].ReadOnly = &trueVal
+		}
+	}
+	for i := range c.ExtraVolumeMounts {
+		if c.ExtraVolumeMounts[i].ReadOnly == nil {
+			c.ExtraVolumeMounts[i].ReadOnly = &trueVal
+		}
+	}
 }
 
 func (c *FileConfig) validate() error {
