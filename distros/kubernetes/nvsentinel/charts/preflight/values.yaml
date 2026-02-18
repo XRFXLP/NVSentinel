@@ -191,12 +191,38 @@ fabricProfiles:
         value: "efa"
       - name: NCCL_SOCKET_IFNAME
         value: "eth0"
+      # Container's stale EFA/RDMA libs are removed at build time (Dockerfile).
+      # At runtime, host's /opt/amazon provides libfabric + ofi-nccl.
+      # Host's libefa.so.1 (needed by libfabric via dlopen) is bind-mounted
+      # into the container at its standard path. Since the container's copy
+      # was removed at build time, only the host version exists.
       - name: LD_LIBRARY_PATH
         value: "/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64"
     extraHostPathMounts:
       - name: host-opt-amazon
         hostPath: /opt/amazon
         mountPath: /opt/amazon
+        readOnly: true
+        hostPathType: Directory
+      # Bind-mount individual host RDMA libs into the container's system lib
+      # path. We cannot mount the entire /usr/lib/x86_64-linux-gnu directory
+      # because it contains glibc (libc.so.6, libm.so.6) whose version may
+      # differ from the container's — mounting it would break Python/CUDA.
+      # The Dockerfile removes the container's stale copies of these files,
+      # so the bind-mounts fill the gap with host-compatible versions.
+      - name: host-libefa
+        hostPath: /usr/lib/x86_64-linux-gnu/libefa.so.1
+        mountPath: /usr/lib/x86_64-linux-gnu/libefa.so.1
+        readOnly: true
+        hostPathType: File
+      - name: host-libibverbs
+        hostPath: /usr/lib/x86_64-linux-gnu/libibverbs.so.1
+        mountPath: /usr/lib/x86_64-linux-gnu/libibverbs.so.1
+        readOnly: true
+        hostPathType: File
+      - name: host-libibverbs-dir
+        hostPath: /usr/lib/x86_64-linux-gnu/libibverbs
+        mountPath: /usr/lib/x86_64-linux-gnu/libibverbs
         readOnly: true
         hostPathType: Directory
     extraVolumeMounts: []
@@ -259,6 +285,20 @@ fabricProfiles:
         value: "/usr/local/nvidia/lib64/a3plus_tuner_config.textproto"
       - name: LD_LIBRARY_PATH
         value: "/usr/local/nvidia/lib64:/usr/lib/x86_64-linux-gnu"
+      - name: NCCL_PROTO
+        value: "Simple"
+      - name: NCCL_P2P_NVL_CHUNKSIZE
+        value: "1048576"
+      - name: NCCL_ALGO
+        value: "Ring,Tree"
+      - name: NCCL_MIN_NCHANNELS
+        value: "4"
+      - name: NCCL_DYNAMIC_CHUNK_SIZE
+        value: "524288"
+      - name: NCCL_P2P_NET_CHUNKSIZE
+        value: "524288"
+      - name: NCCL_P2P_PCI_CHUNKSIZE
+        value: "524288"
     extraHostPathMounts: []
     extraVolumeMounts:
       - name: nvtcpxo-libraries
@@ -315,9 +355,16 @@ gangCoordination:
   masterPort: 29500
   # Path where gang ConfigMap is mounted in init containers
   configMapMountPath: "/etc/preflight"
-  # NCCL topology ConfigMap name - required for Azure NDv4/v5 InfiniBand
-  # Without this, NCCL cannot map GPUs to IB NICs and falls back to TCP
+  # NCCL topology ConfigMap name — required for Azure InfiniBand.
+  # Without this, NCCL cannot map GPUs to IB HCAs and falls back to TCP.
+  # Set explicitly to use a pre-existing ConfigMap, or use ncclTopoShape
+  # to auto-create one from the chart's bundled topology files.
   ncclTopoConfigMap: ""
+  # VM shape for auto-creating the NCCL topology ConfigMap (IB only).
+  # Supported: "ndv4", "ndv5" (files shipped in charts/preflight/files/).
+  # When set, a ConfigMap is created from files/<shape>-topo.xml and
+  # ncclTopoConfigMap is auto-resolved to its name.
+  ncclTopoShape: ""
 
   # Optional hostPath mounts injected into gang-aware preflight init containers.
   # Fabric-specific; set via overlay files (e.g. values-mnnvl-efa.yaml).

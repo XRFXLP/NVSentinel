@@ -37,10 +37,21 @@ data:
       timeout: {{ .Values.gangCoordination.timeout | quote }}
       masterPort: {{ .Values.gangCoordination.masterPort }}
       configMapMountPath: {{ .Values.gangCoordination.configMapMountPath | quote }}
-      {{- /* Resolve ncclTopoConfigMap: explicit value or fabric default */}}
-      {{- $topoConfigMap := .Values.gangCoordination.ncclTopoConfigMap | default (include "preflight.fabric.ncclTopoConfigMap" .) }}
+      {{- /* Resolve ncclTopoConfigMap: explicit > auto-generated name > fabric default */}}
+      {{- $topoConfigMap := "" }}
+      {{- if .Values.gangCoordination.ncclTopoConfigMap }}
+      {{- $topoConfigMap = .Values.gangCoordination.ncclTopoConfigMap }}
+      {{- else if .Values.gangCoordination.ncclTopoShape }}
+      {{- $topoConfigMap = printf "%s-nccl-topo" (include "preflight.fullname" .) }}
+      {{- else }}
+      {{- $topoConfigMap = include "preflight.fabric.ncclTopoConfigMap" . }}
+      {{- end }}
       {{- if $topoConfigMap }}
       ncclTopoConfigMap: {{ $topoConfigMap | quote }}
+      {{- end }}
+      {{- if .Values.gangCoordination.ncclTopoShape }}
+      ncclTopoData: |
+{{ .Files.Get (printf "files/%s-topo.xml" .Values.gangCoordination.ncclTopoShape) | indent 8 }}
       {{- end }}
       {{- /* Merge explicit extraHostPathMounts with fabric defaults */}}
       {{- $fabricHPM := include "preflight.fabric.extraHostPathMounts" . | fromYamlArray | default list }}

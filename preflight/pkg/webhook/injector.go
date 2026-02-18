@@ -443,6 +443,8 @@ func (i *Injector) collectGangVolumes(
 
 	// Add NCCL topology ConfigMap volume if configured.
 	// Required for Azure NDv4/v5 - NCCL needs this to map GPUs to IB NICs.
+	// The ConfigMap is auto-created by the gang controller in the pod's namespace
+	// when ncclTopoData is configured, or must exist if set explicitly.
 	if i.cfg.GangCoordination.NCCLTopoConfigMap != "" && !existingVolumes[ncclTopoVolumeName] {
 		optional := true
 

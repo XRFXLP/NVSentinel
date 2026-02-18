@@ -98,7 +98,15 @@ type GangCoordinationConfig struct {
 
 	// NCCLTopoConfigMap is the name of the ConfigMap containing the NCCL topology file.
 	// Required for Azure NDv4/v5 - without it, NCCL cannot map GPUs to IB NICs.
+	// If NCCLTopoData is set, the controller auto-creates this ConfigMap in the
+	// pod's namespace; otherwise it must already exist.
 	NCCLTopoConfigMap string `yaml:"ncclTopoConfigMap,omitempty"`
+
+	// NCCLTopoData is the raw NCCL topology XML content.
+	// When set, the controller creates a ConfigMap with this data in the pod's
+	// namespace alongside the gang ConfigMap. This avoids manual ConfigMap
+	// creation per namespace for Azure IB topology files.
+	NCCLTopoData string `yaml:"ncclTopoData,omitempty"`
 
 	// ExtraHostPathMounts defines optional hostPath mounts to inject into
 	// gang-aware preflight init containers. This is useful for environments

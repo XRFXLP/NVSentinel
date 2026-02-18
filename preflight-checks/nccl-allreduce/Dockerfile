@@ -67,6 +67,15 @@ FROM nvcr.io/nvidia/pytorch:${PYTORCH_VERSION} AS runtime
 
 ARG VERSION
 
+# Remove the NGC image's bundled EFA/OFI-NCCL stack and stale RDMA libs.
+# On AWS, the host's /opt/amazon is mounted at runtime and provides the
+# EFA libs (libfabric, ofi-nccl plugin) that match the host's kernel
+# driver. The base image also ships an older libefa.so in the system lib
+# path which causes ABI mismatches (e.g. EFA_1.4 not found) with the
+# host's libfabric. Removing both ensures the host stack is used end-to-end.
+# On non-AWS platforms these files don't exist, so the rm is a no-op.
+RUN rm -rf /opt/amazon /usr/lib/x86_64-linux-gnu/libefa.so*
+
 COPY --from=build /app/dist/*.whl /tmp/
 COPY --from=build /app/constraints.txt /tmp/
 
