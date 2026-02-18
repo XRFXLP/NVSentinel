@@ -90,8 +90,8 @@ def main() -> int:
 
     # 2. Wait for gang formation and validate
     gang_config = _wait_for_gang(cfg)
-    if gang_config is None:
-        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
+    if isinstance(gang_config, int):
+        return gang_config
 
     # 3. Launch torchrun (replaces this process)
     _launch_torchrun(gang_config, cfg.nprocs_per_node)
@@ -143,11 +143,11 @@ def _load_config() -> _EntrypointConfig | None:
     )
 
 
-def _wait_for_gang(cfg: _EntrypointConfig) -> GangConfig | None:
+def _wait_for_gang(cfg: _EntrypointConfig) -> GangConfig | int:
     """Wait for gang formation and validate the resulting configuration.
 
     Returns:
-        The gang configuration on success, or None on failure (error already reported).
+        The gang configuration on success, or an NCCLError exit code on failure.
     """
     waiter = GangWaiter(cfg.gang_config_dir)
 
@@ -156,23 +156,23 @@ def _wait_for_gang(cfg: _EntrypointConfig) -> GangConfig | None:
     except TimeoutError as err:
         log.error("Gang formation timeout", extra={"error": str(err)})
         _report_error(NCCLError.GANG_TIMEOUT, str(err))
-        return None
+        return NCCLError.GANG_TIMEOUT.value.exit_code
     except ValueError as err:
         log.error("Invalid gang configuration", extra={"error": str(err)})
         _report_error(NCCLError.GANG_CONFIG_ERROR, str(err))
-        return None
+        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
 
     if gang_config.my_rank < 0:
         error_msg = f"Pod {cfg.pod_name} not found in peers list"
         log.error(error_msg)
         _report_error(NCCLError.GANG_CONFIG_ERROR, error_msg)
-        return None
+        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
 
     if not gang_config.master_addr:
         error_msg = "Master address not set in ConfigMap"
         log.error(error_msg)
         _report_error(NCCLError.GANG_CONFIG_ERROR, error_msg)
-        return None
+        return NCCLError.GANG_CONFIG_ERROR.value.exit_code
 
     return gang_config
 
@@ -202,7 +202,12 @@ def _launch_torchrun(gang_config: GangConfig, nprocs_per_node: int) -> None:
 
     os.environ["NPROCS_PER_NODE"] = str(nprocs_per_node)
 
-    os.execvp(cmd[0], cmd)
+    try:
+        os.execvp(cmd[0], cmd)
+    except OSError as err:
+        log.error("Failed to exec torchrun", extra={"command": cmd[0], "error": str(err)})
+        _report_error(NCCLError.GANG_CONFIG_ERROR, f"Failed to exec {cmd[0]}: {err}")
+        sys.exit(NCCLError.GANG_CONFIG_ERROR.value.exit_code)
 
 
 def _detect_gpu_count() -> int:

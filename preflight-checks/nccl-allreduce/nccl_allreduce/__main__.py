@@ -94,14 +94,9 @@ def run() -> int:
         log.error("Configuration error", extra={"error": str(err)})
         return NCCLError.GANG_CONFIG_ERROR.value.exit_code
 
-    # Set NCCL timeout environment variables if not already set
-    # This helps fail faster if there are network connectivity issues
-    if "NCCL_TIMEOUT" not in os.environ:
-        os.environ["NCCL_TIMEOUT"] = "1800"  # 30 minutes default
-    if "NCCL_ASYNC_ERROR_HANDLING" not in os.environ:
-        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+    # Set NCCL defaults if not already set by the container env.
     if "NCCL_DEBUG" not in os.environ:
-        os.environ["NCCL_DEBUG"] = "INFO"  # Enable NCCL debug logging
+        os.environ["NCCL_DEBUG"] = "INFO"
 
     try:
         log.info("Initializing NCCL process group", extra={"backend": "nccl"})
