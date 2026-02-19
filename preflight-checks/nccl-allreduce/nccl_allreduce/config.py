@@ -87,7 +87,7 @@ class Config:
         message_sizes = os.getenv("MESSAGE_SIZES", DEFAULT_MESSAGE_SIZES)
         benchmark_iters = _parse_int("BENCHMARK_ITERS", DEFAULT_BENCHMARK_ITERS)
         warmup_iters = _parse_int("WARMUP_ITERS", DEFAULT_WARMUP_ITERS)
-        reduce_op = os.getenv("REDUCE_OP", DEFAULT_REDUCE_OP)
+        reduce_op = os.getenv("NCCL_REDUCE_OP", DEFAULT_REDUCE_OP)
 
         connector_socket = os.getenv("PLATFORM_CONNECTOR_SOCKET", "")
         node_name = os.getenv("NODE_NAME", "")
