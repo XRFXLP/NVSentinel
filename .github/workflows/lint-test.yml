@@ -213,7 +213,7 @@ jobs:
       - name: Upload artifacts
         uses: ./.github/actions/upload-test-artifacts
         with:
-          component-name: ${{ matrix.component }}
+          component-name: slinky-drainer
           file-paths: |
             ${{ matrix.component }}/coverage.xml
             ${{ matrix.component }}/coverage.txt
