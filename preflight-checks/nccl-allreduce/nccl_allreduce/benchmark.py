@@ -138,6 +138,8 @@ class Benchmark:
             warmup: Number of warmup iterations before timing.
             reduce_op: Reduction operation name (sum/prod/min/max/avg).
         """
+        if iters < 1:
+            raise ValueError(f"iters must be >= 1, got {iters}")
         self._threshold = threshold_gbps
         self._iters = iters
         self._warmup = warmup

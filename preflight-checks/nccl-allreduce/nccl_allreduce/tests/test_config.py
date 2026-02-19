@@ -67,7 +67,7 @@ class TestParseInt:
 
     def test_rejects_zero(self) -> None:
         with patch.dict(os.environ, {"TEST_VAR": "0"}):
-            with pytest.raises(ValueError, match="must be positive"):
+            with pytest.raises(ValueError, match="must be >= 1"):
                 _parse_int("TEST_VAR", 1)
 
 
