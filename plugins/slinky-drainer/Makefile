@@ -75,3 +75,6 @@ test:
 lint:
 	golangci-lint run --config ../../.golangci.yml
 
+.PHONY: lint-test
+lint-test: lint test
+
