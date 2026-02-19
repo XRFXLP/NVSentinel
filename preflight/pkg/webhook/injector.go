@@ -565,7 +565,7 @@ func (i *Injector) injectGangEnv(container *corev1.Container, gangCtx *GangConte
 		},
 		{
 			Name:  "GANG_TIMEOUT_SECONDS",
-			Value: i.cfg.GangCoordination.Timeout,
+			Value: strconv.Itoa(int(i.cfg.GangCoordination.TimeoutDuration.Seconds())),
 		},
 		{
 			Name:  "MASTER_PORT",

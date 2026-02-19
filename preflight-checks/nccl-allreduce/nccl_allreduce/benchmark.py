@@ -271,7 +271,7 @@ class Benchmark:
                     "warmup_iters": self._warmup,
                 },
             )
-        for i in range(self._warmup):
+        for _ in range(self._warmup):
             dist.all_reduce(tensor, op=self._reduce_op)
         torch.cuda.synchronize()
         if rank == 0:
@@ -284,7 +284,7 @@ class Benchmark:
                 extra={"iters": self._iters},
             )
         start = time.perf_counter()
-        for i in range(self._iters):
+        for _ in range(self._iters):
             dist.all_reduce(tensor, op=self._reduce_op)
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - start

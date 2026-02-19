@@ -54,8 +54,13 @@ data:
       ncclTopoConfigMap: {{ $topoConfigMap | quote }}
       {{- end }}
       {{- if .Values.gangCoordination.ncclTopoShape }}
+      {{- $topoFile := printf "files/%s-topo.xml" .Values.gangCoordination.ncclTopoShape }}
+      {{- $topoContent := .Files.Get $topoFile }}
+      {{- if not $topoContent }}
+      {{- fail (printf "ncclTopoShape '%s' not found: %s does not exist in chart files/" .Values.gangCoordination.ncclTopoShape $topoFile) }}
+      {{- end }}
       ncclTopoData: |
-{{ .Files.Get (printf "files/%s-topo.xml" .Values.gangCoordination.ncclTopoShape) | indent 8 }}
+{{ $topoContent | indent 8 }}
       {{- end }}
       {{- if .Values.gangCoordination.extraHostPathMounts }}
       extraHostPathMounts:

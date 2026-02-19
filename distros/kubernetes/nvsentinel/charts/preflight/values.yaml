@@ -139,8 +139,6 @@ initContainers:
         value: "100"  # Minimum acceptable bus bandwidth in GB/s
       - name: MESSAGE_SIZES
         value: "4G"  # Message size for bandwidth test
-      - name: GANG_TIMEOUT_SECONDS
-        value: "600"  # Timeout waiting for gang formation
       - name: NCCL_DEBUG
         value: "INFO"  # Set to WARN after transport selection is validated
       - name: NCCL_DEBUG_SUBSYS
