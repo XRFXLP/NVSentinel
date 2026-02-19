@@ -86,7 +86,7 @@ class Config:
         )
         message_sizes = os.getenv("MESSAGE_SIZES", DEFAULT_MESSAGE_SIZES)
         benchmark_iters = _parse_int("BENCHMARK_ITERS", DEFAULT_BENCHMARK_ITERS)
-        warmup_iters = _parse_int("WARMUP_ITERS", DEFAULT_WARMUP_ITERS)
+        warmup_iters = _parse_int("WARMUP_ITERS", DEFAULT_WARMUP_ITERS, min_value=0)
         reduce_op = os.getenv("NCCL_REDUCE_OP", DEFAULT_REDUCE_OP)
 
         connector_socket = os.getenv("PLATFORM_CONNECTOR_SOCKET", "")
@@ -150,18 +150,19 @@ def _parse_float(env_key: str, default: float) -> float:
     return parsed
 
 
-def _parse_int(env_key: str, default: int) -> int:
+def _parse_int(env_key: str, default: int, *, min_value: int = 1) -> int:
     """Parse an integer from environment variable.
 
     Args:
         env_key: Environment variable name.
         default: Default value if not set.
+        min_value: Minimum acceptable value (default: 1).
 
     Returns:
         Parsed integer value.
 
     Raises:
-        ValueError: If the value cannot be parsed as a positive integer.
+        ValueError: If the value is invalid or below min_value.
     """
     value = os.getenv(env_key, "")
     if not value:
@@ -172,7 +173,7 @@ def _parse_int(env_key: str, default: int) -> int:
     except ValueError as err:
         raise ValueError(f"Invalid {env_key}: {value}") from err
 
-    if parsed <= 0:
-        raise ValueError(f"{env_key} must be positive, got {parsed}")
+    if parsed < min_value:
+        raise ValueError(f"{env_key} must be >= {min_value}, got {parsed}")
 
     return parsed

@@ -164,6 +164,9 @@ class Benchmark:
         if not dist.is_initialized():
             raise RuntimeError("Distributed not initialized")
 
+        if not message_sizes:
+            raise ValueError("message_sizes must be non-empty")
+
         rank = dist.get_rank()
         world_size = dist.get_world_size()
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
