@@ -22,11 +22,22 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from typing import Final
 
 import torch
 import torch.distributed as dist
 
 log = logging.getLogger(__name__)
+
+# Supported reduction operations, matching nccl-tests -o flag.
+# See: https://github.com/nvidia/nccl-tests#arguments
+REDUCE_OPS: Final[dict[str, dist.ReduceOp]] = {
+    "sum": dist.ReduceOp.SUM,
+    "prod": dist.ReduceOp.PRODUCT,
+    "min": dist.ReduceOp.MIN,
+    "max": dist.ReduceOp.MAX,
+    "avg": dist.ReduceOp.AVG,
+}
 
 
 @dataclass
@@ -117,6 +128,7 @@ class Benchmark:
         threshold_gbps: float,
         iters: int = 20,
         warmup: int = 5,
+        reduce_op: str = "sum",
     ) -> None:
         """Initialize the benchmark.
 
@@ -124,10 +136,16 @@ class Benchmark:
             threshold_gbps: Minimum acceptable bus bandwidth in GB/s.
             iters: Number of timed iterations per test.
             warmup: Number of warmup iterations before timing.
+            reduce_op: Reduction operation name (sum/prod/min/max/avg).
         """
         self._threshold = threshold_gbps
         self._iters = iters
         self._warmup = warmup
+        op_name = reduce_op.lower().strip()
+        if op_name not in REDUCE_OPS:
+            raise ValueError(f"Invalid reduce_op '{reduce_op}'. " f"Supported: {', '.join(REDUCE_OPS)}")
+        self._reduce_op = REDUCE_OPS[op_name]
+        self._reduce_op_name = op_name
 
     def run(self, message_sizes: list[int]) -> BenchmarkResult:
         """Run the benchmark with the given message sizes.
@@ -165,6 +183,7 @@ class Benchmark:
             log.info(
                 "Starting NCCL All-Reduce benchmark",
                 extra={
+                    "reduce_op": self._reduce_op_name,
                     "num_nodes": num_nodes,
                     "gpus_per_node": gpus_per_node,
                     "world_size": world_size,
@@ -253,7 +272,7 @@ class Benchmark:
                 },
             )
         for i in range(self._warmup):
-            dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+            dist.all_reduce(tensor, op=self._reduce_op)
         torch.cuda.synchronize()
         if rank == 0:
             log.info("Warmup iterations complete")
@@ -266,7 +285,7 @@ class Benchmark:
             )
         start = time.perf_counter()
         for i in range(self._iters):
-            dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+            dist.all_reduce(tensor, op=self._reduce_op)
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - start
         if rank == 0:

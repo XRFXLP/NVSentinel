@@ -128,10 +128,6 @@ initContainers:
 
   # NCCL all-reduce test - validates multi-node GPU communication
   # Requires gangCoordination.enabled=true and gang-aware scheduler (Volcano, Kueue, etc.)
-  # Fabric-specific NCCL env vars are set via ncclAllreduceExtraEnv below, NOT by
-  # overriding this container.  Use overlay files to set them:
-  #   helm upgrade preflight . -f values.yaml -f values-<fabric>.yaml
-  # See values-ib.yaml, values-efa.yaml, values-mnnvl-efa.yaml, values-tcpxo.yaml
   - name: preflight-nccl-allreduce
     image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:latest
     securityContext:
@@ -153,159 +149,67 @@ initContainers:
       - name: nvsentinel-socket
         mountPath: /var/run
 
-# Interconnect fabric for NCCL all-reduce.
-# Determines which NCCL environment variables, hostPath mounts, and volume
-# mounts are injected into the preflight-nccl-allreduce init container.
-# Supported values:
-#   ""           - No fabric-specific config (manual via ncclAllreduceExtraEnv)
-#   "ib"         - InfiniBand (Azure NDv4/v5)
-#   "efa"        - AWS EFA (H100 p5)
-#   "mnnvl-efa"  - MNNVL + EFA (GB200, GB300)
-#   "tcpxo"      - GCP TCPXO/FastRak (A3+, A4)
-networkFabric: ""
+# Fabric-specific NCCL configuration.
+#
+# In production, the webhook automatically copies NCCL env vars and volume
+# mounts from the user's main container to preflight init containers using
+# ncclEnvPatterns and volumeMountPatterns. No manual fabric config needed.
+#
+# For standalone testing (busybox main container), use ncclAllreduceExtraEnv
+# and gangCoordination.extraHostPathMounts to provide fabric config explicitly.
+#
+# Tested fabric configurations (for reference):
+#
+#   InfiniBand (Azure NDv4/v5, 166 GB/s):
+#     Env: NCCL_TOPO_FILE=/etc/nccl/topo.xml, NCCL_IB_PCI_RELAXED_ORDERING=1,
+#          NCCL_SOCKET_IFNAME=eth0
+#     Mounts: ncclTopoShape=ndv4 (auto-creates topo ConfigMap)
+#
+#   EFA (AWS H100, 346 GB/s):
+#     Env: FI_EFA_USE_DEVICE_RDMA=1, FI_PROVIDER=efa, NCCL_SOCKET_IFNAME=eth0,
+#          LD_LIBRARY_PATH=/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:...
+#     Mounts: /opt/amazon from host; libefa.so.1 + libibverbs.so.1 bind-mounts
+#     Note: Dockerfile removes /opt/amazon to avoid ABI mismatch with host EFA
+#
+#   MNNVL + EFA (AWS GB200, 689 GB/s):
+#     Env: FI_EFA_USE_DEVICE_RDMA=1, NCCL_MNNVL_ENABLE=1, NCCL_NVLS_ENABLE=0,
+#          NCCL_NET_GDR_LEVEL=PHB, NCCL_P2P_NET_CHUNKSIZE=2097152
+#     Mounts: /opt/amazon-efa-ofi from host
+#     Requires: ComputeDomain DRA claim, Volcano DRA feature gate
+#
+#   TCPXO (GCP H100 A3+, 331 GB/s):
+#     Env: NCCL_SOCKET_IFNAME=eth1-8, NCCL_FASTRAK_*, NCCL_BUFFSIZE=8388608,
+#          NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE, NCCL_TUNER_PLUGIN, etc.
+#     Mounts: nvtcpxo-libraries → /usr/local/nvidia,
+#             nvtcpxo-aperture-devices → /dev/aperture_devices (from GKE webhook)
 
-# Additional fabric-specific environment variables appended to the
-# preflight-nccl-allreduce init container AFTER the networkFabric defaults.
-# Use this to override or extend the fabric profile.
+# Glob patterns for environment variable names to copy from the user's main
+# containers to preflight init containers. Allows automatic inheritance of
+# fabric-specific NCCL config without manual configuration.
+ncclEnvPatterns:
+  - "NCCL_*"
+  - "FI_*"
+  - "LD_LIBRARY_PATH"
+  - "UCX_*"
+  - "TORCH_NCCL_*"
+  - "CUDA_DEVICE_ORDER"
+
+# Glob patterns for volume mount names to copy from the user's main
+# containers to preflight init containers. Allows automatic inheritance of
+# fabric-specific host mounts (EFA libs, TCPXO plugins, etc.).
+volumeMountPatterns:
+  - "host-opt-amazon*"
+  - "host-libefa*"
+  - "host-libibverbs*"
+  - "amazon-efa*"
+  - "nvtcpxo-*"
+  - "nccl-*"
+  - "dev-shm"
+
+# Additional env vars appended to the preflight-nccl-allreduce init container
+# AFTER user-container env vars are copied. Use for standalone testing or
+# to override specific values.
 ncclAllreduceExtraEnv: []
-
-# Per-fabric mount profiles. Keyed by networkFabric name.
-# The selected profile's extraHostPathMounts and extraVolumeMounts are
-# merged into gangCoordination at render time (see _helpers.tpl).
-fabricProfiles:
-  ib:
-    env:
-      - name: NCCL_TOPO_FILE
-        value: "/etc/nccl/topo.xml"
-      - name: NCCL_IB_PCI_RELAXED_ORDERING
-        value: "1"
-      - name: NCCL_SOCKET_IFNAME
-        value: "eth0"
-    extraHostPathMounts: []
-    extraVolumeMounts: []
-  efa:
-    env:
-      - name: FI_EFA_USE_DEVICE_RDMA
-        value: "1"
-      - name: FI_PROVIDER
-        value: "efa"
-      - name: NCCL_SOCKET_IFNAME
-        value: "eth0"
-      # Container's stale EFA/RDMA libs are removed at build time (Dockerfile).
-      # At runtime, host's /opt/amazon provides libfabric + ofi-nccl.
-      # Host's libefa.so.1 (needed by libfabric via dlopen) is bind-mounted
-      # into the container at its standard path. Since the container's copy
-      # was removed at build time, only the host version exists.
-      - name: LD_LIBRARY_PATH
-        value: "/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64"
-    extraHostPathMounts:
-      - name: host-opt-amazon
-        hostPath: /opt/amazon
-        mountPath: /opt/amazon
-        readOnly: true
-        hostPathType: Directory
-      # Bind-mount individual host RDMA libs into the container's system lib
-      # path. We cannot mount the entire /usr/lib/x86_64-linux-gnu directory
-      # because it contains glibc (libc.so.6, libm.so.6) whose version may
-      # differ from the container's — mounting it would break Python/CUDA.
-      # The Dockerfile removes the container's stale copies of these files,
-      # so the bind-mounts fill the gap with host-compatible versions.
-      - name: host-libefa
-        hostPath: /usr/lib/x86_64-linux-gnu/libefa.so.1
-        mountPath: /usr/lib/x86_64-linux-gnu/libefa.so.1
-        readOnly: true
-        hostPathType: File
-      - name: host-libibverbs
-        hostPath: /usr/lib/x86_64-linux-gnu/libibverbs.so.1
-        mountPath: /usr/lib/x86_64-linux-gnu/libibverbs.so.1
-        readOnly: true
-        hostPathType: File
-      - name: host-libibverbs-dir
-        hostPath: /usr/lib/x86_64-linux-gnu/libibverbs
-        mountPath: /usr/lib/x86_64-linux-gnu/libibverbs
-        readOnly: true
-        hostPathType: Directory
-    extraVolumeMounts: []
-  mnnvl-efa:
-    env:
-      - name: FI_EFA_USE_DEVICE_RDMA
-        value: "1"
-      - name: NCCL_MNNVL_ENABLE
-        value: "1"
-      - name: NCCL_NVLS_ENABLE
-        value: "0"
-      - name: NCCL_NET_GDR_LEVEL
-        value: "PHB"
-      - name: NCCL_P2P_NET_CHUNKSIZE
-        value: "2097152"
-      - name: LD_LIBRARY_PATH
-        value: "/opt/amazon-efa-ofi/ofi/lib:/opt/amazon-efa-ofi/efa/lib:/usr/local/nvidia/lib64:/usr/lib:/usr/lib64:/usr/local/cuda/lib64"
-    extraHostPathMounts:
-      - name: amazon-efa
-        hostPath: /opt/amazon-efa-ofi
-        mountPath: /opt/amazon-efa-ofi
-        readOnly: true
-        hostPathType: Directory
-    extraVolumeMounts: []
-  tcpxo:
-    env:
-      - name: NCCL_SOCKET_IFNAME
-        value: "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8"
-      - name: NCCL_CROSS_NIC
-        value: "0"
-      - name: NCCL_NVLS_ENABLE
-        value: "0"
-      - name: NCCL_FASTRAK_CTRL_DEV
-        value: "eth0"
-      - name: NCCL_FASTRAK_IFNAME
-        value: "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8"
-      - name: NCCL_BUFFSIZE
-        value: "8388608"
-      - name: NCCL_FASTRAK_NUM_FLOWS
-        value: "2"
-      - name: NCCL_FASTRAK_USE_SNAP
-        value: "1"
-      - name: NCCL_FASTRAK_USE_LLCM
-        value: "1"
-      - name: NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY
-        value: "/dev/aperture_devices"
-      - name: NCCL_FASTRAK_ENABLE_CONTROL_CHANNEL
-        value: "0"
-      - name: NCCL_FASTRAK_ENABLE_HOTPATH_LOGGING
-        value: "0"
-      - name: NCCL_FASTRAK_PLUGIN_ACCEPT_TIMEOUT_MS
-        value: "600000"
-      - name: NCCL_NET_GDR_LEVEL
-        value: "PIX"
-      - name: NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE
-        value: "/usr/local/nvidia/lib64/a3plus_guest_config.textproto"
-      - name: NCCL_TUNER_PLUGIN
-        value: "libnccl-tuner.so"
-      - name: NCCL_TUNER_CONFIG_PATH
-        value: "/usr/local/nvidia/lib64/a3plus_tuner_config.textproto"
-      - name: LD_LIBRARY_PATH
-        value: "/usr/local/nvidia/lib64:/usr/lib/x86_64-linux-gnu"
-      - name: NCCL_PROTO
-        value: "Simple"
-      - name: NCCL_P2P_NVL_CHUNKSIZE
-        value: "1048576"
-      - name: NCCL_ALGO
-        value: "Ring,Tree"
-      - name: NCCL_MIN_NCHANNELS
-        value: "4"
-      - name: NCCL_DYNAMIC_CHUNK_SIZE
-        value: "524288"
-      - name: NCCL_P2P_NET_CHUNKSIZE
-        value: "524288"
-      - name: NCCL_P2P_PCI_CHUNKSIZE
-        value: "524288"
-    extraHostPathMounts: []
-    extraVolumeMounts:
-      - name: nvtcpxo-libraries
-        mountPath: /usr/local/nvidia
-        readOnly: true
-      - name: nvtcpxo-aperture-devices
-        mountPath: /dev/aperture_devices
 
 gpuResourceNames:
   - "nvidia.com/gpu"

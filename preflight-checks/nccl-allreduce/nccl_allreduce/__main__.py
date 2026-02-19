@@ -173,6 +173,7 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
         threshold_gbps=cfg.bw_threshold_gbps,
         iters=cfg.benchmark_iters,
         warmup=cfg.warmup_iters,
+        reduce_op=cfg.reduce_op,
     )
 
     try:

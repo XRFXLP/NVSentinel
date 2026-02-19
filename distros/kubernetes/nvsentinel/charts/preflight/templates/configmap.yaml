@@ -25,6 +25,14 @@ data:
       {{- toYaml .Values.gpuResourceNames | nindent 6 }}
     networkResourceNames:
       {{- toYaml .Values.networkResourceNames | nindent 6 }}
+    {{- if .Values.ncclEnvPatterns }}
+    ncclEnvPatterns:
+      {{- toYaml .Values.ncclEnvPatterns | nindent 6 }}
+    {{- end }}
+    {{- if .Values.volumeMountPatterns }}
+    volumeMountPatterns:
+      {{- toYaml .Values.volumeMountPatterns | nindent 6 }}
+    {{- end }}
     dcgm:
       hostengineAddr: {{ include "preflight.dcgmHostengineAddr" . | quote }}
       diagLevel: {{ include "preflight.dcgmDiagLevel" . }}
@@ -37,14 +45,10 @@ data:
       timeout: {{ .Values.gangCoordination.timeout | quote }}
       masterPort: {{ .Values.gangCoordination.masterPort }}
       configMapMountPath: {{ .Values.gangCoordination.configMapMountPath | quote }}
-      {{- /* Resolve ncclTopoConfigMap: explicit > auto-generated name > fabric default */}}
-      {{- $topoConfigMap := "" }}
-      {{- if .Values.gangCoordination.ncclTopoConfigMap }}
-      {{- $topoConfigMap = .Values.gangCoordination.ncclTopoConfigMap }}
-      {{- else if .Values.gangCoordination.ncclTopoShape }}
+      {{- /* Resolve ncclTopoConfigMap: explicit or auto-generated from shape */}}
+      {{- $topoConfigMap := .Values.gangCoordination.ncclTopoConfigMap | default "" }}
+      {{- if and (not $topoConfigMap) .Values.gangCoordination.ncclTopoShape }}
       {{- $topoConfigMap = printf "%s-nccl-topo" (include "preflight.fullname" .) }}
-      {{- else }}
-      {{- $topoConfigMap = include "preflight.fabric.ncclTopoConfigMap" . }}
       {{- end }}
       {{- if $topoConfigMap }}
       ncclTopoConfigMap: {{ $topoConfigMap | quote }}
@@ -53,35 +57,24 @@ data:
       ncclTopoData: |
 {{ .Files.Get (printf "files/%s-topo.xml" .Values.gangCoordination.ncclTopoShape) | indent 8 }}
       {{- end }}
-      {{- /* Merge explicit extraHostPathMounts with fabric defaults */}}
-      {{- $fabricHPM := include "preflight.fabric.extraHostPathMounts" . | fromYamlArray | default list }}
-      {{- $explicitHPM := .Values.gangCoordination.extraHostPathMounts | default list }}
-      {{- $allHPM := concat $fabricHPM $explicitHPM }}
-      {{- if $allHPM }}
+      {{- if .Values.gangCoordination.extraHostPathMounts }}
       extraHostPathMounts:
-      {{- toYaml $allHPM | nindent 8 }}
+      {{- toYaml .Values.gangCoordination.extraHostPathMounts | nindent 8 }}
       {{- end }}
-      {{- /* Merge explicit extraVolumeMounts with fabric defaults */}}
-      {{- $fabricVM := include "preflight.fabric.extraVolumeMounts" . | fromYamlArray | default list }}
-      {{- $explicitVM := .Values.gangCoordination.extraVolumeMounts | default list }}
-      {{- $allVM := concat $fabricVM $explicitVM }}
-      {{- if $allVM }}
+      {{- if .Values.gangCoordination.extraVolumeMounts }}
       extraVolumeMounts:
-      {{- toYaml $allVM | nindent 8 }}
+      {{- toYaml .Values.gangCoordination.extraVolumeMounts | nindent 8 }}
       {{- end }}
       {{- if not (kindIs "invalid" .Values.gangCoordination.mirrorResourceClaims) }}
       mirrorResourceClaims: {{ .Values.gangCoordination.mirrorResourceClaims }}
       {{- end }}
     initContainers:
-      {{- /* Build fabric env vars + explicit extra env vars */}}
-      {{- $fabricEnv := include "preflight.fabric.env" . | fromYamlArray | default list }}
       {{- $extraEnv := .Values.ncclAllreduceExtraEnv | default list }}
-      {{- $allExtraEnv := concat $fabricEnv $extraEnv }}
       {{- $result := list }}
       {{- range .Values.initContainers }}
-      {{- if and (eq .name "preflight-nccl-allreduce") $allExtraEnv }}
+      {{- if and (eq .name "preflight-nccl-allreduce") $extraEnv }}
       {{- $container := deepCopy . }}
-      {{- $_ := set $container "env" (concat (.env | default list) $allExtraEnv) }}
+      {{- $_ := set $container "env" (concat (.env | default list) $extraEnv) }}
       {{- $result = append $result $container }}
       {{- else }}
       {{- $result = append $result . }}

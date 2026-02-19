@@ -26,6 +26,7 @@ DEFAULT_GANG_TIMEOUT_SECONDS = 600
 DEFAULT_MESSAGE_SIZES = "4G,8G"
 DEFAULT_BENCHMARK_ITERS = 20
 DEFAULT_WARMUP_ITERS = 5
+DEFAULT_REDUCE_OP = "sum"
 
 
 @dataclass
@@ -44,6 +45,7 @@ class Config:
         node_name: Kubernetes node name for health events.
         pod_name: Pod name (used to determine rank).
         processing_strategy: How downstream modules handle the event.
+        reduce_op: Reduction operation (sum/prod/min/max/avg).
     """
 
     gang_config_dir: str
@@ -53,6 +55,7 @@ class Config:
     message_sizes: str
     benchmark_iters: int
     warmup_iters: int
+    reduce_op: str
     connector_socket: str
     node_name: str
     pod_name: str
@@ -84,6 +87,7 @@ class Config:
         message_sizes = os.getenv("MESSAGE_SIZES", DEFAULT_MESSAGE_SIZES)
         benchmark_iters = _parse_int("BENCHMARK_ITERS", DEFAULT_BENCHMARK_ITERS)
         warmup_iters = _parse_int("WARMUP_ITERS", DEFAULT_WARMUP_ITERS)
+        reduce_op = os.getenv("REDUCE_OP", DEFAULT_REDUCE_OP)
 
         connector_socket = os.getenv("PLATFORM_CONNECTOR_SOCKET", "")
         node_name = os.getenv("NODE_NAME", "")
@@ -110,6 +114,7 @@ class Config:
             message_sizes=message_sizes,
             benchmark_iters=benchmark_iters,
             warmup_iters=warmup_iters,
+            reduce_op=reduce_op,
             connector_socket=connector_socket,
             node_name=node_name,
             pod_name=pod_name,

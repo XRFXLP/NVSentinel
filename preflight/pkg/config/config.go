@@ -37,6 +37,18 @@ type FileConfig struct {
 	DCGM                 DCGMConfig             `yaml:"dcgm"`
 	GangDiscovery        GangDiscoveryConfig    `yaml:"gangDiscovery"`
 	GangCoordination     GangCoordinationConfig `yaml:"gangCoordination"`
+
+	// NCCLEnvPatterns are glob patterns for environment variable names to copy
+	// from the pod's main containers to preflight init containers.
+	// This allows the init container to inherit fabric-specific NCCL config
+	// (e.g. NCCL_*, FI_*, LD_LIBRARY_PATH) from the user's training container.
+	NCCLEnvPatterns []string `yaml:"ncclEnvPatterns,omitempty"`
+
+	// VolumeMountPatterns are glob patterns for volume mount names to copy
+	// from the pod's main containers to preflight init containers.
+	// This allows the init container to inherit fabric-specific mounts
+	// (e.g. host EFA libs, TCPXO plugin volumes) from the user's container.
+	VolumeMountPatterns []string `yaml:"volumeMountPatterns,omitempty"`
 }
 
 type DCGMConfig struct {

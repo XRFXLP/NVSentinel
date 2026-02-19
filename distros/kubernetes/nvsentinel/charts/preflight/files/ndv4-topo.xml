@@ -1,3 +1,4 @@
+<!-- Source: https://github.com/Azure/azhpc-images/blob/master/topology/ndv4-topo.xml -->
 <system version="1">
   <cpu numaid="0" affinity="0000ffff,0000ffff" arch="x86_64" vendor="AuthenticAMD" familyid="23" modelid="49">
     <pci busid="ffff:ff:01.0" class="0x060400" link_speed="16 GT/s" link_width="16">

@@ -17,6 +17,7 @@ package webhook
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
@@ -102,7 +103,7 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 		}
 	}
 
-	initContainers := i.buildInitContainers(maxResources, gangCtx, pod.Spec.ResourceClaims)
+	initContainers := i.buildInitContainers(pod, maxResources, gangCtx)
 	if len(initContainers) == 0 {
 		// No init containers to inject, but still return gangCtx
 		// so the controller can track gang membership
@@ -184,18 +185,21 @@ func (i *Injector) updateMax(resources corev1.ResourceList, name corev1.Resource
 }
 
 func (i *Injector) buildInitContainers(
+	pod *corev1.Pod,
 	maxResources corev1.ResourceList,
 	gangCtx *GangContext,
-	podResourceClaims []corev1.PodResourceClaim,
 ) []corev1.Container {
 	var initContainers []corev1.Container
 
 	// Determine whether to mirror pod-level DRA claims to init containers.
-	// Per ADR-026 §DRA Integration: "the webhook copies resource claim
-	// references to the init container" so init containers get the same
-	// device access (GPUs, RDMA, IMEX channels) as main containers.
 	mirrorClaims := i.cfg.GangCoordination.MirrorResourceClaims != nil &&
 		*i.cfg.GangCoordination.MirrorResourceClaims
+
+	// Collect env vars and volume mounts from main containers that match
+	// configured patterns. This allows init containers to inherit fabric-
+	// specific NCCL config from the user's training container.
+	userEnvVars := i.collectMatchingEnvVars(pod.Spec.Containers)
+	userVolumeMounts := i.collectMatchingVolumeMounts(pod.Spec.Containers)
 
 	for _, tmpl := range i.cfg.InitContainers {
 		container := tmpl.DeepCopy()
@@ -225,8 +229,15 @@ func (i *Injector) buildInitContainers(
 		i.injectDCGMEnv(container)
 		i.injectGangEnv(container, gangCtx)
 
+		// Copy matching env vars from user containers (lower precedence
+		// than the init container's own env vars — only adds new names).
+		i.mergeEnvVars(container, userEnvVars)
+
+		// Copy matching volume mounts from user containers.
+		i.mergeVolumeMounts(container, userVolumeMounts)
+
 		if gangCtx != nil {
-			i.injectGangMounts(container, mirrorClaims, podResourceClaims)
+			i.injectGangMounts(container, mirrorClaims, pod.Spec.ResourceClaims)
 		}
 
 		initContainers = append(initContainers, *container)
@@ -594,6 +605,91 @@ func (i *Injector) mergeEnvVars(container *corev1.Container, envVars []corev1.En
 			container.Env = append(container.Env, env)
 		}
 	}
+}
+
+// collectMatchingEnvVars scans all containers for env vars whose names match
+// any of the configured ncclEnvPatterns. Returns a deduplicated list (first
+// occurrence wins if multiple containers set the same var).
+func (i *Injector) collectMatchingEnvVars(containers []corev1.Container) []corev1.EnvVar {
+	if len(i.cfg.NCCLEnvPatterns) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+
+	var result []corev1.EnvVar
+
+	for _, c := range containers {
+		for _, env := range c.Env {
+			if seen[env.Name] {
+				continue
+			}
+
+			if matchesAnyPattern(env.Name, i.cfg.NCCLEnvPatterns) {
+				result = append(result, env)
+				seen[env.Name] = true
+			}
+		}
+	}
+
+	return result
+}
+
+// collectMatchingVolumeMounts scans all containers for volume mounts whose
+// names match any of the configured volumeMountPatterns. Returns a deduplicated
+// list (first occurrence wins).
+func (i *Injector) collectMatchingVolumeMounts(containers []corev1.Container) []corev1.VolumeMount {
+	if len(i.cfg.VolumeMountPatterns) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+
+	var result []corev1.VolumeMount
+
+	for _, c := range containers {
+		for _, vm := range c.VolumeMounts {
+			if seen[vm.Name] {
+				continue
+			}
+
+			if matchesAnyPattern(vm.Name, i.cfg.VolumeMountPatterns) {
+				result = append(result, vm)
+				seen[vm.Name] = true
+			}
+		}
+	}
+
+	return result
+}
+
+// mergeVolumeMounts adds volume mounts to a container, skipping any whose
+// name or mountPath already exists.
+func (i *Injector) mergeVolumeMounts(container *corev1.Container, mounts []corev1.VolumeMount) {
+	existingNames := make(map[string]bool)
+	existingPaths := make(map[string]bool)
+
+	for _, vm := range container.VolumeMounts {
+		existingNames[vm.Name] = true
+		existingPaths[vm.MountPath] = true
+	}
+
+	for _, vm := range mounts {
+		if !existingNames[vm.Name] && !existingPaths[vm.MountPath] {
+			container.VolumeMounts = append(container.VolumeMounts, vm)
+		}
+	}
+}
+
+// matchesAnyPattern returns true if name matches any of the glob patterns.
+func matchesAnyPattern(name string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if matched, _ := filepath.Match(pattern, name); matched {
+			return true
+		}
+	}
+
+	return false
 }
 
 // boolDefault returns *ptr if non-nil, or def otherwise.
