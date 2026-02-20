@@ -74,7 +74,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := controller.NewDrainRequestReconciler(mgr, podCheckInterval, drainTimeout, slinkyNamespace).SetupWithManager(mgr); err != nil {
+	if err := controller.NewDrainRequestReconciler(mgr,
+		podCheckInterval,
+		drainTimeout, slinkyNamespace).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Unable to create controller")
 		os.Exit(1)
 	}
