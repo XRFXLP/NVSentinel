@@ -76,8 +76,10 @@ func TestWorkerPool_SingleWorker(t *testing.T) {
 		return nil
 	}
 
-	pool := newWorkerPool(1, publish, src)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWorkerPool(1, publish, src, cancel)
 
 	const numEvents = 5
 
@@ -128,8 +130,10 @@ func TestWorkerPool_MultipleWorkers(t *testing.T) {
 		return nil
 	}
 
-	pool := newWorkerPool(4, publish, src)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWorkerPool(4, publish, src, cancel)
 
 	const numEvents = 50
 
@@ -176,8 +180,10 @@ func TestWorkerPool_PublishError(t *testing.T) {
 		return errBoom
 	}
 
-	pool := newWorkerPool(1, publish, src)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWorkerPool(1, publish, src, cancel)
 
 	go func() {
 		pool.dispatch(ctx, workItem{
@@ -210,8 +216,10 @@ func TestWorkerPool_MarkProcessedError(t *testing.T) {
 		return nil
 	}
 
-	pool := newWorkerPool(1, publish, src)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWorkerPool(1, publish, src, cancel)
 
 	go func() {
 		pool.dispatch(ctx, workItem{
