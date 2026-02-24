@@ -59,6 +59,7 @@ func (t *sequenceTracker) markCompleted(seq uint64, resumeToken []byte) []byte {
 		}
 
 		latestToken = token
+
 		delete(t.completed, t.nextSeq)
 		t.nextSeq++
 	}

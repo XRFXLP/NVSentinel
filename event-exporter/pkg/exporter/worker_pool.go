@@ -54,7 +54,7 @@ type publishFunc func(ctx context.Context, event *pb.HealthEvent) error
 //	         │
 //	    ┌────┴────┐
 //	    ▼    ▼    ▼
-//	  Worker Worker Worker  (N goroutines, publish concurrently)
+//	   W-1  W-2 W-3  (N goroutines, publish concurrently)
 //	    │    │    │
 //	    └────┬────┘
 //	         ▼
@@ -74,6 +74,7 @@ type workerPool struct {
 
 func newWorkerPool(numWorkers int, publish publishFunc, source client.ChangeStreamWatcher) *workerPool {
 	bufSize := numWorkers * 2
+
 	return &workerPool{
 		numWorkers: numWorkers,
 		publish:    publish,
@@ -94,6 +95,7 @@ func (wp *workerPool) run(ctx context.Context) error {
 
 		go func(id int) {
 			defer workersWg.Done()
+
 			wp.worker(ctx, id)
 		}(i)
 	}
