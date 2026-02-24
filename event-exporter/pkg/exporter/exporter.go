@@ -297,7 +297,7 @@ func (e *HealthEventsExporter) streamEventsConcurrent(ctx context.Context, numWo
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	pool := newWorkerPool(numWorkers, e.publishWithRetry, e.source)
+	pool := newWorkerPool(numWorkers, e.publishWithRetry, e.source, cancel)
 
 	// Run the worker pool in a separate goroutine.
 	// It blocks until all workers finish and the token writer drains.

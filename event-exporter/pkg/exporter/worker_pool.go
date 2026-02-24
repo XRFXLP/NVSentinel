@@ -67,18 +67,25 @@ type workerPool struct {
 	numWorkers int
 	publish    publishFunc
 	source     client.ChangeStreamWatcher
+	cancel     context.CancelFunc
 
 	dispatchCh chan workItem
 	resultCh   chan workResult
 }
 
-func newWorkerPool(numWorkers int, publish publishFunc, source client.ChangeStreamWatcher) *workerPool {
+func newWorkerPool(
+	numWorkers int,
+	publish publishFunc,
+	source client.ChangeStreamWatcher,
+	cancel context.CancelFunc,
+) *workerPool {
 	bufSize := numWorkers * 2
 
 	return &workerPool{
 		numWorkers: numWorkers,
 		publish:    publish,
 		source:     source,
+		cancel:     cancel,
 		dispatchCh: make(chan workItem, bufSize),
 		resultCh:   make(chan workResult, bufSize),
 	}
@@ -148,6 +155,7 @@ func (wp *workerPool) tokenWriter(ctx context.Context) error {
 
 	for result := range wp.resultCh {
 		if result.err != nil {
+			wp.cancel()
 			return fmt.Errorf("publish failed for seq %d: %w", result.seq, result.err)
 		}
 
