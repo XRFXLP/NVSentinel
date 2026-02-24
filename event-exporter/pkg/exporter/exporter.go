@@ -38,6 +38,7 @@ type HealthEventsExporter struct {
 	transformer    transformer.EventTransformer
 	sink           sink.EventSink
 	hasResumeToken bool
+	workers        int
 }
 
 func New(
@@ -47,6 +48,7 @@ func New(
 	transformer transformer.EventTransformer,
 	sink sink.EventSink,
 	hasResumeToken bool,
+	workers int,
 ) *HealthEventsExporter {
 	return &HealthEventsExporter{
 		cfg:            cfg,
@@ -55,6 +57,7 @@ func New(
 		transformer:    transformer,
 		sink:           sink,
 		hasResumeToken: hasResumeToken,
+		workers:        workers,
 	}
 }
 
@@ -229,8 +232,22 @@ func (e *HealthEventsExporter) waitForRateLimit(
 }
 
 func (e *HealthEventsExporter) streamEvents(ctx context.Context) error {
-	slog.Info("Starting event stream")
+	numWorkers := e.workers
+	if numWorkers <= 0 {
+		numWorkers = 1
+	}
 
+	slog.Info("Starting event stream", "workers", numWorkers)
+
+	if numWorkers == 1 {
+		return e.streamEventsSequential(ctx)
+	}
+
+	return e.streamEventsConcurrent(ctx, numWorkers)
+}
+
+// streamEventsSequential is the original single-threaded path.
+func (e *HealthEventsExporter) streamEventsSequential(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -242,7 +259,7 @@ func (e *HealthEventsExporter) streamEvents(ctx context.Context) error {
 				return fmt.Errorf("event channel closed")
 			}
 
-			if err := e.processEvent(ctx, healthEvent); err != nil {
+			if err := e.processEventSequential(ctx, healthEvent); err != nil {
 				slog.Error("Failed to process event", "error", err)
 				return fmt.Errorf("process event: %w", err)
 			}
@@ -250,7 +267,7 @@ func (e *HealthEventsExporter) streamEvents(ctx context.Context) error {
 	}
 }
 
-func (e *HealthEventsExporter) processEvent(ctx context.Context, healthEvent client.Event) error {
+func (e *HealthEventsExporter) processEventSequential(ctx context.Context, healthEvent client.Event) error {
 	metrics.EventsReceived.Inc()
 
 	event, err := unmarshalHealthEvent(healthEvent)
@@ -266,22 +283,97 @@ func (e *HealthEventsExporter) processEvent(ctx context.Context, healthEvent cli
 		return e.markProcessedOrFail(ctx, healthEvent.GetResumeToken())
 	}
 
-	eventTime := "unknown"
-	if event.GeneratedTimestamp != nil {
-		eventTime = event.GeneratedTimestamp.AsTime().Format(time.RFC3339)
-	}
-
-	slog.Debug("Publishing stream event",
-		"nodeName", event.NodeName,
-		"checkName", event.CheckName,
-		"generatedAt", eventTime)
-
 	if err := e.publishWithRetry(ctx, event); err != nil {
 		slog.Error("Failed to publish event with retry", "error", err)
 		return fmt.Errorf("publish with retry: %w", err)
 	}
 
 	return e.markProcessedOrFail(ctx, healthEvent.GetResumeToken())
+}
+
+// streamEventsConcurrent dispatches events to a worker pool for parallel publishing.
+// Resume tokens are advanced in order via a sequenceTracker.
+func (e *HealthEventsExporter) streamEventsConcurrent(ctx context.Context, numWorkers int) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	pool := newWorkerPool(numWorkers, e.publishWithRetry, e.source)
+
+	// Run the worker pool in a separate goroutine.
+	// It blocks until all workers finish and the token writer drains.
+	poolErrCh := make(chan error, 1)
+
+	go func() {
+		poolErrCh <- pool.run(ctx)
+	}()
+
+	// Consumer loop: read events, unmarshal, and dispatch to workers.
+	var seq uint64
+
+	consumeErr := e.consumeAndDispatch(ctx, pool, &seq)
+
+	pool.closeDispatch()
+
+	// Wait for the pool to finish processing in-flight items
+	poolErr := <-poolErrCh
+
+	if consumeErr != nil {
+		return consumeErr
+	}
+
+	return poolErr
+}
+
+func (e *HealthEventsExporter) consumeAndDispatch(
+	ctx context.Context, pool *workerPool, seq *uint64,
+) error {
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("Context done", "error", ctx.Err())
+			return ctx.Err()
+
+		case healthEvent, ok := <-e.source.Events():
+			if !ok {
+				slog.Info("Event channel closed, finishing in-flight events")
+				return nil
+			}
+
+			metrics.EventsReceived.Inc()
+
+			event, err := unmarshalHealthEvent(healthEvent)
+			if err != nil {
+				slog.Warn("Failed to unmarshal event", "error", err)
+				metrics.TransformErrors.Inc()
+
+				if markErr := e.markProcessedOrFail(ctx, healthEvent.GetResumeToken()); markErr != nil {
+					return markErr
+				}
+
+				continue
+			}
+
+			if event == nil {
+				slog.Debug("Skipping nil health event")
+
+				if markErr := e.markProcessedOrFail(ctx, healthEvent.GetResumeToken()); markErr != nil {
+					return markErr
+				}
+
+				continue
+			}
+
+			*seq++
+
+			if !pool.dispatch(ctx, workItem{
+				seq:         *seq,
+				event:       event,
+				resumeToken: healthEvent.GetResumeToken(),
+			}) {
+				return ctx.Err()
+			}
+		}
+	}
 }
 
 func (e *HealthEventsExporter) markProcessedOrFail(ctx context.Context, token []byte) error {
