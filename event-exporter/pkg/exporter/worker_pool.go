@@ -97,14 +97,10 @@ func newWorkerPool(
 func (wp *workerPool) run(ctx context.Context) error {
 	var workersWg sync.WaitGroup
 
-	for i := range wp.numWorkers {
-		workersWg.Add(1)
-
-		go func(id int) {
-			defer workersWg.Done()
-
-			wp.worker(ctx, id)
-		}(i)
+	for range wp.numWorkers {
+		workersWg.Go(func() {
+			wp.worker(ctx)
+		})
 	}
 
 	// Close resultCh after all workers finish so tokenWriter exits its range loop
@@ -127,13 +123,26 @@ func (wp *workerPool) dispatch(ctx context.Context, item workItem) bool {
 	}
 }
 
+// forwardResult injects a result directly into the token writer's result
+// channel, bypassing workers. Used for events that don't need publishing
+// (e.g., unmarshal errors, nil events) but must still participate in
+// sequence tracking to maintain contiguous resume token advancement.
+func (wp *workerPool) forwardResult(ctx context.Context, result workResult) bool {
+	select {
+	case wp.resultCh <- result:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // closeDispatch signals that no more items will be dispatched.
 func (wp *workerPool) closeDispatch() {
 	close(wp.dispatchCh)
 }
 
 // worker picks items from dispatchCh and publishes them.
-func (wp *workerPool) worker(ctx context.Context, id int) {
+func (wp *workerPool) worker(ctx context.Context) {
 	for item := range wp.dispatchCh {
 		if ctx.Err() != nil {
 			return
@@ -166,6 +175,8 @@ func (wp *workerPool) tokenWriter(ctx context.Context) error {
 
 		if err := wp.source.MarkProcessed(ctx, token); err != nil {
 			slog.Error("Failed to mark processed", "error", err)
+			wp.cancel()
+
 			return fmt.Errorf("mark processed: %w", err)
 		}
 

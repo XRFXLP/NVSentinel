@@ -205,6 +205,56 @@ func TestWorkerPool_PublishError(t *testing.T) {
 	}
 }
 
+// TestWorkerPool_ForwardedResults verifies that results injected directly
+// via forwardResult (bypassing workers) are correctly sequenced alongside
+// worker-produced results. This exercises the path used when the consumer
+// skips events (unmarshal errors, nil events) but must maintain contiguous
+// resume token advancement.
+func TestWorkerPool_ForwardedResults(t *testing.T) {
+	src := &mockSource{}
+
+	var publishCount atomic.Int32
+
+	publish := func(_ context.Context, _ *pb.HealthEvent) error {
+		publishCount.Add(1)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWorkerPool(1, publish, src, cancel)
+
+	go func() {
+		// seq 1: forwarded directly (simulates unmarshal error)
+		pool.forwardResult(ctx, workResult{seq: 1, resumeToken: []byte("tok-1")})
+		// seq 2: dispatched to worker normally
+		pool.dispatch(ctx, workItem{seq: 2, event: &pb.HealthEvent{}, resumeToken: []byte("tok-2")})
+		// seq 3: forwarded directly (simulates nil event)
+		pool.forwardResult(ctx, workResult{seq: 3, resumeToken: []byte("tok-3")})
+
+		pool.closeDispatch()
+	}()
+
+	if err := pool.run(ctx); err != nil {
+		t.Fatalf("run() returned error: %v", err)
+	}
+
+	if int(publishCount.Load()) != 1 {
+		t.Fatalf("publish called %d times, want 1 (only seq 2 goes through worker)", publishCount.Load())
+	}
+
+	tokens := src.getTokens()
+	if len(tokens) == 0 {
+		t.Fatal("MarkProcessed was never called")
+	}
+
+	lastToken := string(tokens[len(tokens)-1])
+	if lastToken != "tok-3" {
+		t.Fatalf("last token = %q, want %q", lastToken, "tok-3")
+	}
+}
+
 // TestWorkerPool_MarkProcessedError verifies that a store failure during
 // resume token advancement surfaces from run() so the exporter can restart
 // from the last committed position.

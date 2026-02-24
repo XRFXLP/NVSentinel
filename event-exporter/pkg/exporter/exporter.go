@@ -317,11 +317,13 @@ func (e *HealthEventsExporter) streamEventsConcurrent(ctx context.Context, numWo
 	// Wait for the pool to finish processing in-flight items
 	poolErr := <-poolErrCh
 
-	if consumeErr != nil {
-		return consumeErr
+	// When the pool triggers cancellation (e.g., publish failure), consumeErr
+	// is just context.Canceled — prefer poolErr which has the root cause.
+	if poolErr != nil {
+		return poolErr
 	}
 
-	return poolErr
+	return consumeErr
 }
 
 func (e *HealthEventsExporter) consumeAndDispatch(
@@ -346,8 +348,13 @@ func (e *HealthEventsExporter) consumeAndDispatch(
 				slog.Warn("Failed to unmarshal event", "error", err)
 				metrics.TransformErrors.Inc()
 
-				if markErr := e.markProcessedOrFail(ctx, healthEvent.GetResumeToken()); markErr != nil {
-					return markErr
+				*seq++
+
+				if !pool.forwardResult(ctx, workResult{
+					seq:         *seq,
+					resumeToken: healthEvent.GetResumeToken(),
+				}) {
+					return ctx.Err()
 				}
 
 				continue
@@ -356,8 +363,13 @@ func (e *HealthEventsExporter) consumeAndDispatch(
 			if event == nil {
 				slog.Debug("Skipping nil health event")
 
-				if markErr := e.markProcessedOrFail(ctx, healthEvent.GetResumeToken()); markErr != nil {
-					return markErr
+				*seq++
+
+				if !pool.forwardResult(ctx, workResult{
+					seq:         *seq,
+					resumeToken: healthEvent.GetResumeToken(),
+				}) {
+					return ctx.Err()
 				}
 
 				continue
