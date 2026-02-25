@@ -67,7 +67,11 @@ func (r *DrainRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	if isDrainComplete(drainReq) {
-		slog.Info("Drain already complete", "drainrequest", req.NamespacedName)
+		if err := r.removeNodeAnnotation(ctx, drainReq.Spec.NodeName); err != nil {
+			slog.Error("Failed to remove node annotation, will retry", "drainrequest", req.NamespacedName, "error", err)
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+
 		return ctrl.Result{}, nil
 	}
 
@@ -249,12 +253,6 @@ func (r *DrainRequestReconciler) markDrainComplete(
 	if err := r.Status().Update(ctx, dr); err != nil {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 	}
-
-	if err := r.removeNodeAnnotation(ctx, dr.Spec.NodeName); err != nil {
-		slog.Error("Failed to remove node annotation after drain complete", "node", dr.Spec.NodeName, "error", err)
-	}
-
-	slog.Info("Node annotation removed after drain complete", "node", dr.Spec.NodeName)
 
 	return ctrl.Result{}, nil
 }
