@@ -280,7 +280,7 @@ func waitForPodDeletion(t *testing.T, tc *testEnvContext, podName, podNamespace 
 	require.Eventually(t, func() bool {
 		p := &corev1.Pod{}
 		if err := tc.client.Get(tc.ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, p); err != nil {
-			return true
+			return apierrors.IsNotFound(err)
 		}
 
 		return p.DeletionTimestamp != nil
