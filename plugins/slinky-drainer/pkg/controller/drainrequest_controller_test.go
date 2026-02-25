@@ -30,6 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	drainv1alpha1 "github.com/nvidia/nvsentinel/plugins/slinky-drainer/api/v1alpha1"
@@ -93,16 +94,6 @@ func TestReconcile_PreExistingAnnotationPreserved(t *testing.T) {
 	assertNodeAnnotation(t, tc, node.Name, "Manual drain by operator")
 }
 
-func TestNodeAnnotation_RemovedWhenLabelAbsent(t *testing.T) {
-	tc := setupTestEnv(t, "label-absent")
-
-	createNode(t, tc, "test-node-no-label", map[string]string{
-		annotationKey: "[J] [NVSentinel] 79 - GPU error",
-	}, nil)
-
-	waitForAnnotationRemoved(t, tc, "test-node-no-label")
-}
-
 // ---------------------------------------------------------------------------
 // Test setup
 // ---------------------------------------------------------------------------
@@ -148,16 +139,11 @@ func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 		ctrl.NewControllerManagedBy(mgr).
 			Named(controllerName).
 			For(&drainv1alpha1.DrainRequest{}).
+			Watches(&corev1.Node{},
+				handler.EnqueueRequestsFromMapFunc(reconciler.nodeToMatchingDrainRequests),
+			).
 			Complete(reconciler),
-		"failed to setup drain request controller",
-	)
-
-	require.NoError(t,
-		ctrl.NewControllerManagedBy(mgr).
-			Named(controllerName+"-node-cleanup").
-			For(&corev1.Node{}).
-			Complete(&NodeAnnotationReconciler{Client: mgr.GetClient()}),
-		"failed to setup node annotation controller",
+		"failed to setup controller",
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

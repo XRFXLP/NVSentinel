@@ -77,12 +77,7 @@ func main() {
 	if err := controller.NewDrainRequestReconciler(mgr,
 		podCheckInterval,
 		drainTimeout, slinkyNamespace).SetupWithManager(mgr); err != nil {
-		slog.Error("Unable to create drain request controller", "error", err)
-		os.Exit(1)
-	}
-
-	if err := (&controller.NodeAnnotationReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
-		slog.Error("Unable to create node annotation controller", "error", err)
+		slog.Error("Unable to create controller", "error", err)
 		os.Exit(1)
 	}
 

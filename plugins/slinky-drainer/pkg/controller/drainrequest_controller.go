@@ -26,8 +26,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	drainv1alpha1 "github.com/nvidia/nvsentinel/plugins/slinky-drainer/api/v1alpha1"
 )
@@ -39,6 +45,7 @@ const (
 	annotationPrefix                 = "[J] [NVSentinel]"
 	nvsentinelStateLabelKey          = "dgxc.nvidia.com/nvsentinel-state"
 	remediationSucceededValue        = "remediation-succeeded"
+	drainRequestFinalizer            = "nvsentinel.nvidia.com/slinky-drainer"
 )
 
 type DrainRequestReconciler struct {
@@ -69,8 +76,13 @@ func (r *DrainRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if isDrainComplete(drainReq) {
-		return ctrl.Result{}, nil
+	if !drainReq.DeletionTimestamp.IsZero() || isDrainComplete(drainReq) {
+		return r.reconcileCompleted(ctx, drainReq)
+	}
+
+	if err := r.ensureFinalizer(ctx, drainReq); err != nil {
+		return ctrl.Result{},
+			fmt.Errorf("failed to add finalizer to DrainRequest %s/%s: %w", drainReq.Namespace, drainReq.Name, err)
 	}
 
 	if err := r.setNodeAnnotation(ctx, drainReq); err != nil {
@@ -108,6 +120,83 @@ func (r *DrainRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	slog.Info("Successfully drained all Slinky pods", "drainrequest", req.NamespacedName, "count", len(pods))
 
 	return r.markDrainComplete(ctx, drainReq, "DrainComplete", "All Slinky pods drained successfully")
+}
+
+func (r *DrainRequestReconciler) reconcileCompleted(
+	ctx context.Context,
+	drainReq *drainv1alpha1.DrainRequest,
+) (ctrl.Result, error) {
+	node := &corev1.Node{}
+	if err := r.Get(ctx, client.ObjectKey{Name: drainReq.Spec.NodeName}, node); err != nil {
+		if apierrors.IsNotFound(err) {
+			return r.removeFinalizer(ctx, drainReq)
+		}
+
+		// Return nil error to use fixed requeue interval instead of exponential backoff.
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	if !shouldRemoveAnnotation(node) {
+		return ctrl.Result{}, nil
+	}
+
+	if err := r.removeNodeAnnotation(ctx, node); err != nil {
+		slog.Error("Failed to remove node annotation", "node", node.Name, "error", err)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	return r.removeFinalizer(ctx, drainReq)
+}
+
+func (r *DrainRequestReconciler) ensureFinalizer(ctx context.Context, drainReq *drainv1alpha1.DrainRequest) error {
+	if controllerutil.ContainsFinalizer(drainReq, drainRequestFinalizer) {
+		return nil
+	}
+
+	controllerutil.AddFinalizer(drainReq, drainRequestFinalizer)
+
+	return r.Update(ctx, drainReq)
+}
+
+func (r *DrainRequestReconciler) removeFinalizer(
+	ctx context.Context,
+	drainReq *drainv1alpha1.DrainRequest,
+) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(drainReq, drainRequestFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	controllerutil.RemoveFinalizer(drainReq, drainRequestFinalizer)
+
+	if err := r.Update(ctx, drainReq); err != nil {
+		return ctrl.Result{},
+			fmt.Errorf("failed to remove finalizer from DrainRequest %s/%s: %w", drainReq.Namespace, drainReq.Name, err)
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func shouldRemoveAnnotation(node *corev1.Node) bool {
+	val, exists := node.Labels[nvsentinelStateLabelKey]
+
+	return !exists || val == remediationSucceededValue
+}
+
+func (r *DrainRequestReconciler) removeNodeAnnotation(ctx context.Context, node *corev1.Node) error {
+	val, ok := node.Annotations[annotationKey]
+	if !ok || !strings.HasPrefix(val, annotationPrefix) {
+		return nil
+	}
+
+	slog.Info("Node healthy, removing cordon annotation", "node", node.Name)
+
+	delete(node.Annotations, annotationKey)
+
+	if err := r.Update(ctx, node); err != nil {
+		return fmt.Errorf("failed to update node %s: %w", node.Name, err)
+	}
+
+	return nil
 }
 
 func (r *DrainRequestReconciler) setNodeAnnotation(
@@ -270,6 +359,35 @@ func isDrainComplete(dr *drainv1alpha1.DrainRequest) bool {
 	return false
 }
 
+// nodeToMatchingDrainRequests maps a Node event to DrainRequests targeting that node.
+func (r *DrainRequestReconciler) nodeToMatchingDrainRequests(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	node := obj.(*corev1.Node)
+
+	drainRequests := &drainv1alpha1.DrainRequestList{}
+	if err := r.List(ctx, drainRequests); err != nil {
+		slog.Error("Failed to list DrainRequests for node watch", "node", node.Name, "error", err)
+		return nil
+	}
+
+	var requests []reconcile.Request
+
+	for i := range drainRequests.Items {
+		if drainRequests.Items[i].Spec.NodeName == node.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      drainRequests.Items[i].Name,
+					Namespace: drainRequests.Items[i].Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
 func (r *DrainRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
@@ -285,5 +403,9 @@ func (r *DrainRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&drainv1alpha1.DrainRequest{}).
+		Watches(&corev1.Node{},
+			handler.EnqueueRequestsFromMapFunc(r.nodeToMatchingDrainRequests),
+			builder.WithPredicates(predicate.LabelChangedPredicate{}),
+		).
 		Complete(r)
 }
