@@ -70,6 +70,9 @@ event-exporter:
       batchSize: 500
       rateLimit: 1000     # events/second
     
+    # Concurrent publish workers
+    workers: 10           # See scale-up guide below
+    
     # Failure handling
     failureHandling:
       maxRetries: 17      # ~30 minutes
@@ -84,6 +87,7 @@ event-exporter:
 - **Sink Endpoint**: HTTP/HTTPS URL where CloudEvents are posted
 - **OIDC Authentication**: OAuth2 client credentials for endpoint authentication
 - **Backfill**: On first startup, optionally export historical events (disabled after initial run)
+- **Workers**: Number of concurrent goroutines that publish events to the sink in parallel. Events are dispatched to workers round-robin and resume tokens are advanced in order regardless of which worker finishes first, so increasing workers does not affect delivery ordering. Default is `10`.
 - **Retry Policy**: Exponential backoff configuration for failed publishes
 
 ## CloudEvents Format
@@ -149,5 +153,33 @@ Enriches every event with custom metadata (cluster, environment, region, etc.) f
 ### Rate Limiting
 Configurable rate limiting for backfill to avoid overwhelming destination systems.
 
+### Concurrent Workers
+Publishes events in parallel using a configurable worker pool. A sequence tracker ensures resume tokens advance in strict order regardless of which worker finishes first, so increasing workers scales throughput without affecting delivery guarantees.
+
 ### Change Stream Based
 Uses datastore change streams for real-time event delivery with minimal latency.
+
+## Scale-Up Guide
+
+**Event production rate**: ~10 events/sec per 1,000 nodes (11,000 events/hour from 1,100 nodes)
+**Per-worker throughput**: ~3.3 events/sec (at 300ms publish latency)
+
+| Workers | Throughput (events/sec) | Max Nodes Supported |
+|---------|-------------------------|---------------------|
+| 1       | 3.3                     | ~330                |
+| 2       | 6.6                     | ~660                |
+| 3       | 9.9                     | ~990                |
+| 5       | 16.5                    | ~1,650              |
+| 10      | 33                      | ~3,300              |
+| 15      | 49.5                    | ~5,000              |
+| 20      | 66                      | ~6,600              |
+
+To change the worker count, set `exporter.workers` in your Helm values:
+
+```yaml
+event-exporter:
+  exporter:
+    workers: 15
+```
+
+If your publish latency is lower (e.g., 100ms for a co-located endpoint), each worker handles proportionally more events — divide the latency ratio to estimate your actual throughput.
