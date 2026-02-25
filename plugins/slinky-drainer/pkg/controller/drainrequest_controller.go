@@ -264,15 +264,18 @@ func (r *DrainRequestReconciler) removeNodeAnnotation(ctx context.Context, nodeN
 	}
 
 	if node.Annotations == nil {
+		slog.Info("Node has no annotations, skipping", "node", nodeName)
 		return nil
 	}
 
 	val, ok := node.Annotations[annotationKey]
 	if !ok {
+		slog.Info("Node annotation not found, skipping", "node", nodeName)
 		return nil
 	}
 
 	if !strings.HasPrefix(val, "[J] [NVSentinel]") {
+		slog.Info("Node annotation does not have [J] [NVSentinel] prefix, skipping", "node", nodeName)
 		return nil
 	}
 
