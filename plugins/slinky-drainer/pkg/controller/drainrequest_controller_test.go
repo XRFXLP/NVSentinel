@@ -50,9 +50,9 @@ type testEnvContext struct {
 func TestReconcile_FullDrainCycle(t *testing.T) {
 	tc := setupTestEnv(t, "drain-full-cycle")
 
-	node := createNode(t, tc, "test-node-drain-cycle", nil)
-	// Create pod without drain condition so the reconciler pauses waiting for it,
-	// giving us time to observe the annotation before it gets cleaned up.
+	node := createNode(t, tc, "test-node-drain-cycle", nil, map[string]string{
+		nvsentinelStateLabelKey: "draining",
+	})
 	pod := createSlinkyPod(t, tc, node.Name)
 	createDrainRequest(t, tc, "drain-full-cycle", drainv1alpha1.DrainRequestSpec{
 		NodeName:         node.Name,
@@ -63,32 +63,17 @@ func TestReconcile_FullDrainCycle(t *testing.T) {
 
 	assertNodeAnnotation(t, tc, node.Name, "[J] [NVSentinel] 79 GPU:0 - GPU has fallen off the bus")
 
-	// Now mark the pod as drain-ready so the reconciler can proceed.
 	markPodDrainReady(t, tc, pod.Name, pod.Namespace)
 
 	waitForDrainComplete(t, tc, "drain-full-cycle", "default")
 	waitForPodDeletion(t, tc, pod.Name, pod.Namespace)
-	waitForAnnotationRemoved(t, tc, node.Name)
-}
 
-func TestReconcile_CancelledDrainRemovesAnnotation(t *testing.T) {
-	tc := setupTestEnv(t, "drain-cancelled")
+	// Annotation stays while node is still in draining state.
+	assertNodeAnnotation(t, tc, node.Name, "[J] [NVSentinel] 79 GPU:0 - GPU has fallen off the bus")
 
-	node := createNode(t, tc, "test-node-cancelled", nil)
-	// Create pod without drain condition so the reconciler sets the annotation and waits.
-	createSlinkyPod(t, tc, node.Name)
-	createDrainRequest(t, tc, "drain-cancelled", drainv1alpha1.DrainRequestSpec{
-		NodeName:  node.Name,
-		ErrorCode: []string{"79"},
-		Reason:    "GPU has fallen off the bus",
-	})
+	// Simulate remediation success by removing the label (as statemanager would).
+	removeNodeLabel(t, tc, node.Name, nvsentinelStateLabelKey)
 
-	assertNodeAnnotation(t, tc, node.Name, "[J] [NVSentinel] 79 - GPU has fallen off the bus")
-
-	// Simulate cancellation: delete the DrainRequest (as node-drainer would).
-	deleteDrainRequest(t, tc, "drain-cancelled", "default")
-
-	waitForDrainRequestGone(t, tc, "drain-cancelled", "default")
 	waitForAnnotationRemoved(t, tc, node.Name)
 }
 
@@ -97,7 +82,7 @@ func TestReconcile_PreExistingAnnotationPreserved(t *testing.T) {
 
 	node := createNode(t, tc, "test-node-preexisting", map[string]string{
 		annotationKey: "Manual drain by operator",
-	})
+	}, nil)
 	createDrainRequest(t, tc, "drain-preexisting", drainv1alpha1.DrainRequestSpec{
 		NodeName:  node.Name,
 		ErrorCode: []string{"79"},
@@ -108,8 +93,20 @@ func TestReconcile_PreExistingAnnotationPreserved(t *testing.T) {
 	assertNodeAnnotation(t, tc, node.Name, "Manual drain by operator")
 }
 
-// setupTestEnv bootstraps an envtest API server, wires up the reconciler with a
-// unique controller name, starts the manager, and returns a context for the test.
+func TestNodeAnnotation_RemovedWhenLabelAbsent(t *testing.T) {
+	tc := setupTestEnv(t, "label-absent")
+
+	createNode(t, tc, "test-node-no-label", map[string]string{
+		annotationKey: "[J] [NVSentinel] 79 - GPU error",
+	}, nil)
+
+	waitForAnnotationRemoved(t, tc, "test-node-no-label")
+}
+
+// ---------------------------------------------------------------------------
+// Test setup
+// ---------------------------------------------------------------------------
+
 func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 	t.Helper()
 
@@ -152,7 +149,15 @@ func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 			Named(controllerName).
 			For(&drainv1alpha1.DrainRequest{}).
 			Complete(reconciler),
-		"failed to setup controller",
+		"failed to setup drain request controller",
+	)
+
+	require.NoError(t,
+		ctrl.NewControllerManagedBy(mgr).
+			Named(controllerName+"-node-cleanup").
+			For(&corev1.Node{}).
+			Complete(&NodeAnnotationReconciler{Client: mgr.GetClient()}),
+		"failed to setup node annotation controller",
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -182,13 +187,18 @@ func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 	return &testEnvContext{client: k, ctx: ctx}
 }
 
-func createNode(t *testing.T, tc *testEnvContext, name string, annotations map[string]string) *corev1.Node {
+// ---------------------------------------------------------------------------
+// Resource creation helpers
+// ---------------------------------------------------------------------------
+
+func createNode(t *testing.T, tc *testEnvContext, name string, annotations, labels map[string]string) *corev1.Node {
 	t.Helper()
 
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
 			Annotations: annotations,
+			Labels:      labels,
 		},
 	}
 	require.NoError(t, tc.client.Create(tc.ctx, node))
@@ -236,24 +246,19 @@ func createDrainRequest(t *testing.T, tc *testEnvContext, name string, spec drai
 	require.NoError(t, tc.client.Create(tc.ctx, dr))
 }
 
-func deleteDrainRequest(t *testing.T, tc *testEnvContext, name, namespace string) {
+func removeNodeLabel(t *testing.T, tc *testEnvContext, nodeName, labelKey string) {
 	t.Helper()
 
-	dr := &drainv1alpha1.DrainRequest{}
-	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: name, Namespace: namespace}, dr))
-	require.NoError(t, tc.client.Delete(tc.ctx, dr))
+	node := &corev1.Node{}
+	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: nodeName}, node))
+
+	delete(node.Labels, labelKey)
+	require.NoError(t, tc.client.Update(tc.ctx, node))
 }
 
-func waitForDrainRequestGone(t *testing.T, tc *testEnvContext, drName, drNamespace string) {
-	t.Helper()
-
-	require.Eventually(t, func() bool {
-		dr := &drainv1alpha1.DrainRequest{}
-		err := tc.client.Get(tc.ctx, types.NamespacedName{Name: drName, Namespace: drNamespace}, dr)
-
-		return apierrors.IsNotFound(err)
-	}, testTimeout, testPollInterval, "DrainRequest %s/%s should be deleted", drNamespace, drName)
-}
+// ---------------------------------------------------------------------------
+// Assertion / wait helpers
+// ---------------------------------------------------------------------------
 
 func waitForDrainComplete(t *testing.T, tc *testEnvContext, drName, drNamespace string) {
 	t.Helper()
@@ -320,4 +325,3 @@ func assertNodeAnnotation(t *testing.T, tc *testEnvContext, nodeName, expectedVa
 	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: nodeName}, node))
 	assert.Equal(t, expectedValue, node.Annotations[annotationKey])
 }
-

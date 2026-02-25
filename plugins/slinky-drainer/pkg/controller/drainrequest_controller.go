@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	drainv1alpha1 "github.com/nvidia/nvsentinel/plugins/slinky-drainer/api/v1alpha1"
 )
@@ -38,7 +37,8 @@ const (
 	slurmNodeStateDrainConditionType = "SlurmNodeStateDrain"
 	annotationKey                    = "nodeset.slinky.slurm.net/node-cordon-reason"
 	annotationPrefix                 = "[J] [NVSentinel]"
-	drainRequestFinalizer            = "nvsentinel.nvidia.com/slinky-drainer"
+	nvsentinelStateLabelKey          = "dgxc.nvidia.com/nvsentinel-state"
+	remediationSucceededValue        = "remediation-succeeded"
 )
 
 type DrainRequestReconciler struct {
@@ -69,17 +69,8 @@ func (r *DrainRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if !drainReq.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, req, drainReq)
-	}
-
 	if isDrainComplete(drainReq) {
-		return r.reconcileCompleted(ctx, req, drainReq)
-	}
-
-	if err := r.ensureFinalizer(ctx, drainReq); err != nil {
-		return ctrl.Result{},
-			fmt.Errorf("failed to add finalizer to DrainRequest %s/%s: %w", drainReq.Namespace, drainReq.Name, err)
+		return ctrl.Result{}, nil
 	}
 
 	if err := r.setNodeAnnotation(ctx, drainReq); err != nil {
@@ -117,60 +108,6 @@ func (r *DrainRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	slog.Info("Successfully drained all Slinky pods", "drainrequest", req.NamespacedName, "count", len(pods))
 
 	return r.markDrainComplete(ctx, drainReq, "DrainComplete", "All Slinky pods drained successfully")
-}
-
-func (r *DrainRequestReconciler) reconcileCompleted(
-	ctx context.Context,
-	req ctrl.Request,
-	drainReq *drainv1alpha1.DrainRequest,
-) (ctrl.Result, error) {
-	if err := r.removeNodeAnnotation(ctx, drainReq.Spec.NodeName); err != nil {
-		slog.Error("Failed to remove node annotation, will retry", "drainrequest", req.NamespacedName, "error", err)
-		// Return nil error to use fixed requeue interval instead of exponential backoff.
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-	}
-
-	return ctrl.Result{}, nil
-}
-
-func (r *DrainRequestReconciler) reconcileDelete(
-	ctx context.Context,
-	req ctrl.Request,
-	drainReq *drainv1alpha1.DrainRequest,
-) (ctrl.Result, error) {
-	if !controllerutil.ContainsFinalizer(drainReq, drainRequestFinalizer) {
-		return ctrl.Result{}, nil
-	}
-
-	slog.Info("DrainRequest being deleted, cleaning up annotation", "drainrequest", req.NamespacedName)
-
-	if err := r.removeNodeAnnotation(ctx, drainReq.Spec.NodeName); err != nil {
-		slog.Error("Failed to remove node annotation during deletion, will retry",
-			"drainrequest", req.NamespacedName, "error", err)
-
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-	}
-
-	controllerutil.RemoveFinalizer(drainReq, drainRequestFinalizer)
-
-	if err := r.Update(ctx, drainReq); err != nil {
-		return ctrl.Result{},
-			fmt.Errorf("failed to remove finalizer from DrainRequest %s/%s: %w", drainReq.Namespace, drainReq.Name, err)
-	}
-
-	slog.Info("Finalizer removed, DrainRequest will be deleted", "drainrequest", req.NamespacedName)
-
-	return ctrl.Result{}, nil
-}
-
-func (r *DrainRequestReconciler) ensureFinalizer(ctx context.Context, drainReq *drainv1alpha1.DrainRequest) error {
-	if controllerutil.ContainsFinalizer(drainReq, drainRequestFinalizer) {
-		return nil
-	}
-
-	controllerutil.AddFinalizer(drainReq, drainRequestFinalizer)
-
-	return r.Update(ctx, drainReq)
 }
 
 func (r *DrainRequestReconciler) setNodeAnnotation(
@@ -321,41 +258,6 @@ func (r *DrainRequestReconciler) markDrainComplete(
 	}
 
 	return ctrl.Result{}, nil
-}
-
-func (r *DrainRequestReconciler) removeNodeAnnotation(ctx context.Context, nodeName string) error {
-	node := &corev1.Node{}
-	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-
-		return fmt.Errorf("failed to get node %s: %w", nodeName, err)
-	}
-
-	if node.Annotations == nil {
-		slog.Info("Node has no annotations, skipping", "node", nodeName)
-		return nil
-	}
-
-	val, ok := node.Annotations[annotationKey]
-	if !ok {
-		slog.Info("Node annotation not found, skipping", "node", nodeName)
-		return nil
-	}
-
-	if !strings.HasPrefix(val, annotationPrefix) {
-		slog.Info("Node annotation does not have [J] [NVSentinel] prefix, skipping", "node", nodeName)
-		return nil
-	}
-
-	delete(node.Annotations, annotationKey)
-
-	if err := r.Update(ctx, node); err != nil {
-		return fmt.Errorf("failed to update node %s: %w", nodeName, err)
-	}
-
-	return nil
 }
 
 func isDrainComplete(dr *drainv1alpha1.DrainRequest) bool {

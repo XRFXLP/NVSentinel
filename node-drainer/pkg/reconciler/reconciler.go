@@ -331,6 +331,7 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 		return fmt.Errorf("waiting for retry delay: %v", action.WaitDelay)
 
 	case evaluator.ActionCreateCR:
+		r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, true)
 		return r.executeCustomDrain(ctx, action, healthEvent, event, database, action.PartialDrainEntity)
 
 	case evaluator.ActionEvictImmediate:
