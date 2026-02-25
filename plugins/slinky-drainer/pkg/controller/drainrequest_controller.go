@@ -260,7 +260,11 @@ func (r *DrainRequestReconciler) markDrainComplete(
 func (r *DrainRequestReconciler) removeNodeAnnotation(ctx context.Context, nodeName string) error {
 	node := &corev1.Node{}
 	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
-		return fmt.Errorf("failed to get node: %w", err)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("failed to get node %s: %w", nodeName, err)
 	}
 
 	if node.Annotations == nil {
@@ -281,7 +285,11 @@ func (r *DrainRequestReconciler) removeNodeAnnotation(ctx context.Context, nodeN
 
 	delete(node.Annotations, annotationKey)
 
-	return r.Update(ctx, node)
+	if err := r.Update(ctx, node); err != nil {
+		return fmt.Errorf("failed to update node %s: %w", nodeName, err)
+	}
+
+	return nil
 }
 
 func isDrainComplete(dr *drainv1alpha1.DrainRequest) bool {
