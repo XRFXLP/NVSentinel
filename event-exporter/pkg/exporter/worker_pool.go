@@ -20,29 +20,30 @@ import (
 	"log/slog"
 	"sync"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
-// workItem is dispatched from the consumer to a worker for publishing.
+// workItem is dispatched from the consumer to a worker for processing.
 type workItem struct {
 	seq         uint64
-	event       *pb.HealthEvent
+	event       client.Event
 	resumeToken []byte
 }
 
-// workResult is sent from a worker back to the token writer after publishing.
+// workResult is sent from a worker back to the token writer after processing.
 type workResult struct {
 	seq         uint64
 	resumeToken []byte
 	err         error
 }
 
-// publishFunc is the function workers call to publish an event.
-type publishFunc func(ctx context.Context, event *pb.HealthEvent) error
+// processFunc is called by workers to handle an event (unmarshal, skip, or publish).
+// Returning nil means the event was handled (published or intentionally skipped);
+// returning a non-nil error is fatal and stops the pool.
+type processFunc func(ctx context.Context, event client.Event) error
 
-// workerPool manages concurrent event publishing with ordered resume token advancement.
+// workerPool manages concurrent event processing with ordered resume token advancement.
 //
 // Architecture:
 //
@@ -54,7 +55,7 @@ type publishFunc func(ctx context.Context, event *pb.HealthEvent) error
 //	         │
 //	    ┌────┴────┐
 //	    ▼    ▼    ▼
-//	   W-1  W-2 W-3  (N goroutines, publish concurrently)
+//	   W-1  W-2 W-3  (N goroutines, process concurrently)
 //	    │    │    │
 //	    └────┬────┘
 //	         ▼
@@ -65,7 +66,7 @@ type publishFunc func(ctx context.Context, event *pb.HealthEvent) error
 //	    uses sequenceTracker to advance resume token only for contiguous completions
 type workerPool struct {
 	numWorkers int
-	publish    publishFunc
+	process    processFunc
 	source     client.ChangeStreamWatcher
 	cancel     context.CancelFunc
 
@@ -75,7 +76,7 @@ type workerPool struct {
 
 func newWorkerPool(
 	numWorkers int,
-	publish publishFunc,
+	process processFunc,
 	source client.ChangeStreamWatcher,
 	cancel context.CancelFunc,
 ) *workerPool {
@@ -83,7 +84,7 @@ func newWorkerPool(
 
 	return &workerPool{
 		numWorkers: numWorkers,
-		publish:    publish,
+		process:    process,
 		source:     source,
 		cancel:     cancel,
 		dispatchCh: make(chan workItem, bufSize),
@@ -93,7 +94,7 @@ func newWorkerPool(
 
 // run starts the worker pool and blocks until all work is done or the context is cancelled.
 // The caller must close dispatchCh when no more items will be sent (i.e., when the event
-// channel is closed). This method returns the first fatal publish error, or nil.
+// channel is closed). This method returns the first fatal error, or nil.
 func (wp *workerPool) run(ctx context.Context) error {
 	var workersWg sync.WaitGroup
 
@@ -112,24 +113,11 @@ func (wp *workerPool) run(ctx context.Context) error {
 	return wp.tokenWriter(ctx)
 }
 
-// dispatch sends an event to the worker pool for publishing.
+// dispatch sends an event to the worker pool for processing.
 // Returns false if the context was cancelled.
 func (wp *workerPool) dispatch(ctx context.Context, item workItem) bool {
 	select {
 	case wp.dispatchCh <- item:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
-// forwardResult injects a result directly into the token writer's result
-// channel, bypassing workers. Used for events that don't need publishing
-// (e.g., unmarshal errors, nil events) but must still participate in
-// sequence tracking to maintain contiguous resume token advancement.
-func (wp *workerPool) forwardResult(ctx context.Context, result workResult) bool {
-	select {
-	case wp.resultCh <- result:
 		return true
 	case <-ctx.Done():
 		return false
@@ -141,14 +129,14 @@ func (wp *workerPool) closeDispatch() {
 	close(wp.dispatchCh)
 }
 
-// worker picks items from dispatchCh and publishes them.
+// worker picks items from dispatchCh and processes them.
 func (wp *workerPool) worker(ctx context.Context) {
 	for item := range wp.dispatchCh {
 		if ctx.Err() != nil {
 			return
 		}
 
-		err := wp.publish(ctx, item.event)
+		err := wp.process(ctx, item.event)
 		wp.resultCh <- workResult{
 			seq:         item.seq,
 			resumeToken: item.resumeToken,
@@ -158,14 +146,14 @@ func (wp *workerPool) worker(ctx context.Context) {
 }
 
 // tokenWriter collects results from workers and advances the resume token in order.
-// Returns the first fatal error (a worker failed to publish after all retries).
+// Returns the first fatal error (a worker failed to process after all retries).
 func (wp *workerPool) tokenWriter(ctx context.Context) error {
 	tracker := newSequenceTracker()
 
 	for result := range wp.resultCh {
 		if result.err != nil {
 			wp.cancel()
-			return fmt.Errorf("publish failed for seq %d: %w", result.seq, result.err)
+			return fmt.Errorf("process failed for seq %d: %w", result.seq, result.err)
 		}
 
 		token := tracker.markCompleted(result.seq, result.resumeToken)

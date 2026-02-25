@@ -22,7 +22,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
@@ -34,9 +33,9 @@ type mockSource struct {
 	markErr error
 }
 
-func (m *mockSource) Start(context.Context)             {}
-func (m *mockSource) Events() <-chan client.Event        { return nil }
-func (m *mockSource) Close(context.Context) error        { return nil }
+func (m *mockSource) Start(context.Context)              {}
+func (m *mockSource) Events() <-chan client.Event         { return nil }
+func (m *mockSource) Close(context.Context) error         { return nil }
 
 func (m *mockSource) MarkProcessed(_ context.Context, token []byte) error {
 	m.mu.Lock()
@@ -69,17 +68,17 @@ func (m *mockSource) getTokens() [][]byte {
 func TestWorkerPool_SingleWorker(t *testing.T) {
 	src := &mockSource{}
 
-	var publishCount atomic.Int32
+	var processCount atomic.Int32
 
-	publish := func(_ context.Context, _ *pb.HealthEvent) error {
-		publishCount.Add(1)
+	process := func(_ context.Context, _ client.Event) error {
+		processCount.Add(1)
 		return nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := newWorkerPool(1, publish, src, cancel)
+	pool := newWorkerPool(1, process, src, cancel)
 
 	const numEvents = 5
 
@@ -87,7 +86,6 @@ func TestWorkerPool_SingleWorker(t *testing.T) {
 		for i := uint64(1); i <= numEvents; i++ {
 			pool.dispatch(ctx, workItem{
 				seq:         i,
-				event:       &pb.HealthEvent{},
 				resumeToken: []byte(fmt.Sprintf("tok-%d", i)),
 			})
 		}
@@ -99,8 +97,8 @@ func TestWorkerPool_SingleWorker(t *testing.T) {
 		t.Fatalf("run() returned error: %v", err)
 	}
 
-	if int(publishCount.Load()) != numEvents {
-		t.Fatalf("publish called %d times, want %d", publishCount.Load(), numEvents)
+	if int(processCount.Load()) != numEvents {
+		t.Fatalf("process called %d times, want %d", processCount.Load(), numEvents)
 	}
 
 	tokens := src.getTokens()
@@ -117,23 +115,23 @@ func TestWorkerPool_SingleWorker(t *testing.T) {
 }
 
 // TestWorkerPool_MultipleWorkers verifies the concurrent invariant: with N
-// workers, all events must be published and the final MarkProcessed token
+// workers, all events must be processed and the final MarkProcessed token
 // must correspond to the last sequence (because the sequenceTracker waits
 // for contiguous completion before advancing).
 func TestWorkerPool_MultipleWorkers(t *testing.T) {
 	src := &mockSource{}
 
-	var publishCount atomic.Int32
+	var processCount atomic.Int32
 
-	publish := func(_ context.Context, _ *pb.HealthEvent) error {
-		publishCount.Add(1)
+	process := func(_ context.Context, _ client.Event) error {
+		processCount.Add(1)
 		return nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := newWorkerPool(4, publish, src, cancel)
+	pool := newWorkerPool(4, process, src, cancel)
 
 	const numEvents = 50
 
@@ -141,7 +139,6 @@ func TestWorkerPool_MultipleWorkers(t *testing.T) {
 		for i := uint64(1); i <= numEvents; i++ {
 			pool.dispatch(ctx, workItem{
 				seq:         i,
-				event:       &pb.HealthEvent{},
 				resumeToken: []byte(fmt.Sprintf("tok-%d", i)),
 			})
 		}
@@ -153,8 +150,8 @@ func TestWorkerPool_MultipleWorkers(t *testing.T) {
 		t.Fatalf("run() returned error: %v", err)
 	}
 
-	if int(publishCount.Load()) != numEvents {
-		t.Fatalf("publish called %d times, want %d", publishCount.Load(), numEvents)
+	if int(processCount.Load()) != numEvents {
+		t.Fatalf("process called %d times, want %d", processCount.Load(), numEvents)
 	}
 
 	// The final token must be tok-N regardless of worker completion order,
@@ -170,25 +167,24 @@ func TestWorkerPool_MultipleWorkers(t *testing.T) {
 	}
 }
 
-// TestWorkerPool_PublishError verifies that a worker's publish failure
+// TestWorkerPool_ProcessError verifies that a worker's process failure
 // propagates as a fatal error from run(), stopping the pool.
-func TestWorkerPool_PublishError(t *testing.T) {
+func TestWorkerPool_ProcessError(t *testing.T) {
 	src := &mockSource{}
-	errBoom := errors.New("publish exploded")
+	errBoom := errors.New("process exploded")
 
-	publish := func(_ context.Context, _ *pb.HealthEvent) error {
+	process := func(_ context.Context, _ client.Event) error {
 		return errBoom
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := newWorkerPool(1, publish, src, cancel)
+	pool := newWorkerPool(1, process, src, cancel)
 
 	go func() {
 		pool.dispatch(ctx, workItem{
 			seq:         1,
-			event:       &pb.HealthEvent{},
 			resumeToken: []byte("tok-1"),
 		})
 
@@ -205,56 +201,6 @@ func TestWorkerPool_PublishError(t *testing.T) {
 	}
 }
 
-// TestWorkerPool_ForwardedResults verifies that results injected directly
-// via forwardResult (bypassing workers) are correctly sequenced alongside
-// worker-produced results. This exercises the path used when the consumer
-// skips events (unmarshal errors, nil events) but must maintain contiguous
-// resume token advancement.
-func TestWorkerPool_ForwardedResults(t *testing.T) {
-	src := &mockSource{}
-
-	var publishCount atomic.Int32
-
-	publish := func(_ context.Context, _ *pb.HealthEvent) error {
-		publishCount.Add(1)
-		return nil
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	pool := newWorkerPool(1, publish, src, cancel)
-
-	go func() {
-		// seq 1: forwarded directly (simulates unmarshal error)
-		pool.forwardResult(ctx, workResult{seq: 1, resumeToken: []byte("tok-1")})
-		// seq 2: dispatched to worker normally
-		pool.dispatch(ctx, workItem{seq: 2, event: &pb.HealthEvent{}, resumeToken: []byte("tok-2")})
-		// seq 3: forwarded directly (simulates nil event)
-		pool.forwardResult(ctx, workResult{seq: 3, resumeToken: []byte("tok-3")})
-
-		pool.closeDispatch()
-	}()
-
-	if err := pool.run(ctx); err != nil {
-		t.Fatalf("run() returned error: %v", err)
-	}
-
-	if int(publishCount.Load()) != 1 {
-		t.Fatalf("publish called %d times, want 1 (only seq 2 goes through worker)", publishCount.Load())
-	}
-
-	tokens := src.getTokens()
-	if len(tokens) == 0 {
-		t.Fatal("MarkProcessed was never called")
-	}
-
-	lastToken := string(tokens[len(tokens)-1])
-	if lastToken != "tok-3" {
-		t.Fatalf("last token = %q, want %q", lastToken, "tok-3")
-	}
-}
-
 // TestWorkerPool_MarkProcessedError verifies that a store failure during
 // resume token advancement surfaces from run() so the exporter can restart
 // from the last committed position.
@@ -262,19 +208,18 @@ func TestWorkerPool_MarkProcessedError(t *testing.T) {
 	errStore := errors.New("store unavailable")
 	src := &mockSource{markErr: errStore}
 
-	publish := func(_ context.Context, _ *pb.HealthEvent) error {
+	process := func(_ context.Context, _ client.Event) error {
 		return nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := newWorkerPool(1, publish, src, cancel)
+	pool := newWorkerPool(1, process, src, cancel)
 
 	go func() {
 		pool.dispatch(ctx, workItem{
 			seq:         1,
-			event:       &pb.HealthEvent{},
 			resumeToken: []byte("tok-1"),
 		})
 

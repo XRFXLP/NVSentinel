@@ -239,56 +239,7 @@ func (e *HealthEventsExporter) streamEvents(ctx context.Context) error {
 
 	slog.Info("Starting event stream", "workers", numWorkers)
 
-	if numWorkers == 1 {
-		return e.streamEventsSequential(ctx)
-	}
-
 	return e.streamEventsConcurrent(ctx, numWorkers)
-}
-
-// streamEventsSequential is the original single-threaded path.
-func (e *HealthEventsExporter) streamEventsSequential(ctx context.Context) error {
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("Context done", "error", ctx.Err())
-			return ctx.Err()
-		case healthEvent, ok := <-e.source.Events():
-			if !ok {
-				slog.Error("Event channel closed")
-				return fmt.Errorf("event channel closed")
-			}
-
-			if err := e.processEventSequential(ctx, healthEvent); err != nil {
-				slog.Error("Failed to process event", "error", err)
-				return fmt.Errorf("process event: %w", err)
-			}
-		}
-	}
-}
-
-func (e *HealthEventsExporter) processEventSequential(ctx context.Context, healthEvent client.Event) error {
-	metrics.EventsReceived.Inc()
-
-	event, err := unmarshalHealthEvent(healthEvent)
-	if err != nil {
-		slog.Warn("Failed to unmarshal event", "error", err)
-		metrics.TransformErrors.Inc()
-
-		return e.markProcessedOrFail(ctx, healthEvent.GetResumeToken())
-	}
-
-	if event == nil {
-		slog.Debug("Skipping nil health event")
-		return e.markProcessedOrFail(ctx, healthEvent.GetResumeToken())
-	}
-
-	if err := e.publishWithRetry(ctx, event); err != nil {
-		slog.Error("Failed to publish event with retry", "error", err)
-		return fmt.Errorf("publish with retry: %w", err)
-	}
-
-	return e.markProcessedOrFail(ctx, healthEvent.GetResumeToken())
 }
 
 // streamEventsConcurrent dispatches events to a worker pool for parallel publishing.
@@ -297,7 +248,7 @@ func (e *HealthEventsExporter) streamEventsConcurrent(ctx context.Context, numWo
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	pool := newWorkerPool(numWorkers, e.publishWithRetry, e.source, cancel)
+	pool := newWorkerPool(numWorkers, e.processEvent, e.source, cancel)
 
 	// Run the worker pool in a separate goroutine.
 	// It blocks until all workers finish and the token writer drains.
@@ -320,10 +271,14 @@ func (e *HealthEventsExporter) streamEventsConcurrent(ctx context.Context, numWo
 	// When the pool triggers cancellation (e.g., publish failure), consumeErr
 	// is just context.Canceled — prefer poolErr which has the root cause.
 	if poolErr != nil {
-		return poolErr
+		return fmt.Errorf("worker pool: %w", poolErr)
 	}
 
-	return consumeErr
+	if consumeErr != nil {
+		return fmt.Errorf("event consumer: %w", consumeErr)
+	}
+
+	return nil
 }
 
 func (e *HealthEventsExporter) consumeAndDispatch(
@@ -343,43 +298,11 @@ func (e *HealthEventsExporter) consumeAndDispatch(
 
 			metrics.EventsReceived.Inc()
 
-			event, err := unmarshalHealthEvent(healthEvent)
-			if err != nil {
-				slog.Warn("Failed to unmarshal event", "error", err)
-				metrics.TransformErrors.Inc()
-
-				*seq++
-
-				if !pool.forwardResult(ctx, workResult{
-					seq:         *seq,
-					resumeToken: healthEvent.GetResumeToken(),
-				}) {
-					return ctx.Err()
-				}
-
-				continue
-			}
-
-			if event == nil {
-				slog.Debug("Skipping nil health event")
-
-				*seq++
-
-				if !pool.forwardResult(ctx, workResult{
-					seq:         *seq,
-					resumeToken: healthEvent.GetResumeToken(),
-				}) {
-					return ctx.Err()
-				}
-
-				continue
-			}
-
 			*seq++
 
 			if !pool.dispatch(ctx, workItem{
 				seq:         *seq,
-				event:       event,
+				event:       healthEvent,
 				resumeToken: healthEvent.GetResumeToken(),
 			}) {
 				return ctx.Err()
@@ -388,15 +311,25 @@ func (e *HealthEventsExporter) consumeAndDispatch(
 	}
 }
 
-func (e *HealthEventsExporter) markProcessedOrFail(ctx context.Context, token []byte) error {
-	if err := e.source.MarkProcessed(ctx, token); err != nil {
-		slog.Error("Failed to mark processed", "error", err)
-		return fmt.Errorf("mark processed: %w", err)
+// processEvent handles a single change stream event: unmarshal, skip if
+// invalid, or publish. Returns nil for skipped events (unmarshal errors,
+// nil documents) so the token writer advances the resume token. Returns
+// a non-nil error only for fatal publish failures.
+func (e *HealthEventsExporter) processEvent(ctx context.Context, rawEvent client.Event) error {
+	event, err := unmarshalHealthEvent(rawEvent)
+	if err != nil {
+		slog.Warn("Failed to unmarshal event", "error", err)
+		metrics.TransformErrors.Inc()
+
+		return nil
 	}
 
-	metrics.ResumeTokenUpdateTimestamp.SetToCurrentTime()
+	if event == nil {
+		slog.Debug("Skipping nil health event")
+		return nil
+	}
 
-	return nil
+	return e.publishWithRetry(ctx, event)
 }
 
 func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.HealthEvent) error {
