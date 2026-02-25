@@ -36,6 +36,7 @@ const (
 	drainCompleteConditionType       = "DrainComplete"
 	slurmNodeStateDrainConditionType = "SlurmNodeStateDrain"
 	annotationKey                    = "nodeset.slinky.slurm.net/node-cordon-reason"
+	annotationPrefix                 = "[J] [NVSentinel]"
 )
 
 type DrainRequestReconciler struct {
@@ -69,6 +70,7 @@ func (r *DrainRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if isDrainComplete(drainReq) {
 		if err := r.removeNodeAnnotation(ctx, drainReq.Spec.NodeName); err != nil {
 			slog.Error("Failed to remove node annotation, will retry", "drainrequest", req.NamespacedName, "error", err)
+			// Return nil error to use fixed requeue interval instead of exponential backoff.
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
 
@@ -138,13 +140,17 @@ func (r *DrainRequestReconciler) setNodeAnnotation(
 
 	node.Annotations[annotationKey] = reason
 
-	return r.Update(ctx, node)
+	if err := r.Update(ctx, node); err != nil {
+		return fmt.Errorf("failed to update node %s annotations: %w", node.Name, err)
+	}
+
+	return nil
 }
 
 func buildCordonReason(dr *drainv1alpha1.DrainRequest) string {
 	var parts []string
 
-	parts = append(parts, "[J] [NVSentinel]")
+	parts = append(parts, annotationPrefix)
 
 	if len(dr.Spec.ErrorCode) > 0 {
 		parts = append(parts, strings.Join(dr.Spec.ErrorCode, ","))
@@ -251,7 +257,8 @@ func (r *DrainRequestReconciler) markDrainComplete(
 	meta.SetStatusCondition(&dr.Status.Conditions, condition)
 
 	if err := r.Status().Update(ctx, dr); err != nil {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+		return ctrl.Result{RequeueAfter: 5 * time.Second},
+			fmt.Errorf("failed to update status for DrainRequest %s/%s: %w", dr.Namespace, dr.Name, err)
 	}
 
 	return ctrl.Result{}, nil
@@ -278,7 +285,7 @@ func (r *DrainRequestReconciler) removeNodeAnnotation(ctx context.Context, nodeN
 		return nil
 	}
 
-	if !strings.HasPrefix(val, "[J] [NVSentinel]") {
+	if !strings.HasPrefix(val, annotationPrefix) {
 		slog.Info("Node annotation does not have [J] [NVSentinel] prefix, skipping", "node", nodeName)
 		return nil
 	}
