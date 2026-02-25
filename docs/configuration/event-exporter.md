@@ -214,13 +214,13 @@ event-exporter:
     workers: 10
 ```
 
-Each worker independently picks events from the dispatch queue, processes them (unmarshal, transform, publish), and reports the result. A sequence tracker ensures resume tokens advance in strict order regardless of which worker finishes first, so increasing workers scales throughput without affecting delivery ordering or exactly-once guarantees.
+Each worker independently picks events from the dispatch queue, processes them (unmarshal, transform, publish), and reports the result. A sequence tracker ensures resume tokens advance in strict order regardless of which worker finishes first, so increasing workers scales throughput while preserving at-least-once delivery guarantees. Note that concurrent publishing means events may arrive at the sink out of order.
 
 The default of `10` handles clusters up to ~3,300 nodes at typical event rates.
 
 ### Scale-Up Guide
 
-**Event production rate**: ~10 events/sec per 1,000 nodes (11,000 events/hour from 1,100 nodes)
+**Event production rate**: ~10 events/sec per 1,000 nodes (~36,000 events/hour)
 **Per-worker throughput**: ~3.3 events/sec (at 300ms publish latency)
 
 | Workers | Throughput (events/sec) | Max Nodes Supported |
