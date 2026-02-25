@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -27,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	drainv1alpha1 "github.com/nvidia/nvsentinel/plugins/slinky-drainer/api/v1alpha1"
 )
@@ -61,37 +61,36 @@ func NewDrainRequestReconciler(
 }
 
 func (r *DrainRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx).WithValues("drainrequest", req.NamespacedName)
-
 	drainReq := &drainv1alpha1.DrainRequest{}
 	if err := r.Get(ctx, req.NamespacedName, drainReq); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	if isDrainComplete(drainReq) {
-		logger.Info("Drain already complete")
+		slog.Info("Drain already complete", "drainrequest", req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 
 	if err := r.setNodeAnnotation(ctx, drainReq); err != nil {
-		logger.Error(err, "Failed to set node annotation")
+		slog.Error("Failed to set node annotation", "drainrequest", req.NamespacedName, "error", err)
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, err
 	}
 
 	pods, err := r.getSlinkyPods(ctx, drainReq.Spec.NodeName)
 	if err != nil {
-		logger.Error(err, "Failed to list Slinky pods")
+		slog.Error("Failed to list Slinky pods", "drainrequest", req.NamespacedName, "error", err)
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, err
 	}
 
 	if len(pods) == 0 {
-		logger.Info("No Slinky pods found on node, marking complete")
+		slog.Info("No Slinky pods found on node, marking complete", "drainrequest", req.NamespacedName)
 		return r.markDrainComplete(ctx, drainReq, "NoPods", "No Slinky pods found on node")
 	}
 
 	allReady, notReadyPods := r.checkPodsReadyForDrain(pods)
 	if !allReady {
-		logger.Info("Waiting for pods to be ready for drain",
+		slog.Info("Waiting for pods to be ready for drain",
+			"drainrequest", req.NamespacedName,
 			"total", len(pods),
 			"notReady", len(notReadyPods),
 			"notReadyPods", notReadyPods)
@@ -100,11 +99,11 @@ func (r *DrainRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	if err := r.deleteSlinkyPods(ctx, pods); err != nil {
-		logger.Error(err, "Failed to delete Slinky pods")
+		slog.Error("Failed to delete Slinky pods", "drainrequest", req.NamespacedName, "error", err)
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, err
 	}
 
-	logger.Info("Successfully drained all Slinky pods", "count", len(pods))
+	slog.Info("Successfully drained all Slinky pods", "drainrequest", req.NamespacedName, "count", len(pods))
 
 	return r.markDrainComplete(ctx, drainReq, "DrainComplete", "All Slinky pods drained successfully")
 }
@@ -118,14 +117,19 @@ func (r *DrainRequestReconciler) setNodeAnnotation(
 		return fmt.Errorf("failed to get node: %w", err)
 	}
 
+	if node.Annotations != nil {
+		if _, ok := node.Annotations[annotationKey]; ok {
+			slog.Info("Node already has annotation, skipping", "node", drainReq.Spec.NodeName)
+			return nil
+		}
+	}
+
 	reason := buildCordonReason(drainReq)
+
+	slog.Info("Setting node annotation", "node", drainReq.Spec.NodeName, "reason", reason)
 
 	if node.Annotations == nil {
 		node.Annotations = make(map[string]string)
-	}
-
-	if existing, ok := node.Annotations[annotationKey]; ok && existing == reason {
-		return nil
 	}
 
 	node.Annotations[annotationKey] = reason
@@ -136,7 +140,7 @@ func (r *DrainRequestReconciler) setNodeAnnotation(
 func buildCordonReason(dr *drainv1alpha1.DrainRequest) string {
 	var parts []string
 
-	parts = append(parts, "[J]")
+	parts = append(parts, "[J] [NVSentinel]")
 
 	if len(dr.Spec.ErrorCode) > 0 {
 		parts = append(parts, strings.Join(dr.Spec.ErrorCode, ","))
@@ -246,7 +250,37 @@ func (r *DrainRequestReconciler) markDrainComplete(
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 	}
 
+	if err := r.removeNodeAnnotation(ctx, dr.Spec.NodeName); err != nil {
+		slog.Error("Failed to remove node annotation after drain complete", "node", dr.Spec.NodeName, "error", err)
+	}
+
+	slog.Info("Node annotation removed after drain complete", "node", dr.Spec.NodeName)
+
 	return ctrl.Result{}, nil
+}
+
+func (r *DrainRequestReconciler) removeNodeAnnotation(ctx context.Context, nodeName string) error {
+	node := &corev1.Node{}
+	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
+		return fmt.Errorf("failed to get node: %w", err)
+	}
+
+	if node.Annotations == nil {
+		return nil
+	}
+
+	val, ok := node.Annotations[annotationKey]
+	if !ok {
+		return nil
+	}
+
+	if !strings.HasPrefix(val, "[J] [NVSentinel]") {
+		return nil
+	}
+
+	delete(node.Annotations, annotationKey)
+
+	return r.Update(ctx, node)
 }
 
 func isDrainComplete(dr *drainv1alpha1.DrainRequest) bool {
