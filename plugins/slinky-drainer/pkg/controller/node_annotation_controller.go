@@ -23,7 +23,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 // NodeAnnotationReconciler watches nodes and removes the slinky cordon
@@ -40,7 +42,7 @@ func (r *NodeAnnotationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	if !shouldRemoveAnnotation(node) {
-		slog.Info("Node is not in draining state, skipping", "node", node.Name)
+		slog.Debug("Node is not in healthy state, skipping", "node", node.Name)
 
 		return ctrl.Result{}, nil
 	}
@@ -74,6 +76,6 @@ func shouldRemoveAnnotation(node *corev1.Node) bool {
 
 func (r *NodeAnnotationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Node{}).
+		For(&corev1.Node{}, builder.WithPredicates(predicate.LabelChangedPredicate{})).
 		Complete(r)
 }
