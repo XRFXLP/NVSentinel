@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -67,6 +68,27 @@ func TestReconcile_FullDrainCycle(t *testing.T) {
 
 	waitForDrainComplete(t, tc, "drain-full-cycle", "default")
 	waitForPodDeletion(t, tc, pod.Name, pod.Namespace)
+	waitForAnnotationRemoved(t, tc, node.Name)
+}
+
+func TestReconcile_CancelledDrainRemovesAnnotation(t *testing.T) {
+	tc := setupTestEnv(t, "drain-cancelled")
+
+	node := createNode(t, tc, "test-node-cancelled", nil)
+	// Create pod without drain condition so the reconciler sets the annotation and waits.
+	createSlinkyPod(t, tc, node.Name)
+	createDrainRequest(t, tc, "drain-cancelled", drainv1alpha1.DrainRequestSpec{
+		NodeName:  node.Name,
+		ErrorCode: []string{"79"},
+		Reason:    "GPU has fallen off the bus",
+	})
+
+	assertNodeAnnotation(t, tc, node.Name, "[J] [NVSentinel] 79 - GPU has fallen off the bus")
+
+	// Simulate cancellation: delete the DrainRequest (as node-drainer would).
+	deleteDrainRequest(t, tc, "drain-cancelled", "default")
+
+	waitForDrainRequestGone(t, tc, "drain-cancelled", "default")
 	waitForAnnotationRemoved(t, tc, node.Name)
 }
 
@@ -212,6 +234,25 @@ func createDrainRequest(t *testing.T, tc *testEnvContext, name string, spec drai
 		Spec:       spec,
 	}
 	require.NoError(t, tc.client.Create(tc.ctx, dr))
+}
+
+func deleteDrainRequest(t *testing.T, tc *testEnvContext, name, namespace string) {
+	t.Helper()
+
+	dr := &drainv1alpha1.DrainRequest{}
+	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: name, Namespace: namespace}, dr))
+	require.NoError(t, tc.client.Delete(tc.ctx, dr))
+}
+
+func waitForDrainRequestGone(t *testing.T, tc *testEnvContext, drName, drNamespace string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		dr := &drainv1alpha1.DrainRequest{}
+		err := tc.client.Get(tc.ctx, types.NamespacedName{Name: drName, Namespace: drNamespace}, dr)
+
+		return apierrors.IsNotFound(err)
+	}, testTimeout, testPollInterval, "DrainRequest %s/%s should be deleted", drNamespace, drName)
 }
 
 func waitForDrainComplete(t *testing.T, tc *testEnvContext, drName, drNamespace string) {
