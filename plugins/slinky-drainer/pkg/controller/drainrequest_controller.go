@@ -177,9 +177,9 @@ func (r *DrainRequestReconciler) removeFinalizer(
 }
 
 func shouldRemoveAnnotation(node *corev1.Node) bool {
-	val, exists := node.Labels[nvsentinelStateLabelKey]
+	_, exists := node.Labels[nvsentinelStateLabelKey]
 
-	return !exists || val == remediationSucceededValue
+	return !exists
 }
 
 func (r *DrainRequestReconciler) removeNodeAnnotation(ctx context.Context, node *corev1.Node) error {
