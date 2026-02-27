@@ -23,6 +23,7 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/coordinator"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
+	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -292,4 +293,182 @@ func newGangDiscoverer(gangID string, minCount int) *mockDiscoverer {
 
 func newNonGangDiscoverer() *mockDiscoverer {
 	return &mockDiscoverer{canHandle: false}
+}
+
+// --- Phase 5: RegisterPod and ensureNCCLTopoConfigMap tests ---
+
+func TestGangController_RegisterPod(t *testing.T) {
+	t.Run("creates skeleton ConfigMap", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		te := setupTestEnv(t, ctx, newGangDiscoverer("rp-gang", 2))
+		defer te.teardown()
+
+		te.createNamespace(t, ctx, "default")
+
+		ctrl := NewGangController(
+			&config.Config{},
+			te.mgr.GetClient(),
+			gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
+			newGangDiscoverer("rp-gang", 2),
+		)
+
+		ctrl.RegisterPod(ctx, webhook.GangRegistration{
+			Namespace:     "default",
+			PodName:       "worker-0",
+			GangID:        "rp-gang",
+			ConfigMapName: coordinator.ConfigMapName("rp-gang"),
+		})
+
+		cmName := coordinator.ConfigMapName("rp-gang")
+		require.Eventually(t, func() bool {
+			cm, err := te.kubeClient.CoreV1().ConfigMaps("default").Get(ctx, cmName, metav1.GetOptions{})
+			return err == nil && cm != nil
+		}, 10*time.Second, 200*time.Millisecond, "ConfigMap should be created")
+
+		cm, err := te.kubeClient.CoreV1().ConfigMaps("default").Get(ctx, cmName, metav1.GetOptions{})
+		require.NoError(t, err)
+		assert.Equal(t, "0", cm.Data["expected_count"], "skeleton ConfigMap should have expected_count=0")
+	})
+
+	t.Run("RegisterPod then reconcile fills peers", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		disc := newGangDiscoverer("full-gang", 2)
+		te := setupTestEnv(t, ctx, disc)
+		defer te.teardown()
+
+		te.createNamespace(t, ctx, "default")
+
+		gangCtrl := NewGangController(
+			&config.Config{},
+			te.mgr.GetClient(),
+			gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
+			disc,
+		)
+
+		gangCtrl.RegisterPod(ctx, webhook.GangRegistration{
+			Namespace:     "default",
+			PodName:       "worker-0",
+			GangID:        "full-gang",
+			ConfigMapName: coordinator.ConfigMapName("full-gang"),
+		})
+
+		// Now create a pod with IP — the controller should reconcile and register the peer
+		te.createPodWithIP(t, ctx, newGangPod("worker-0", "default", "10.0.0.1"))
+		te.assertConfigMapWithPeer(t, ctx, "default", "full-gang", "worker-0", "10.0.0.1")
+	})
+}
+
+func TestGangController_EnsureNCCLTopoConfigMap(t *testing.T) {
+	t.Run("creates topo ConfigMap", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		te := setupTestEnv(t, ctx, newGangDiscoverer("topo-gang", 2))
+		defer te.teardown()
+
+		te.createNamespace(t, ctx, "default")
+
+		topoData := "<topology>test</topology>"
+		cfg := &config.Config{
+			FileConfig: config.FileConfig{
+				GangCoordination: config.GangCoordinationConfig{
+					NCCLTopoConfigMap: "nccl-topo",
+					NCCLTopoData:      topoData,
+				},
+			},
+		}
+		ctrl := NewGangController(
+			cfg,
+			te.mgr.GetClient(),
+			gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
+			newGangDiscoverer("topo-gang", 2),
+		)
+
+		ctrl.RegisterPod(ctx, webhook.GangRegistration{
+			Namespace:     "default",
+			PodName:       "w-0",
+			GangID:        "topo-gang",
+			ConfigMapName: coordinator.ConfigMapName("topo-gang"),
+		})
+
+		require.Eventually(t, func() bool {
+			cm, err := te.kubeClient.CoreV1().ConfigMaps("default").Get(ctx, "nccl-topo", metav1.GetOptions{})
+			return err == nil && cm != nil && cm.Data["topo.xml"] == topoData
+		}, 10*time.Second, 200*time.Millisecond, "NCCL topo ConfigMap should be created")
+	})
+
+	t.Run("idempotent topo ConfigMap", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		te := setupTestEnv(t, ctx, newGangDiscoverer("topo2-gang", 2))
+		defer te.teardown()
+
+		te.createNamespace(t, ctx, "default")
+
+		cfg := &config.Config{
+			FileConfig: config.FileConfig{
+				GangCoordination: config.GangCoordinationConfig{
+					NCCLTopoConfigMap: "nccl-topo-2",
+					NCCLTopoData:      "<topo/>",
+				},
+			},
+		}
+		ctrl := NewGangController(
+			cfg,
+			te.mgr.GetClient(),
+			gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
+			newGangDiscoverer("topo2-gang", 2),
+		)
+
+		ctrl.RegisterPod(ctx, webhook.GangRegistration{
+			Namespace: "default", PodName: "w-0", GangID: "topo2-gang",
+			ConfigMapName: coordinator.ConfigMapName("topo2-gang"),
+		})
+		ctrl.RegisterPod(ctx, webhook.GangRegistration{
+			Namespace: "default", PodName: "w-1", GangID: "topo2-gang",
+			ConfigMapName: coordinator.ConfigMapName("topo2-gang"),
+		})
+
+		require.Eventually(t, func() bool {
+			cm, err := te.kubeClient.CoreV1().ConfigMaps("default").Get(ctx, "nccl-topo-2", metav1.GetOptions{})
+			return err == nil && cm != nil
+		}, 10*time.Second, 200*time.Millisecond)
+	})
+}
+
+func TestGangController_MultipleGangsIndependent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	disc := newGangDiscoverer("gang-a", 2)
+	te := setupTestEnv(t, ctx, disc)
+	defer te.teardown()
+
+	te.createNamespace(t, ctx, "default")
+
+	coord := gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig())
+
+	// Create ConfigMaps for two different gangs
+	require.NoError(t, coord.EnsureConfigMap(ctx, "default", "gang-a", 2))
+	require.NoError(t, coord.EnsureConfigMap(ctx, "default", "gang-b", 3))
+
+	cmA := coordinator.ConfigMapName("gang-a")
+	cmB := coordinator.ConfigMapName("gang-b")
+
+	require.Eventually(t, func() bool {
+		a, errA := te.kubeClient.CoreV1().ConfigMaps("default").Get(ctx, cmA, metav1.GetOptions{})
+		b, errB := te.kubeClient.CoreV1().ConfigMaps("default").Get(ctx, cmB, metav1.GetOptions{})
+		return errA == nil && errB == nil && a != nil && b != nil
+	}, 10*time.Second, 200*time.Millisecond)
+
+	cmAObj, _ := te.kubeClient.CoreV1().ConfigMaps("default").Get(ctx, cmA, metav1.GetOptions{})
+	cmBObj, _ := te.kubeClient.CoreV1().ConfigMaps("default").Get(ctx, cmB, metav1.GetOptions{})
+
+	assert.Equal(t, "2", cmAObj.Data["expected_count"])
+	assert.Equal(t, "3", cmBObj.Data["expected_count"])
 }
