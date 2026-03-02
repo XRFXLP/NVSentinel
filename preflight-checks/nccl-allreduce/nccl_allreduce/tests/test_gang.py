@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -28,7 +28,7 @@ def write_configmap(tmpdir: str, data: dict[str, str]) -> None:
 
 
 class TestGangConfigReader:
-    def test_read_parses_configmap(self, tmp_path: str) -> None:
+    def test_read_parses_configmap(self, tmp_path: Path) -> None:
         config_dir = str(tmp_path)
         write_configmap(
             config_dir,
@@ -51,7 +51,7 @@ class TestGangConfigReader:
         assert len(cfg.peers) == 3
         assert cfg.my_rank == 1
 
-    def test_read_peers_with_invalid_rank(self, tmp_path: str) -> None:
+    def test_read_peers_with_invalid_rank(self, tmp_path: Path) -> None:
         config_dir = str(tmp_path)
         write_configmap(
             config_dir,
@@ -68,7 +68,7 @@ class TestGangConfigReader:
         assert cfg.peers[0].rank == -1  # bad rank defaults to -1
         assert cfg.peers[1].rank == 1
 
-    def test_read_missing_expected_count(self, tmp_path: str) -> None:
+    def test_read_missing_expected_count(self, tmp_path: Path) -> None:
         config_dir = str(tmp_path)
         # No expected_count file
         write_configmap(config_dir, {"peers": "pod-0;10.0.0.1;0"})
@@ -77,7 +77,7 @@ class TestGangConfigReader:
         with pytest.raises(FileNotFoundError):
             reader.read("pod-0")
 
-    def test_read_empty_peers(self, tmp_path: str) -> None:
+    def test_read_empty_peers(self, tmp_path: Path) -> None:
         config_dir = str(tmp_path)
         write_configmap(
             config_dir,
@@ -90,7 +90,7 @@ class TestGangConfigReader:
         assert len(cfg.peers) == 0
         assert cfg.my_rank == -1
 
-    def test_find_rank_not_found(self, tmp_path: str) -> None:
+    def test_find_rank_not_found(self, tmp_path: Path) -> None:
         config_dir = str(tmp_path)
         write_configmap(
             config_dir,
@@ -128,7 +128,7 @@ class TestGangConfig:
 
 
 class TestGangWaiter:
-    def test_wait_succeeds_when_all_peers_present(self, tmp_path: str) -> None:
+    def test_wait_succeeds_when_all_peers_present(self, tmp_path: Path) -> None:
         config_dir = str(tmp_path)
         write_configmap(
             config_dir,
@@ -147,7 +147,7 @@ class TestGangWaiter:
         assert cfg.expected_count == 2
         assert len(cfg.peers) == 2
 
-    def test_wait_timeout_when_peers_missing(self, tmp_path: str) -> None:
+    def test_wait_timeout_when_peers_missing(self, tmp_path: Path) -> None:
         config_dir = str(tmp_path)
         write_configmap(
             config_dir,
@@ -162,7 +162,7 @@ class TestGangWaiter:
         with pytest.raises(TimeoutError, match="timeout"):
             waiter.wait("pod-0", timeout_seconds=0.05)
 
-    def test_wait_timeout_when_configmap_missing(self, tmp_path: str) -> None:
+    def test_wait_timeout_when_configmap_missing(self, tmp_path: Path) -> None:
         config_dir = str(tmp_path)
         # Empty directory - no ConfigMap files
 

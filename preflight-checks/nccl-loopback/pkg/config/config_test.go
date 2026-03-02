@@ -18,36 +18,43 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestParsePositiveFloat(t *testing.T) {
 	t.Run("default when unset", func(t *testing.T) {
 		t.Setenv("TEST_FLOAT", "")
 		v, err := parsePositiveFloat("TEST_FLOAT", 150.0)
-		require.NoError(t, err)
-		assert.Equal(t, 150.0, v)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if v != 150.0 {
+			t.Errorf("got %f, want 150.0", v)
+		}
 	})
 
 	t.Run("parses valid float", func(t *testing.T) {
 		t.Setenv("TEST_FLOAT", "42.5")
 		v, err := parsePositiveFloat("TEST_FLOAT", 0)
-		require.NoError(t, err)
-		assert.Equal(t, 42.5, v)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if v != 42.5 {
+			t.Errorf("got %f, want 42.5", v)
+		}
 	})
 
 	t.Run("rejects non-positive", func(t *testing.T) {
 		t.Setenv("TEST_FLOAT", "-1.0")
-		_, err := parsePositiveFloat("TEST_FLOAT", 0)
-		require.Error(t, err)
+		if _, err := parsePositiveFloat("TEST_FLOAT", 0); err == nil {
+			t.Fatal("expected error for negative float")
+		}
 	})
 
 	t.Run("rejects invalid", func(t *testing.T) {
 		t.Setenv("TEST_FLOAT", "abc")
-		_, err := parsePositiveFloat("TEST_FLOAT", 0)
-		require.Error(t, err)
+		if _, err := parsePositiveFloat("TEST_FLOAT", 0); err == nil {
+			t.Fatal("expected error for non-numeric string")
+		}
 	})
 }
 
@@ -55,38 +62,53 @@ func TestParsePositiveInt(t *testing.T) {
 	t.Run("default when unset", func(t *testing.T) {
 		t.Setenv("TEST_INT", "")
 		v, err := parsePositiveInt("TEST_INT", 256)
-		require.NoError(t, err)
-		assert.Equal(t, 256, v)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if v != 256 {
+			t.Errorf("got %d, want 256", v)
+		}
 	})
 
 	t.Run("parses valid int", func(t *testing.T) {
 		t.Setenv("TEST_INT", "128")
 		v, err := parsePositiveInt("TEST_INT", 0)
-		require.NoError(t, err)
-		assert.Equal(t, 128, v)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if v != 128 {
+			t.Errorf("got %d, want 128", v)
+		}
 	})
 
 	t.Run("rejects non-positive", func(t *testing.T) {
 		t.Setenv("TEST_INT", "0")
-		_, err := parsePositiveInt("TEST_INT", 0)
-		require.Error(t, err)
+		if _, err := parsePositiveInt("TEST_INT", 0); err == nil {
+			t.Fatal("expected error for zero")
+		}
 	})
 }
 
 func TestParseBool(t *testing.T) {
 	t.Run("default when unset", func(t *testing.T) {
 		t.Setenv("TEST_BOOL", "")
-		assert.False(t, parseBool("TEST_BOOL", false))
+		if parseBool("TEST_BOOL", false) {
+			t.Error("expected false when unset with default false")
+		}
 	})
 
 	t.Run("parses true", func(t *testing.T) {
 		t.Setenv("TEST_BOOL", "true")
-		assert.True(t, parseBool("TEST_BOOL", false))
+		if !parseBool("TEST_BOOL", false) {
+			t.Error("expected true")
+		}
 	})
 
 	t.Run("invalid returns default", func(t *testing.T) {
 		t.Setenv("TEST_BOOL", "not-a-bool")
-		assert.True(t, parseBool("TEST_BOOL", true))
+		if !parseBool("TEST_BOOL", true) {
+			t.Error("expected default true for invalid input")
+		}
 	})
 }
 
@@ -94,14 +116,19 @@ func TestRequireEnv(t *testing.T) {
 	t.Run("returns value when set", func(t *testing.T) {
 		t.Setenv("TEST_REQ", "value")
 		v, err := requireEnv("TEST_REQ")
-		require.NoError(t, err)
-		assert.Equal(t, "value", v)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if v != "value" {
+			t.Errorf("got %q, want %q", v, "value")
+		}
 	})
 
 	t.Run("error when empty", func(t *testing.T) {
 		t.Setenv("TEST_REQ", "")
-		_, err := requireEnv("TEST_REQ")
-		require.Error(t, err)
+		if _, err := requireEnv("TEST_REQ"); err == nil {
+			t.Fatal("expected error for empty env var")
+		}
 	})
 }
 
@@ -109,26 +136,35 @@ func TestValidateExecutable(t *testing.T) {
 	t.Run("valid executable", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "binary")
-		require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755))
-
-		assert.NoError(t, validateExecutable(path))
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("failed to create test binary: %v", err)
+		}
+		if err := validateExecutable(path); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
 	})
 
 	t.Run("missing file", func(t *testing.T) {
-		assert.Error(t, validateExecutable("/nonexistent/binary"))
+		if err := validateExecutable("/nonexistent/binary"); err == nil {
+			t.Error("expected error for missing file")
+		}
 	})
 
 	t.Run("directory not executable", func(t *testing.T) {
-		dir := t.TempDir()
-		assert.Error(t, validateExecutable(dir))
+		if err := validateExecutable(t.TempDir()); err == nil {
+			t.Error("expected error for directory")
+		}
 	})
 
 	t.Run("non-executable file", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "noexec")
-		require.NoError(t, os.WriteFile(path, []byte("data"), 0o644))
-
-		assert.Error(t, validateExecutable(path))
+		if err := os.WriteFile(path, []byte("data"), 0o644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+		if err := validateExecutable(path); err == nil {
+			t.Error("expected error for non-executable file")
+		}
 	})
 }
 
@@ -136,20 +172,29 @@ func TestParseProcessingStrategy(t *testing.T) {
 	t.Run("default strategy", func(t *testing.T) {
 		t.Setenv("PROCESSING_STRATEGY", "")
 		s, err := parseProcessingStrategy()
-		require.NoError(t, err)
-		assert.NotZero(t, s)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s == 0 {
+			t.Error("expected non-zero strategy")
+		}
 	})
 
 	t.Run("explicit strategy", func(t *testing.T) {
 		t.Setenv("PROCESSING_STRATEGY", "EXECUTE_REMEDIATION")
 		s, err := parseProcessingStrategy()
-		require.NoError(t, err)
-		assert.NotZero(t, s)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s == 0 {
+			t.Error("expected non-zero strategy")
+		}
 	})
 
 	t.Run("invalid strategy", func(t *testing.T) {
 		t.Setenv("PROCESSING_STRATEGY", "INVALID_STRATEGY")
-		_, err := parseProcessingStrategy()
-		require.Error(t, err)
+		if _, err := parseProcessingStrategy(); err == nil {
+			t.Fatal("expected error for invalid strategy")
+		}
 	})
 }

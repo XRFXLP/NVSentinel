@@ -142,137 +142,7 @@ func TestFindMaxResources_NoGPU_ReturnsNil(t *testing.T) {
 	assert.Nil(t, injector.findMaxResources(pod))
 }
 
-// findEnv returns the value for a named env var, or "" if not found.
-func findEnv(envs []corev1.EnvVar, name string) string {
-	for _, e := range envs {
-		if e.Name == name {
-			return e.Value
-		}
-	}
-	return ""
-}
 
-// --- Test helpers ---
-
-type mockDiscoverer struct {
-	name      string
-	canHandle bool
-	gangID    string
-}
-
-func (m *mockDiscoverer) Name() string                       { return m.name }
-func (m *mockDiscoverer) CanHandle(_ *corev1.Pod) bool       { return m.canHandle }
-func (m *mockDiscoverer) ExtractGangID(_ *corev1.Pod) string { return m.gangID }
-func (m *mockDiscoverer) DiscoverPeers(_ context.Context, _ *corev1.Pod) (*types.GangInfo, error) {
-	return nil, nil
-}
-
-func boolPtr(b bool) *bool { return &b }
-
-func testConfig() *config.Config {
-	return &config.Config{
-		FileConfig: config.FileConfig{
-			InitContainers: []corev1.Container{
-				{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"},
-			},
-			GPUResourceNames:     []string{"nvidia.com/gpu"},
-			NetworkResourceNames: []string{"vpc.amazonaws.com/efa"},
-			DCGM: config.DCGMConfig{
-				HostengineAddr:     "localhost:5555",
-				DiagLevel:          1,
-				ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
-				ProcessingStrategy: "EXECUTE_REMEDIATION",
-			},
-		},
-	}
-}
-
-func testGangConfig() *config.Config {
-	cfg := testConfig()
-	cfg.GangCoordination = config.GangCoordinationConfig{
-		Enabled:            true,
-		Timeout:            "10m",
-		TimeoutDuration:    10 * time.Minute,
-		MasterPort:         29500,
-		ConfigMapMountPath: "/etc/preflight",
-		MirrorResourceClaims: boolPtr(true),
-	}
-	return cfg
-}
-
-func gpuPod() *corev1.Pod {
-	return &corev1.Pod{
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  "train",
-					Image: "training:latest",
-					Resources: corev1.ResourceRequirements{
-						Limits: corev1.ResourceList{
-							"nvidia.com/gpu": resource.MustParse("8"),
-						},
-					},
-				},
-			},
-		},
-	}
-}
-
-func gpuEFAPod() *corev1.Pod {
-	return &corev1.Pod{
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  "train",
-					Image: "training:latest",
-					Resources: corev1.ResourceRequirements{
-						Limits: corev1.ResourceList{
-							"nvidia.com/gpu":        resource.MustParse("8"),
-							"vpc.amazonaws.com/efa": resource.MustParse("4"),
-						},
-					},
-				},
-			},
-		},
-	}
-}
-
-func findPatchByPath(patches []PatchOperation, path string) *PatchOperation {
-	for i := range patches {
-		if patches[i].Path == path {
-			return &patches[i]
-		}
-	}
-	return nil
-}
-
-func countPatchesByPath(patches []PatchOperation, path string) int {
-	count := 0
-	for _, p := range patches {
-		if p.Path == path {
-			count++
-		}
-	}
-	return count
-}
-
-func hasEnvVar(container corev1.Container, name string) bool {
-	for _, e := range container.Env {
-		if e.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-func hasVolumeMount(container corev1.Container, name string) bool {
-	for _, vm := range container.VolumeMounts {
-		if vm.Name == name {
-			return true
-		}
-	}
-	return false
-}
 
 // --- TestInjectInitContainers ---
 
@@ -723,36 +593,47 @@ func TestBuildInitContainers(t *testing.T) {
 	})
 }
 
-// --- TestInjectVolumes ---
+// extractVolumes pulls the []corev1.Volume out of the first /spec/volumes
+// or /spec/volumes/- patch, failing the test if none is found.
+func extractVolumes(t *testing.T, patches []PatchOperation) []corev1.Volume {
+	t.Helper()
+	p := findPatchByPath(patches, "/spec/volumes")
+	require.NotNil(t, p, "expected /spec/volumes patch")
+	volumes, ok := p.Value.([]corev1.Volume)
+	require.True(t, ok, "patch value should be []corev1.Volume")
+	return volumes
+}
+
+// findVolume returns the first volume with the given name, or nil.
+func findVolume(volumes []corev1.Volume, name string) *corev1.Volume {
+	for i := range volumes {
+		if volumes[i].Name == name {
+			return &volumes[i]
+		}
+	}
+	return nil
+}
+
+// requireVolume returns the volume with the given name, failing if absent.
+func requireVolume(t *testing.T, volumes []corev1.Volume, name string) *corev1.Volume {
+	t.Helper()
+	vol := findVolume(volumes, name)
+	require.NotNil(t, vol, "expected volume %q", name)
+	return vol
+}
 
 func TestInjectVolumes(t *testing.T) {
 	t.Run("nvsentinel socket volume added", func(t *testing.T) {
-		cfg := testConfig()
-		injector := &Injector{cfg: cfg}
-		pod := &corev1.Pod{}
+		injector := &Injector{cfg: testConfig()}
 
-		patches := injector.injectVolumes(pod, nil)
-		require.NotEmpty(t, patches)
-
-		p := findPatchByPath(patches, "/spec/volumes")
-		require.NotNil(t, p)
-		volumes, ok := p.Value.([]corev1.Volume)
-		require.True(t, ok)
-
-		var found bool
-		for _, vol := range volumes {
-			if vol.Name == nvsentinelSocketVolumeName {
-				found = true
-				require.NotNil(t, vol.HostPath)
-				assert.Equal(t, "/var/run/nvsentinel", vol.HostPath.Path)
-			}
-		}
-		assert.True(t, found, "expected nvsentinel-socket volume")
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, nil))
+		vol := requireVolume(t, volumes, nvsentinelSocketVolumeName)
+		require.NotNil(t, vol.HostPath)
+		assert.Equal(t, "/var/run/nvsentinel", vol.HostPath.Path)
 	})
 
 	t.Run("nvsentinel socket volume skipped if exists", func(t *testing.T) {
-		cfg := testConfig()
-		injector := &Injector{cfg: cfg}
+		injector := &Injector{cfg: testConfig()}
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
 				Volumes: []corev1.Volume{{Name: nvsentinelSocketVolumeName}},
@@ -768,92 +649,50 @@ func TestInjectVolumes(t *testing.T) {
 	})
 
 	t.Run("gang ConfigMap volume is optional", func(t *testing.T) {
-		cfg := testGangConfig()
-		injector := &Injector{cfg: cfg}
-		pod := &corev1.Pod{}
+		injector := &Injector{cfg: testGangConfig()}
 		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
 
-		patches := injector.injectVolumes(pod, gangCtx)
-		require.NotEmpty(t, patches)
-
-		p := findPatchByPath(patches, "/spec/volumes")
-		require.NotNil(t, p)
-		volumes, ok := p.Value.([]corev1.Volume)
-		require.True(t, ok)
-
-		for _, vol := range volumes {
-			if vol.Name == types.GangConfigVolumeName {
-				require.NotNil(t, vol.ConfigMap)
-				require.NotNil(t, vol.ConfigMap.Optional)
-				assert.True(t, *vol.ConfigMap.Optional)
-				assert.Equal(t, "preflight-test", vol.ConfigMap.Name)
-			}
-		}
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, gangCtx))
+		vol := requireVolume(t, volumes, types.GangConfigVolumeName)
+		require.NotNil(t, vol.ConfigMap)
+		require.NotNil(t, vol.ConfigMap.Optional)
+		assert.True(t, *vol.ConfigMap.Optional)
+		assert.Equal(t, "preflight-test", vol.ConfigMap.Name)
 	})
 
 	t.Run("dshm volume specs", func(t *testing.T) {
-		cfg := testGangConfig()
-		injector := &Injector{cfg: cfg}
-		pod := &corev1.Pod{}
+		injector := &Injector{cfg: testGangConfig()}
 		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
 
-		patches := injector.injectVolumes(pod, gangCtx)
-		p := findPatchByPath(patches, "/spec/volumes")
-		require.NotNil(t, p)
-		volumes, ok := p.Value.([]corev1.Volume)
-		require.True(t, ok)
-
-		for _, vol := range volumes {
-			if vol.Name == dshmVolumeName {
-				require.NotNil(t, vol.EmptyDir)
-				assert.Equal(t, corev1.StorageMediumMemory, vol.EmptyDir.Medium)
-				assert.Equal(t, resource.MustParse("64Gi"), *vol.EmptyDir.SizeLimit)
-			}
-		}
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, gangCtx))
+		vol := requireVolume(t, volumes, dshmVolumeName)
+		require.NotNil(t, vol.EmptyDir)
+		assert.Equal(t, corev1.StorageMediumMemory, vol.EmptyDir.Medium)
+		assert.Equal(t, resource.MustParse("64Gi"), *vol.EmptyDir.SizeLimit)
 	})
 
 	t.Run("NCCL topo volume added when configured", func(t *testing.T) {
 		cfg := testGangConfig()
 		cfg.GangCoordination.NCCLTopoConfigMap = "nccl-topo-ndv4"
 		injector := &Injector{cfg: cfg}
-		pod := &corev1.Pod{}
 		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
 
-		patches := injector.injectVolumes(pod, gangCtx)
-		p := findPatchByPath(patches, "/spec/volumes")
-		require.NotNil(t, p)
-		volumes, ok := p.Value.([]corev1.Volume)
-		require.True(t, ok)
-
-		var found bool
-		for _, vol := range volumes {
-			if vol.Name == ncclTopoVolumeName {
-				found = true
-				require.NotNil(t, vol.ConfigMap)
-				assert.Equal(t, "nccl-topo-ndv4", vol.ConfigMap.Name)
-				require.NotNil(t, vol.ConfigMap.Optional)
-				assert.True(t, *vol.ConfigMap.Optional)
-			}
-		}
-		assert.True(t, found, "expected nccl-topo volume")
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, gangCtx))
+		vol := requireVolume(t, volumes, ncclTopoVolumeName)
+		require.NotNil(t, vol.ConfigMap)
+		assert.Equal(t, "nccl-topo-ndv4", vol.ConfigMap.Name)
+		require.NotNil(t, vol.ConfigMap.Optional)
+		assert.True(t, *vol.ConfigMap.Optional)
 	})
 
 	t.Run("NCCL topo volume not added when not configured", func(t *testing.T) {
 		cfg := testGangConfig()
 		cfg.GangCoordination.NCCLTopoConfigMap = ""
 		injector := &Injector{cfg: cfg}
-		pod := &corev1.Pod{}
 		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
 
-		patches := injector.injectVolumes(pod, gangCtx)
-		p := findPatchByPath(patches, "/spec/volumes")
-		require.NotNil(t, p)
-		volumes, ok := p.Value.([]corev1.Volume)
-		require.True(t, ok)
-
-		for _, vol := range volumes {
-			assert.NotEqual(t, ncclTopoVolumeName, vol.Name)
-		}
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, gangCtx))
+		assert.Nil(t, findVolume(volumes, ncclTopoVolumeName), "nccl-topo volume should not be present")
 	})
 
 	t.Run("extra hostPath volumes added", func(t *testing.T) {
@@ -862,24 +701,12 @@ func TestInjectVolumes(t *testing.T) {
 			{Name: "host-efa", HostPath: "/opt/amazon/efa", MountPath: "/opt/amazon/efa", HostPathType: "Directory"},
 		}
 		injector := &Injector{cfg: cfg}
-		pod := &corev1.Pod{}
 		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
 
-		patches := injector.injectVolumes(pod, gangCtx)
-		p := findPatchByPath(patches, "/spec/volumes")
-		require.NotNil(t, p)
-		volumes, ok := p.Value.([]corev1.Volume)
-		require.True(t, ok)
-
-		var found bool
-		for _, vol := range volumes {
-			if vol.Name == "host-efa" {
-				found = true
-				require.NotNil(t, vol.HostPath)
-				assert.Equal(t, "/opt/amazon/efa", vol.HostPath.Path)
-			}
-		}
-		assert.True(t, found, "expected host-efa volume")
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, gangCtx))
+		vol := requireVolume(t, volumes, "host-efa")
+		require.NotNil(t, vol.HostPath)
+		assert.Equal(t, "/opt/amazon/efa", vol.HostPath.Path)
 	})
 
 	t.Run("extra hostPath with invalid type skipped", func(t *testing.T) {
@@ -889,30 +716,13 @@ func TestInjectVolumes(t *testing.T) {
 			{Name: "good-type", HostPath: "/good", MountPath: "/good", HostPathType: "Directory"},
 		}
 		injector := &Injector{cfg: cfg}
-		pod := &corev1.Pod{}
 		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
 
-		patches := injector.injectVolumes(pod, gangCtx)
-		p := findPatchByPath(patches, "/spec/volumes")
-		require.NotNil(t, p)
-		volumes, ok := p.Value.([]corev1.Volume)
-		require.True(t, ok)
-
-		for _, vol := range volumes {
-			assert.NotEqual(t, "bad-type", vol.Name, "bogus hostPathType should be skipped")
-		}
-
-		var found bool
-		for _, vol := range volumes {
-			if vol.Name == "good-type" {
-				found = true
-			}
-		}
-		assert.True(t, found, "valid hostPath should be included")
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, gangCtx))
+		assert.Nil(t, findVolume(volumes, "bad-type"), "bogus hostPathType should be skipped")
+		assert.NotNil(t, findVolume(volumes, "good-type"), "valid hostPath should be included")
 	})
 }
-
-// --- TestParseHostPathType ---
 
 func TestParseHostPathType(t *testing.T) {
 	tests := []struct {
@@ -945,4 +755,135 @@ func TestParseHostPathType(t *testing.T) {
 			}
 		})
 	}
+}
+
+// findEnv returns the value for a named env var, or "" if not found.
+func findEnv(envs []corev1.EnvVar, name string) string {
+	for _, e := range envs {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
+}
+
+
+type mockDiscoverer struct {
+	name      string
+	canHandle bool
+	gangID    string
+}
+
+func (m *mockDiscoverer) Name() string                       { return m.name }
+func (m *mockDiscoverer) CanHandle(_ *corev1.Pod) bool       { return m.canHandle }
+func (m *mockDiscoverer) ExtractGangID(_ *corev1.Pod) string { return m.gangID }
+func (m *mockDiscoverer) DiscoverPeers(_ context.Context, _ *corev1.Pod) (*types.GangInfo, error) {
+	return nil, nil
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+func testConfig() *config.Config {
+	return &config.Config{
+		FileConfig: config.FileConfig{
+			InitContainers: []corev1.Container{
+				{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"},
+			},
+			GPUResourceNames:     []string{"nvidia.com/gpu"},
+			NetworkResourceNames: []string{"vpc.amazonaws.com/efa"},
+			DCGM: config.DCGMConfig{
+				HostengineAddr:     "localhost:5555",
+				DiagLevel:          1,
+				ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
+				ProcessingStrategy: "EXECUTE_REMEDIATION",
+			},
+		},
+	}
+}
+
+func testGangConfig() *config.Config {
+	cfg := testConfig()
+	cfg.GangCoordination = config.GangCoordinationConfig{
+		Enabled:            true,
+		Timeout:            "10m",
+		TimeoutDuration:    10 * time.Minute,
+		MasterPort:         29500,
+		ConfigMapMountPath: "/etc/preflight",
+		MirrorResourceClaims: boolPtr(true),
+	}
+	return cfg
+}
+
+func gpuPod() *corev1.Pod {
+	return &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "train",
+					Image: "training:latest",
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{
+							"nvidia.com/gpu": resource.MustParse("8"),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func gpuEFAPod() *corev1.Pod {
+	return &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "train",
+					Image: "training:latest",
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{
+							"nvidia.com/gpu":        resource.MustParse("8"),
+							"vpc.amazonaws.com/efa": resource.MustParse("4"),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func findPatchByPath(patches []PatchOperation, path string) *PatchOperation {
+	for i := range patches {
+		if patches[i].Path == path {
+			return &patches[i]
+		}
+	}
+	return nil
+}
+
+func countPatchesByPath(patches []PatchOperation, path string) int {
+	count := 0
+	for _, p := range patches {
+		if p.Path == path {
+			count++
+		}
+	}
+	return count
+}
+
+func hasEnvVar(container corev1.Container, name string) bool {
+	for _, e := range container.Env {
+		if e.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasVolumeMount(container corev1.Container, name string) bool {
+	for _, vm := range container.VolumeMounts {
+		if vm.Name == name {
+			return true
+		}
+	}
+	return false
 }
