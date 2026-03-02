@@ -183,13 +183,20 @@ func TestInjectInitContainers(t *testing.T) {
 				assert.Len(t, containers, 1)
 				assert.Equal(t, "preflight-dcgm-diag", containers[0].Name)
 
-				// No gang volumes should be present
-				for _, p := range patches {
-					if vol, ok := p.Value.(corev1.Volume); ok {
+			// No gang volumes should be present (check both single-volume
+			// appends and the initial slice-valued /spec/volumes patch).
+			for _, p := range patches {
+				switch v := p.Value.(type) {
+				case corev1.Volume:
+					assert.NotEqual(t, types.GangConfigVolumeName, v.Name)
+					assert.NotEqual(t, dshmVolumeName, v.Name)
+				case []corev1.Volume:
+					for _, vol := range v {
 						assert.NotEqual(t, types.GangConfigVolumeName, vol.Name)
 						assert.NotEqual(t, dshmVolumeName, vol.Name)
 					}
 				}
+			}
 			},
 		},
 		{
