@@ -39,9 +39,13 @@ import (
 )
 
 const (
-	drainCompleteConditionType       = "DrainComplete"
-	slurmNodeStateDrainConditionType = "SlurmNodeStateDrain"
-	annotationKey                    = "nodeset.slinky.slurm.net/node-cordon-reason"
+	drainCompleteConditionType = "DrainComplete"
+	annotationKey              = "nodeset.slinky.slurm.net/node-cordon-reason"
+
+	slurmNodeStateDrainConditionType      = "SlurmNodeStateDrain"
+	slurmNodeStateAllocatedConditionType  = "SlurmNodeStateAllocated"
+	slurmNodeStateMixedConditionType      = "SlurmNodeStateMixed"
+	slurmNodeStateCompletingConditionType = "SlurmNodeStateCompleting"
 	annotationPrefix                 = "[J] [NVSentinel]"
 	nvsentinelStateLabelKey          = "dgxc.nvidia.com/nvsentinel-state"
 	drainRequestFinalizer            = "nvsentinel.nvidia.com/slinky-drainer"
@@ -297,7 +301,7 @@ func (r *DrainRequestReconciler) checkPodsReadyForDrain(pods []corev1.Pod) (bool
 			continue
 		}
 
-		if !hasSlurmDrainCondition(&pod) {
+		if !hasSlurmDrainCondition(&pod) || isNodeBusy(&pod.Status) {
 			notReady = append(notReady, pod.Name)
 		}
 	}
@@ -306,19 +310,23 @@ func (r *DrainRequestReconciler) checkPodsReadyForDrain(pods []corev1.Pod) (bool
 }
 
 func isPodReady(pod *corev1.Pod) bool {
-	for _, cond := range pod.Status.Conditions {
-		if cond.Type == corev1.PodReady {
-			return cond.Status == corev1.ConditionTrue
-		}
-	}
-
-	return false
+	return isConditionTrue(&pod.Status, string(corev1.PodReady))
 }
 
 func hasSlurmDrainCondition(pod *corev1.Pod) bool {
-	for _, cond := range pod.Status.Conditions {
-		if cond.Type == slurmNodeStateDrainConditionType && cond.Status == corev1.ConditionTrue {
-			return true
+	return isConditionTrue(&pod.Status, slurmNodeStateDrainConditionType)
+}
+
+func isNodeBusy(status *corev1.PodStatus) bool {
+	return isConditionTrue(status, slurmNodeStateAllocatedConditionType) ||
+		isConditionTrue(status, slurmNodeStateMixedConditionType) ||
+		isConditionTrue(status, slurmNodeStateCompletingConditionType)
+}
+
+func isConditionTrue(status *corev1.PodStatus, conditionType string) bool {
+	for _, cond := range status.Conditions {
+		if string(cond.Type) == conditionType {
+			return cond.Status == corev1.ConditionTrue
 		}
 	}
 

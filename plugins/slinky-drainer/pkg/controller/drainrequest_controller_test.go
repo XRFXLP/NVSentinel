@@ -97,6 +97,94 @@ func TestReconcile_PreExistingAnnotationPreserved(t *testing.T) {
 	assertNodeAnnotation(t, tc, node.Name, "Manual drain by operator")
 }
 
+func TestCheckPodsReadyForDrain(t *testing.T) {
+	makePod := func(name string, conditions ...corev1.PodCondition) corev1.Pod {
+		return corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Status:     corev1.PodStatus{Conditions: conditions},
+		}
+	}
+
+	cond := func(typ string, status corev1.ConditionStatus) corev1.PodCondition {
+		return corev1.PodCondition{Type: corev1.PodConditionType(typ), Status: status}
+	}
+
+	ready := cond(string(corev1.PodReady), corev1.ConditionTrue)
+	drained := cond(slurmNodeStateDrainConditionType, corev1.ConditionTrue)
+	allocated := cond(slurmNodeStateAllocatedConditionType, corev1.ConditionTrue)
+	mixed := cond(slurmNodeStateMixedConditionType, corev1.ConditionTrue)
+	completing := cond(slurmNodeStateCompletingConditionType, corev1.ConditionTrue)
+
+	tests := []struct {
+		name          string
+		pods          []corev1.Pod
+		expectReady   bool
+		expectPending []string
+	}{
+		{
+			name:        "ready + drained + not busy",
+			pods:        []corev1.Pod{makePod("p1", ready, drained)},
+			expectReady: true,
+		},
+		{
+			name:          "ready + drained + allocated (busy)",
+			pods:          []corev1.Pod{makePod("p1", ready, drained, allocated)},
+			expectReady:   false,
+			expectPending: []string{"p1"},
+		},
+		{
+			name:          "ready + drained + mixed (busy)",
+			pods:          []corev1.Pod{makePod("p1", ready, drained, mixed)},
+			expectReady:   false,
+			expectPending: []string{"p1"},
+		},
+		{
+			name:          "ready + drained + completing (busy)",
+			pods:          []corev1.Pod{makePod("p1", ready, drained, completing)},
+			expectReady:   false,
+			expectPending: []string{"p1"},
+		},
+		{
+			name:          "ready but no drain condition",
+			pods:          []corev1.Pod{makePod("p1", ready)},
+			expectReady:   false,
+			expectPending: []string{"p1"},
+		},
+		{
+			name:        "not ready pod skipped",
+			pods:        []corev1.Pod{makePod("p1")},
+			expectReady: true,
+		},
+		{
+			name: "mix of ready drained and failed",
+			pods: []corev1.Pod{
+				makePod("good", ready, drained),
+				makePod("failed"),
+			},
+			expectReady: true,
+		},
+		{
+			name: "one busy blocks drain",
+			pods: []corev1.Pod{
+				makePod("done", ready, drained),
+				makePod("busy", ready, drained, allocated),
+			},
+			expectReady:   false,
+			expectPending: []string{"busy"},
+		},
+	}
+
+	r := &DrainRequestReconciler{}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			allReady, notReady := r.checkPodsReadyForDrain(tt.pods)
+			assert.Equal(t, tt.expectReady, allReady)
+			assert.Equal(t, tt.expectPending, notReady)
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test setup
 // ---------------------------------------------------------------------------
