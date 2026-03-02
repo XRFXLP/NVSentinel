@@ -255,22 +255,6 @@ func createSlinkyPod(t *testing.T, tc *testEnvContext, nodeName string) *corev1.
 	return pod
 }
 
-func markPodReady(t *testing.T, tc *testEnvContext, podName, podNamespace string) {
-	t.Helper()
-
-	var pod corev1.Pod
-
-	require.Eventually(t, func() bool {
-		return tc.client.Get(tc.ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, &pod) == nil
-	}, testTimeout, testPollInterval, "Pod %s/%s should exist in cache", podNamespace, podName)
-
-	pod.Status.Phase = corev1.PodRunning
-	pod.Status.Conditions = []corev1.PodCondition{
-		{Type: corev1.PodReady, Status: corev1.ConditionTrue},
-	}
-	require.NoError(t, tc.client.Status().Update(tc.ctx, &pod))
-}
-
 func createFailedPod(t *testing.T, tc *testEnvContext, nodeName string) {
 	t.Helper()
 
@@ -297,7 +281,7 @@ func markPodReady(t *testing.T, tc *testEnvContext, podName, podNamespace string
 
 	require.Eventually(t, func() bool {
 		return tc.client.Get(tc.ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, &pod) == nil
-	}, testTimeout, testPollInterval, "Pod %s/%s should exist", podNamespace, podName)
+	}, testTimeout, testPollInterval, "Pod %s/%s should exist in cache", podNamespace, podName)
 
 	pod.Status.Phase = corev1.PodRunning
 	pod.Status.Conditions = []corev1.PodCondition{
@@ -306,21 +290,7 @@ func markPodReady(t *testing.T, tc *testEnvContext, podName, podNamespace string
 	require.NoError(t, tc.client.Status().Update(tc.ctx, &pod))
 }
 
-func markPodDraining(t *testing.T, tc *testEnvContext, podName, podNamespace string) {
-	t.Helper()
-
-	pod := &corev1.Pod{}
-	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, pod))
-
-	pod.Status.Conditions = []corev1.PodCondition{
-		{Type: corev1.PodReady, Status: corev1.ConditionTrue},
-		{Type: slurmNodeStateDrainConditionType, Status: corev1.ConditionTrue},
-		{Type: slurmNodeStateAllocatedConditionType, Status: corev1.ConditionTrue},
-	}
-	require.NoError(t, tc.client.Status().Update(tc.ctx, pod))
-}
-
-func markPodDrained(t *testing.T, tc *testEnvContext, podName, podNamespace string) {
+func markPodDrainReady(t *testing.T, tc *testEnvContext, podName, podNamespace string) {
 	t.Helper()
 
 	pod := &corev1.Pod{}

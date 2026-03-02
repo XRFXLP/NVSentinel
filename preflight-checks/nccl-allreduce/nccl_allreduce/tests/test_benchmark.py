@@ -27,48 +27,44 @@ from nccl_allreduce.benchmark import format_size, parse_size  # noqa: E402
 class TestParseSize:
     """Tests for parse_size: human-readable size strings (e.g. '4G', '512MB') to bytes."""
 
-    def test_megabytes_suffix_m(self) -> None:
-        assert parse_size("512M") == 512 * 1024**2
+    @pytest.mark.parametrize(
+        ("input_str", "expected"),
+        [
+            ("512M", 512 * 1024**2),
+            ("512MB", 512 * 1024**2),
+            ("4G", 4 * 1024**3),
+            ("4GB", 4 * 1024**3),
+            ("1g", 1 * 1024**3),
+            ("  256M  ", 256 * 1024**2),
+            ("0.5G", int(0.5 * 1024**3)),
+        ],
+        ids=["M", "MB", "G", "GB", "lowercase", "whitespace", "fractional"],
+    )
+    def test_valid(self, input_str: str, expected: int) -> None:
+        assert parse_size(input_str) == expected
 
-    def test_megabytes_suffix_mb(self) -> None:
-        assert parse_size("512MB") == 512 * 1024**2
-
-    def test_gigabytes_suffix_g(self) -> None:
-        assert parse_size("4G") == 4 * 1024**3
-
-    def test_gigabytes_suffix_gb(self) -> None:
-        assert parse_size("4GB") == 4 * 1024**3
-
-    def test_lowercase(self) -> None:
-        assert parse_size("1g") == 1 * 1024**3
-
-    def test_whitespace(self) -> None:
-        assert parse_size("  256M  ") == 256 * 1024**2
-
-    def test_fractional(self) -> None:
-        assert parse_size("0.5G") == int(0.5 * 1024**3)
-
-    def test_invalid_suffix(self) -> None:
-        with pytest.raises(ValueError, match="Invalid size format"):
-            parse_size("100")
-
-    def test_invalid_string(self) -> None:
+    @pytest.mark.parametrize(
+        "input_str",
+        ["100", "not-a-size"],
+        ids=["no_suffix", "garbage"],
+    )
+    def test_invalid(self, input_str: str) -> None:
         with pytest.raises(ValueError):
-            parse_size("not-a-size")
+            parse_size(input_str)
 
 
 class TestFormatSize:
     """Tests for format_size: bytes to human-readable strings (e.g. '512.00 MB')."""
 
-    def test_megabytes(self) -> None:
-        assert format_size(512 * 1024**2) == "512.00 MB"
-
-    def test_gigabytes(self) -> None:
-        assert format_size(4 * 1024**3) == "4.00 GB"
-
-    def test_sub_megabyte(self) -> None:
-        result = format_size(1024)
-        assert "MB" in result
-
-    def test_exact_one_gb(self) -> None:
-        assert format_size(1024**3) == "1.00 GB"
+    @pytest.mark.parametrize(
+        ("size_bytes", "expected"),
+        [
+            (512 * 1024**2, "512.00 MB"),
+            (4 * 1024**3, "4.00 GB"),
+            (1024**3, "1.00 GB"),
+            (1024, "0.00 MB"),
+        ],
+        ids=["megabytes", "gigabytes", "exact_1gb", "sub_megabyte"],
+    )
+    def test_format(self, size_bytes: int, expected: str) -> None:
+        assert format_size(size_bytes) == expected
