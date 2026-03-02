@@ -46,9 +46,9 @@ const (
 	slurmNodeStateAllocatedConditionType  = "SlurmNodeStateAllocated"
 	slurmNodeStateMixedConditionType      = "SlurmNodeStateMixed"
 	slurmNodeStateCompletingConditionType = "SlurmNodeStateCompleting"
-	annotationPrefix                 = "[J] [NVSentinel]"
-	nvsentinelStateLabelKey          = "dgxc.nvidia.com/nvsentinel-state"
-	drainRequestFinalizer            = "nvsentinel.nvidia.com/slinky-drainer"
+	annotationPrefix                      = "[J] [NVSentinel]"
+	nvsentinelStateLabelKey               = "dgxc.nvidia.com/nvsentinel-state"
+	drainRequestFinalizer                 = "nvsentinel.nvidia.com/slinky-drainer"
 )
 
 type DrainRequestReconciler struct {
