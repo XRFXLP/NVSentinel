@@ -44,7 +44,6 @@ const (
 	annotationKey                    = "nodeset.slinky.slurm.net/node-cordon-reason"
 	annotationPrefix                 = "[J] [NVSentinel]"
 	nvsentinelStateLabelKey          = "dgxc.nvidia.com/nvsentinel-state"
-	remediationSucceededValue        = "remediation-succeeded"
 	drainRequestFinalizer            = "nvsentinel.nvidia.com/slinky-drainer"
 )
 
