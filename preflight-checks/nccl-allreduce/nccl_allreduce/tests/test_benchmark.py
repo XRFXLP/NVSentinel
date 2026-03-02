@@ -25,6 +25,8 @@ from nccl_allreduce.benchmark import format_size, parse_size  # noqa: E402
 
 
 class TestParseSize:
+    """Tests for parse_size: human-readable size strings (e.g. '4G', '512MB') to bytes."""
+
     def test_megabytes_suffix_m(self) -> None:
         assert parse_size("512M") == 512 * 1024**2
 
@@ -56,6 +58,8 @@ class TestParseSize:
 
 
 class TestFormatSize:
+    """Tests for format_size: bytes to human-readable strings (e.g. '512.00 MB')."""
+
     def test_megabytes(self) -> None:
         assert format_size(512 * 1024**2) == "512.00 MB"
 

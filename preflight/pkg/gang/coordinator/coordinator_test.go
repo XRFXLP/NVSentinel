@@ -264,6 +264,8 @@ func getConfigMap(t *testing.T, c client.Client, namespace, name string) *corev1
 	return cm
 }
 
+// TestEnsureConfigMap covers idempotent ConfigMap creation: creates when
+// missing, no-ops when already present, handles concurrent create races.
 func TestEnsureConfigMap(t *testing.T) {
 	t.Run("creates ConfigMap when missing", func(t *testing.T) {
 		coord := newFakeCoordinator()
@@ -310,6 +312,9 @@ func TestEnsureConfigMap(t *testing.T) {
 	})
 }
 
+// TestRegisterPeer covers peer registration: first peer + master election,
+// alphabetical sorting, IP updates without duplication, empty IP skipping,
+// and expected_count backfill from skeleton ConfigMaps.
 func TestRegisterPeer(t *testing.T) {
 	t.Run("registers first peer and sets master", func(t *testing.T) {
 		coord := newFakeCoordinator()
@@ -399,6 +404,9 @@ func TestRegisterPeer(t *testing.T) {
 	})
 }
 
+// TestUpdateMasterAddr covers master address selection: rank-0 is
+// alphabetically first, empty peer list is a no-op, rank-0 with
+// empty IP doesn't overwrite.
 func TestUpdateMasterAddr(t *testing.T) {
 	t.Run("rank 0 is alphabetically first", func(t *testing.T) {
 		coord := newFakeCoordinator()

@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -35,6 +37,16 @@ import (
 
 	drainv1alpha1 "github.com/nvidia/nvsentinel/plugins/slinky-drainer/api/v1alpha1"
 )
+
+var testSchemeOnce sync.Once
+
+func testScheme() *runtime.Scheme {
+	testSchemeOnce.Do(func() {
+		_ = drainv1alpha1.AddToScheme(clientgoscheme.Scheme)
+	})
+
+	return clientgoscheme.Scheme
+}
 
 const (
 	testSlinkyNamespace = "slinky-test"
@@ -135,8 +147,7 @@ func TestReconcile_DrainingPodNotDeleted(t *testing.T) {
 func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 	t.Helper()
 
-	scheme := clientgoscheme.Scheme
-	require.NoError(t, drainv1alpha1.AddToScheme(scheme))
+	scheme := testScheme()
 
 	te := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd")},
@@ -242,6 +253,22 @@ func createSlinkyPod(t *testing.T, tc *testEnvContext, nodeName string) *corev1.
 	require.NoError(t, tc.client.Create(tc.ctx, pod))
 
 	return pod
+}
+
+func markPodReady(t *testing.T, tc *testEnvContext, podName, podNamespace string) {
+	t.Helper()
+
+	var pod corev1.Pod
+
+	require.Eventually(t, func() bool {
+		return tc.client.Get(tc.ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, &pod) == nil
+	}, testTimeout, testPollInterval, "Pod %s/%s should exist in cache", podNamespace, podName)
+
+	pod.Status.Phase = corev1.PodRunning
+	pod.Status.Conditions = []corev1.PodCondition{
+		{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+	}
+	require.NoError(t, tc.client.Status().Update(tc.ctx, &pod))
 }
 
 func createFailedPod(t *testing.T, tc *testEnvContext, nodeName string) {

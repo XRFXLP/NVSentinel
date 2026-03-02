@@ -144,8 +144,9 @@ func TestFindMaxResources_NoGPU_ReturnsNil(t *testing.T) {
 
 
 
-// --- TestInjectInitContainers ---
-
+// TestInjectInitContainers covers the main entry point: GPU detection,
+// gang context extraction, init container / volume patch generation,
+// and append-vs-create behavior for existing init containers and volumes.
 func TestInjectInitContainers(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -351,8 +352,9 @@ func TestInjectInitContainers(t *testing.T) {
 	}
 }
 
-// --- TestBuildInitContainers ---
-
+// TestBuildInitContainers covers per-container logic: resource mirroring,
+// CPU/memory floor defaults, env injection ordering (common > DCGM > gang > user),
+// user env/mount inheritance, and DRA claim mirroring.
 func TestBuildInitContainers(t *testing.T) {
 	t.Run("resources mirrored to init containers", func(t *testing.T) {
 		cfg := testConfig()
@@ -622,6 +624,9 @@ func requireVolume(t *testing.T, volumes []corev1.Volume, name string) *corev1.V
 	return vol
 }
 
+// TestInjectVolumes covers volume patch generation: nvsentinel socket,
+// gang ConfigMap (optional), /dev/shm, NCCL topology, extra hostPaths,
+// and dedup against existing pod volumes.
 func TestInjectVolumes(t *testing.T) {
 	t.Run("nvsentinel socket volume added", func(t *testing.T) {
 		injector := &Injector{cfg: testConfig()}
@@ -724,6 +729,8 @@ func TestInjectVolumes(t *testing.T) {
 	})
 }
 
+// TestParseHostPathType covers all 7 valid K8s HostPathType values,
+// empty string (nil), and invalid strings (rejected).
 func TestParseHostPathType(t *testing.T) {
 	tests := []struct {
 		input   string

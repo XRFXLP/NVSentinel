@@ -32,6 +32,9 @@ func writeYAML(t *testing.T, content string) string {
 	return path
 }
 
+// TestLoad covers YAML parsing, default population (GPU resources, DCGM,
+// gang coordination), validation errors (bad timeout), file errors,
+// and extraHostPathMounts readOnly defaulting.
 func TestLoad(t *testing.T) {
 	t.Run("minimal config with defaults", func(t *testing.T) {
 		path := writeYAML(t, `

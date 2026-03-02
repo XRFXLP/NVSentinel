@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Tests for env-based configuration helpers: float/int/bool parsing,
+// required env vars, executable validation, and processing strategy parsing.
 package config
 
 import (

@@ -81,6 +81,9 @@ func handlerGangConfig() *config.Config {
 	return cfg
 }
 
+// TestHandleMutate covers the HTTP admission webhook layer: request parsing,
+// AdmissionReview serialization, UID propagation, namespace backfill,
+// gang registration callback, and error responses for invalid input.
 func TestHandleMutate(t *testing.T) {
 	t.Run("valid GPU pod returns patch", func(t *testing.T) {
 		handler := NewHandler(handlerConfig(), nil, nil)

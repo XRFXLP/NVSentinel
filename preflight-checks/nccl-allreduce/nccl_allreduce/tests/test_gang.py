@@ -28,6 +28,12 @@ def write_configmap(tmpdir: str, data: dict[str, str]) -> None:
 
 
 class TestGangConfigReader:
+    """Tests for reading gang coordination data from a mounted ConfigMap volume.
+
+    Covers: full happy-path parsing, malformed peer ranks, missing required
+    keys, empty peer lists, and rank lookup for unknown pods.
+    """
+
     def test_read_parses_configmap(self, tmp_path: Path) -> None:
         config_dir = str(tmp_path)
         write_configmap(
@@ -103,6 +109,8 @@ class TestGangConfigReader:
 
 
 class TestGangConfig:
+    """Tests for building torchrun CLI arguments from gang coordination info."""
+
     def test_get_torchrun_args(self) -> None:
         cfg = GangConfig(
             expected_count=4,
@@ -128,6 +136,12 @@ class TestGangConfig:
 
 
 class TestGangWaiter:
+    """Tests for polling the ConfigMap until gang formation completes.
+
+    Covers: immediate success when all peers are present, timeout when
+    peers are missing, and timeout when the ConfigMap doesn't exist yet.
+    """
+
     def test_wait_succeeds_when_all_peers_present(self, tmp_path: Path) -> None:
         config_dir = str(tmp_path)
         write_configmap(
