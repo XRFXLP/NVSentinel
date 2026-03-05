@@ -106,7 +106,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 		return "", fmt.Errorf("failed to create reboot job for node %s: %w", node.Name, err)
 	}
 
-	slog.Info("Reboot Job created", "node", node.Name, "job", created.Name, "bootID", preRebootBootID)
+	slog.Info("Reboot Job created", "node", node.Name, "job", created.Name, "jobNamespace", c.config.RebootJobNamespace, "bootID", preRebootBootID)
 
 	return model.ResetSignalRequestRef(preRebootBootID), nil
 }
@@ -319,7 +319,10 @@ func loadConfigFromEnv() Config {
 
 	ttl := int32(defaultRebootJobTTLSeconds)
 	if ttlStr := os.Getenv("GENERIC_REBOOT_JOB_TTL"); ttlStr != "" {
-		if parsed, err := strconv.Atoi(ttlStr); err == nil {
+		parsed, err := strconv.ParseInt(ttlStr, 10, 32)
+		if err != nil || parsed < 0 {
+			slog.Warn("Invalid GENERIC_REBOOT_JOB_TTL, using default", "value", ttlStr, "default", defaultRebootJobTTLSeconds)
+		} else {
 			ttl = int32(parsed)
 		}
 	}

@@ -346,10 +346,19 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		t.Setenv("GENERIC_REBOOT_IMAGE", "custom-image:latest")
 		t.Setenv("GENERIC_REBOOT_JOB_NAMESPACE", "custom-ns")
 		t.Setenv("GENERIC_REBOOT_JOB_TTL", "7200")
+		t.Setenv("GENERIC_REBOOT_IMAGE_PULL_SECRETS", "secret-a, secret-b")
 
 		config := loadConfigFromEnv()
 		assert.Equal(t, "custom-image:latest", config.RebootImage)
 		assert.Equal(t, "custom-ns", config.RebootJobNamespace)
 		assert.Equal(t, int32(7200), config.RebootJobTTL)
+		assert.Equal(t, []string{"secret-a", "secret-b"}, config.RebootJobPullSecrets)
+	})
+
+	t.Run("invalid TTL uses default", func(t *testing.T) {
+		t.Setenv("GENERIC_REBOOT_JOB_TTL", "not-a-number")
+
+		config := loadConfigFromEnv()
+		assert.Equal(t, int32(defaultRebootJobTTLSeconds), config.RebootJobTTL)
 	})
 }
