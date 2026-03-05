@@ -55,7 +55,7 @@ flowchart TD
     Switch -->|unknown| ERR["Error: unsupported CSP"]
 ```
 
-Known CSPs ignore `rebootMethod`. Setting `CSP=aws` with `rebootMethod=host-reboot` is rejected as an invalid combination — cloud providers must use their CSP API.
+When `rebootMethod=host-reboot` is set, the generic provider is used regardless of the `CSP` value. When `rebootMethod` is empty (the default), the factory routes to the CSP-specific provider or errors on unknown values.
 
 ### 2. Generic Provider — Reboot via Privileged Job
 
@@ -169,7 +169,7 @@ csp:
   generic:                      # config for the generic provider (when rebootMethod=host-reboot)
     rebootImage: "busybox:1.37"
     rebootJobNamespace: ""      # defaults to the janitor-provider's own namespace
-    rebootJobTTLSeconds: 86400
+    rebootJobTTLSeconds: 3600
 ```
 
 ```yaml
@@ -189,7 +189,9 @@ env:
 
 ### 4. RBAC
 
-The existing ClusterRole handles cluster-scoped `nodes` access. For Jobs, a namespaced **Role** scopes permissions to the provider's own namespace:
+Today the janitor-provider is a read-only gRPC service — its ClusterRole only grants `get`/`list`/`watch` on `nodes`, and all Kubernetes write operations (creating RebootNode CRs, managing Leases) belong to the janitor controller. The generic provider changes this boundary: the janitor-provider now creates and deletes Jobs.
+
+This is scoped as tightly as possible. The janitor-provider retains its existing ClusterRole for read-only node access. Job permissions are granted via a separate namespaced **Role**, limiting writes to the provider's own namespace:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -202,6 +204,8 @@ rules:
     verbs: ["create", "get", "list", "watch", "delete"]
 ```
 
+The janitor controller's RBAC is unchanged — it continues to own RebootNode lifecycle and distributed locking. The provider's new write scope is limited to ephemeral reboot Jobs in a single namespace.
+
 ### 5. File Locations
 
 | File | Change |
@@ -212,7 +216,8 @@ rules:
 | `janitor-provider/pkg/csp/client_test.go` | Modified — tests for opt-in routing |
 | `distros/.../charts/janitor-provider/values.yaml` | Modified — add `csp.rebootMethod` and `csp.generic` |
 | `distros/.../charts/janitor-provider/templates/deployment.yaml` | Modified — inject `REBOOT_METHOD` and generic env vars |
-| `distros/.../charts/janitor-provider/templates/clusterrole.yaml` | Modified — add `batch/jobs` permissions |
+| `distros/.../charts/janitor-provider/templates/role.yaml` | New — namespaced Role for `batch/jobs` permissions |
+| `distros/.../charts/janitor-provider/templates/rolebinding.yaml` | New — RoleBinding for the above |
 
 ## Rationale
 
@@ -249,19 +254,16 @@ rules:
 ### Privileged DaemonSet Agent
 **Rejected**: Larger security surface than an ephemeral Job, wastes resources while idle. Also rejected in [ADR-019](019-janitor-gpu-reset.md).
 
-### IPMI / BMC Out-of-Band Reboot
-**Rejected** as default: Requires BMC credentials and network access that vary across environments. Could be added as a dedicated provider later.
 
 ## Testing
 
-- **Unit**: Job spec generation, `IsNodeReady` bootID comparison logic, factory opt-in routing, config loading, validation that known CSPs reject `host-reboot`
+- **Unit**: Job spec generation, `IsNodeReady` bootID comparison logic, factory opt-in routing, config loading
 - **Integration**: Mock K8s client, verify Job creation with correct spec, verify `IsNodeReady` for various node conditions
-- **E2E**: Deploy with `CSP=test-provider` and `rebootMethod=host-reboot` on kind, create RebootNode CR, verify reboot Job creation
 
 ## Notes
 
 - `busybox:1.37` is overridable via Helm for custom image registries
-- Job TTL (24h default) is tunable per-environment
+- Job TTL (1h default) is tunable per-environment
 - Future providers (IPMI, Redfish) can be added as named factory cases
 
 ## References
