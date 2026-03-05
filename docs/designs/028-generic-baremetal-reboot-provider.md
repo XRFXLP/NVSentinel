@@ -33,29 +33,25 @@ flowchart TD
 
 ## Decision
 
-Add a **generic provider** that reboots nodes via a privileged Kubernetes Job running `nsenter ... /sbin/reboot`, following the Job-based pattern from GPU Reset ([ADR-019](019-janitor-gpu-reset.md)).
-
-The generic provider is selected via an explicit opt-in: a new `csp.rebootMethod` configuration field. When set to `"host-reboot"`, the factory returns the generic provider regardless of the `CSP` value. The `CSP` name is preserved for logging and metrics. Unknown `CSP` values without an explicit opt-in continue to produce an error, preventing accidental privileged reboots from typos.
+Add a **generic provider** (`CSP=generic`) that reboots nodes via a privileged Kubernetes Job running `chroot /host /sbin/reboot`, following the Job-based pattern from GPU Reset ([ADR-019](019-janitor-gpu-reset.md)). It is a named provider in the factory switch, just like `aws`, `gcp`, or `kind`.
 
 ## Implementation
 
-### 1. Provider Factory — Explicit Opt-In
+### 1. Provider Factory
 
 ```mermaid
 flowchart TD
-    Start["Read CSP and REBOOT_METHOD env vars"] --> CheckMethod{"REBOOT_METHOD = host-reboot?"}
-    CheckMethod -->|Yes| GEN["generic.NewClient"]
-    CheckMethod -->|No| Switch{"Match known CSP?"}
+    Start["Read CSP env var"] --> Switch{"Match provider?"}
     Switch -->|aws| AWS[aws.NewClient]
     Switch -->|gcp| GCP[gcp.NewClient]
     Switch -->|azure| AZR[azure.NewClient]
     Switch -->|oci| OCI[oci.NewClient]
     Switch -->|nebius| NEB[nebius.NewClient]
     Switch -->|kind| KND[kind.NewClient]
+    Switch -->|generic| GEN[generic.NewClient]
     Switch -->|unknown| ERR["Error: unsupported CSP"]
 ```
 
-When `rebootMethod=host-reboot` is set, the generic provider is used regardless of the `CSP` value. When `rebootMethod` is empty (the default), the factory routes to the CSP-specific provider or errors on unknown values.
 
 ### 2. Generic Provider — Reboot via Privileged Job
 
@@ -73,7 +69,7 @@ sequenceDiagram
     GP-->>JC: requestID = pre-reboot bootID
 
     K8s->>Job: Schedule pod on target node
-    Job->>Node: nsenter --target 1 ... /sbin/reboot
+    Job->>Node: chroot /host /sbin/reboot
     Note over Node: Node reboots, pod is killed
 
     Note over Node: Node boots back up, new bootID assigned
@@ -107,66 +103,68 @@ spec:
   template:
     spec:
       nodeName: <target-node>
-      hostPID: true
       restartPolicy: Never
       tolerations:
         - operator: "Exists"
       containers:
         - name: reboot
           image: busybox:1.37
-          command:
-            - nsenter
-            - --target
-            - "1"
-            - --mount
-            - --uts
-            - --ipc
-            - --net
-            - --
-            - /sbin/reboot
+          command: ["chroot", "/host", "/sbin/reboot"]
           securityContext:
             privileged: true
+          volumeMounts:
+            - name: host-root
+              mountPath: /host
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
 ```
 
 **Design choices (mirroring GPU Reset):**
 
 | Choice | Value | Rationale |
 |--------|-------|-----------|
-| `hostPID` | `true` | Required for `nsenter` to access PID 1 |
-| `privileged` | `true` | Required to enter host namespaces |
+| `privileged` | `true` | Required for `chroot` syscall and reboot |
+| `hostPath: /` | mounted at `/host` | Access to host filesystem for `chroot` |
 | `backoffLimit` | `0` | Reboot kills the pod — retrying would double-reboot |
 | `ttlSecondsAfterFinished` | `3600` | Auto-cleanup after 1h |
 | `tolerations` | `[{operator: Exists}]` | Target node is likely cordoned/tainted |
 | `restartPolicy` | `Never` | Do not restart after reboot |
-| Image | `busybox:1.37` | Only needs `nsenter` and `/sbin/reboot` |
+| Image | `busybox:1.37` | Only needs `chroot` and host `/sbin/reboot` |
 
 #### IsNodeReady
 
-The `requestID` is the pre-reboot `bootID`. A changed `bootID` is definitive proof that the node rebooted — unlike `lastTransitionTime`, it cannot change due to network blips or other non-reboot events.
+The `requestID` is the pre-reboot `bootID`. The check first verifies the reboot Job pod reached the node and started, then confirms the reboot via `bootID` change.
 
 ```mermaid
 flowchart TD
-    Start["IsNodeReady called with requestID (pre-reboot bootID)"] --> GetBoot["Get current node.Status.NodeInfo.BootID"]
-    GetBoot --> CheckBoot{"Current bootID != requestID?"}
-    CheckBoot -->|No| RetFalse["Return false (not yet rebooted)"]
-    CheckBoot -->|Yes| CheckReady{"Ready condition = True?"}
+    Start["IsNodeReady called with requestID (pre-reboot bootID)"] --> GetPod["Get reboot Job pod status"]
+    GetPod --> CheckScheduled{"PodScheduled = True?"}
+    CheckScheduled -->|No| RetFalse["Return false (waiting for scheduling)"]
+    CheckScheduled -->|Yes| CheckContainer{"Container state?"}
+    CheckContainer -->|"Waiting: ImagePullBackOff / ErrImagePull"| RetErr["Return error (fast-fail)"]
+    CheckContainer -->|"Waiting: ContainerCreating"| RetFalse
+    CheckContainer -->|"Running / Terminated"| GetBoot["Get current node.Status.NodeInfo.BootID"]
+    GetBoot --> CheckBoot{"bootID != requestID?"}
+    CheckBoot -->|No| RetFalse
+    CheckBoot -->|Yes| CheckReady{"Node Ready = True?"}
     CheckReady -->|No| RetFalse
-    CheckReady -->|Yes| RetTrue["Return true"]
+    CheckReady -->|Yes| Cleanup["Delete reboot Job, return true"]
 ```
 
-If the reboot never happened, `bootID` stays the same and the janitor controller will eventually time out.
+A changed `bootID` is definitive proof that the node rebooted — unlike `lastTransitionTime`, it cannot change due to network blips or other non-reboot events. If the reboot never happened, `bootID` stays the same and the janitor controller will eventually time out.
 
-Once `IsNodeReady` confirms a successful reboot, it deletes the reboot Job before returning `true`. This avoids a lingering "Failed" Job (the pod is killed by the reboot, so the Job always ends in a failed state).
+Once a successful reboot is confirmed, the Job is deleted to avoid a lingering "Failed" Job (the pod is killed by the reboot, so the Job always ends in a failed state).
 
 ### 3. Helm Configuration
 
 ```yaml
 # distros/kubernetes/nvsentinel/charts/janitor-provider/values.yaml
 csp:
-  provider: "kind"              # existing field, unchanged
-  rebootMethod: ""              # NEW — "" (default, use CSP API) or "host-reboot"
+  provider: "kind"              # set to "generic" for bare-metal host reboot
 
-  generic:                      # config for the generic provider (when rebootMethod=host-reboot)
+  generic:                      # config for the generic provider (when provider=generic)
     rebootImage: "busybox:1.37"
     rebootJobNamespace: ""      # defaults to the janitor-provider's own namespace
     rebootJobTTLSeconds: 3600
@@ -177,8 +175,6 @@ csp:
 env:
   - name: CSP
     value: {{ .Values.csp.provider | default "kind" | quote }}
-  - name: REBOOT_METHOD
-    value: {{ .Values.csp.rebootMethod | quote }}
   - name: GENERIC_REBOOT_IMAGE
     value: {{ .Values.csp.generic.rebootImage | default "busybox:1.37" | quote }}
   - name: GENERIC_REBOOT_JOB_NAMESPACE
@@ -212,10 +208,10 @@ The janitor controller's RBAC is unchanged — it continues to own RebootNode li
 |------|--------|
 | `janitor-provider/pkg/csp/generic/generic.go` | New — generic provider implementation |
 | `janitor-provider/pkg/csp/generic/generic_test.go` | New — unit tests |
-| `janitor-provider/pkg/csp/client.go` | Modified — check `REBOOT_METHOD` before CSP switch |
-| `janitor-provider/pkg/csp/client_test.go` | Modified — tests for opt-in routing |
-| `distros/.../charts/janitor-provider/values.yaml` | Modified — add `csp.rebootMethod` and `csp.generic` |
-| `distros/.../charts/janitor-provider/templates/deployment.yaml` | Modified — inject `REBOOT_METHOD` and generic env vars |
+| `janitor-provider/pkg/csp/client.go` | Modified — add `generic` case to factory switch |
+| `janitor-provider/pkg/csp/client_test.go` | Modified — tests for generic provider routing |
+| `distros/.../charts/janitor-provider/values.yaml` | Modified — add `csp.generic` config block |
+| `distros/.../charts/janitor-provider/templates/deployment.yaml` | Modified — inject generic provider env vars |
 | `distros/.../charts/janitor-provider/templates/role.yaml` | New — namespaced Role for `batch/jobs` permissions |
 | `distros/.../charts/janitor-provider/templates/rolebinding.yaml` | New — RoleBinding for the above |
 
@@ -223,30 +219,24 @@ The janitor controller's RBAC is unchanged — it continues to own RebootNode li
 
 - **Proven pattern**: Same Job-based architecture as GPU Reset ([ADR-019](019-janitor-gpu-reset.md)), validated in production
 - **No custom image**: `busybox` with `nsenter` is sufficient
-- **Safe by default**: Running `sudo reboot` via a privileged pod requires explicit opt-in. A CSP name typo produces an error, not an accidental bare-metal reboot.
-- **CSP identity preserved**: The `CSP` name remains available for logging and metrics even when using the generic reboot method
+- **Minimal interface changes**: Generic provider creates its own K8s client internally
 
 ## Consequences
 
 ### Positive
 - Enables automated reboot remediation on bare-metal and non-cloud environments
 - Consistent remediation workflow regardless of infrastructure type
-- New providers can be onboarded with `CSP=<name>` + `rebootMethod=host-reboot` — no code needed
 - Kubernetes-native (Jobs, RBAC, tolerations)
 
 ### Negative
 - Requires **privileged pod with hostPID**
 - No `SendTerminateSignal` support for bare-metal nodes
-- Extra configuration field (`rebootMethod`)
 
 ### Mitigations
 - **Security**: Ephemeral Job with TTL cleanup, RBAC-restricted RebootNode creation. Matches GPU Reset security model.
 - **No terminate**: Bare-metal deployments should set `terminateNodeController.enabled=false`.
 
 ## Alternatives Considered
-
-### Implicit Fallback (Unknown CSP → Generic)
-**Rejected**: A CSP name typo (e.g., `"awss"`) would silently create a privileged pod and reboot a cloud node via `sudo reboot` instead of using the CSP API. Running `sudo reboot` is a high-impact action that should require explicit intent.
 
 ### SSH-Based Reboot
 **Rejected**: Requires SSH key management and network access to all nodes.
@@ -257,8 +247,9 @@ The janitor controller's RBAC is unchanged — it continues to own RebootNode li
 
 ## Testing
 
-- **Unit**: Job spec generation, `IsNodeReady` bootID comparison logic, factory opt-in routing, config loading
+- **Unit**: Job spec generation, `IsNodeReady` bootID comparison logic, factory routing for `CSP=generic`, config loading
 - **Integration**: Mock K8s client, verify Job creation with correct spec, verify `IsNodeReady` for various node conditions
+- **E2E**: Deploy with `CSP=generic` on kind, create RebootNode CR, verify reboot Job creation
 
 ## Notes
 
