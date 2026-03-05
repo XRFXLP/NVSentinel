@@ -184,7 +184,7 @@ env:
   - name: GENERIC_REBOOT_JOB_NAMESPACE
     value: {{ .Values.csp.generic.rebootJobNamespace | quote }}
   - name: GENERIC_REBOOT_JOB_TTL
-    value: {{ .Values.csp.generic.rebootJobTTLSeconds | default 86400 | quote }}
+    value: {{ .Values.csp.generic.rebootJobTTLSeconds | default 3600 | quote }}
 ```
 
 ### 4. RBAC
