@@ -103,7 +103,7 @@ metadata:
     nvsentinel.nvidia.com/reboot-job: "true"
 spec:
   backoffLimit: 0
-  ttlSecondsAfterFinished: 86400
+  ttlSecondsAfterFinished: 3600
   template:
     spec:
       nodeName: <target-node>
@@ -135,7 +135,7 @@ spec:
 | `hostPID` | `true` | Required for `nsenter` to access PID 1 |
 | `privileged` | `true` | Required to enter host namespaces |
 | `backoffLimit` | `0` | Reboot kills the pod — retrying would double-reboot |
-| `ttlSecondsAfterFinished` | `86400` | Auto-cleanup after 24h |
+| `ttlSecondsAfterFinished` | `3600` | Auto-cleanup after 1h |
 | `tolerations` | `[{operator: Exists}]` | Target node is likely cordoned/tainted |
 | `restartPolicy` | `Never` | Do not restart after reboot |
 | Image | `busybox:1.37` | Only needs `nsenter` and `/sbin/reboot` |
