@@ -155,7 +155,7 @@ func (m *MockNodeAnnotationManager) ClearRemediationState(ctx context.Context, n
 	return nil
 }
 
-func (m *MockNodeAnnotationManager) RemoveGroupFromState(ctx context.Context, nodeName string, group string) error {
+func (m *MockNodeAnnotationManager) RemoveGroupsFromState(ctx context.Context, nodeName string, groups []string) error {
 	return nil
 }
 

@@ -490,6 +490,8 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, 
 
 	groupStates := common.FilterEquivalenceGroupStates(groupConfig, state)
 
+	var groupsToRemove []string
+
 	for groupName, groupState := range groupStates {
 		shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, groupState.ActionName, groupState.MaintenanceCR)
 		if shouldSkip {
@@ -499,8 +501,12 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, 
 
 		slog.Info("CR completed or failed, allowing retry", "node", nodeName, "crName", groupState.MaintenanceCR)
 
-		if err := r.annotationManager.RemoveGroupFromState(ctx, nodeName, groupName); err != nil {
-			slog.Error("Failed to remove CR from annotation", "error", err)
+		groupsToRemove = append(groupsToRemove, groupName)
+	}
+
+	if len(groupsToRemove) > 0 {
+		if err := r.annotationManager.RemoveGroupsFromState(ctx, nodeName, groupsToRemove); err != nil {
+			return true, "", fmt.Errorf("failed to remove groups from annotation: %w", err)
 		}
 	}
 
