@@ -33,23 +33,29 @@ flowchart TD
 
 ## Decision
 
-Replace the error for unrecognized `CSP` values with a **generic fallback provider** that reboots nodes via a privileged Kubernetes Job running `nsenter ... /sbin/reboot`. This follows the Job-based pattern from GPU Reset ([ADR-019](019-janitor-gpu-reset.md)).
+Add a **generic provider** that reboots nodes via a privileged Kubernetes Job running `nsenter ... /sbin/reboot`, following the Job-based pattern from GPU Reset ([ADR-019](019-janitor-gpu-reset.md)).
+
+The generic provider is selected via an explicit opt-in: a new `csp.rebootMethod` configuration field. When set to `"host-reboot"`, the factory returns the generic provider regardless of the `CSP` value. The `CSP` name is preserved for logging and metrics. Unknown `CSP` values without an explicit opt-in continue to produce an error, preventing accidental privileged reboots from typos.
 
 ## Implementation
 
-### 1. Provider Factory — Fallback to Generic
+### 1. Provider Factory — Explicit Opt-In
 
 ```mermaid
 flowchart TD
-    Start["Read CSP env var"] --> Switch{"Match known provider?"}
+    Start["Read CSP and REBOOT_METHOD env vars"] --> CheckMethod{"REBOOT_METHOD = host-reboot?"}
+    CheckMethod -->|Yes| GEN["generic.NewClient"]
+    CheckMethod -->|No| Switch{"Match known CSP?"}
     Switch -->|aws| AWS[aws.NewClient]
     Switch -->|gcp| GCP[gcp.NewClient]
     Switch -->|azure| AZR[azure.NewClient]
     Switch -->|oci| OCI[oci.NewClient]
     Switch -->|nebius| NEB[nebius.NewClient]
     Switch -->|kind| KND[kind.NewClient]
-    Switch -->|"Any other value"| GEN["generic.NewClient (fallback)"]
+    Switch -->|unknown| ERR["Error: unsupported CSP"]
 ```
+
+Known CSPs ignore `rebootMethod`. Setting `CSP=aws` with `rebootMethod=host-reboot` is rejected as an invalid combination — cloud providers must use their CSP API.
 
 ### 2. Generic Provider — Reboot via Privileged Job
 
@@ -129,7 +135,7 @@ spec:
 | `hostPID` | `true` | Required for `nsenter` to access PID 1 |
 | `privileged` | `true` | Required to enter host namespaces |
 | `backoffLimit` | `0` | Reboot kills the pod — retrying would double-reboot |
-| `ttlSecondsAfterFinished` | `86400` | Auto-cleanup after 24h; Job shows "Failed" (expected) |
+| `ttlSecondsAfterFinished` | `86400` | Auto-cleanup after 24h |
 | `tolerations` | `[{operator: Exists}]` | Target node is likely cordoned/tainted |
 | `restartPolicy` | `Never` | Do not restart after reboot |
 | Image | `busybox:1.37` | Only needs `nsenter` and `/sbin/reboot` |
@@ -157,11 +163,12 @@ Once `IsNodeReady` confirms a successful reboot, it deletes the reboot Job befor
 ```yaml
 # distros/kubernetes/nvsentinel/charts/janitor-provider/values.yaml
 csp:
-  provider: "kind"           # existing field, unchanged
+  provider: "kind"              # existing field, unchanged
+  rebootMethod: ""              # NEW — "" (default, use CSP API) or "host-reboot"
 
-  generic:                   # NEW — config for the generic fallback provider
+  generic:                      # config for the generic provider (when rebootMethod=host-reboot)
     rebootImage: "busybox:1.37"
-    rebootJobNamespace: ""   # defaults to the janitor-provider's own namespace
+    rebootJobNamespace: ""      # defaults to the janitor-provider's own namespace
     rebootJobTTLSeconds: 86400
 ```
 
@@ -170,6 +177,8 @@ csp:
 env:
   - name: CSP
     value: {{ .Values.csp.provider | default "kind" | quote }}
+  - name: REBOOT_METHOD
+    value: {{ .Values.csp.rebootMethod | quote }}
   - name: GENERIC_REBOOT_IMAGE
     value: {{ .Values.csp.generic.rebootImage | default "busybox:1.37" | quote }}
   - name: GENERIC_REBOOT_JOB_NAMESPACE
@@ -180,12 +189,17 @@ env:
 
 ### 4. RBAC
 
-Additional ClusterRole permissions for creating reboot Jobs:
+The existing ClusterRole handles cluster-scoped `nodes` access. For Jobs, a namespaced **Role** scopes permissions to the provider's own namespace:
 
 ```yaml
-- apiGroups: ["batch"]
-  resources: ["jobs"]
-  verbs: ["create", "get", "list", "watch", "delete"]
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "provider.fullname" . }}-jobs
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
 ```
 
 ### 5. File Locations
@@ -194,37 +208,40 @@ Additional ClusterRole permissions for creating reboot Jobs:
 |------|--------|
 | `janitor-provider/pkg/csp/generic/generic.go` | New — generic provider implementation |
 | `janitor-provider/pkg/csp/generic/generic_test.go` | New — unit tests |
-| `janitor-provider/pkg/csp/client.go` | Modified — default case returns generic provider |
-| `janitor-provider/pkg/csp/client_test.go` | Modified — tests for fallback routing |
-| `distros/.../charts/janitor-provider/values.yaml` | Modified — add `csp.generic` block |
-| `distros/.../charts/janitor-provider/templates/deployment.yaml` | Modified — inject generic env vars |
+| `janitor-provider/pkg/csp/client.go` | Modified — check `REBOOT_METHOD` before CSP switch |
+| `janitor-provider/pkg/csp/client_test.go` | Modified — tests for opt-in routing |
+| `distros/.../charts/janitor-provider/values.yaml` | Modified — add `csp.rebootMethod` and `csp.generic` |
+| `distros/.../charts/janitor-provider/templates/deployment.yaml` | Modified — inject `REBOOT_METHOD` and generic env vars |
 | `distros/.../charts/janitor-provider/templates/clusterrole.yaml` | Modified — add `batch/jobs` permissions |
 
 ## Rationale
 
 - **Proven pattern**: Same Job-based architecture as GPU Reset ([ADR-019](019-janitor-gpu-reset.md)), validated in production
 - **No custom image**: `busybox` with `nsenter` is sufficient
-- **Zero breaking changes**: Known CSP values keep their existing implementations
-- **Minimal interface changes**: Generic provider creates its own K8s client internally
+- **Safe by default**: Running `sudo reboot` via a privileged pod requires explicit opt-in. A CSP name typo produces an error, not an accidental bare-metal reboot.
+- **CSP identity preserved**: The `CSP` name remains available for logging and metrics even when using the generic reboot method
 
 ## Consequences
 
 ### Positive
 - Enables automated reboot remediation on bare-metal and non-cloud environments
 - Consistent remediation workflow regardless of infrastructure type
-- New providers can be onboarded by setting `CSP` to their name — no code needed
+- New providers can be onboarded with `CSP=<name>` + `rebootMethod=host-reboot` — no code needed
 - Kubernetes-native (Jobs, RBAC, tolerations)
 
 ### Negative
 - Requires **privileged pod with hostPID**
 - No `SendTerminateSignal` support for bare-metal nodes
-- CSP name typo (e.g., `"awss"`) silently falls back to generic reboot
+- Extra configuration field (`rebootMethod`)
 
 ### Mitigations
 - **Security**: Ephemeral Job with TTL cleanup, RBAC-restricted RebootNode creation. Matches GPU Reset security model.
-- **Typo risk**: Log a warning at startup when the generic fallback is used.
+- **No terminate**: Bare-metal deployments should set `terminateNodeController.enabled=false`.
 
 ## Alternatives Considered
+
+### Implicit Fallback (Unknown CSP → Generic)
+**Rejected**: A CSP name typo (e.g., `"awss"`) would silently create a privileged pod and reboot a cloud node via `sudo reboot` instead of using the CSP API. Running `sudo reboot` is a high-impact action that should require explicit intent.
 
 ### SSH-Based Reboot
 **Rejected**: Requires SSH key management and network access to all nodes.
@@ -235,20 +252,17 @@ Additional ClusterRole permissions for creating reboot Jobs:
 ### IPMI / BMC Out-of-Band Reboot
 **Rejected** as default: Requires BMC credentials and network access that vary across environments. Could be added as a dedicated provider later.
 
-### Modifying CSPClient Interface to Accept a Kubernetes Client
-**Rejected**: Would require changing every provider constructor. The in-cluster client approach is self-contained.
-
 ## Testing
 
-- **Unit**: Job spec generation, `IsNodeReady` bootID comparison logic, factory fallback routing, config loading
+- **Unit**: Job spec generation, `IsNodeReady` bootID comparison logic, factory opt-in routing, config loading, validation that known CSPs reject `host-reboot`
 - **Integration**: Mock K8s client, verify Job creation with correct spec, verify `IsNodeReady` for various node conditions
-- **E2E**: Deploy with `CSP=baremetal` on kind, create RebootNode CR, verify reboot Job creation
+- **E2E**: Deploy with `CSP=test-provider` and `rebootMethod=host-reboot` on kind, create RebootNode CR, verify reboot Job creation
 
 ## Notes
 
 - `busybox:1.37` is overridable via Helm for custom image registries
 - Job TTL (24h default) is tunable per-environment
-- Future providers (IPMI, Redfish) can be added as named factory cases without changing fallback behavior
+- Future providers (IPMI, Redfish) can be added as named factory cases
 
 ## References
 
