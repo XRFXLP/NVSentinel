@@ -324,6 +324,10 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 	nodeName := healthEvent.HealthEvent.NodeName
 	eventID := healthEvent.HealthEvent.Id
 
+	if eventID == "" {
+		return nil, fmt.Errorf("health event for node %s is missing Id, cannot generate DrainRequest CR name", nodeName)
+	}
+
 	crName := customdrain.GenerateCRName(nodeName, eventID)
 
 	exists, err := e.customDrainClient.Exists(ctx, crName)
