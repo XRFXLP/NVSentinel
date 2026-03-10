@@ -91,6 +91,16 @@ func SetupPreflightTest(
 
 	t.Logf("Using worker nodes: %v", nodeNames)
 
+	testCtx := &PreflightTestContext{
+		TestNamespace: testNamespace,
+		NodeNames:     nodeNames,
+		PodGroupName:  podGroupName,
+	}
+
+	t.Cleanup(func() {
+		TeardownPreflightTest(ctx, t, c, testCtx)
+	})
+
 	err = CreateNamespace(ctx, client, testNamespace)
 	require.NoError(t, err, "create test namespace")
 
@@ -121,19 +131,10 @@ func SetupPreflightTest(
 	t.Logf("Created PodGroup %s/%s with minMember=%d",
 		testNamespace, podGroupName, nodeCount)
 
-	var podNames []string
-
 	for i, node := range nodeNames {
 		name := CreateGPUPodInGang(ctx, t, client, testNamespace, node, podGroupName)
-		podNames = append(podNames, name)
+		testCtx.PodNames = append(testCtx.PodNames, name)
 		t.Logf("Created gang pod %d: %s on node %s", i, name, node)
-	}
-
-	testCtx := &PreflightTestContext{
-		TestNamespace: testNamespace,
-		NodeNames:     nodeNames,
-		PodNames:      podNames,
-		PodGroupName:  podGroupName,
 	}
 
 	return ctx, testCtx
@@ -224,7 +225,7 @@ func ListGangConfigMaps(
 			ctx, &list, resources.WithLabelSelector(selector),
 		)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("listing ConfigMaps in namespace %s: %w", ns, err)
 		}
 
 		all = append(all, list.Items...)
@@ -305,14 +306,14 @@ func CreateVolcanoPodGroup(
 	t.Helper()
 
 	pg := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "scheduling.volcano.sh/v1beta1",
 			"kind":       "PodGroup",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      name,
 				"namespace": namespace,
 			},
-			"spec": map[string]interface{}{
+			"spec": map[string]any{
 				"minMember": int64(minMember),
 			},
 		},
@@ -328,10 +329,10 @@ func DeleteVolcanoPodGroup(
 	ctx context.Context, client klient.Client, namespace, name string,
 ) {
 	pg := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "scheduling.volcano.sh/v1beta1",
 			"kind":       "PodGroup",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      name,
 				"namespace": namespace,
 			},
