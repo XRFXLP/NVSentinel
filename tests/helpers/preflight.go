@@ -25,7 +25,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -48,13 +47,6 @@ const (
 
 	VolcanoPodGroupAnnotation = "scheduling.k8s.io/group-name"
 )
-
-// VolcanoPodGroupGVR is the GVR for Volcano PodGroups.
-var VolcanoPodGroupGVR = schema.GroupVersionResource{
-	Group:    "scheduling.volcano.sh",
-	Version:  "v1beta1",
-	Resource: "podgroups",
-}
 
 // PreflightTestContext holds state for preflight E2E tests.
 type PreflightTestContext struct {
@@ -178,59 +170,6 @@ func TeardownPreflightTest(
 	}
 
 	return ctx
-}
-
-// AssertPreflightConfigConfigMapExists checks that the preflight config
-// ConfigMap exists and has config.yaml.
-func AssertPreflightConfigConfigMapExists(
-	ctx context.Context, t *testing.T, client klient.Client,
-) {
-	t.Helper()
-
-	var cm v1.ConfigMap
-
-	err := client.Resources(NVSentinelNamespace).Get(
-		ctx, PreflightConfigMapName, NVSentinelNamespace, &cm,
-	)
-	require.NoError(t, err,
-		"preflight config ConfigMap should exist when preflight is deployed")
-	require.Contains(t, cm.Data, PreflightConfigKey,
-		"ConfigMap %s/%s should contain %s",
-		cm.Namespace, cm.Name, PreflightConfigKey)
-}
-
-// CreateGPUPodWithPreflight creates a GPU pod in the given namespace
-// and schedules it on nodeName. Returns the pod name.
-func CreateGPUPodWithPreflight(
-	ctx context.Context, t *testing.T, client klient.Client,
-	namespace, nodeName string,
-) string {
-	t.Helper()
-
-	pod := NewGPUPodSpec(namespace, 1)
-	if nodeName != "" {
-		pod.Spec.NodeName = nodeName
-	}
-
-	err := client.Resources().Create(ctx, pod)
-	require.NoError(t, err, "create GPU pod")
-	require.NotEmpty(t, pod.Name, "server should set pod name after create")
-
-	return pod.Name
-}
-
-// GetPodAfterMutation fetches the pod from the server (after webhook mutation).
-func GetPodAfterMutation(
-	ctx context.Context, client klient.Client, namespace, podName string,
-) (*v1.Pod, error) {
-	var pod v1.Pod
-
-	err := client.Resources().Get(ctx, podName, namespace, &pod)
-	if err != nil {
-		return nil, err
-	}
-
-	return &pod, nil
 }
 
 // WaitForPodInitContainerStatuses waits until at least one preflight init
