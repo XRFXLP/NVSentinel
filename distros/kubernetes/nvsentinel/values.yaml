@@ -67,7 +67,8 @@ global:
     compress: true  # Compress rotated log files
 
   nodeSelector: {}
-  tolerations: []
+  tolerations:
+    - operator: Exists
   affinity: {}
   systemNodeSelector: {}
   systemNodeTolerations: []
@@ -107,7 +108,9 @@ global:
     enabled: false
   preflight:
     enabled: false
-
+  k8sdatastoreCrds:
+    enabled: false
+    
 # Network policy configuration
 # The metrics-access network policy restricts ingress to metrics ports only.
 # This can block other services (e.g., cert-manager webhook) when deployed
