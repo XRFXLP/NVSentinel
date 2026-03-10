@@ -22,8 +22,10 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"tests/helpers"
 
@@ -33,16 +35,17 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
-// TestPreflightEndToEnd creates a 2-member Volcano PodGroup and verifies:
+// TestPreflight_VolcanoGang_InjectionAndConfigMap creates a 2-member Volcano
+// PodGroup and verifies:
 //  1. Webhook injects init containers on both gang pods
 //  2. Init containers pass (exitCode=0)
-//  3. Gang ConfigMap has correct shape (expected_count=2, 2 peers)
+//  3. Gang ConfigMap is fully populated (expected_count=2, 2 peers)
 func TestPreflightEndToEnd(t *testing.T) {
-	const (
-		testNS    = "preflight-e2e-test"
-		pgName    = "test-gang-pg"
-		minMember = 2
-	)
+	suffix := fmt.Sprintf("%d", time.Now().UnixMilli()%100000)
+	testNS := "preflight-e2e-" + suffix
+	pgName := "gang-pg-" + suffix
+
+	const minMember = 2
 
 	feature := features.New("Preflight webhook mutation and Volcano gang coordination").
 		WithLabel("suite", "preflight")
@@ -51,12 +54,14 @@ func TestPreflightEndToEnd(t *testing.T) {
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupPreflightTest(ctx, t, c, testNS, pgName, minMember)
+		newCtx, testCtx = helpers.SetupPreflightTest(
+			ctx, t, c, testNS, pgName, minMember,
+		)
 
 		return newCtx
 	})
 
-	feature.Assess("webhook injected preflight-dcgm-diag init container on both pods",
+	feature.Assess("webhook injected preflight-dcgm-diag on both pods",
 		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			client, err := c.NewClient()
 			require.NoError(t, err)
@@ -64,7 +69,9 @@ func TestPreflightEndToEnd(t *testing.T) {
 			for _, podName := range testCtx.PodNames {
 				var pod v1.Pod
 
-				err = client.Resources().Get(ctx, podName, testNS, &pod)
+				err = client.Resources().Get(
+					ctx, podName, testCtx.TestNamespace, &pod,
+				)
 				require.NoError(t, err)
 
 				var initNames []string
@@ -74,7 +81,8 @@ func TestPreflightEndToEnd(t *testing.T) {
 
 				require.NotEmpty(t, initNames,
 					"pod %s should have init containers", podName)
-				require.Contains(t, initNames, helpers.PreflightDCGMDiagName,
+				require.Contains(t, initNames,
+					helpers.PreflightDCGMDiagName,
 					"pod %s missing %s in %v",
 					podName, helpers.PreflightDCGMDiagName, initNames)
 
@@ -91,7 +99,7 @@ func TestPreflightEndToEnd(t *testing.T) {
 
 			for _, podName := range testCtx.PodNames {
 				pod := helpers.WaitForPodInitContainerStatuses(
-					ctx, t, client, testNS, podName,
+					ctx, t, client, testCtx.TestNamespace, podName,
 				)
 
 				for _, st := range pod.Status.InitContainerStatuses {
@@ -102,9 +110,10 @@ func TestPreflightEndToEnd(t *testing.T) {
 					require.NotNil(t, st.State.Terminated,
 						"pod %s init %s should have terminated",
 						podName, st.Name)
-					require.Equal(t, int32(0), st.State.Terminated.ExitCode,
-						"pod %s init %s should pass (exitCode=0), got %d",
-						podName, st.Name, st.State.Terminated.ExitCode)
+					require.Equal(t, int32(0),
+						st.State.Terminated.ExitCode,
+						"pod %s init %s should pass (exitCode=0)",
+						podName, st.Name)
 
 					t.Logf("Pod %s init %s: passed (exitCode=0)",
 						podName, st.Name)
@@ -120,7 +129,9 @@ func TestPreflightEndToEnd(t *testing.T) {
 			require.NoError(t, err)
 
 			gangID := helpers.ExpectedVolcanoGangID(testNS, pgName)
-			helpers.AssertGangConfigMap(ctx, t, client, testCtx, gangID, minMember)
+			helpers.AssertGangConfigMap(
+				ctx, t, client, testCtx, gangID, minMember,
+			)
 
 			return ctx
 		})

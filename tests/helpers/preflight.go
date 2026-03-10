@@ -32,15 +32,12 @@ import (
 )
 
 const (
-	// PreflightNamespaceLabel is the namespace label required for preflight webhook to mutate pods.
 	PreflightNamespaceLabel    = "nvsentinel.nvidia.com/preflight"
 	PreflightNamespaceLabelVal = "enabled"
-	// PreflightDCGMDiagName is the init container name injected by preflight for DCGM diagnostic.
-	PreflightDCGMDiagName = "preflight-dcgm-diag"
-	// PreflightConfigMapName is the name of the preflight config ConfigMap.
-	PreflightConfigMapName = "nvsentinel-preflight-config"
-	PreflightConfigKey     = "config.yaml"
-	// Gang ConfigMap keys (must match preflight/pkg/gang/coordinator).
+	PreflightDCGMDiagName      = "preflight-dcgm-diag"
+	PreflightConfigMapName     = "nvsentinel-preflight-config"
+	PreflightConfigKey         = "config.yaml"
+
 	GangConfigMapLabelManagedBy = "nvsentinel.nvidia.com/managed-by"
 	GangConfigMapManagedByVal   = "preflight"
 	GangDataKeyExpectedCount    = "expected_count"
@@ -49,7 +46,6 @@ const (
 	GangDataKeyMasterPort       = "master_port"
 	GangDataKeyGangID           = "gang_id"
 
-	// VolcanoPodGroupAnnotation is the annotation key the preflight webhook reads.
 	VolcanoPodGroupAnnotation = "scheduling.k8s.io/group-name"
 )
 
@@ -87,8 +83,10 @@ func SetupPreflightTest(
 
 	err = client.Resources(NVSentinelNamespace).List(ctx, &deployList,
 		resources.WithLabelSelector("app.kubernetes.io/name=preflight"))
-	if err != nil || len(deployList.Items) == 0 {
-		t.Skipf("Preflight not deployed in %s: %v", NVSentinelNamespace, err)
+	require.NoError(t, err, "list preflight deployments")
+
+	if len(deployList.Items) == 0 {
+		t.Skipf("Preflight not deployed in %s", NVSentinelNamespace)
 	}
 
 	preflightDeployName := deployList.Items[0].Name
@@ -296,8 +294,10 @@ func ListGangConfigMaps(
 	return all, nil
 }
 
-// AssertGangConfigMap waits for the gang ConfigMap and asserts gang_id,
-// expected_count, peer count, master_addr, and master_port.
+// AssertGangConfigMap waits for the gang ConfigMap to be fully populated
+// (gang_id, expected_count, peers, master_addr, master_port) and asserts
+// correct values. Polls until all fields are present and match expectations
+// to avoid flaky one-shot assertions on a partially-populated ConfigMap.
 func AssertGangConfigMap(
 	ctx context.Context, t *testing.T, client klient.Client,
 	testCtx *PreflightTestContext, expectedGangID string,
@@ -305,37 +305,56 @@ func AssertGangConfigMap(
 ) {
 	t.Helper()
 
-	cm := WaitForGangConfigMap(
-		ctx, t, client,
-		[]string{testCtx.TestNamespace, NVSentinelNamespace},
-		expectedGangID,
-	)
+	namespaces := []string{testCtx.TestNamespace, NVSentinelNamespace}
+	expectedCountStr := fmt.Sprintf("%d", expectedPeerCount)
 
-	require.Equal(t, expectedGangID,
-		cm.Data[GangDataKeyGangID])
-	require.Equal(t, fmt.Sprintf("%d", expectedPeerCount),
-		cm.Data[GangDataKeyExpectedCount])
+	var found *v1.ConfigMap
 
-	peers := cm.Data[GangDataKeyPeers]
-	peerLines := strings.Split(strings.TrimSpace(peers), "\n")
+	require.Eventually(t, func() bool {
+		all, err := ListGangConfigMaps(ctx, client, namespaces)
+		if err != nil {
+			return false
+		}
 
-	require.Len(t, peerLines, expectedPeerCount,
-		"peers should have %d entries, got: %v",
-		expectedPeerCount, peerLines)
+		for i := range all {
+			cm := &all[i]
+			if cm.Data[GangDataKeyGangID] != expectedGangID {
+				continue
+			}
 
-	require.Contains(t, cm.Data, GangDataKeyMasterPort,
-		"ConfigMap %s/%s missing master_port",
-		cm.Namespace, cm.Name)
+			if cm.Data[GangDataKeyExpectedCount] != expectedCountStr {
+				continue
+			}
 
-	_, hasMaster := cm.Data[GangDataKeyMasterAddr]
-	require.True(t, hasMaster,
-		"ConfigMap %s/%s missing master_addr",
-		cm.Namespace, cm.Name)
+			peers := strings.TrimSpace(cm.Data[GangDataKeyPeers])
+			if peers == "" || len(strings.Split(peers, "\n")) != expectedPeerCount {
+				continue
+			}
+
+			if cm.Data[GangDataKeyMasterAddr] == "" {
+				continue
+			}
+
+			if cm.Data[GangDataKeyMasterPort] == "" {
+				continue
+			}
+
+			found = cm
+
+			return true
+		}
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval,
+		"gang ConfigMap with gang_id=%s should be fully populated "+
+			"(expected_count=%s, %d peers, master_addr, master_port)",
+		expectedGangID, expectedCountStr, expectedPeerCount)
 
 	t.Logf("Gang ConfigMap %s/%s: gang_id=%s expected_count=%s peers=\n%s",
-		cm.Namespace, cm.Name,
-		cm.Data[GangDataKeyGangID],
-		cm.Data[GangDataKeyExpectedCount], peers)
+		found.Namespace, found.Name,
+		found.Data[GangDataKeyGangID],
+		found.Data[GangDataKeyExpectedCount],
+		found.Data[GangDataKeyPeers])
 }
 
 // CreateVolcanoPodGroup creates a Volcano PodGroup with the given
@@ -407,37 +426,6 @@ func CreateGPUPodInGang(
 	require.NotEmpty(t, pod.Name)
 
 	return pod.Name
-}
-
-// WaitForGangConfigMap polls until a gang ConfigMap with matching gangID
-// appears. Returns the ConfigMap once found.
-func WaitForGangConfigMap(
-	ctx context.Context, t *testing.T, client klient.Client,
-	namespaces []string, gangID string,
-) *v1.ConfigMap {
-	t.Helper()
-
-	var found *v1.ConfigMap
-
-	require.Eventually(t, func() bool {
-		all, err := ListGangConfigMaps(ctx, client, namespaces)
-		if err != nil {
-			return false
-		}
-
-		for i := range all {
-			if all[i].Data[GangDataKeyGangID] == gangID {
-				found = &all[i]
-
-				return true
-			}
-		}
-
-		return false
-	}, EventuallyWaitTimeout, WaitInterval,
-		"gang ConfigMap with gang_id=%s should appear", gangID)
-
-	return found
 }
 
 // ExpectedVolcanoGangID returns the gang ID the preflight webhook generates
