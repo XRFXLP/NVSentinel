@@ -45,7 +45,7 @@ const (
 	GangDataKeyMasterPort       = "master_port"
 	GangDataKeyGangID           = "gang_id"
 
-	VolcanoPodGroupAnnotation = "scheduling.k8s.io/group-name"
+	KAIPodGroupAnnotation = "scheduling.run.ai/pod-group"
 )
 
 // PreflightTestContext holds state for preflight E2E tests.
@@ -61,7 +61,7 @@ type PreflightTestContext struct {
 //   - Gets N real worker nodes (skips if insufficient)
 //   - Creates and labels a test namespace for preflight
 //   - Verifies the preflight config ConfigMap exists
-//   - Creates a Volcano PodGroup and GPU pods (one per node)
+//   - Creates a KAI PodGroup and GPU pods (one per node)
 func SetupPreflightTest(
 	ctx context.Context, t *testing.T, c *envconf.Config,
 	testNamespace, podGroupName string, nodeCount int,
@@ -127,7 +127,7 @@ func SetupPreflightTest(
 		"preflight config ConfigMap %s should exist", PreflightConfigMapName)
 	require.Contains(t, cm.Data, PreflightConfigKey)
 
-	CreateVolcanoPodGroup(ctx, t, client, testNamespace, podGroupName, nodeCount)
+	CreateKAIPodGroup(ctx, t, client, testNamespace, podGroupName, nodeCount)
 	t.Logf("Created PodGroup %s/%s with minMember=%d",
 		testNamespace, podGroupName, nodeCount)
 
@@ -161,7 +161,7 @@ func TeardownPreflightTest(
 	}
 
 	if testCtx.PodGroupName != "" {
-		DeleteVolcanoPodGroup(ctx, client, testCtx.TestNamespace, testCtx.PodGroupName)
+		DeleteKAIPodGroup(ctx, client, testCtx.TestNamespace, testCtx.PodGroupName)
 	}
 
 	if testCtx.TestNamespace != "" {
@@ -297,9 +297,9 @@ func AssertGangConfigMap(
 		found.Data[GangDataKeyPeers])
 }
 
-// CreateVolcanoPodGroup creates a Volcano PodGroup with the given
+// CreateKAIPodGroup creates a KAI Scheduler PodGroup with the given
 // minMember in the namespace.
-func CreateVolcanoPodGroup(
+func CreateKAIPodGroup(
 	ctx context.Context, t *testing.T, client klient.Client,
 	namespace, name string, minMember int,
 ) {
@@ -307,7 +307,7 @@ func CreateVolcanoPodGroup(
 
 	pg := &unstructured.Unstructured{
 		Object: map[string]any{
-			"apiVersion": "scheduling.volcano.sh/v1beta1",
+			"apiVersion": "scheduling.run.ai/v2alpha2",
 			"kind":       "PodGroup",
 			"metadata": map[string]any{
 				"name":      name,
@@ -321,16 +321,16 @@ func CreateVolcanoPodGroup(
 
 	err := client.Resources(namespace).Create(ctx, pg)
 	require.NoError(t, err,
-		"create Volcano PodGroup %s/%s", namespace, name)
+		"create KAI PodGroup %s/%s", namespace, name)
 }
 
-// DeleteVolcanoPodGroup deletes a Volcano PodGroup (best-effort).
-func DeleteVolcanoPodGroup(
+// DeleteKAIPodGroup deletes a KAI Scheduler PodGroup (best-effort).
+func DeleteKAIPodGroup(
 	ctx context.Context, client klient.Client, namespace, name string,
 ) {
 	pg := &unstructured.Unstructured{
 		Object: map[string]any{
-			"apiVersion": "scheduling.volcano.sh/v1beta1",
+			"apiVersion": "scheduling.run.ai/v2alpha2",
 			"kind":       "PodGroup",
 			"metadata": map[string]any{
 				"name":      name,
@@ -342,7 +342,7 @@ func DeleteVolcanoPodGroup(
 	_ = client.Resources(namespace).Delete(ctx, pg)
 }
 
-// CreateGPUPodInGang creates a GPU pod annotated with the Volcano PodGroup
+// CreateGPUPodInGang creates a GPU pod annotated with the KAI PodGroup
 // name and pinned to nodeName. Returns the pod name.
 func CreateGPUPodInGang(
 	ctx context.Context, t *testing.T, client klient.Client,
@@ -355,7 +355,7 @@ func CreateGPUPodInGang(
 		pod.Annotations = make(map[string]string)
 	}
 
-	pod.Annotations[VolcanoPodGroupAnnotation] = podGroupName
+	pod.Annotations[KAIPodGroupAnnotation] = podGroupName
 
 	if nodeName != "" {
 		pod.Spec.NodeName = nodeName
@@ -368,8 +368,8 @@ func CreateGPUPodInGang(
 	return pod.Name
 }
 
-// ExpectedVolcanoGangID returns the gang ID the preflight webhook generates
-// for a Volcano PodGroup: volcano-{namespace}-{podGroupName}.
-func ExpectedVolcanoGangID(namespace, podGroupName string) string {
-	return fmt.Sprintf("volcano-%s-%s", namespace, podGroupName)
+// ExpectedKAIGangID returns the gang ID the preflight webhook generates
+// for a KAI PodGroup: kai-{namespace}-{podGroupName}.
+func ExpectedKAIGangID(namespace, podGroupName string) string {
+	return fmt.Sprintf("kai-%s-%s", namespace, podGroupName)
 }

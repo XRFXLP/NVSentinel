@@ -105,13 +105,13 @@ global:
 # override to only inject preflight-dcgm-diag for Tilt (NCCL inits need real GPUs and would fail/hang).
 preflight:
   gangDiscovery:
-    name: "volcano"
+    name: "kai"
     annotationKeys:
-      - "scheduling.k8s.io/group-name"
+      - "scheduling.run.ai/pod-group"
     labelKeys: []
     podGroupGVR:
-      group: "scheduling.volcano.sh"
-      version: "v1beta1"
+      group: "scheduling.run.ai"
+      version: "v2alpha2"
       resource: "podgroups"
     minCountExpr: "podGroup.spec.minMember"
   dcgm:

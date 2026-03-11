@@ -35,8 +35,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
-// TestPreflight_VolcanoGang_InjectionAndConfigMap creates a 2-member Volcano
-// PodGroup and verifies:
+// TestPreflightEndToEnd creates a 2-member KAI Scheduler PodGroup and verifies:
 //  1. Webhook injects init containers on both gang pods
 //  2. Init containers pass (exitCode=0)
 //  3. Gang ConfigMap is fully populated (expected_count=2, 2 peers)
@@ -47,7 +46,7 @@ func TestPreflightEndToEnd(t *testing.T) {
 
 	const minMember = 2
 
-	feature := features.New("Preflight webhook mutation and Volcano gang coordination").
+	feature := features.New("Preflight webhook mutation and KAI gang coordination").
 		WithLabel("suite", "preflight")
 
 	var testCtx *helpers.PreflightTestContext
@@ -128,7 +127,7 @@ func TestPreflightEndToEnd(t *testing.T) {
 			client, err := c.NewClient()
 			require.NoError(t, err)
 
-			gangID := helpers.ExpectedVolcanoGangID(testNS, pgName)
+			gangID := helpers.ExpectedKAIGangID(testNS, pgName)
 			helpers.AssertGangConfigMap(
 				ctx, t, client, testCtx, gangID, minMember,
 			)
