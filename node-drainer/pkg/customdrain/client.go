@@ -113,6 +113,7 @@ func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, 
 	if labels == nil {
 		labels = make(map[string]string)
 	}
+
 	labels[NodeNameLabelKey] = data.HealthEvent.NodeName
 	cr.SetLabels(labels)
 
