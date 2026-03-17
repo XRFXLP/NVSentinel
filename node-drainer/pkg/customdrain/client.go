@@ -109,6 +109,13 @@ func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, 
 		cr.SetNamespace(c.config.Namespace)
 	}
 
+	labels := cr.GetLabels()
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+	labels[NodeNameLabelKey] = data.HealthEvent.NodeName
+	cr.SetLabels(labels)
+
 	gvk := schema.GroupVersionKind{
 		Group:   c.config.ApiGroup,
 		Version: c.config.Version,
@@ -132,7 +139,7 @@ func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, 
 	return crName, nil
 }
 
-func (c *Client) Exists(ctx context.Context, crName string) (bool, error) {
+func (c *Client) ExistsForNode(ctx context.Context, nodeName string) (bool, error) {
 	gvk := schema.GroupVersionKind{
 		Group:   c.config.ApiGroup,
 		Version: c.config.Version,
@@ -144,19 +151,17 @@ func (c *Client) Exists(ctx context.Context, crName string) (bool, error) {
 		return false, fmt.Errorf("failed to get REST mapping for %s: %w", gvk, err)
 	}
 
-	_, err = c.dynamicClient.
+	selector := fmt.Sprintf("%s=%s", NodeNameLabelKey, nodeName)
+
+	list, err := c.dynamicClient.
 		Resource(mapping.Resource).
 		Namespace(c.config.Namespace).
-		Get(ctx, crName, metav1.GetOptions{})
+		List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
-		if errors.IsNotFound(err) {
-			return false, nil
-		}
-
-		return false, fmt.Errorf("failed to check CR existence: %w", err)
+		return false, fmt.Errorf("failed to list drain CRs for node %s: %w", nodeName, err)
 	}
 
-	return true, nil
+	return len(list.Items) > 0, nil
 }
 
 func (c *Client) matchesCondition(condMap map[string]any) bool {
@@ -168,7 +173,9 @@ func (c *Client) matchesCondition(condMap map[string]any) bool {
 		strings.EqualFold(condStatus, c.config.StatusConditionStatus)
 }
 
-func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
+// GetCRStatus checks if a CR exists and whether its status condition is met.
+// Returns (found, complete, error). found=false means the CR does not exist.
+func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, bool, error) {
 	gvk := schema.GroupVersionKind{
 		Group:   c.config.ApiGroup,
 		Version: c.config.Version,
@@ -177,7 +184,7 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
 
 	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
-		return false, fmt.Errorf("failed to get REST mapping for %s: %w", gvk, err)
+		return false, false, fmt.Errorf("failed to get REST mapping for %s: %w", gvk, err)
 	}
 
 	cr, err := c.dynamicClient.
@@ -185,26 +192,30 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, error) {
 		Namespace(c.config.Namespace).
 		Get(ctx, crName, metav1.GetOptions{})
 	if err != nil {
-		return false, fmt.Errorf("failed to get CR: %w", err)
+		if errors.IsNotFound(err) {
+			return false, false, nil
+		}
+
+		return false, false, fmt.Errorf("failed to get CR: %w", err)
 	}
 
 	conditions, found, err := unstructured.NestedSlice(cr.Object, "status", "conditions")
 	if err != nil {
-		return false, fmt.Errorf("failed to extract status.conditions: %w", err)
+		return true, false, fmt.Errorf("failed to extract status.conditions: %w", err)
 	}
 
 	if !found {
-		return false, nil
+		return true, false, nil
 	}
 
 	for _, cond := range conditions {
 		condMap, ok := cond.(map[string]any)
 		if ok && c.matchesCondition(condMap) {
-			return true, nil
+			return true, true, nil
 		}
 	}
 
-	return false, nil
+	return true, false, nil
 }
 
 func (c *Client) DeleteDrainCR(ctx context.Context, crName string) error {

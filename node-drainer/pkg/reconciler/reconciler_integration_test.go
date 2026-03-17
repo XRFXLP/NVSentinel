@@ -1914,19 +1914,20 @@ func TestReconciler_CustomDrainMultipleEventsOnSameNode(t *testing.T) {
 	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameA, metav1.GetOptions{})
 	require.NoError(t, err, "DrainRequest for Event A should exist")
 
-	// Process Event B — should create a separate DrainRequest CR
+	// Process Event B — should NOT create a CR because Event A's CR already exists for this node
 	err = setup.reconciler.ProcessEventGeneric(setup.ctx, eventB, setup.mockDB, setup.healthEventStore, nodeName)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
+	assert.Contains(t, err.Error(), "waiting for retry delay",
+		"Event B should wait because another CR exists for this node")
 
 	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameB, metav1.GetOptions{})
-	require.NoError(t, err, "DrainRequest for Event B should exist")
+	require.True(t, errors.IsNotFound(err), "DrainRequest for Event B should NOT exist while Event A's CR is active")
 
-	// Retry Event A while CR is incomplete — should poll Event A's CR, not Event B's
+	// Retry Event A while CR is incomplete — should poll Event A's CR status
 	err = setup.reconciler.ProcessEventGeneric(setup.ctx, eventA, setup.mockDB, setup.healthEventStore, nodeName)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "waiting for retry delay",
-		"Event A should be waiting on its own CR, not trying to create a new one")
+		"Event A should be waiting on its own CR")
 
 	// Complete Event A's DrainRequest
 	crA, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameA, metav1.GetOptions{})
@@ -1953,9 +1954,14 @@ func TestReconciler_CustomDrainMultipleEventsOnSameNode(t *testing.T) {
 		return errors.IsNotFound(err)
 	}, 10*time.Second, 500*time.Millisecond, "Event A's CR should be cleaned up")
 
-	// Event B's CR should still exist independently
+	// After Event A's CR is deleted, Event B should now be able to create its own CR
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, eventB, setup.mockDB, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete",
+		"Event B should now create its CR since Event A's CR was cleaned up")
+
 	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameB, metav1.GetOptions{})
-	require.NoError(t, err, "Event B's CR should still exist — it hasn't been completed yet")
+	require.NoError(t, err, "DrainRequest for Event B should now exist")
 }
 
 func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
