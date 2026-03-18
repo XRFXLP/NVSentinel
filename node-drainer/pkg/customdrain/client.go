@@ -228,23 +228,7 @@ func (c *Client) GetCRStatus(ctx context.Context, crName string) (bool, bool, er
 		return false, false, fmt.Errorf("failed to get CR: %w", err)
 	}
 
-	conditions, found, err := unstructured.NestedSlice(cr.Object, "status", "conditions")
-	if err != nil {
-		return true, false, fmt.Errorf("failed to extract status.conditions: %w", err)
-	}
-
-	if !found {
-		return true, false, nil
-	}
-
-	for _, cond := range conditions {
-		condMap, ok := cond.(map[string]any)
-		if ok && c.matchesCondition(condMap) {
-			return true, true, nil
-		}
-	}
-
-	return true, false, nil
+	return true, c.isCRComplete(*cr), nil
 }
 
 func (c *Client) DeleteDrainCR(ctx context.Context, crName string) error {
