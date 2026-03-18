@@ -47,7 +47,7 @@ type InformersInterface interface {
 }
 
 type CustomDrainClientInterface interface {
-	ExistsForNode(ctx context.Context, nodeName string) (bool, error)
+	ExistsForNode(ctx context.Context, nodeName string) (exists bool, drainComplete bool, err error)
 	GetCRStatus(ctx context.Context, crName string) (found bool, complete bool, err error)
 }
 

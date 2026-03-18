@@ -140,7 +140,9 @@ func (c *Client) CreateDrainCR(ctx context.Context, data TemplateData) (string, 
 	return crName, nil
 }
 
-func (c *Client) ExistsForNode(ctx context.Context, nodeName string) (bool, error) {
+// ExistsForNode checks if any drain CR exists for the given node.
+// Returns (exists, drainComplete, error).
+func (c *Client) ExistsForNode(ctx context.Context, nodeName string) (bool, bool, error) {
 	gvk := schema.GroupVersionKind{
 		Group:   c.config.ApiGroup,
 		Version: c.config.Version,
@@ -149,7 +151,7 @@ func (c *Client) ExistsForNode(ctx context.Context, nodeName string) (bool, erro
 
 	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
-		return false, fmt.Errorf("failed to get REST mapping for %s: %w", gvk, err)
+		return false, false, fmt.Errorf("failed to get REST mapping for %s: %w", gvk, err)
 	}
 
 	selector := fmt.Sprintf("%s=%s", NodeNameLabelKey, nodeName)
@@ -159,10 +161,36 @@ func (c *Client) ExistsForNode(ctx context.Context, nodeName string) (bool, erro
 		Namespace(c.config.Namespace).
 		List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
-		return false, fmt.Errorf("failed to list drain CRs for node %s: %w", nodeName, err)
+		return false, false, fmt.Errorf("failed to list drain CRs for node %s: %w", nodeName, err)
 	}
 
-	return len(list.Items) > 0, nil
+	if len(list.Items) == 0 {
+		return false, false, nil
+	}
+
+	for _, item := range list.Items {
+		if !c.isCRComplete(item) {
+			return true, false, nil
+		}
+	}
+
+	return true, true, nil
+}
+
+func (c *Client) isCRComplete(cr unstructured.Unstructured) bool {
+	conditions, found, err := unstructured.NestedSlice(cr.Object, "status", "conditions")
+	if err != nil || !found {
+		return false
+	}
+
+	for _, cond := range conditions {
+		condMap, ok := cond.(map[string]any)
+		if ok && c.matchesCondition(condMap) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (c *Client) matchesCondition(condMap map[string]any) bool {
