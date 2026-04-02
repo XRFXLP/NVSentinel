@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
@@ -1147,15 +1148,22 @@ func TestStaleLabelsRemoval(t *testing.T) {
 					return len(dcgmObjs) > 0 || len(driverObjs) > 0
 				}, 10*time.Second, 100*time.Millisecond, "pods not indexed in custom indexes")
 
-				// Restore original labels - reconcileAllNodes() may have removed them
-				// before pods were indexed during the initial sync race
+			// Restore original labels - reconcileAllNodes() may have removed them
+			// before pods were indexed during the initial sync race.
+			// Uses RetryOnConflict because the labeler may concurrently update
+			// the same node during its initial reconciliation.
+			err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 				node, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
-				require.NoError(t, err, "failed to get node")
+				if err != nil {
+					return err
+				}
 				for k, v := range tt.existingNode.Labels {
 					node.Labels[k] = v
 				}
 				_, err = cli.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-				require.NoError(t, err, "failed to restore node labels")
+				return err
+			})
+			require.NoError(t, err, "failed to restore node labels")
 			}
 
 			err = labeler.handleNodeEvent(tt.existingNode)
