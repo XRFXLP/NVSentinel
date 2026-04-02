@@ -396,10 +396,10 @@ func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
 	return false
 }
 
-// nodeRequiresReconciliation returns true only when a node update changed
-// labels the labeler reads or writes. This skips heartbeats, condition changes,
-// and other status-only updates that would otherwise queue expensive API calls
-// and cause unbounded notification buffer growth at scale.
+// nodeRequiresReconciliation returns true only when a node update changed an
+// input label the labeler reads from nodes. DCGM and driver labels are driven
+// by pod events, so the node UpdateFunc only needs to react to changes in kata
+// detection labels and the gpu-present label (for assumeDriverInstalled mode).
 func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 	oldNode, ok1 := oldObj.(*v1.Node)
 	newNode, ok2 := newObj.(*v1.Node)
@@ -407,23 +407,17 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 		return true
 	}
 
-	for _, key := range l.relevantNodeLabels() {
+	if oldNode.Labels[gpuPresentLabel] != newNode.Labels[gpuPresentLabel] {
+		return true
+	}
+
+	for _, key := range l.kataLabels {
 		if oldNode.Labels[key] != newNode.Labels[key] {
 			return true
 		}
 	}
 
 	return false
-}
-
-func (l *Labeler) relevantNodeLabels() []string {
-	labels := []string{
-		gpuPresentLabel,
-		DCGMVersionLabel,
-		DriverInstalledLabel,
-		KataEnabledLabel,
-	}
-	return append(labels, l.kataLabels...)
 }
 
 const gpuPresentLabel = "nvidia.com/gpu.present"
