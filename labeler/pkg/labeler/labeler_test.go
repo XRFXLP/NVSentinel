@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1369,6 +1370,29 @@ func TestMemoryUnderNodeUpdatePressure(t *testing.T) {
 
 	updateCtx, updateCancel := context.WithTimeout(labelerCtx, testDuration)
 	defer updateCancel()
+
+	var peakHeapInuse atomic.Uint64
+	peakHeapInuse.Store(baseline.HeapInuse)
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-updateCtx.Done():
+				return
+			case <-ticker.C:
+				var ms runtime.MemStats
+				runtime.ReadMemStats(&ms)
+				for {
+					cur := peakHeapInuse.Load()
+					if ms.HeapInuse <= cur || peakHeapInuse.CompareAndSwap(cur, ms.HeapInuse) {
+						break
+					}
+				}
+			}
+		}
+	}()
+
 	generateNodeUpdates(t, updateCtx, cli, nodeCount, workers)
 
 	runtime.GC()
@@ -1376,14 +1400,21 @@ func TestMemoryUnderNodeUpdatePressure(t *testing.T) {
 	var final runtime.MemStats
 	runtime.ReadMemStats(&final)
 
-	growthMiB := int64(final.HeapInuse-baseline.HeapInuse) / 1024 / 1024
+	finalGrowthMiB := int64(final.HeapInuse-baseline.HeapInuse) / 1024 / 1024
+	peakGrowthMiB := int64(peakHeapInuse.Load()-baseline.HeapInuse) / 1024 / 1024
 
-	t.Logf("nodes=%d duration=%s baseline=%dMiB final=%dMiB growth=%dMiB",
-		nodeCount, testDuration, baseline.HeapInuse/1024/1024, final.HeapInuse/1024/1024, growthMiB)
+	t.Logf("nodes=%d duration=%s baseline=%dMiB peak=%dMiB final=%dMiB peakGrowth=%dMiB finalGrowth=%dMiB",
+		nodeCount, testDuration,
+		baseline.HeapInuse/1024/1024, peakHeapInuse.Load()/1024/1024, final.HeapInuse/1024/1024,
+		peakGrowthMiB, finalGrowthMiB)
 
-	if growthMiB > maxGrowthMiB {
-		t.Errorf("memory grew by %d MiB (limit %d MiB) — likely unbounded notification buffer growth",
-			growthMiB, maxGrowthMiB)
+	if peakGrowthMiB > maxGrowthMiB {
+		t.Errorf("peak memory grew by %d MiB (limit %d MiB) — likely unbounded notification buffer growth",
+			peakGrowthMiB, maxGrowthMiB)
+	}
+	if finalGrowthMiB > maxGrowthMiB {
+		t.Errorf("final memory grew by %d MiB (limit %d MiB) — memory not reclaimed after GC",
+			finalGrowthMiB, maxGrowthMiB)
 	}
 }
 
