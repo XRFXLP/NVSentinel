@@ -1,0 +1,31 @@
+Scheduled a workload to block the drain:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sticky-workload-10
+  namespace: slurm
+  finalizers:
+    - test.example.com/block-deletion
+spec:
+  nodeName: "be21d5aa-10.cloud.together.ai"
+  containers:
+    - name: pause
+      image: registry.k8s.io/pause:3.9
+```
+`
+Injected couple of errors for a node
+
+```
+  [root@nvidia-device-plugin-daemonset-scgrx /]# chroot /host
+# logger -p daemon.err "[6085126.134786] NVRM: Xid (PCI:0002:00:00): 79, pid=1582259, name=nvc:[driver], GPU has fallen off the bus."
+# logger -p daemon.err "[6085126.134786] NVRM: Xid (PCI:0002:00:00): 79, pid=1582259, name=nvc:[driver], GPU has fallen off the b"   
+# 
+```
+
+
+Verified that there is only one drain CR:
+
+
+

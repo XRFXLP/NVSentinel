@@ -16,6 +16,9 @@ package labeler
 
 import (
 	"context"
+	"fmt"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -1311,5 +1314,131 @@ func TestAssumeDriverInstalled(t *testing.T) {
 				return !driverExists
 			}, 15*time.Second, 500*time.Millisecond, "driver label not set correctly on node %s", tt.existingNode.Name)
 		})
+	}
+}
+
+// TestMemoryUnderNodeUpdatePressure creates nodes in envtest and rapidly updates
+// their status conditions (simulating kubelet heartbeats) to detect unbounded
+// memory growth in the labeler's node event handler path.
+func TestMemoryUnderNodeUpdatePressure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping memory stress test in short mode")
+	}
+
+	const (
+		nodeCount    = 200
+		testDuration = 60 * time.Second
+		workers      = 10
+		maxGrowthMiB = 30
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	defer func() { _ = testEnv.Stop() }()
+
+	cli, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	createNodes(t, ctx, cli, nodeCount)
+
+	labeler, err := NewLabeler(cli, 30*time.Second, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false)
+	require.NoError(t, err)
+
+	labelerCtx, labelerCancel := context.WithCancel(ctx)
+	defer labelerCancel()
+	go func() { _ = labeler.Run(labelerCtx) }()
+
+	require.True(t, cache.WaitForCacheSync(labelerCtx.Done(), labeler.informersSynced...))
+
+	runtime.GC()
+	time.Sleep(200 * time.Millisecond)
+	var baseline runtime.MemStats
+	runtime.ReadMemStats(&baseline)
+
+	updateCtx, updateCancel := context.WithTimeout(labelerCtx, testDuration)
+	defer updateCancel()
+	generateNodeUpdates(t, updateCtx, cli, nodeCount, workers)
+
+	runtime.GC()
+	time.Sleep(200 * time.Millisecond)
+	var final runtime.MemStats
+	runtime.ReadMemStats(&final)
+
+	growthMiB := int64(final.HeapInuse-baseline.HeapInuse) / 1024 / 1024
+
+	t.Logf("nodes=%d duration=%s baseline=%dMiB final=%dMiB growth=%dMiB",
+		nodeCount, testDuration, baseline.HeapInuse/1024/1024, final.HeapInuse/1024/1024, growthMiB)
+
+	if growthMiB > maxGrowthMiB {
+		t.Errorf("memory grew by %d MiB (limit %d MiB) — likely unbounded notification buffer growth",
+			growthMiB, maxGrowthMiB)
+	}
+}
+
+func createNodes(t *testing.T, ctx context.Context, cli kubernetes.Interface, count int) {
+	t.Helper()
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 20)
+
+	for i := range count {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			_, err := cli.CoreV1().Nodes().Create(ctx, &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   fmt.Sprintf("node-%04d", i),
+					Labels: map[string]string{"nvidia.com/gpu.present": "true"},
+				},
+			}, metav1.CreateOptions{})
+			require.NoError(t, err)
+		}()
+	}
+
+	wg.Wait()
+	t.Logf("created %d nodes", count)
+}
+
+func generateNodeUpdates(t *testing.T, ctx context.Context, cli kubernetes.Interface, nodeCount, workers int) {
+	t.Helper()
+
+	sem := make(chan struct{}, workers)
+
+	for round := 1; ; round++ {
+		var wg sync.WaitGroup
+		for i := range nodeCount {
+			select {
+			case <-ctx.Done():
+				return
+			case sem <- struct{}{}:
+			}
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				node, err := cli.CoreV1().Nodes().Get(ctx, fmt.Sprintf("node-%04d", i), metav1.GetOptions{})
+				if err != nil {
+					return
+				}
+				node.Status.Conditions = []corev1.NodeCondition{{
+					Type:              corev1.NodeReady,
+					Status:            corev1.ConditionTrue,
+					LastHeartbeatTime: metav1.Now(),
+					Reason:            fmt.Sprintf("round-%d", round),
+				}}
+				_, _ = cli.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
+			}()
+		}
+		wg.Wait()
+		t.Logf("heartbeat round %d complete", round)
 	}
 }
