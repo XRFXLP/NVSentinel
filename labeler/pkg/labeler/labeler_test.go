@@ -1443,7 +1443,11 @@ func generateNodeUpdates(t *testing.T, ctx context.Context, cli kubernetes.Inter
 					LastHeartbeatTime: metav1.Now(),
 					Reason:            fmt.Sprintf("round-%d", round),
 				}}
-				_, _ = cli.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
+				_, err = cli.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
+				if err != nil {
+					t.Logf("Failed to update node status: %v", err)
+					return
+				}
 			}()
 		}
 		wg.Wait()
