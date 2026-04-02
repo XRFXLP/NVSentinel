@@ -295,6 +295,7 @@ func (l *Labeler) registerNodeEventHandlers() error {
 			if !l.nodeRequiresReconciliation(oldObj, newObj) {
 				return
 			}
+
 			if err := l.handleNodeEvent(newObj); err != nil {
 				slog.Error("Failed to handle node update event", "error", err)
 			}
@@ -403,6 +404,7 @@ func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
 func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 	oldNode, ok1 := oldObj.(*v1.Node)
 	newNode, ok2 := newObj.(*v1.Node)
+
 	if !ok1 || !ok2 {
 		return true
 	}
