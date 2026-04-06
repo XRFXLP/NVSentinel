@@ -80,10 +80,8 @@ data:
       {{- $result := list }}
       {{- range .Values.initContainers }}
       {{- $container := deepCopy . }}
-      {{- if or $globalTag $appVersion }}
-      {{- $repo := index (splitList ":" $container.image) 0 }}
-      {{- $_ := set $container "image" (printf "%s:%s" $repo ($globalTag | default $appVersion)) }}
-      {{- end }}
+      {{- $tag := $container.image.tag | default $globalTag | default $appVersion }}
+      {{- $_ := set $container "image" (printf "%s:%s" $container.image.repository $tag) }}
       {{- if and (eq .name "preflight-nccl-allreduce") $extraEnv }}
       {{- $_ := set $container "env" (concat (.env | default list) $extraEnv) }}
       {{- end }}
