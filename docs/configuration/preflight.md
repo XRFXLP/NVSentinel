@@ -97,7 +97,7 @@ Multi-node NCCL all-reduce across the entire gang. Requires `gangCoordination.en
 | Env var | Default | Description |
 |---------|---------|-------------|
 | `BW_THRESHOLD_GBPS` | `100` | Minimum acceptable bus bandwidth in GB/s |
-| `MESSAGE_SIZES` | `4G,8G` | Comma-separated message sizes for the benchmark (e.g. `"4G"`, `"4G,8G"`) |
+| `MESSAGE_SIZES` | `4G` | Comma-separated message sizes for the benchmark (e.g. `"4G"`, `"4G,8G"`). Code default is `4G,8G`; Helm chart overrides to `4G` |
 | `BENCHMARK_ITERS` | `20` | Number of timed iterations per message size |
 | `WARMUP_ITERS` | `5` | Warmup iterations before timing begins |
 | `NCCL_REDUCE_OP` | `sum` | Reduction operation (`sum`, `prod`, `min`, `max`, `avg`) |
@@ -141,6 +141,8 @@ Gang discovery identifies pods that belong to the same scheduling group so multi
 Two discovery mechanisms are supported:
 
 ### Native Kubernetes (1.35+): workloadRef
+
+> The `Workload` resource (`scheduling.k8s.io/v1alpha1`) and `spec.workloadRef` are alpha in Kubernetes 1.35 and disabled by default. Enable the `GenericWorkload` feature gate on the API server and scheduler to use this path.
 
 The default when `gangDiscovery` is left empty (`{}`). Each pod links to a `Workload` resource via `spec.workloadRef`:
 
