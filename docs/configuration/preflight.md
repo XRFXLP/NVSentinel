@@ -33,7 +33,7 @@ The chart default `namespaceSelector` matches that label.
 
 ## Init containers (check configuration)
 
-The `initContainers` list in the preflight chart defines which checks the webhook injects. Each entry is a standard `corev1.Container`—you control images, env vars, resource limits, security contexts, and volume mounts.
+The `initContainers` list in the preflight chart defines which checks the webhook injects. Each entry is a standard `corev1.Container` — you control images, env vars, resource limits, security contexts, and volume mounts.
 
 The webhook automatically injects these env vars into every init container (you do not need to set them):
 
