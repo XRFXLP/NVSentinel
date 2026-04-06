@@ -18,7 +18,7 @@ limitations under the License.
 Expand the name of the chart.
 */}}
 {{- define "preflight.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
+{{- .Chart.Name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
