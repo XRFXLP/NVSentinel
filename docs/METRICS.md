@@ -14,8 +14,6 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
   - [GPU Health Monitor](#gpu-health-monitor)
   - [Syslog Health Monitor](#syslog-health-monitor)
   - [CSP Health Monitor](#csp-health-monitor)
-- [Preflight](#preflight)
-
 ---
 
 ## Fault Quarantine Module
@@ -318,16 +316,6 @@ annotations:
   prometheus.io/port: "2112"
   prometheus.io/path: "/metrics"
 ```
-
----
-
-## Preflight
-
-Preflight consists of **injected init container images** (checks) and the **admission webhook** Deployment. The webhook pod exposes **`/healthz`** on the webhook HTTPS port for Kubernetes probes.
-
-Prometheus metric names and labels for check containers and the injector are defined in [ADR-026 § Metrics](./designs/026-preflight-checks.md#metrics) (`preflight_check_*`, `preflight_injection_*`, etc.). How you scrape them depends on your setup (for example, PodMonitor annotations on check pods if you add them, or a future metrics endpoint on the webhook). Treat ADR-026 as the reference for intended metric names; verify against your NVSentinel version if you build dashboards or alerts.
-
-Operator documentation: [Preflight configuration](./configuration/preflight.md).
 
 ---
 

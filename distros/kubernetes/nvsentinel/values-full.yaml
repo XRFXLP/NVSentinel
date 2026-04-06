@@ -1479,7 +1479,6 @@ event-exporter:
 # See: docs/configuration/preflight.md
 ################################################################################
 preflight:
-  # Number of webhook pod replicas (recommend >=2 for HA)
   replicaCount: 1
 
   # Container image configuration for the webhook server
@@ -1497,7 +1496,6 @@ preflight:
     annotations: {}
     name: ""
 
-  # Security context for the webhook container
   securityContext:
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
@@ -1513,7 +1511,6 @@ preflight:
     port: 443
     targetPort: 8443
 
-  # Pod resource limits and requests for the webhook server
   resources:
     requests:
       cpu: 250m
