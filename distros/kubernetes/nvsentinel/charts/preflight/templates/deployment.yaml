@@ -67,7 +67,7 @@ spec:
             secretName: {{ include "preflight.certSecretName" . }}
         - name: config
           configMap:
-            name: {{ include "preflight.fullname" . }}-config
+            name: {{ include "preflight.fullname" . }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
