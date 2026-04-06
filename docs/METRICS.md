@@ -14,6 +14,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
   - [GPU Health Monitor](#gpu-health-monitor)
   - [Syslog Health Monitor](#syslog-health-monitor)
   - [CSP Health Monitor](#csp-health-monitor)
+
 ---
 
 ## Fault Quarantine Module
