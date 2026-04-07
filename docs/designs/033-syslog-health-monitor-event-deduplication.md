@@ -102,7 +102,36 @@ Key properties:
 - `Snapshot()` returns the current set as a slice for JSON serialization.
 - `NewTrackerFromSnapshot()` reconstructs from a persisted slice.
 
-### 2. Integration into `SyslogMonitor`
+### 2. Observability: suppressed-event metric
+
+Existing XID/SXID counter metrics are incremented inside `ProcessLine()`, which runs **before** dedup. They therefore reflect the true error rate from the kernel, not the deduplicated event stream:
+
+| Existing metric | Labels |
+|-----------------|--------|
+| `syslog_health_monitor_xid_errors` | `node`, `err_code` |
+| `syslog_health_monitor_sxid_errors` | `node`, `err_code`, `link`, `nvswitch` |
+
+To give operators visibility into dedup activity, a new Prometheus counter is registered in the `syslogmonitor` package with labels matching the common dimensions across both checks:
+
+```go
+var dedupSuppressedCounter = promauto.NewCounterVec(
+    prometheus.CounterOpts{
+        Name: "nvsentinel_syslog_dedup_suppressed_total",
+        Help: "Total number of health events suppressed by deduplication.",
+    },
+    []string{"check", "node", "err_code"},
+)
+```
+
+The `node` and `err_code` values are extracted from the `HealthEvent` being suppressed (`event.NodeName` and `event.ErrorCode[0]`). This allows operators to correlate suppression with the existing error counters per node and error code:
+
+```promql
+rate(nvsentinel_syslog_dedup_suppressed_total{check="SysLogsXIDError", node="gpu-node-1"}[5m])
+  /
+rate(syslog_health_monitor_xid_errors{node="gpu-node-1"}[5m])
+```
+
+### 3. Integration into `SyslogMonitor`
 
 **Struct changes** in [`pkg/syslog-monitor/types.go`](health-monitors/syslog-health-monitor/pkg/syslog-monitor/types.go):
 
@@ -144,7 +173,7 @@ for _, check := range checks {
 sm.dedupTrackers = dedupTrackers
 ```
 
-### 3. Dedup in the event-sending path
+### 4. Dedup in the event-sending path
 
 A new method `applyDedup` is inserted into [`handleSingleLine`](health-monitors/syslog-health-monitor/pkg/syslog-monitor/syslogmonitor.go) between `handler.ProcessLine()` and `sendHealthEventWithRetry()`:
 
@@ -187,8 +216,15 @@ func (sm *SyslogMonitor) applyDedup(checkName string, events *pb.HealthEvents) *
 
         key := dedup.NormalizeMessage(event.Message)
         if tracker.IsDuplicate(key) {
+            errCode := ""
+            if len(event.ErrorCode) > 0 {
+                errCode = event.ErrorCode[0]
+            }
+            dedupSuppressedCounter.WithLabelValues(checkName, event.NodeName, errCode).Inc()
             slog.Info("Suppressed duplicate health event",
                 "check", checkName,
+                "node", event.NodeName,
+                "errCode", errCode,
                 "normalizedMessage", key)
             continue
         }
@@ -230,7 +266,7 @@ func (sm *SyslogMonitor) clearDedupForHealthyEvent(checkName string, event *pb.H
 }
 ```
 
-### 4. Boot ID change handling
+### 5. Boot ID change handling
 
 In [`handleBootIDChange`](health-monitors/syslog-health-monitor/pkg/syslog-monitor/syslogmonitor.go), clear all dedup trackers alongside cursors:
 
@@ -253,7 +289,7 @@ func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
 }
 ```
 
-### 5. State persistence
+### 6. State persistence
 
 In `saveCurrentState`, snapshot the dedup trackers:
 
@@ -278,7 +314,7 @@ func (sm *SyslogMonitor) saveCurrentState() error {
 
 This is called after each check in `executeCheck`, which already happens today for cursor persistence. No additional save calls are needed.
 
-### 6. Files changed summary
+### 7. Files changed summary
 
 | File                                       | Change                                                                                                                                         |
 |--------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -318,11 +354,6 @@ This is called after each check in `executeCheck`, which already happens today f
 Instead of selectively clearing by PCI, clear the entire check's seen set whenever any healthy event is produced for that check.
 
 **Not chosen** because: when GPU-A is reset, GPU-B's suppressed errors would be re-reported unnecessarily. Per-GPU clearing avoids this at the cost of a linear scan over a small set, which is an acceptable trade-off.
-
-### Dedup inside each handler (`XIDHandler`, `SXIDHandler`)
-Each handler maintains its own seen set and suppresses duplicate events before returning from `ProcessLine`.
-
-**Not chosen** because: requires modifying the `Handler` interface (or each handler separately), duplicates the dedup logic across handlers, and makes it harder to add dedup to new handlers. The monitor-level approach is a single integration point.
 
 ### Dedup in downstream components only (platform connector / fault-quarantine)
 Rely on existing downstream compaction (e.g., `deduplicateMessagesByIdentity` in the platform connector) instead of dedup at the source.
