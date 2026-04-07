@@ -1030,6 +1030,20 @@ type MockMongoCollection struct {
 	UpdateDocumentFunc func(ctx context.Context, filter interface{}, update interface{}) (*sdkclient.UpdateResult, error)
 	FindDocumentFunc   func(ctx context.Context, filter interface{}, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error)
 	FindDocumentsFunc  func(ctx context.Context, filter interface{}, options *sdkclient.FindOptions) (sdkclient.Cursor, error)
+
+	// In-memory store keyed by string _id, used by the worker's lazy fetch.
+	mu        sync.RWMutex
+	documents map[string]map[string]any
+}
+
+// StoreDocument stores a document by its string _id so FindDocument can return it.
+func (m *MockMongoCollection) StoreDocument(id string, doc map[string]any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.documents == nil {
+		m.documents = make(map[string]map[string]any)
+	}
+	m.documents[id] = doc
 }
 
 // mockSingleResult implements sdkclient.SingleResult interface for testing
@@ -1076,7 +1090,20 @@ func (m *MockMongoCollection) FindDocument(ctx context.Context, filter interface
 	if m.FindDocumentFunc != nil {
 		return m.FindDocumentFunc(ctx, filter, options)
 	}
-	// Return a mock result for tests
+
+	// Handle _id-based lookup used by the worker's lazy fetch.
+	if filterMap, ok := filter.(map[string]interface{}); ok {
+		if id, exists := filterMap["_id"]; exists {
+			idStr := fmt.Sprintf("%v", id)
+			m.mu.RLock()
+			doc, found := m.documents[idStr]
+			m.mu.RUnlock()
+			if found {
+				return &mockSingleResult{document: doc}, nil
+			}
+		}
+	}
+
 	return &MockSingleResult{}, nil
 }
 
@@ -1410,6 +1437,10 @@ func enqueueHealthEvent(ctx context.Context, t *testing.T, queueMgr queue.EventQ
 		nodeName:        nodeName,
 		nodeQuarantined: model.Quarantined,
 	})
+	// Store event in collection so the worker can fetch it by _id via lazy fetch.
+	if id, ok := event["_id"]; ok {
+		collection.StoreDocument(fmt.Sprintf("%v", id), event)
+	}
 	require.NoError(t, queueMgr.EnqueueEventGeneric(ctx, nodeName, event, collection, healthEventStore))
 }
 
@@ -1628,6 +1659,7 @@ func TestReconciler_CancelledEventWithOngoingDrain(t *testing.T) {
 	eventID := fmt.Sprintf("%v", document["_id"])
 
 	healthEventStore := newMockHealthEventStore(nil, nil)
+	setup.mockCollection.StoreDocument(eventID, event)
 	err := setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, event, setup.mockCollection, healthEventStore)
 	require.NoError(t, err)
 
@@ -1672,6 +1704,9 @@ func TestReconciler_UnQuarantinedEventCancelsOngoingDrain(t *testing.T) {
 		nodeQuarantined: model.Quarantined,
 	})
 
+	if id, ok := quarantinedEvent["_id"]; ok {
+		setup.mockCollection.StoreDocument(fmt.Sprintf("%v", id), quarantinedEvent)
+	}
 	err := setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, quarantinedEvent, setup.mockCollection,
 		setup.healthEventStore)
 	require.NoError(t, err)
@@ -1686,6 +1721,9 @@ func TestReconciler_UnQuarantinedEventCancelsOngoingDrain(t *testing.T) {
 		nodeName:        nodeName,
 		nodeQuarantined: model.UnQuarantined,
 	})
+	if id, ok := unquarantinedEvent["_id"]; ok {
+		setup.mockCollection.StoreDocument(fmt.Sprintf("%v", id), unquarantinedEvent)
+	}
 	err = setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, unquarantinedEvent, setup.mockCollection,
 		setup.healthEventStore)
 	require.NoError(t, err)
@@ -1731,9 +1769,11 @@ func TestReconciler_MultipleEventsOnNodeCancelledByUnQuarantine(t *testing.T) {
 	})
 	event2["_id"] = nodeName + "-event-2"
 
+	setup.mockCollection.StoreDocument(fmt.Sprintf("%v", event1["_id"]), event1)
 	err := setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, event1, setup.mockCollection, setup.healthEventStore)
 	require.NoError(t, err)
 
+	setup.mockCollection.StoreDocument(fmt.Sprintf("%v", event2["_id"]), event2)
 	err = setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, event2, setup.mockCollection, setup.healthEventStore)
 	require.NoError(t, err)
 
@@ -1746,6 +1786,9 @@ func TestReconciler_MultipleEventsOnNodeCancelledByUnQuarantine(t *testing.T) {
 		nodeName:        nodeName,
 		nodeQuarantined: model.UnQuarantined,
 	})
+	if id, ok := unquarantinedEvent["_id"]; ok {
+		setup.mockCollection.StoreDocument(fmt.Sprintf("%v", id), unquarantinedEvent)
+	}
 	err = setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, unquarantinedEvent, setup.mockCollection,
 		setup.healthEventStore)
 	require.NoError(t, err)
@@ -2065,6 +2108,9 @@ func TestMetrics_PodEvictionDuration(t *testing.T) {
 		event["healtheventstatus"] = status
 	}
 
+	if id, ok := event["_id"]; ok {
+		setup.mockCollection.StoreDocument(fmt.Sprintf("%v", id), event)
+	}
 	err := setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, event, setup.mockCollection, setup.healthEventStore)
 	require.NoError(t, err)
 
