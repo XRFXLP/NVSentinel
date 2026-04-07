@@ -298,6 +298,8 @@ func handleColdStart(ctx context.Context, components *initializer.Components) er
 
 	slog.Info("Found events to re-process", "count", len(healthEvents))
 
+	dbAdapter := &dataStoreAdapter{DatabaseClient: components.DatabaseClient}
+
 	// Re-process each event
 	for _, he := range healthEvents {
 		// Use the RawEvent from the database query which includes _id
@@ -325,9 +327,6 @@ func handleColdStart(ctx context.Context, components *initializer.Components) er
 			slog.Error("Node name is empty in cold start event")
 			continue
 		}
-
-		// Create adapter to bridge interface differences
-		dbAdapter := &dataStoreAdapter{DatabaseClient: components.DatabaseClient}
 
 		documentID, err := utils.ExtractDocumentIDNative(event)
 		if err != nil {
