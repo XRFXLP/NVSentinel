@@ -44,7 +44,9 @@ func (m *eventQueueManager) SetDataStoreEventProcessor(processor DataStoreEventP
 	m.dataStoreEventProcessor = processor
 }
 
-// EnqueueEventGeneric enqueues an event using the new database-agnostic interface
+// EnqueueEventGeneric enqueues an event using the new database-agnostic interface.
+// Only the document ID is stored in the queue; the full event is fetched from the
+// database lazily when the worker processes the item, keeping queue memory minimal.
 func (m *eventQueueManager) EnqueueEventGeneric(ctx context.Context, nodeName string, event datastore.Event,
 	database DataStore, healthEventStore datastore.HealthEventStore) error {
 	if ctx.Err() != nil {
@@ -59,10 +61,15 @@ func (m *eventQueueManager) EnqueueEventGeneric(ctx context.Context, nodeName st
 
 	eventID := utils.ExtractEventID(event)
 
+	documentID, err := utils.ExtractDocumentIDNative(event)
+	if err != nil {
+		return fmt.Errorf("failed to extract document ID for event %s on node %s: %w", eventID, nodeName, err)
+	}
+
 	nodeEvent := NodeEvent{
 		NodeName:         nodeName,
 		EventID:          eventID,
-		Event:            &event,
+		DocumentID:       documentID,
 		Database:         database,
 		HealthEventStore: healthEventStore,
 	}

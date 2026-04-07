@@ -25,14 +25,10 @@ import (
 
 type NodeEvent struct {
 	NodeName         string
-	EventID          string                     // Unique event ID for deduplication (from _id field)
-	Event            *datastore.Event           // Database-agnostic event data
-	HealthEventStore datastore.HealthEventStore // New database-agnostic interface
-	Database         DataStore                  // New database-agnostic interface
-
-	// Deprecated fields for backward compatibility
-	EventBSON *map[string]interface{} // DEPRECATED: Use Event instead
-	// Collection field has been removed - use Database instead
+	EventID          string      // String event ID for logging and rate-limiter deduplication
+	DocumentID       interface{} // Native DB document ID (e.g. MongoDB ObjectID) for lazy fetch
+	HealthEventStore datastore.HealthEventStore
+	Database         DataStore
 }
 
 // DataStore provides database-agnostic operations using store-client
