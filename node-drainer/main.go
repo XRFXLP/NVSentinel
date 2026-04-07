@@ -35,6 +35,7 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/initializer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
 var (
@@ -328,7 +329,15 @@ func handleColdStart(ctx context.Context, components *initializer.Components) er
 		// Create adapter to bridge interface differences
 		dbAdapter := &dataStoreAdapter{DatabaseClient: components.DatabaseClient}
 
-		if err := components.QueueManager.EnqueueEventGeneric(ctx, nodeName, event, dbAdapter, healthStore); err != nil {
+		documentID, err := utils.ExtractDocumentIDNative(event)
+		if err != nil {
+			slog.Error("Failed to extract document ID from cold start event", "error", err)
+			continue
+		}
+
+		err = components.QueueManager.EnqueueEventGeneric(
+			ctx, nodeName, event, dbAdapter, healthStore, documentID)
+		if err != nil {
 			slog.Error("Failed to enqueue cold start event", "error", err, "nodeName", nodeName)
 		} else {
 			slog.Info("Re-queued event from cold start", "nodeName", nodeName)

@@ -49,7 +49,7 @@ type DataStoreEventProcessor interface {
 type EventQueueManager interface {
 	// New database-agnostic method
 	EnqueueEventGeneric(ctx context.Context, nodeName string, event datastore.Event, database DataStore,
-		healthEventStore datastore.HealthEventStore) error
+		healthEventStore datastore.HealthEventStore, documentID interface{}) error
 
 	// Deprecated EnqueueEvent method has been removed - use EnqueueEventGeneric instead
 
