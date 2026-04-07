@@ -53,12 +53,13 @@ The dedup key is the **exact message string** with the kernel timestamp prefix s
 
 ### What clears the dedup
 
-| Signal | What gets cleared |
-|--------|-------------------|
-| GPU reset detected (`GPU reset executed: GPU-...`) | Only seen-set entries whose normalized message contains the recovered GPU's PCI address (extracted from the healthy event's `EntitiesImpacted`) |
-| System reboot (boot ID change) | All seen sets for all checks |
-| Healthy event with no `PCI` entity (e.g., generic reboot healthy event) | Entire seen set for that check |
-| Pod restart (state file reloaded) | Nothing cleared — seen set is restored from state file |
+| Signal                                                                  | What gets cleared                                                                                                                               |
+|-------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|
+| GPU reset detected (`GPU reset executed: GPU-...`)                      | Only seen-set entries whose normalized message contains the recovered GPU's PCI address (extracted from the healthy event's `EntitiesImpacted`) |
+| System reboot (boot ID change)                                          | All seen sets for all checks                                                                                                                    |
+| Healthy event with no `PCI` entity (e.g., generic reboot healthy event) | Entire seen set for that check                                                                                                                  |
+| Pod restart (state file reloaded)                                       | Nothing cleared — seen set is restored from state file                                                                                          |
+
 
 Per-GPU clearing ensures that when GPU-A is reset, dedup entries for GPU-B remain intact and its repeated errors continue to be suppressed.
 
@@ -106,10 +107,11 @@ Key properties:
 
 Existing XID/SXID counter metrics are incremented inside `ProcessLine()`, which runs **before** dedup. They therefore reflect the true error rate from the kernel, not the deduplicated event stream:
 
-| Existing metric | Labels |
-|-----------------|--------|
-| `syslog_health_monitor_xid_errors` | `node`, `err_code` |
+| Existing metric                     | Labels                                 |
+|-------------------------------------|----------------------------------------|
+| `syslog_health_monitor_xid_errors`  | `node`, `err_code`                     |
 | `syslog_health_monitor_sxid_errors` | `node`, `err_code`, `link`, `nvswitch` |
+
 
 To give operators visibility into dedup activity, a new Prometheus counter is registered in the `syslogmonitor` package with labels matching the common dimensions across both checks:
 
