@@ -72,6 +72,7 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 			"node", nodeEvent.NodeName, "eventID", nodeEvent.EventID)
 		m.queue.Forget(nodeEvent)
 		metrics.QueueDepth.Set(float64(m.queue.Len()))
+
 		return true
 	}
 
@@ -81,11 +82,11 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 			"node", nodeEvent.NodeName, "eventID", nodeEvent.EventID, "error", fetchErr)
 		m.queue.AddRateLimited(nodeEvent)
 		metrics.QueueDepth.Set(float64(m.queue.Len()))
+
 		return true
 	}
 
 	err := m.processEventGeneric(ctx, event, nodeEvent.Database, nodeEvent.HealthEventStore, nodeEvent.NodeName)
-
 	if err != nil {
 		slog.Warn("Error processing event for node (will retry)",
 			"node", nodeEvent.NodeName,
