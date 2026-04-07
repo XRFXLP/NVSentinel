@@ -152,6 +152,10 @@ func (e *postgresqlEvent) UnmarshalDocument(v interface{}) error {
 		)
 	}
 
+	if _, hasID := document["_id"]; !hasID && e.recordID != "" {
+		document["_id"] = e.recordID
+	}
+
 	// Marshal and unmarshal to convert to target type
 	docJSON, err := json.Marshal(document)
 	if err != nil {
