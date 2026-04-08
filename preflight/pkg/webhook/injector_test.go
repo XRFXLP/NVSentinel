@@ -867,8 +867,9 @@ func testConfig() *config.Config {
 			InitContainers: []corev1.Container{
 				{Name: "preflight-dcgm-diag", Image: "nvcr.io/nvidia/dcgm:latest"},
 			},
-			GPUResourceNames:     []string{"nvidia.com/gpu"},
-			NetworkResourceNames: []string{"vpc.amazonaws.com/efa"},
+			GPUResourceNames:       []string{"nvidia.com/gpu"},
+			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
+			InitContainerPlacement: config.PlacementAppend,
 			DCGM: config.DCGMConfig{
 				HostengineAddr:     "localhost:5555",
 				DiagLevel:          1,
