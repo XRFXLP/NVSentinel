@@ -41,6 +41,10 @@ func fetchEventFromDB(ctx context.Context, documentID interface{}, database Data
 		return nil, fmt.Errorf("failed to decode event %v: %w", documentID, err)
 	}
 
+	if _, hasID := event["_id"]; !hasID {
+		event["_id"] = documentID
+	}
+
 	return event, nil
 }
 
