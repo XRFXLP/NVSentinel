@@ -128,19 +128,11 @@ func (i *Injector) patchInitContainers(pod *corev1.Pod, initContainers []corev1.
 		}}
 	}
 
-	placement := i.cfg.InitContainerPlacement
-	if placement != config.PlacementPrepend && placement != config.PlacementAppend {
-		slog.Warn("Unknown initContainerPlacement, defaulting to append",
-			"placement", placement)
-
-		placement = config.PlacementAppend
-	}
-
 	patches := make([]PatchOperation, 0, len(initContainers))
 
 	for idx, c := range initContainers {
 		path := "/spec/initContainers/-"
-		if placement == config.PlacementPrepend {
+		if i.cfg.InitContainerPlacement == config.PlacementPrepend {
 			path = fmt.Sprintf("/spec/initContainers/%d", idx)
 		}
 
