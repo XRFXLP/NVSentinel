@@ -118,6 +118,16 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 			Path:  "/spec/initContainers",
 			Value: initContainers,
 		})
+	} else if i.cfg.InitContainerPlacement == config.PlacementPrepend {
+		// Insert preflight init containers before existing ones so that
+		// GPU health checks gate subsequent init containers.
+		for idx, c := range initContainers {
+			patches = append(patches, PatchOperation{
+				Op:    "add",
+				Path:  fmt.Sprintf("/spec/initContainers/%d", idx),
+				Value: c,
+			})
+		}
 	} else {
 		// Append preflight init containers after existing init containers.
 		// This preserves platform/user init ordering and ensures any
