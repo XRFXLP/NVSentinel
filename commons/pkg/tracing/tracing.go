@@ -43,6 +43,15 @@ var (
 	tracer                  trace.Tracer
 )
 
+// Service name constants used across multiple modules for span-ID lookups.
+// For example, platform-connector's span ID is read by fault-quarantine,
+// event-exporter, and health-events-analyzer to establish parent-child
+// trace relationships.
+const (
+	ServicePlatformConnector = "platform-connector"
+	ServiceFaultQuarantine   = "fault-quarantine"
+)
+
 // MetadataKeyTraceID is the key used to store the trace ID in the health event's
 // Metadata map. Platform-connector writes it at ingestion time so that all
 // downstream event consumers are linked to same trace.
@@ -51,12 +60,6 @@ const MetadataKeyTraceID = "trace_id"
 // defaultTraceID is the hex representation of the zero-value OpenTelemetry trace ID,
 // which is present when the context doesn't carry trace info.
 var defaultTraceID = trace.TraceID{}.String()
-
-const (
-	OperationStatusThrottled = "throttled"
-	OperationStatusCancelled = "cancelled"
-	OperationStatusSkipped   = "skipped"
-)
 
 // InitTracing initializes OpenTelemetry tracing with OTLP gRPC exporter.
 func InitTracing(serviceName string) error {
@@ -75,15 +78,22 @@ func InitTracing(serviceName string) error {
 		return fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT is not configured")
 	}
 
-	var opts []otlptracegrpc.Option
+	opts := []otlptracegrpc.Option{
+		otlptracegrpc.WithEndpoint(endpoint),
+	}
 
 	if os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true" {
 		opts = append(opts, otlptracegrpc.WithTLSCredentials(insecure.NewCredentials()))
 	}
 
-	exporter, err := otlptracegrpc.New(context.Background(), opts...)
+	primaryExporter, err := otlptracegrpc.New(context.Background(), opts...)
 	if err != nil {
-		return fmt.Errorf("failed to create OTLP exporter: %w", err)
+		return fmt.Errorf("failed to create primary OTLP exporter: %w", err)
+	}
+
+	childOnlyExporter, err := otlptracegrpc.New(context.Background(), opts...)
+	if err != nil {
+		return fmt.Errorf("failed to create child-only OTLP exporter: %w", err)
 	}
 
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
@@ -91,7 +101,7 @@ func InitTracing(serviceName string) error {
 	}))
 
 	tracerProvider = sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithBatcher(primaryExporter),
 		sdktrace.WithResource(res),
 	)
 
@@ -100,7 +110,7 @@ func InitTracing(serviceName string) error {
 	// preventing standalone root traces from background operations like change
 	// stream getMore polling and listCollections.
 	childOnlyTracerProvider = sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithBatcher(childOnlyExporter),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.NeverSample())),
 	)
@@ -342,13 +352,4 @@ func RecordError(span trace.Span, err error, opts ...trace.EventOption) {
 // SpanFromContext returns the active span stored in ctx, or a no-op span if none exists.
 func SpanFromContext(ctx context.Context) trace.Span {
 	return trace.SpanFromContext(ctx)
-}
-
-// SetOperationStatus sets the standard operation status attribute on a span.
-func SetOperationStatus(span trace.Span, status string, service string) {
-	if span == nil {
-		return
-	}
-
-	span.SetAttributes(attribute.String(fmt.Sprintf("%s.operation.status", service), status))
 }
