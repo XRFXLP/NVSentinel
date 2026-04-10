@@ -43,26 +43,24 @@ message HealthEvent {
 Add a shared helper in `data-models/pkg/model/` (or `fault-remediation/pkg/common/`):
 
 ```go
-func GetEffectiveActionName(he *protos.HealthEvent) (string, error) {
+func GetEffectiveActionName(he *protos.HealthEvent) string {
     if he.RecommendedAction == protos.RecommendedAction_CUSTOM {
-        if he.CustomRecommendedAction == "" {
-            return "", fmt.Errorf("recommendedAction is CUSTOM but customRecommendedAction is empty")
-        }
-        return he.CustomRecommendedAction, nil
+        return he.CustomRecommendedAction
     }
-    return he.RecommendedAction.String(), nil
+    return he.RecommendedAction.String()
 }
 ```
 
-Returning an error instead of an empty string centralizes the validity check — callers don't need to independently guard against an empty action name.
+Validation of `CUSTOM` + empty string is handled at the Platform Connector gRPC boundary (see Validation section), so this helper does not need to duplicate that check.
 
 ### Fault-Remediation Code Changes
 
-Three call sites switch from `healthEvent.RecommendedAction.String()` to `GetEffectiveActionName(healthEvent)`:
+Two call sites switch from `healthEvent.RecommendedAction.String()` to `GetEffectiveActionName(healthEvent)`:
 
-1. **`fault-remediation/pkg/common/equivalence_groups.go`** — `GetGroupConfigForEvent` action lookup. On error, return `nil, err` so the reconciler marks remediation as failed.
-2. **`fault-remediation/pkg/remediation/remediation.go`** — `CreateMaintenanceResource` action routing. On error, return the error to the caller.
-3. **`fault-remediation/pkg/reconciler/reconciler.go`** — `shouldSkipEvent` currently checks `action == protos.RecommendedAction_NONE`. No change needed here since `GetEffectiveActionName` is called upstream in `GetGroupConfigForEvent` and `CreateMaintenanceResource`; a `CUSTOM` event with an empty string will fail at those call sites before reaching `shouldSkipEvent`.
+1. **`fault-remediation/pkg/common/equivalence_groups.go`** — `GetGroupConfigForEvent` action lookup.
+2. **`fault-remediation/pkg/remediation/remediation.go`** — `CreateMaintenanceResource` action routing.
+
+`fault-remediation/pkg/reconciler/reconciler.go` — `shouldSkipEvent` checks `action == protos.RecommendedAction_NONE`, which remains correct. No change needed here.
 
 ### Validation
 
@@ -91,16 +89,20 @@ This lets custom actions like `"REPLACE_DISK"` use `ImpactedEntityScope` while k
 
 #### Platform Connector
 
-In the gRPC handler (`platform-connectors/pkg/server/platform_connector_server.go`), normalize `CUSTOM` events with an empty `customRecommendedAction` before enqueuing — similar to how `UNSPECIFIED` processing strategy is normalized to `EXECUTE_REMEDIATION` (ADR-025):
+In the gRPC handler (`platform-connectors/pkg/server/platform_connector_server.go`), reject `CUSTOM` events with an empty `customRecommendedAction` at the gRPC boundary. This enforces correctness at ingress — the health monitor gets an immediate error rather than the event silently becoming a no-op downstream:
 
 ```go
-if event.RecommendedAction == protos.RecommendedAction_CUSTOM &&
-    event.CustomRecommendedAction == "" {
-    slog.Warn("Received CUSTOM event with empty customRecommendedAction, treating as UNKNOWN",
-        "node", event.NodeName, "agent", event.Agent)
-    event.RecommendedAction = protos.RecommendedAction_UNKNOWN
+for _, event := range he.Events {
+    if event.RecommendedAction == protos.RecommendedAction_CUSTOM &&
+        event.CustomRecommendedAction == "" {
+        return nil, status.Errorf(codes.InvalidArgument,
+            "recommendedAction is CUSTOM but customRecommendedAction is empty (node=%s, agent=%s)",
+            event.NodeName, event.Agent)
+    }
 }
 ```
+
+This differs from the `ProcessingStrategy_UNSPECIFIED` normalization pattern (ADR-025) intentionally: an unspecified strategy has a safe default (`EXECUTE_REMEDIATION`), but a `CUSTOM` action with no name has no safe fallback — silently storing it would hide a configuration error in the health monitor.
 
 ### Operator Usage
 
@@ -169,9 +171,8 @@ The existing CEL-based override system (ADR-021) currently supports overriding `
 - Consumers must use the resolution helper consistently; direct `.RecommendedAction.String()` calls will return `"CUSTOM"` instead of the actual action name
 
 ### Mitigations
-- `GetEffectiveActionName` returns `(string, error)` so invalid `CUSTOM` events (empty string) are caught centrally rather than silently passing through
-- Provide the helper in a shared package so all consumers have a single correct path
-- Platform Connector normalizes invalid `CUSTOM` events to `UNKNOWN` at ingress (see Validation section)
+- Platform Connector rejects invalid `CUSTOM` events (empty string) at the gRPC boundary with `InvalidArgument`, so health monitors get immediate feedback
+- Provide `GetEffectiveActionName` in a shared package so all consumers have a single correct path
 - Add a code review guideline to flag direct `.RecommendedAction.String()` usage in remediation paths
 
 ## Alternatives Considered
