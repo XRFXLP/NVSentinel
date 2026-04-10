@@ -29,7 +29,7 @@ message HealthEvent {
 }
 ```
 
-The `RecommendedAction` enum is unchanged — no new values needed. The `oneof` enforces that exactly one of the two fields is set at any time.
+The `RecommendedAction` enum is unchanged — no new values needed. The `oneof` enforces that *at most one* of the two fields is set at any time (zero or one). Since neither field being set is a valid wire state, explicit validation must be added at the Platform Connector gRPC boundary to reject events where neither variant is populated (see Validation section).
 
 **Wire compatibility:** Old consumers that don't know about the `oneof` will still read field 8 (`recommendedAction`) normally for built-in actions. For custom actions (field 18), old consumers will see `recommendedAction` at its default value (`NONE`) and treat the event as a no-op — which is the correct fallback behavior.
 
@@ -188,7 +188,7 @@ The existing CEL-based override system (ADR-021) currently supports overriding `
 ### Mitigations
 - Platform Connector rejects custom actions with empty strings at the gRPC boundary
 - Provide `GetEffectiveActionName` in a shared package so all consumers have a single correct path
-- The migration is mechanical (search-and-replace `he.RecommendedAction` → `he.GetRecommendedAction()`) and can be validated by the compiler — any missed usage will be a build error
+- The typed Go migration is mechanical (search-and-replace `he.RecommendedAction` → `he.GetRecommendedAction()`) and missed usages will be caught by the compiler as build errors. However, CEL override rules, dynamic Kubernetes client access, and export/serialization/transformer paths use string-based or dynamic field access that the compiler cannot catch — these must be validated with targeted integration tests
 - Old consumers defaulting to `NONE` for custom actions is safe (event is skipped, not mishandled)
 
 ## Alternatives Considered
