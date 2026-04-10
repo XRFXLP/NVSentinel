@@ -1,4 +1,4 @@
-# ADR-034: Data Model — Custom Remediation Actions
+# ADR-036: Data Model — Custom Remediation Actions
 
 ## Context
 
