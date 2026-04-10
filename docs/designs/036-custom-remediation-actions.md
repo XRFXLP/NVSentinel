@@ -43,26 +43,64 @@ message HealthEvent {
 Add a shared helper in `data-models/pkg/model/` (or `fault-remediation/pkg/common/`):
 
 ```go
-func GetEffectiveActionName(he *protos.HealthEvent) string {
+func GetEffectiveActionName(he *protos.HealthEvent) (string, error) {
     if he.RecommendedAction == protos.RecommendedAction_CUSTOM {
-        return he.CustomRecommendedAction
+        if he.CustomRecommendedAction == "" {
+            return "", fmt.Errorf("recommendedAction is CUSTOM but customRecommendedAction is empty")
+        }
+        return he.CustomRecommendedAction, nil
     }
-    return he.RecommendedAction.String()
+    return he.RecommendedAction.String(), nil
 }
 ```
+
+Returning an error instead of an empty string centralizes the validity check — callers don't need to independently guard against an empty action name.
 
 ### Fault-Remediation Code Changes
 
 Three call sites switch from `healthEvent.RecommendedAction.String()` to `GetEffectiveActionName(healthEvent)`:
 
-1. **`fault-remediation/pkg/common/equivalence_groups.go`** — `GetGroupConfigForEvent` action lookup
-2. **`fault-remediation/pkg/remediation/remediation.go`** — `CreateMaintenanceResource` action routing
-3. **`fault-remediation/pkg/reconciler/reconciler.go`** — `shouldSkipEvent` must treat `CUSTOM` with an empty `customRecommendedAction` as unsupported
+1. **`fault-remediation/pkg/common/equivalence_groups.go`** — `GetGroupConfigForEvent` action lookup. On error, return `nil, err` so the reconciler marks remediation as failed.
+2. **`fault-remediation/pkg/remediation/remediation.go`** — `CreateMaintenanceResource` action routing. On error, return the error to the caller.
+3. **`fault-remediation/pkg/reconciler/reconciler.go`** — `shouldSkipEvent` currently checks `action == protos.RecommendedAction_NONE`. No change needed here since `GetEffectiveActionName` is called upstream in `GetGroupConfigForEvent` and `CreateMaintenanceResource`; a `CUSTOM` event with an empty string will fail at those call sites before reaching `shouldSkipEvent`.
 
 ### Validation
 
-- **`fault-remediation/pkg/config/config.go`**: `validateResourceImpactedEntityScope` currently hardcodes `protos.RecommendedAction_COMPONENT_RESET.String()` as the only action allowed to have an `ImpactedEntityScope`. This should be relaxed to also allow custom actions that declare an `ImpactedEntityScope` in config, or kept restricted with a clear error message explaining the limitation.
-- **Platform Connector**: If `recommendedAction == CUSTOM` and `customRecommendedAction` is empty, log a warning and treat as `UNKNOWN`.
+#### `fault-remediation/pkg/config/config.go`
+
+`validateResourceImpactedEntityScope` currently hardcodes `protos.RecommendedAction_COMPONENT_RESET.String()` as the only action allowed to have an `ImpactedEntityScope`:
+
+```go
+if actionName != protos.RecommendedAction_COMPONENT_RESET.String() {
+    return fmt.Errorf("action '%s' cannot have an ImpactedEntityScope defined", actionName)
+}
+```
+
+Update this to also allow custom actions (action names that don't match any built-in enum value) to declare an `ImpactedEntityScope`, provided the entity type supports partial draining (the existing `EntityTypeToResourceNames` check handles this):
+
+```go
+_, isBuiltinAction := protos.RecommendedAction_value[actionName]
+if isBuiltinAction && actionName != protos.RecommendedAction_COMPONENT_RESET.String() {
+    return fmt.Errorf(
+        "built-in action '%s' cannot have an ImpactedEntityScope; "+
+            "only COMPONENT_RESET and custom actions support this", actionName)
+}
+```
+
+This lets custom actions like `"REPLACE_DISK"` use `ImpactedEntityScope` while keeping the restriction for built-in actions where it doesn't make sense (e.g., `RESTART_BM` always targets the whole node).
+
+#### Platform Connector
+
+In the gRPC handler (`platform-connectors/pkg/server/platform_connector_server.go`), normalize `CUSTOM` events with an empty `customRecommendedAction` before enqueuing — similar to how `UNSPECIFIED` processing strategy is normalized to `EXECUTE_REMEDIATION` (ADR-025):
+
+```go
+if event.RecommendedAction == protos.RecommendedAction_CUSTOM &&
+    event.CustomRecommendedAction == "" {
+    slog.Warn("Received CUSTOM event with empty customRecommendedAction, treating as UNKNOWN",
+        "node", event.NodeName, "agent", event.Agent)
+    event.RecommendedAction = protos.RecommendedAction_UNKNOWN
+}
+```
 
 ### Operator Usage
 
@@ -93,15 +131,22 @@ maintenance:
       equivalenceGroup: "disk-replace"
 ```
 
-No code changes needed beyond the initial implementation—new custom actions are purely configuration.
+Once implemented, adding new custom actions requires no further code changes—only Helm configuration.
 
 ### Event Exporter
 
-`event-exporter/pkg/transformer/cloudevents.go` should include `customRecommendedAction` in exported events when set, so external monitoring systems see the effective action name.
+`event-exporter/pkg/transformer/cloudevents.go` currently sets `"recommendedAction": event.RecommendedAction.String()` in exported CloudEvents. For `CUSTOM` events this would emit `"CUSTOM"` as the action name, which is not useful for external monitoring systems. Update `ToCloudEvent` to include `customRecommendedAction` when set:
+
+```go
+healthEventData["recommendedAction"] = event.RecommendedAction.String()
+if event.CustomRecommendedAction != "" {
+    healthEventData["customRecommendedAction"] = event.CustomRecommendedAction
+}
+```
 
 ### Health Event Overrides
 
-The existing CEL-based override system (ADR-021) should support setting `recommendedAction: CUSTOM` and `customRecommendedAction: "MY_ACTION"` in override rules, enabling operators to reroute built-in events to custom actions without modifying health monitors.
+The existing CEL-based override system (ADR-021) currently supports overriding `isFatal`, `isHealthy`, and `recommendedAction`. To enable rerouting built-in events to custom actions, the override `Override` struct in `platform-connectors/pkg/overrides/` must also accept a `customRecommendedAction` string field. When an override rule sets `recommendedAction: CUSTOM`, `customRecommendedAction` must be non-empty — validated at startup alongside CEL expression compilation. This is an additive change to ADR-021's implementation scope.
 
 ## Rationale
 
@@ -124,9 +169,10 @@ The existing CEL-based override system (ADR-021) should support setting `recomme
 - Consumers must use the resolution helper consistently; direct `.RecommendedAction.String()` calls will return `"CUSTOM"` instead of the actual action name
 
 ### Mitigations
-- Provide the `GetEffectiveActionName` helper in a shared package so all consumers have a single correct path
-- Add a linter or code review guideline to flag direct `.RecommendedAction.String()` usage in remediation paths
-- Validate at Platform Connector ingress that `CUSTOM` events have a non-empty `customRecommendedAction`
+- `GetEffectiveActionName` returns `(string, error)` so invalid `CUSTOM` events (empty string) are caught centrally rather than silently passing through
+- Provide the helper in a shared package so all consumers have a single correct path
+- Platform Connector normalizes invalid `CUSTOM` events to `UNKNOWN` at ingress (see Validation section)
+- Add a code review guideline to flag direct `.RecommendedAction.String()` usage in remediation paths
 
 ## Alternatives Considered
 
