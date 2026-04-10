@@ -28,8 +28,8 @@ enum RecommendedAction {
   RESTART_BM = 24;
   REPLACE_VM = 25;
   RUN_DCGMEUD = 26;
+  CUSTOM = 27;  // Action name is in customRecommendedAction field
   UNKNOWN = 99;
-  CUSTOM = 100;  // Action name is in customRecommendedAction field
 }
 
 message HealthEvent {
@@ -188,7 +188,7 @@ The existing CEL-based override system (ADR-021) currently supports overriding `
 
 ## Notes
 
-- The `CUSTOM` enum value uses `100` to leave room for future built-in actions
+- The `CUSTOM` enum value uses `27`, the next sequential value after `RUN_DCGMEUD = 26`
 - RBAC for custom CRD kinds must be configured separately by the operator; the Helm chart's auto-generated RBAC only covers built-in kinds
 - This change pairs well with ADR-021 (Health Event Property Overrides) for rerouting built-in events to custom actions
 
