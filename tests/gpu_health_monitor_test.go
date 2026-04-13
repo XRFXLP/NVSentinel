@@ -757,11 +757,12 @@ func TestGpuHealthMonitorStoreOnlyEvents(t *testing.T) {
 
 		t.Logf("Waiting for GpuInforomWatch condition to be cleared on node %s", nodeName)
 		require.Eventually(t, func() bool {
-			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName, "GpuInforomWatch", "")
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"GpuInforomWatch", "GpuInforomWatchIsNotHealthy")
 			if err != nil {
 				return false
 			}
-			if condition == nil || condition.Status == v1.ConditionFalse {
+			if condition == nil {
 				return true
 			}
 			t.Logf("GpuInforomWatch condition still present: %s", condition.Message)
