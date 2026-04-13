@@ -755,6 +755,19 @@ func TestGpuHealthMonitorStoreOnlyEvents(t *testing.T) {
 
 		helpers.RestoreDaemonSetArgs(ctx, t, client, GPUHealthMonitorDaemonSetName, GPUHealthMonitorContainerName, originalArgs)
 
+		t.Logf("Waiting for GpuInforomWatch condition to be cleared on node %s", nodeName)
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName, "GpuInforomWatch", "")
+			if err != nil {
+				return false
+			}
+			if condition == nil || condition.Status == v1.ConditionFalse {
+				return true
+			}
+			t.Logf("GpuInforomWatch condition still present: %s", condition.Message)
+			return false
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "GpuInforomWatch condition should be cleared")
+
 		t.Logf("Cleaning up metadata from node %s", nodeName)
 		helpers.DeleteMetadata(t, ctx, client, helpers.NVSentinelNamespace, nodeName)
 
