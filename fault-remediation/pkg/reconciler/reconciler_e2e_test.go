@@ -1325,6 +1325,10 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 	})
 
 	t.Run("CustomAction_CreatesCorrectCR", func(t *testing.T) {
+		// Remove stale state label from previous subtests
+		_, _ = statemanager.NewStateManager(testClient).UpdateNVSentinelStateNodeLabel(
+			ctx, nodeName, "", true)
+
 		customRemediationActions := map[string]config.MaintenanceResource{
 			"RESTART_BM": {
 				ApiGroup:              "janitor.dgxc.nvidia.com",
