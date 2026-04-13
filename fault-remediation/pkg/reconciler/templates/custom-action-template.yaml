@@ -13,7 +13,7 @@
 # limitations under the License.
 
 apiVersion: {{.ApiGroup}}/{{.Version}}
-kind: RebootNode
+kind: {{.Kind}}
 metadata:
   name: custom-maintenance-{{.NodeName}}-{{.HealthEventID}}
   labels:

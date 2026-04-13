@@ -1324,87 +1324,6 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		assert.Equal(t, beforeUnsupported+1, afterUnsupported, "TotalUnsupportedRemediationActions should increment")
 	})
 
-	t.Run("CustomAction_CreatesCorrectCR", func(t *testing.T) {
-		// Remove stale state label from previous subtests
-		_, _ = statemanager.NewStateManager(testClient).UpdateNVSentinelStateNodeLabel(
-			ctx, nodeName, "", true)
-
-		customRemediationActions := map[string]config.MaintenanceResource{
-			"RESTART_BM": {
-				ApiGroup:              "janitor.dgxc.nvidia.com",
-				Version:               "v1alpha1",
-				Kind:                  "RebootNode",
-				TemplateFileName:      "rebootnode-template.yaml",
-				CompleteConditionType: "NodeReady",
-				EquivalenceGroup:      "restart",
-			},
-			"REPLACE_DISK": {
-				ApiGroup:              "janitor.dgxc.nvidia.com",
-				Version:               "v1alpha1",
-				Kind:                  "RebootNode",
-				TemplateFileName:      "custom-action-template.yaml",
-				CompleteConditionType: "NodeReady",
-				EquivalenceGroup:      "disk-replace",
-			},
-		}
-
-		remediationClient, err := createTestRemediationClient(false, customRemediationActions)
-		require.NoError(t, err)
-
-		cfg := ReconcilerConfig{
-			RemediationClient: remediationClient,
-			StateManager:      statemanager.NewStateManager(testClient),
-			UpdateMaxRetries:  3,
-			UpdateRetryDelay:  100 * time.Millisecond,
-		}
-
-		reconcilerInstance := FaultRemediationReconciler{
-			Config:            cfg,
-			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
-		}
-
-		cleanupNodeAnnotations(ctx, t, nodeName)
-
-		he := &protos.HealthEvent{
-			NodeName:                nodeName,
-			RecommendedAction:      protos.RecommendedAction_CUSTOM,
-			CustomRecommendedAction: "REPLACE_DISK",
-		}
-		healthEventWithStatus := model.HealthEventWithStatus{HealthEvent: he}
-
-		groupConfig, err := common.GetGroupConfigForEvent(
-			cfg.RemediationClient.GetConfig().RemediationActions, he)
-		require.NoError(t, err)
-		require.NotNil(t, groupConfig, "REPLACE_DISK should match a configured action")
-		assert.Equal(t, "disk-replace", groupConfig.EffectiveEquivalenceGroup)
-
-		shouldSkip := reconcilerInstance.shouldSkipEvent(ctx, healthEventWithStatus, groupConfig)
-		assert.False(t, shouldSkip, "Custom action with matching config should not be skipped")
-
-		healthEventDoc := &events.HealthEventDoc{
-			ID:                    "custom-event-1",
-			HealthEventWithStatus: healthEventWithStatus,
-		}
-		crName, err := reconcilerInstance.performRemediation(ctx, healthEventDoc, groupConfig)
-		require.NoError(t, err)
-		assert.Contains(t, crName, "custom-maintenance-", "CR name should use the custom template prefix")
-
-		cr, err := testDynamic.Resource(gvr).Get(ctx, crName, metav1.GetOptions{})
-		require.NoError(t, err, "Custom action CR should exist in Kubernetes")
-		assert.Equal(t, nodeName, cr.Object["spec"].(map[string]interface{})["nodeName"])
-
-		labels := cr.GetLabels()
-		assert.Equal(t, "true", labels["nvsentinel.nvidia.com/custom-action"],
-			"CR should have custom-action label from template")
-
-		state, _, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
-		require.NoError(t, err)
-		assert.Contains(t, state.EquivalenceGroups, "disk-replace",
-			"Should have disk-replace equivalence group")
-		assert.Equal(t, crName, state.EquivalenceGroups["disk-replace"].MaintenanceCR)
-
-		_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
-	})
 }
 
 // createCustomActionQuarantineEvent creates a quarantine event with CUSTOM recommendedAction
@@ -2162,6 +2081,97 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 		return !hasAnnotation
 	}, 5*time.Second, 100*time.Millisecond,
 		"Cold start should clear remediation annotation for cancelled events")
+
+	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
+}
+
+// TestCustomAction_E2E tests the full reconciler flow with a custom remediation action.
+// Uses its own reconciler, watcher, and event loop to exercise the complete path:
+// MongoDB event → reconciler loop → GetEffectiveActionName → template rendering → CR creation.
+func TestCustomAction_E2E(t *testing.T) {
+	ctx, cancel := context.WithTimeout(testContext, 15*time.Second)
+	defer cancel()
+
+	nodeName := "test-node-custom-action-e2e"
+	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	defer func() {
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	customRemediationActions := map[string]config.MaintenanceResource{
+		"REPLACE_DISK": {
+			ApiGroup:              "janitor.dgxc.nvidia.com",
+			Version:               "v1alpha1",
+			Kind:                  "RebootNode",
+			TemplateFileName:      "custom-action-template.yaml",
+			CompleteConditionType: "NodeReady",
+			EquivalenceGroup:      "disk-replace",
+		},
+	}
+
+	remediationClient, err := createTestRemediationClient(false, customRemediationActions)
+	require.NoError(t, err)
+
+	customMockStore := &MockHealthEventStore{}
+	customMockStore.UpdateHealthEventStatusFn = func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
+		return nil
+	}
+
+	customWatcher := NewMockChangeStreamWatcher()
+
+	cfg := ReconcilerConfig{
+		RemediationClient: remediationClient,
+		StateManager:      statemanager.NewStateManager(testClient),
+		UpdateMaxRetries:  3,
+		UpdateRetryDelay:  100 * time.Millisecond,
+	}
+
+	customReconciler := NewFaultRemediationReconciler(nil, customWatcher, customMockStore, cfg, false)
+
+	go customReconciler.StartWatcherStream(ctx)
+
+	gvr := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "rebootnodes",
+	}
+
+	eventID := "custom-action-e2e-event-1"
+	event := createCustomActionQuarantineEvent(eventID, nodeName, "REPLACE_DISK")
+	eventToken := datastore.EventWithToken{
+		Event:       map[string]interface{}(event),
+		ResumeToken: []byte("custom-token-1"),
+	}
+	customWatcher.EventsChan <- eventToken
+
+	var crName string
+	assert.Eventually(t, func() bool {
+		state, _, err := customReconciler.annotationManager.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return false
+		}
+		if grp, ok := state.EquivalenceGroups["disk-replace"]; ok {
+			crName = grp.MaintenanceCR
+			return crName != ""
+		}
+		return false
+	}, 5*time.Second, 100*time.Millisecond, "CR should be created for custom action")
+
+	assert.Contains(t, crName, "custom-maintenance-",
+		"CR name should use the custom template prefix")
+
+	cr, err := testDynamic.Resource(gvr).Get(ctx, crName, metav1.GetOptions{})
+	require.NoError(t, err, "Custom action CR should exist in Kubernetes")
+	assert.Equal(t, nodeName, cr.Object["spec"].(map[string]interface{})["nodeName"])
+
+	labels := cr.GetLabels()
+	assert.Equal(t, "true", labels["nvsentinel.nvidia.com/custom-action"],
+		"CR should have custom-action label from template")
+
+	node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	require.Contains(t, node.Annotations, annotation.AnnotationKey,
+		"Node should have remediation annotation")
 
 	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
 }
