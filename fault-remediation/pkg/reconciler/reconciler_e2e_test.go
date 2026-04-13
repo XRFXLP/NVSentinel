@@ -1323,6 +1323,105 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		afterUnsupported := getCounterVecValue(t, metrics.TotalUnsupportedRemediationActions, "UNKNOWN", nodeName)
 		assert.Equal(t, beforeUnsupported+1, afterUnsupported, "TotalUnsupportedRemediationActions should increment")
 	})
+
+	t.Run("CustomAction_CreatesCorrectCR", func(t *testing.T) {
+		customRemediationActions := map[string]config.MaintenanceResource{
+			"RESTART_BM": {
+				ApiGroup:              "janitor.dgxc.nvidia.com",
+				Version:               "v1alpha1",
+				Kind:                  "RebootNode",
+				TemplateFileName:      "rebootnode-template.yaml",
+				CompleteConditionType: "NodeReady",
+				EquivalenceGroup:      "restart",
+			},
+			"REPLACE_DISK": {
+				ApiGroup:              "janitor.dgxc.nvidia.com",
+				Version:               "v1alpha1",
+				Kind:                  "RebootNode",
+				TemplateFileName:      "custom-action-template.yaml",
+				CompleteConditionType: "NodeReady",
+				EquivalenceGroup:      "disk-replace",
+			},
+		}
+
+		remediationClient, err := createTestRemediationClient(false, customRemediationActions)
+		require.NoError(t, err)
+
+		cfg := ReconcilerConfig{
+			RemediationClient: remediationClient,
+			StateManager:      statemanager.NewStateManager(testClient),
+			UpdateMaxRetries:  3,
+			UpdateRetryDelay:  100 * time.Millisecond,
+		}
+
+		reconcilerInstance := FaultRemediationReconciler{
+			Config:            cfg,
+			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
+		}
+
+		cleanupNodeAnnotations(ctx, t, nodeName)
+
+		he := &protos.HealthEvent{
+			NodeName:                nodeName,
+			RecommendedAction:      protos.RecommendedAction_CUSTOM,
+			CustomRecommendedAction: "REPLACE_DISK",
+		}
+		healthEventWithStatus := model.HealthEventWithStatus{HealthEvent: he}
+
+		groupConfig, err := common.GetGroupConfigForEvent(
+			cfg.RemediationClient.GetConfig().RemediationActions, he)
+		require.NoError(t, err)
+		require.NotNil(t, groupConfig, "REPLACE_DISK should match a configured action")
+		assert.Equal(t, "disk-replace", groupConfig.EffectiveEquivalenceGroup)
+
+		shouldSkip := reconcilerInstance.shouldSkipEvent(ctx, healthEventWithStatus, groupConfig)
+		assert.False(t, shouldSkip, "Custom action with matching config should not be skipped")
+
+		healthEventDoc := &events.HealthEventDoc{
+			ID:                    "custom-event-1",
+			HealthEventWithStatus: healthEventWithStatus,
+		}
+		crName, err := reconcilerInstance.performRemediation(ctx, healthEventDoc, groupConfig)
+		require.NoError(t, err)
+		assert.Contains(t, crName, "custom-maintenance-", "CR name should use the custom template prefix")
+
+		cr, err := testDynamic.Resource(gvr).Get(ctx, crName, metav1.GetOptions{})
+		require.NoError(t, err, "Custom action CR should exist in Kubernetes")
+		assert.Equal(t, nodeName, cr.Object["spec"].(map[string]interface{})["nodeName"])
+
+		labels := cr.GetLabels()
+		assert.Equal(t, "true", labels["nvsentinel.nvidia.com/custom-action"],
+			"CR should have custom-action label from template")
+
+		state, _, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+		require.NoError(t, err)
+		assert.Contains(t, state.EquivalenceGroups, "disk-replace",
+			"Should have disk-replace equivalence group")
+		assert.Equal(t, crName, state.EquivalenceGroups["disk-replace"].MaintenanceCR)
+
+		_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
+	})
+}
+
+// createCustomActionQuarantineEvent creates a quarantine event with CUSTOM recommendedAction
+func createCustomActionQuarantineEvent(eventID, nodeName, customAction string) datastore.Event {
+	return datastore.Event{
+		"operationType": "update",
+		"fullDocument": map[string]interface{}{
+			"_id": eventID,
+			"healtheventstatus": map[string]interface{}{
+				"userpodsevictionstatus": map[string]interface{}{
+					"status": model.StatusSucceeded,
+				},
+				"nodequarantined": model.Quarantined,
+			},
+			"healthevent": map[string]interface{}{
+				"nodename":                  nodeName,
+				"recommendedaction":         int32(protos.RecommendedAction_CUSTOM),
+				"customrecommendedaction":   customAction,
+			},
+		},
+	}
 }
 
 // Helper to create quarantine event
