@@ -64,8 +64,10 @@ func (p *SidecarParser) WaitUntilReady(ctx context.Context, maxRetries int, retr
 
 	slog.Info("Waiting for XID analyzer sidecar to become ready", "host", host)
 
+	dialer := &net.Dialer{Timeout: 1 * time.Second}
+
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		conn, err := net.DialTimeout("tcp", host, 1*time.Second)
+		conn, err := dialer.DialContext(ctx, "tcp", host)
 		if err == nil {
 			conn.Close()
 			slog.Info("XID analyzer sidecar is ready", "attempt", attempt)
