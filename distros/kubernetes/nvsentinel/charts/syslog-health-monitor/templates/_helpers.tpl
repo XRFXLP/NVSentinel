@@ -77,7 +77,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if $root.Values.xidSideCar.enabled }}
+      {{- if and $root.Values.xidSideCar.enabled (semverCompare ">=1.29-0" $root.Capabilities.KubeVersion.Version) }}
       initContainers:
         - name: xid-analyzer-sidecar
           restartPolicy: Always
@@ -189,6 +189,25 @@ spec:
             - name: sys-vol
               mountPath: /nvsentinel/sys
               readOnly: true
+        {{- if and $root.Values.xidSideCar.enabled (not (semverCompare ">=1.29-0" $root.Capabilities.KubeVersion.Version)) }}
+        - name: xid-analyzer-sidecar
+          image: {{ $root.Values.xidSideCar.image.repository }}:{{ $root.Values.xidSideCar.image.tag }}
+          imagePullPolicy: {{ $root.Values.xidSideCar.image.pullPolicy }}
+          ports:
+            - name: http-api
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          env:
+            - name: PORT
+              value: "8080"
+        {{- end }}
       volumes:
         - name: var-run-vol
           hostPath:

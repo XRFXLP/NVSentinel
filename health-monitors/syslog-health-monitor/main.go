@@ -35,6 +35,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/parser"
 	fd "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
 )
 
@@ -145,6 +146,13 @@ func run() error {
 
 		return nil
 	})
+
+	if *xidAnalyserEndpoint != "" {
+		sidecar := parser.NewSidecarParser(*xidAnalyserEndpoint, nodeName, "")
+		if err := sidecar.WaitUntilReady(gCtx, 30, 2*time.Second); err != nil {
+			return fmt.Errorf("sidecar readiness check failed: %w", err)
+		}
+	}
 
 	g.Go(func() error {
 		return runPollingLoop(gCtx, monitor, pollingInterval, checks)
