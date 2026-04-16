@@ -90,7 +90,7 @@ show_summary() {
     local worker_schedulable=$(kubectl get node "$worker" -o jsonpath='{.spec.unschedulable}' 2>/dev/null)
     local monitor_count=$(kubectl get pods -n "$NAMESPACE" -l app=memory-pressure-monitor --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d ' ')
     local controller_ready=$(kubectl get deployment memory-reclaim-controller -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-    local reboot_count=$(kubectl get rebootnodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local reclaim_count=$(kubectl get memoryreclaims --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
     echo "Current State:"
     if [ "$worker_schedulable" = "true" ]; then
@@ -100,7 +100,7 @@ show_summary() {
     fi
     echo "  📡 Memory monitors running: $monitor_count"
     echo "  🔧 Reclaim controller ready: ${controller_ready:-0}"
-    echo "  📋 RebootNode CRs: $reboot_count"
+    echo "  📋 MemoryReclaim CRs: $reclaim_count"
     echo ""
 
     if [ "$reboot_count" -eq 0 ]; then

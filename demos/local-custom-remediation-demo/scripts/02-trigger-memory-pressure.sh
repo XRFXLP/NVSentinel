@@ -100,15 +100,15 @@ The automated remediation flow is:
 
   4. 🔒 Fault Quarantine cordons the node
 
-  5. 🔧 Fault Remediation creates a RebootNode CR
+  5. 🔧 Fault Remediation creates a MemoryReclaim CR
      (from the RECLAIM_MEMORY action template)
 
   6. 🧹 Memory Reclaim Controller detects the CR
-     (watches for label nvsentinel.nvidia.com/custom-action=true)
+     (watches for MemoryReclaim CRs at demo.nvsentinel.nvidia.com)
 
   7. 🗑️  Deletes memory-hog pods on the affected node
 
-  8. ✅ Updates CR status with NodeReady=True
+  8. ✅ Updates CR status with MemoryReclaimed=True
 
 This process takes 30-60 seconds depending on polling intervals.
 

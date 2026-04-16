@@ -34,6 +34,7 @@ spec:
         properties:
           spec:
             type: object
+            required: ["nodeName"]
             properties:
               nodeName:
                 type: string

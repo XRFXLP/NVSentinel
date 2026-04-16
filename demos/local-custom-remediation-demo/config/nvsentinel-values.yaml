@@ -185,14 +185,6 @@ fault-remediation:
 
   maintenance:
     actions:
-      RESTART_BM:
-        apiGroup: "janitor.dgxc.nvidia.com"
-        version: "v1alpha1"
-        kind: "RebootNode"
-        scope: "Cluster"
-        completeConditionType: "NodeReady"
-        templateFileName: "nvidia-reboot.yaml"
-        equivalenceGroup: "restart"
       RECLAIM_MEMORY:
         apiGroup: "demo.nvsentinel.nvidia.com"
         version: "v1alpha1"
