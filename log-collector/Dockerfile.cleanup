@@ -40,7 +40,7 @@ ENV PYTHONUNBUFFERED=1
 COPY --from=build /app/dist/*.whl ./
 COPY --from=build /app/constraints.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade wheel>=0.46.2 jaraco-context>=6.1.0 && \
+    pip install --upgrade 'wheel>=0.46.2' 'jaraco-context>=6.1.0' && \
     pip install ./file_server_cleanup*.whl --constraint constraints.txt
 
 CMD ["file_server_cleanup"]

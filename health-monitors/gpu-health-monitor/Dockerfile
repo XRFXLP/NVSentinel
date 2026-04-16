@@ -42,8 +42,6 @@ RUN poetry export --format requirements.txt --output constraints.txt --without-h
 
 FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS runtime
 
-RUN echo "Acquire::https::Verify-Peer \"false\";" > /etc/apt/apt.conf.d/99disable-cert-check
-
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries && \
