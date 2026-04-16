@@ -83,6 +83,22 @@ RUN git clone -b ${NCCL_TESTS_VERSION} https://github.com/NVIDIA/nccl-tests.git 
                       -gencode=arch=compute_90,code=sm_90 \
                       -gencode=arch=compute_100,code=sm_100"
 
+RUN apt-get update && \
+    apt-get upgrade -y git git-man gnupg gpgv gpgsm gpgconf keyboxd && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --upgrade \
+    "wheel>=0.46.2" \
+    "urllib3>=2.6.3" \
+    "tornado>=6.5.5" \
+    "h11>=0.16.0" \
+    "pillow>=12.1.1" \
+    "onnx>=1.21.0" \
+    "protobuf>=5.29.6" \
+    "aiohttp>=3.13.3" \
+    "nbconvert>=7.17.0" \
+    "black>=26.3.1"
+
 WORKDIR /app
 
 COPY --from=go-builder /go/src/preflight-checks/nccl-loopback/nccl-loopback-check .
