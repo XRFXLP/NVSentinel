@@ -4,24 +4,24 @@
 
 The janitor controllers own three cluster-scoped CRs — `RebootNode`, `GPUReset`, `TerminateNode` (`janitor.dgxc.nvidia.com/v1alpha1`) — that drive maintenance workflows. They are created per-event (typically by `fault-remediation`, sometimes by admins) and reach a terminal state signaled by `status.completionTime`.
 
-**There is no cleanup after completion.** The reconcilers return `ctrl.Result{}` on terminal state and never revisit the CR. Existing mechanisms also don't GC:
+There is no cleanup after completion. The reconcilers return `ctrl.Result{}` on terminal state and never revisit the CR. Existing mechanisms also don't GC:
 
-- **OwnerReference cascade is ineffective.** `fault-remediation` sets the owner to the `Node` with `BlockOwnerDeletion: false`; cascade fires only when the Node is deleted, which is rare for long-lived clusters.
-- **No TTL field** exists on any of the three CRD schemas.
+- OwnerReference cascade is ineffective: `fault-remediation` sets the owner to the `Node` with `BlockOwnerDeletion: false`, so cascade fires only when the Node is deleted, which is rare for long-lived clusters.
+- No TTL field exists on any of the three CRD schemas.
 
 Observed in production: across multiple long-running clusters, 93–99% of `RebootNode` CRs are older than 14 days. The pattern holds regardless of cluster size, cloud provider, or workload, because it reflects controller defaults rather than operator configuration. The absolute creation rate is low (~1 CR/day per cluster); growth to hundreds of CRs is purely a function of time with no cleanup path.
 
 ### Impact
 
-- **etcd growth** scales linearly with cluster age.
-- **Informer cache / LIST latency** degrades in proportion — notably in `fault-remediation.checkExistingCRStatus`, which LISTs on every reconcile.
-- **Operator UX**: `kubectl get rebootnode` is dominated by stale items.
+- etcd growth scales linearly with cluster age.
+- Informer cache and LIST latency degrade in proportion — notably in `fault-remediation.checkExistingCRStatus`, which LISTs on every reconcile.
+- `kubectl get rebootnode` is dominated by stale items.
 
 [ADR-028](028-generic-baremetal-reboot-provider.md) already applies `ttlSecondsAfterFinished` to the Jobs created by janitor-provider; the parent CRs have been overlooked until now.
 
 ## Decision
 
-Each janitor reconciler deletes its own CR **`T` after `status.completionTime`**, where `T` is a per-controller `ttlAfterCompletion` duration.
+Each janitor reconciler deletes its own CR `T` after `status.completionTime`, where `T` is a per-controller `ttlAfterCompletion` duration.
 
 - Default: `336h` (14 days) — matches the staleness threshold observed in production.
 - `0` disables (opt-out).
@@ -53,8 +53,8 @@ sequenceDiagram
 
 Reconcile is event-driven: it fires on create/update/delete and on the controller's `RequeueAfter`. Two properties make this design work without a separate GC loop:
 
-- **Steady state**: the completed branch now returns `RequeueAfter: ttl - age` instead of `ctrl.Result{}`, so each completed CR schedules exactly one future reconcile at `completionTime + ttl`.
-- **Backlog on upgrade**: on startup, controller-runtime performs an initial sync and fires Reconcile once per existing CR. Any CR already past TTL is deleted on that first pass; others are requeued for their remaining lifetime. No migration code is needed.
+- Steady state: the completed branch now returns `RequeueAfter: ttl - age` instead of `ctrl.Result{}`, so each completed CR schedules exactly one future reconcile at `completionTime + ttl`.
+- Backlog on upgrade: on startup, controller-runtime performs an initial sync and fires Reconcile once per existing CR. Any CR already past TTL is deleted on that first pass; others are requeued for their remaining lifetime. No migration code is needed.
 
 ### Config
 
@@ -167,17 +167,17 @@ All three controllers already have `delete` on their resources. No RBAC change.
 
 ## Alternatives Considered
 
-- **Separate cleanup controller** — rejected; duplicates RBAC/watches already present in the per-kind reconcilers.
-- **CronJob running `kubectl delete`** — rejected; non-idiomatic, awkward to test, separate RBAC surface.
-- **CRD `spec.ttlSecondsAfterFinished` field** — deferred; requires schema migration, and config-level is equivalent for v1.
-- **OwnerReference redesign** (owner = `HealthEventResource`) — deferred; depends on ADR-027 TTL landing and doesn't cover admin-created CRs.
-- **Do nothing** — rejected; production evidence (93–99% staleness across clusters) shows manual cleanup does not happen.
+- Separate cleanup controller — rejected; duplicates RBAC and watches already present in the per-kind reconcilers.
+- CronJob running `kubectl delete` — rejected; non-idiomatic, awkward to test, separate RBAC surface.
+- CRD `spec.ttlSecondsAfterFinished` field — deferred; requires schema migration, and config-level is equivalent for v1.
+- OwnerReference redesign (owner = `HealthEventResource`) — deferred; depends on ADR-027 TTL landing and doesn't cover admin-created CRs.
+- Do nothing — rejected; production evidence (93–99% staleness across clusters) shows manual cleanup does not happen.
 
 ## Testing
 
-- **envtest**: delete past TTL; requeue before TTL; `ttl=0` disables; nil `completionTime` is never deleted; `NotFound` on delete is not an error; idempotent across repeated reconciles.
-- **Integration**: per-controller TTLs independent; Helm upgrade picks up new TTL.
-- **Metrics**: counter increments on each TTL deletion.
+- envtest: delete past TTL; requeue before TTL; `ttl=0` disables; nil `completionTime` is never deleted; `NotFound` on delete is not an error; idempotent across repeated reconciles.
+- Integration: per-controller TTLs independent; Helm upgrade picks up new TTL.
+- Metrics: counter increments on each TTL deletion.
 
 ## References
 
