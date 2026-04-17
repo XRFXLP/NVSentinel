@@ -9,15 +9,13 @@ There is no cleanup after completion. The reconcilers return `ctrl.Result{}` on 
 - OwnerReference cascade is ineffective: `fault-remediation` sets the owner to the `Node` with `BlockOwnerDeletion: false`, so cascade fires only when the Node is deleted, which is rare for long-lived clusters.
 - No TTL field exists on any of the three CRD schemas.
 
-Observed in production: across multiple long-running clusters, 93–99% of `RebootNode` CRs are older than 14 days. The pattern holds regardless of cluster size, cloud provider, or workload, because it reflects controller defaults rather than operator configuration. The absolute creation rate is low (~1 CR/day per cluster); growth to hundreds of CRs is purely a function of time with no cleanup path.
+Observed in production: across multiple long-running clusters, 93–99% of `RebootNode` CRs are older than 14 days.
 
 ### Impact
 
 - etcd growth scales linearly with cluster age.
 - Informer cache and LIST latency degrade in proportion — notably in `fault-remediation.checkExistingCRStatus`, which LISTs on every reconcile.
 - `kubectl get rebootnode` is dominated by stale items.
-
-[ADR-028](028-generic-baremetal-reboot-provider.md) already applies `ttlSecondsAfterFinished` to the Jobs created by janitor-provider; the parent CRs have been overlooked until now.
 
 ## Decision
 
