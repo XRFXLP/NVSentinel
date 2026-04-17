@@ -1,8 +1,8 @@
-# ADR-037: Janitor — Automatic Cleanup of Stale Maintenance CRs
+# ADR-037: Janitor — TTL-Based Cleanup of Maintenance CRs
 
 ## Context
 
-The janitor controllers own three cluster-scoped CRs — `RebootNode`, `GPUReset`, `TerminateNode` (`janitor.dgxc.nvidia.com/v1alpha1`) — that drive maintenance workflows. They are created per-event (typically by `fault-remediation`, sometimes by admins) and reach a terminal state signaled by `status.completionTime`.
+The janitor controllers own three cluster-scoped CRs — `RebootNode`, `GPUReset`, `TerminateNode` (`janitor.dgxc.nvidia.com/v1alpha1`) — that drive maintenance workflows. They are created per-event (typically by `fault-remediation`) and reach a terminal state signaled by `status.completionTime`.
 
 There is no cleanup after completion. The reconcilers return `ctrl.Result{}` on terminal state and never revisit the CR. Existing mechanisms also don't GC:
 
@@ -19,163 +19,141 @@ Observed in production: across multiple long-running clusters, 93–99% of `Rebo
 
 ## Decision
 
-Each janitor reconciler deletes its own CR `T` after `status.completionTime`, where `T` is a per-controller `ttlAfterCompletion` duration.
+Add a generic, annotation-driven TTL reconciler as a new controller inside the existing janitor binary, wired at compile time to the three janitor CRDs.
 
-- Default: `336h` (14 days) — matches the staleness threshold observed in production.
-- `0` disables (opt-out).
-- No CRD schema change.
+- Each CR carries `nvsentinel.nvidia.com/ttl` (e.g. `"336h"`). The reconciler computes `nvsentinel.nvidia.com/expiry` on first reconcile and deletes the CR when `now > expiry`.
+- Default TTL: `336h` (14 days), configurable via CLI flag. `0` disables.
+- Per-CR opt-out: `nvsentinel.nvidia.com/preserve: "true"`.
+- The three existing janitor reconcilers are unchanged. No CRD schema changes.
 
 ## Implementation
 
-### Workflow
+### Layout
+
+```
+janitor/
+├── pkg/
+│   ├── controller/                         # unchanged
+│   │   ├── rebootnode_controller.go
+│   │   ├── gpureset_controller.go
+│   │   └── terminatenode_controller.go
+│   └── ttl/                                # NEW
+│       ├── ttl.go            # Process(), default resolution, expiry
+│       ├── reconciler.go     # generic Reconciler[T client.Object]
+│       ├── setup.go          # Setup[T, L] helper
+│       └── *_test.go
+└── main.go                                 # adds 3 Setup() calls for TTL
+```
+
+The `ttl` package is a new implementation using `log/slog` and controller-runtime conventions already established across the repo. It runs as three additional reconcilers alongside the existing janitor reconcilers in the same manager.
+
+### Reconcile flow
 
 ```mermaid
 sequenceDiagram
-    participant R as Reconciler
-    participant CR as Maintenance CR
-    participant K as Kubernetes API
+    participant K as K8s API
+    participant R as TTL Reconciler[T]
+    participant CR as Janitor CR
 
-    R->>CR: Reconcile workflow
-    CR-->>R: status.completionTime set
-    R->>K: RequeueAfter = remaining TTL
-    Note over R: TTL elapses
-    R->>CR: Re-fetch and check age
-    alt CR is past TTL
-        R->>K: Delete CR
-    else CR is still within TTL
-        R->>K: RequeueAfter = remaining
+    K->>R: Reconcile (informer event)
+    R->>K: Get(CR)
+    R->>R: Apply default TTL if missing
+    R->>R: Compute or read expiry
+    alt annotations changed
+        R->>K: Update(CR)
+    end
+    alt now > expiry
+        R->>K: Delete(CR)
+    else not yet expired
+        R-->>K: RequeueAfter(min(remaining, 1h))
     end
 ```
 
-### Reconciliation model
+State lives on the CR. The reconciler keeps nothing in memory between reconciles.
 
-Reconcile is event-driven: it fires on create/update/delete and on the controller's `RequeueAfter`. Two properties make this design work without a separate GC loop:
+### Compile-time binding
 
-- Steady state: the completed branch now returns `RequeueAfter: ttl - age` instead of `ctrl.Result{}`, so each completed CR schedules exactly one future reconcile at `completionTime + ttl`.
-- Backlog on upgrade: on startup, controller-runtime performs an initial sync and fires Reconcile once per existing CR. Any CR already past TTL is deleted on that first pass; others are requeued for their remaining lifetime. No migration code is needed.
-
-### Config
-
-Add one field to each of `RebootNodeControllerConfig`, `GPUResetControllerConfig`, `TerminateNodeControllerConfig` in `janitor/pkg/config/config.go`:
+`janitor/main.go` wires three additional reconcilers:
 
 ```go
-// TTLAfterCompletion is the duration after status.completionTime before a
-// completed CR is auto-deleted. 0 disables.
-TTLAfterCompletion time.Duration `mapstructure:"ttlAfterCompletion" json:"ttlAfterCompletion"`
-```
-
-Default `14 * 24 * time.Hour` applied in `applyConfigDefaults`.
-
-### Shared helper
-
-A single helper in `janitor/pkg/controller/utils.go`:
-
-```go
-func enforceTTLAfterCompletion(
-    ctx context.Context, c client.Client, obj client.Object,
-    completionTime *metav1.Time, ttl time.Duration,
-) (ctrl.Result, bool, error) {
-    if ttl == 0 || completionTime == nil {
-        return ctrl.Result{}, false, nil
-    }
-    age := time.Since(completionTime.Time)
-    if age >= ttl {
-        if err := c.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-            return ctrl.Result{}, false, err
-        }
-        metrics.GlobalMetrics.IncCRTTLDeleted(obj.GetObjectKind().GroupVersionKind().Kind)
-        return ctrl.Result{}, true, nil
-    }
-    return ctrl.Result{RequeueAfter: ttl - age}, false, nil
-}
-```
-
-### Reconciler call sites
-
-Each `Reconcile` gains one call on the completed branch. For `RebootNodeReconciler`:
-
-```go
-res, deleted, err := enforceTTLAfterCompletion(
-    ctx, r.Client, &rebootNode,
-    rebootNode.Status.CompletionTime, r.Config.TTLAfterCompletion)
-if err != nil || deleted {
-    return res, err
-}
-return res, nil
-```
-
-Same pattern in `gpureset_controller.go` (after finalizer handling) and `terminatenode_controller.go`.
-
-### Helm values
-
-```yaml
-# distros/kubernetes/nvsentinel/charts/janitor/values.yaml
-config:
-  rebootNodeController:
-    ttlAfterCompletion: "336h"    # 14 days; set to 0 to disable
-  terminateNodeController:
-    ttlAfterCompletion: "336h"
-  gpuResetController:
-    ttlAfterCompletion: "336h"
-```
-
-`charts/janitor/templates/configmap.yaml` already renders the full config block via viper — no template change.
-
-### Metrics
-
-New counter in `janitor/pkg/metrics/metrics.go`:
-
-```
-janitor_cr_deleted_by_ttl_total{kind="RebootNode|GPUReset|TerminateNode"}
+ttl.Setup[*v1alpha1.RebootNode,    *v1alpha1.RebootNodeList](mgr,    "rebootnode-ttl",    ttl.WithDefaultTTL(defaultTTL))
+ttl.Setup[*v1alpha1.GPUReset,      *v1alpha1.GPUResetList](mgr,      "gpureset-ttl",      ttl.WithDefaultTTL(defaultTTL))
+ttl.Setup[*v1alpha1.TerminateNode, *v1alpha1.TerminateNodeList](mgr, "terminatenode-ttl", ttl.WithDefaultTTL(defaultTTL))
 ```
 
 ### RBAC
 
-All three controllers already have `delete` on their resources. No RBAC change.
+No change. Janitor's existing ClusterRole already grants `get;list;watch;update;delete` on all three kinds via the `kubebuilder:rbac` markers in the per-kind controllers.
 
-### File changes
+### Annotation schema
 
-| File | Change |
-|------|--------|
-| `janitor/pkg/config/config.go` | Add `TTLAfterCompletion` to 3 configs |
-| `janitor/pkg/config/default.go` | Default `336h` (14d) |
-| `janitor/pkg/controller/utils.go` | Add helper |
-| `janitor/pkg/controller/{rebootnode,gpureset,terminatenode}_controller.go` | Call helper |
-| `janitor/pkg/metrics/metrics.go` | Add counter |
-| `distros/.../charts/janitor/values.yaml` | Add 3 `ttlAfterCompletion` entries |
-| `janitor/pkg/controller/*_test.go` | TTL test cases |
+| Annotation | Set by | Purpose |
+|---|---|---|
+| `nvsentinel.nvidia.com/ttl` | `fault-remediation` template, or TTL reconciler on first reconcile | Per-CR TTL duration |
+| `nvsentinel.nvidia.com/expiry` | TTL reconciler | Computed deletion time (RFC3339) |
+| `nvsentinel.nvidia.com/preserve` | operator | `"true"` pins the CR |
+
+Resolution order for the default: per-CR annotation → CLI system default.
+
+### Fault-remediation changes
+
+Add one line to each remediation template so new CRs ship with an explicit TTL:
+
+```yaml
+metadata:
+  annotations:
+    nvsentinel.nvidia.com/ttl: "336h"
+```
+
+Existing CRs without the annotation receive the system default on first reconcile.
+
+### Helm values
+
+`charts/janitor/values.yaml` gains one field, surfaced to the janitor binary as a CLI flag:
+
+```yaml
+ttl:
+  defaultTTL: "336h"    # "0" disables
+```
+
+### Metrics
+
+Counter `janitor_ttl_deletions_total{kind}` incremented per TTL delete, registered alongside the existing `janitor_*` metrics.
 
 ## Rationale
 
-- Uses the existing reconcile path — no new controller, no new watches, no leader-election changes.
-- Config-level TTL is operationally equivalent to a spec field without a CRD schema bump; can be promoted to a `spec.ttlSecondsAfterFinished` field later if needed.
-- Mirrors Kubernetes `Job.ttlSecondsAfterFinished` semantics, familiar to operators.
-- `completionTime` is a reliable terminal signal already set by each controller.
-- `0` preserves current behavior for operators with external retention tooling.
+- One implementation via Go generics handles all three CRDs.
+- Scope is bound at compile time; adding a kind requires source changes and a rebuild.
+- No new Pod, chart, or SA to operate. One binary, one release cadence.
+- State lives on the CR as annotations; the reconciler is stateless across restarts.
+- The `expiry` annotation is observable and editable via standard `kubectl`.
+- Pattern follows established generic-reconciler conventions (Go generics + per-type `Setup` wiring) common in controller-runtime operators.
 
 ## Consequences
 
-**Positive**: bounded CR growth; faster LISTs; cleaner `kubectl` output; consistency with sibling Jobs.
+Positive: bounded CR growth; faster LISTs; cleaner `kubectl` output; zero new operational surface.
 
-**Negative**:
-- Historical CRs beyond TTL are gone. Maintenance CRs are a transient workflow artifact — long-term audit of health events and remediation outcomes should rely on the configured event store or an external sink, not on these CRs.
+Negative:
+- Historical CRs beyond TTL are gone. Maintenance CRs are a transient workflow artifact; long-term audit should come from the configured event store, not these CRs.
 - First rollout on a large backlog briefly spikes deletion traffic.
 
-**Mitigations**: 14-day default gives ample investigation time; tunable per controller; `0` opts out; deletion is logged and counted; operators with large backlogs can start at a higher TTL and ramp down.
+Mitigations: 14-day default gives investigation time; `preserve: "true"` pins individual CRs; `defaultTTL: "0"` disables enforcement; operators with large backlogs can ramp `defaultTTL` down over a release or two (e.g. `2160h` → `720h` → `336h`) to smooth the burst.
 
 ## Alternatives Considered
 
-- Separate cleanup controller — rejected; duplicates RBAC and watches already present in the per-kind reconcilers.
-- CronJob running `kubectl delete` — rejected; non-idiomatic, awkward to test, separate RBAC surface.
-- CRD `spec.ttlSecondsAfterFinished` field — deferred; requires schema migration, and config-level is equivalent for v1.
-- OwnerReference redesign (owner = `HealthEventResource`) — deferred; depends on ADR-027 TTL landing and doesn't cover admin-created CRs.
-- Do nothing — rejected; production evidence (93–99% staleness across clusters) shows manual cleanup does not happen.
+- Separate deployment / chart (`object-reaper` as a sibling component). Deferred. Appropriate topology if TTL ever needs to cover non-janitor CRDs; premature while the scope is the three janitor kinds.
+- Embed TTL inline in each janitor reconciler. Rejected: three copies of near-identical logic mixed into workflow code.
+- Generic cleanup controller driven by runtime config (kube-janitor / Kyverno pattern). Rejected: runtime-configurable targets widen the blast radius without a corresponding benefit at this scope.
+- Adopt `kube-janitor` (Python). Rejected: new language runtime and supply-chain surface.
+- Adopt Kyverno Cleanup Policies. Rejected: pulls in a full admission-control platform for TTL alone.
+- CRD `spec.ttlSecondsAfterFinished` field. Deferred: requires schema migration; annotation-based scheme is equivalent for v1 and can be promoted later.
 
 ## Testing
 
-- envtest: delete past TTL; requeue before TTL; `ttl=0` disables; nil `completionTime` is never deleted; `NotFound` on delete is not an error; idempotent across repeated reconciles.
-- Integration: per-controller TTLs independent; Helm upgrade picks up new TTL.
-- Metrics: counter increments on each TTL deletion.
+- envtest: default TTL applied on first reconcile; expiry computed and persisted; CR deleted when expired; requeue when not yet expired; `preserve: "true"` blocks deletion; `defaultTTL: "0"` disables; idempotent across repeated reconciles.
+- Integration: three CRDs TTL'd independently; backlog of pre-existing CRs cleaned up on first rollout; existing workflow reconcilers unaffected.
+- Metrics: `janitor_ttl_deletions_total{kind}` increments on each delete.
+
 
 ## References
 
