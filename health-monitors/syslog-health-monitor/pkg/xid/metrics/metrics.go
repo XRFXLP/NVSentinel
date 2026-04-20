@@ -80,19 +80,22 @@ var (
 	)
 )
 
-// PreInitialize materializes the XID CounterVec series at zero for the local
-// node so backends that establish a baseline from the first ingested sample
-// (e.g. Google Managed Prometheus) do not drop the first real occurrence.
+// PreInitialize materializes XidCounterMetric at zero for the local node and
+// each known XID code so backends that establish a baseline from the first
+// ingested sample (e.g. Google Managed Prometheus) do not drop the first real
+// occurrence. See https://github.com/NVIDIA/NVSentinel/issues/1196.
 //
-// Pre-initialized series:
-//   - XidCounterMetric{node=nodeName, err_code=<each code>}:
-//     one entry per XID code in xidCodes. Callers typically pass the keys of
-//     the embedded NVIDIA XID catalog loaded via common.LoadErrorResolutionMap.
-//     NVL5 XIDs reported with a subcode suffix (e.g. "145.RLW_SRC_TRACK") are
+// Callers typically pass the keys of the embedded NVIDIA XID catalog loaded
+// via common.LoadErrorResolutionMap.
+//
+// Notes on scope:
+//   - NVL5 XIDs reported with a subcode suffix (e.g. "145.RLW_SRC_TRACK") are
 //     NOT pre-initialized because the subcode space depends on the specific
 //     interrupt content and is not enumerable at startup.
-//   - XidProcessingErrors{error_type=<each>, node=nodeName}:
-//     one entry per value in allXIDProcessingErrorTypes.
+//   - XidProcessingErrors is deliberately NOT pre-initialized here. Those
+//     counters track internal parser failures; losing the first occurrence in
+//     GMP is acceptable and far less impactful than losing the first real XID
+//     event.
 //
 // Calling PreInitialize is idempotent; WithLabelValues(...).Add(0) is a no-op
 // on an already-materialized counter.
@@ -103,9 +106,5 @@ func PreInitialize(nodeName string, xidCodes []int) {
 
 	for _, code := range xidCodes {
 		XidCounterMetric.WithLabelValues(nodeName, strconv.Itoa(code)).Add(0)
-	}
-
-	for _, errType := range allXIDProcessingErrorTypes {
-		XidProcessingErrors.WithLabelValues(errType, nodeName).Add(0)
 	}
 }
