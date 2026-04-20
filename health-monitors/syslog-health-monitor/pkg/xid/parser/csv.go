@@ -116,7 +116,7 @@ func (p *CSVParser) parseNVL5XID(message string) (*Response, error) {
 
 	xidCode, err := strconv.Atoi(m[2])
 	if err != nil {
-		metrics.XidProcessingErrors.WithLabelValues(metrics.XIDParseError, p.nodeName).Inc()
+		metrics.XidProcessingErrors.WithLabelValues("xid_parse_error", p.nodeName).Inc()
 		return nil, fmt.Errorf("error parsing XID code %s: %w", m[2], err)
 	}
 
@@ -174,7 +174,7 @@ func (p *CSVParser) parseStandardXID(message string) (*Response, error) {
 
 	xidCode, err := strconv.Atoi(m[2])
 	if err != nil {
-		metrics.XidProcessingErrors.WithLabelValues(metrics.XIDParseError, p.nodeName).Inc()
+		metrics.XidProcessingErrors.WithLabelValues("xid_parse_error", p.nodeName).Inc()
 		return nil, fmt.Errorf("error parsing XID code %s: %w", m[2], err)
 	}
 

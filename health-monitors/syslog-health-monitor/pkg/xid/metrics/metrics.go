@@ -21,39 +21,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// XidProcessingErrorType enumerates the "error_type" label values that can be
-// emitted on XidProcessingErrors. Kept here (rather than as untyped string
-// literals at the emission site) so startup pre-initialization and runtime
-// emission cannot drift apart.
-const (
-	// XIDParseError is emitted from the local CSV parser when a matched
-	// log line cannot be converted to a numeric XID code.
-	XIDParseError = "xid_parse_error"
-
-	// Sidecar-path error types. Emitted by pkg/xid/parser/sidecar when
-	// talking to the XID analyser service.
-	XIDSidecarJSONMarshalError     = "json_marshal_error"
-	XIDSidecarRequestCreationError = "request_creation_error"
-	XIDSidecarRequestSendingError  = "request_sending_error"
-	XIDSidecarHTTPStatusError      = "http_status_error"
-	XIDSidecarResponseReadingError = "response_reading_error"
-	XIDSidecarResponseDecodingErr  = "response_decoding_error"
-)
-
-// allXIDProcessingErrorTypes is the closed set of error_type label values that
-// the XID pipeline can emit. Pre-initializing all of them is cheap (one series
-// per (error_type, node) pair) and ensures Google Managed Prometheus does not
-// swallow the first real sample.
-var allXIDProcessingErrorTypes = []string{
-	XIDParseError,
-	XIDSidecarJSONMarshalError,
-	XIDSidecarRequestCreationError,
-	XIDSidecarRequestSendingError,
-	XIDSidecarHTTPStatusError,
-	XIDSidecarResponseReadingError,
-	XIDSidecarResponseDecodingErr,
-}
-
 var (
 	XidCounterMetric = promauto.NewCounterVec(
 		prometheus.CounterOpts{
