@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -87,50 +86,19 @@ type TomlConfig struct {
 	UpdateRetry UpdateRetry `toml:"updateRetry"`
 }
 
-// Validate checks the configuration for consistency and completeness.
-//
-// Validation is performed in two deterministic passes over the remediation
-// actions (iterated in sorted order by action name) so that error reporting is
-// stable regardless of Go's randomized map iteration:
-//  1. Per-action validation: individual constraints that do not depend on other
-//     actions (EquivalenceGroup, template, scope, ImpactedEntityScope validity).
-//  2. Cross-action validation: constraints that require inspecting other
-//     actions (SupersedingEquivalenceGroups references).
-//
-// Running per-action checks first ensures that individually-invalid actions
-// surface their own error before any cross-reference error they may also
-// participate in.
+// Validate checks the configuration for consistency and completeness
 func (c *TomlConfig) Validate() error {
 	if err := c.validateTemplate(); err != nil {
 		return err
 	}
 
-	actionNames := sortedActionNames(c.RemediationActions)
-
-	for _, actionName := range actionNames {
-		if err := c.validateRemediationAction(actionName, c.RemediationActions[actionName]); err != nil {
-			return err
-		}
-	}
-
-	for _, actionName := range actionNames {
-		if err := c.validateSupersedingGroups(actionName, c.RemediationActions[actionName]); err != nil {
+	for actionName, resource := range c.RemediationActions {
+		if err := c.validateRemediationAction(actionName, resource); err != nil {
 			return err
 		}
 	}
 
 	return nil
-}
-
-func sortedActionNames(actions map[string]MaintenanceResource) []string {
-	names := make([]string, 0, len(actions))
-	for name := range actions {
-		names = append(names, name)
-	}
-
-	sort.Strings(names)
-
-	return names
 }
 
 func (c *TomlConfig) validateTemplate() error {
@@ -141,21 +109,8 @@ func (c *TomlConfig) validateTemplate() error {
 	return nil
 }
 
-/*
-Per-action validation. Checks constraints that do not depend on other actions:
-- EquivalenceGroup must be non-empty.
-- templateFileName must be non-empty and reference an existing template file.
-- Scope must be valid and consistent with the namespace field.
-- If ImpactedEntityScope is set, the action must be COMPONENT_RESET or a
-custom (non-built-in) action, and the entity type must be in
-EntityTypeToResourceNames (i.e. partial draining is enabled for it).
-*/
 func (c *TomlConfig) validateRemediationAction(actionName string, resource MaintenanceResource) error {
-	if len(resource.EquivalenceGroup) == 0 {
-		return fmt.Errorf("action '%s' must have a non-empty EquivalenceGroup", actionName)
-	}
-
-	if err := validateResourceImpactedEntityScope(actionName, resource); err != nil {
+	if err := c.validateEquivalenceGroup(actionName, resource); err != nil {
 		return err
 	}
 
@@ -167,27 +122,37 @@ func (c *TomlConfig) validateRemediationAction(actionName string, resource Maint
 		return err
 	}
 
-	return validateScope(actionName, resource.Scope, resource.Namespace)
+	if err := validateScope(actionName, resource.Scope, resource.Namespace); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 /*
-Cross-action validation of SupersedingEquivalenceGroups:
-- Any SupersedingEquivalenceGroup must have a corresponding MaintenanceResource
-which cannot include an ImpactedEntityScope. In the future, we could update our
-SupersedingEquivalenceGroup logic to match the EquivalenceGroup (rather than
-require an exact EffectiveEquivalenceGroup match), however we will punt on this
-complexity since there's not a use-case for it.
-- The SupersedingEquivalenceGroups cannot include the EquivalenceGroup for the
-same MaintenanceResource.
+EquivalenceGroup requirements:
+- All MaintenanceResources must have an EquivalenceGroup defined.
+- Any SupersedingEquivalenceGroup must have a corresponding MaintenanceResource which cannot include an
+ImpactedEntityScope. In the future, we could update our SupersedingEquivalenceGroup logic to match the EquivalenceGroup
+(rather than require an exact EffectiveEquivalenceGroup match), however we will punt on this complexity since there's
+not a use-case for it.
+- The SupersedingEquivalenceGroups cannot include the EquivalenceGroup for the same MaintenanceResource.
+- Only the COMPONENT_RESET recommended action can have a MaintenanceResource which includes an ImpactedEntityScope.
+Additionally, the ImpactedEntityScope must be included in EntityTypeToResourceNames (meaning that partial draining is
+enabled for that entity).
 */
-func (c *TomlConfig) validateSupersedingGroups(actionName string, resource MaintenanceResource) error {
+func (c *TomlConfig) validateEquivalenceGroup(actionName string, resource MaintenanceResource) error {
+	if len(resource.EquivalenceGroup) == 0 {
+		return fmt.Errorf("action '%s' must have a non-empty EquivalenceGroup", actionName)
+	}
+
 	for _, group := range resource.SupersedingEquivalenceGroups {
 		if err := validateOneSupersedingGroup(actionName, group, resource, c.RemediationActions); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return validateResourceImpactedEntityScope(actionName, resource)
 }
 
 func validateOneSupersedingGroup(actionName, group string, resource MaintenanceResource,
@@ -200,8 +165,7 @@ func validateOneSupersedingGroup(actionName, group string, resource MaintenanceR
 
 	foundGroup := false
 
-	for _, name := range sortedActionNames(remediationActions) {
-		maintenanceResource := remediationActions[name]
+	for _, maintenanceResource := range remediationActions {
 		if group != maintenanceResource.EquivalenceGroup {
 			continue
 		}
