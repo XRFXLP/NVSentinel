@@ -59,6 +59,7 @@ spec:
             - "--webhook-cert-path={{ .Values.webhook.certDir }}"
             - "--webhook-cert-name=tls.crt"
             - "--webhook-cert-key=tls.key"
+            - "--enable-ttl={{ .Values.ttl.enabled }}"
             - "--default-ttl={{ .Values.ttl.defaultTTL }}"
             {{- if .Values.metrics.tls.enabled }}
             - "--metrics-secure=true"

@@ -84,6 +84,7 @@ type runFlags struct {
 	leaseDuration                                    time.Duration
 	renewDeadline                                    time.Duration
 	retryPeriod                                      time.Duration
+	enableTTL                                        bool
 	defaultTTL                                       time.Duration
 }
 
@@ -241,7 +242,7 @@ func run() error {
 
 	// Register TTL reconcilers for each maintenance CR kind. See
 	// docs/designs/037-janitor-cr-ttl-cleanup.md for the design.
-	if err = registerTTLReconcilers(mgr, flags.defaultTTL); err != nil {
+	if err = registerTTLReconcilers(mgr, flags.enableTTL, flags.defaultTTL); err != nil {
 		return err
 	}
 
@@ -339,9 +340,14 @@ func parseFlags() runFlags {
 		"The duration the LeaderElector clients should wait between tries of actions.")
 
 	// TTL cleanup flags.
+	flag.BoolVar(&rf.enableTTL, "enable-ttl", true,
+		"Enable the TTL reconcilers that auto-delete completed maintenance CRs after their TTL. "+
+			"Set to false in dev/test environments where CRs should persist for manual inspection "+
+			"regardless of any nvsentinel.nvidia.com/ttl annotation.")
 	flag.DurationVar(&rf.defaultTTL, "default-ttl", 14*24*time.Hour,
 		"Default TTL applied to maintenance CRs without an explicit nvsentinel.nvidia.com/ttl "+
-			"annotation. Set to 0 to disable automatic defaulting; per-CR annotations still take effect.")
+			"annotation. Only consulted when --enable-ttl=true. Set to 0 to disable automatic "+
+			"defaulting while still honoring per-CR annotations.")
 
 	flag.Parse()
 
@@ -367,6 +373,7 @@ func parseFlags() runFlags {
 		"lease-duration", rf.leaseDuration,
 		"renew-deadline", rf.renewDeadline,
 		"retry-period", rf.retryPeriod,
+		"enable-ttl", rf.enableTTL,
 		"default-ttl", rf.defaultTTL)
 
 	return rf
@@ -494,9 +501,20 @@ func setupTLSAndServers(rf runFlags) (serverSetup, error) {
 }
 
 // registerTTLReconcilers wires a generic TTL reconciler for each maintenance
-// CR kind. A zero defaultTTL means no system default — per-CR TTL annotations
-// still take effect. The reconcilers share janitor's existing RBAC.
-func registerTTLReconcilers(mgr ctrl.Manager, defaultTTL time.Duration) error {
+// CR kind when enabled is true. A zero defaultTTL means no system default —
+// per-CR TTL annotations still take effect. The reconcilers share janitor's
+// existing RBAC.
+//
+// When enabled is false, the reconcilers are not registered at all: TTL
+// annotations on CRs are ignored, no automatic deletion occurs, and CRs
+// persist indefinitely. Intended for dev/test environments.
+func registerTTLReconcilers(mgr ctrl.Manager, enabled bool, defaultTTL time.Duration) error {
+	if !enabled {
+		slog.Info("TTL reconcilers disabled; maintenance CRs will not be auto-deleted")
+
+		return nil
+	}
+
 	if err := setupTTL[*janitordgxcnvidiacomv1alpha1.RebootNode](
 		mgr, "rebootnode-ttl", "RebootNode", defaultTTL); err != nil {
 		return err
