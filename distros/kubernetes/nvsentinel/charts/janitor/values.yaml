@@ -179,6 +179,14 @@ config:
             cpu: "100m"
             memory: "128Mi"
 
+# TTL-based cleanup of completed maintenance CRs (RebootNode / GPUReset /
+# TerminateNode). See docs/designs/037-janitor-cr-ttl-cleanup.md for details.
+ttl:
+  # System-wide default TTL applied to CRs that don't carry an explicit
+  # nvsentinel.nvidia.com/ttl annotation. Set to "0" to disable the default;
+  # per-CR annotations still take effect.
+  defaultTTL: "336h"
+
 # Webhook Configuration
 webhook:
   # Port for the webhook server

@@ -51,6 +51,8 @@ import (
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 	"github.com/nvidia/nvsentinel/janitor/pkg/controller"
+	janitormetrics "github.com/nvidia/nvsentinel/janitor/pkg/metrics"
+	"github.com/nvidia/nvsentinel/janitor/pkg/ttl"
 	webhookv1alpha1 "github.com/nvidia/nvsentinel/janitor/pkg/webhook/v1alpha1"
 )
 
@@ -81,6 +83,7 @@ type runFlags struct {
 	leaseDuration                                    time.Duration
 	renewDeadline                                    time.Duration
 	retryPeriod                                      time.Duration
+	defaultTTL                                       time.Duration
 }
 
 // serverSetup holds the webhook server, metrics options, and optional cert watchers
@@ -235,6 +238,12 @@ func run() error {
 
 	slog.Info("RebootNode, TerminateNode, and GPUReset controllers registered")
 
+	// Register TTL reconcilers for each maintenance CR kind. See
+	// docs/designs/037-janitor-cr-ttl-cleanup.md for the design.
+	if err = registerTTLReconcilers(mgr, flags.defaultTTL); err != nil {
+		return err
+	}
+
 	// 7. Register webhook
 	if err = webhookv1alpha1.SetupJanitorWebhookWithManager(mgr, cfg); err != nil {
 		slog.Error("Unable to create webhook", "webhook", "Janitor", "error", err)
@@ -328,6 +337,11 @@ func parseFlags() runFlags {
 	flag.DurationVar(&rf.retryPeriod, "retry-period", 5*time.Second,
 		"The duration the LeaderElector clients should wait between tries of actions.")
 
+	// TTL cleanup flags.
+	flag.DurationVar(&rf.defaultTTL, "default-ttl", 14*24*time.Hour,
+		"Default TTL applied to maintenance CRs without an explicit nvsentinel.nvidia.com/ttl "+
+			"annotation. Set to 0 to disable automatic defaulting; per-CR annotations still take effect.")
+
 	flag.Parse()
 
 	slog.Info("Parsed flags",
@@ -346,7 +360,8 @@ func parseFlags() runFlags {
 		"metrics-cert-key", rf.metricsCertKey,
 		"lease-duration", rf.leaseDuration,
 		"renew-deadline", rf.renewDeadline,
-		"retry-period", rf.retryPeriod)
+		"retry-period", rf.retryPeriod,
+		"default-ttl", rf.defaultTTL)
 
 	return rf
 }
@@ -470,4 +485,41 @@ func setupTLSAndServers(rf runFlags) (serverSetup, error) {
 	}
 
 	return result, nil
+}
+
+// registerTTLReconcilers wires a generic TTL reconciler for each maintenance
+// CR kind. A zero defaultTTL means no system default — per-CR TTL annotations
+// still take effect. The reconcilers share janitor's existing RBAC.
+func registerTTLReconcilers(mgr ctrl.Manager, defaultTTL time.Duration) error {
+	opts := []ttl.Option[*janitordgxcnvidiacomv1alpha1.RebootNode]{
+		ttl.WithDefaultTTL[*janitordgxcnvidiacomv1alpha1.RebootNode](defaultTTL),
+		ttl.WithMetrics[*janitordgxcnvidiacomv1alpha1.RebootNode](janitormetrics.GlobalMetrics.IncTTLDeletion),
+	}
+	if err := ttl.Setup[*janitordgxcnvidiacomv1alpha1.RebootNode](mgr, "rebootnode-ttl", opts...); err != nil {
+		slog.Error("Unable to create TTL reconciler", "kind", "RebootNode", "error", err)
+		return fmt.Errorf("setup rebootnode ttl: %w", err)
+	}
+
+	gpOpts := []ttl.Option[*janitordgxcnvidiacomv1alpha1.GPUReset]{
+		ttl.WithDefaultTTL[*janitordgxcnvidiacomv1alpha1.GPUReset](defaultTTL),
+		ttl.WithMetrics[*janitordgxcnvidiacomv1alpha1.GPUReset](janitormetrics.GlobalMetrics.IncTTLDeletion),
+	}
+	if err := ttl.Setup[*janitordgxcnvidiacomv1alpha1.GPUReset](mgr, "gpureset-ttl", gpOpts...); err != nil {
+		slog.Error("Unable to create TTL reconciler", "kind", "GPUReset", "error", err)
+		return fmt.Errorf("setup gpureset ttl: %w", err)
+	}
+
+	tnOpts := []ttl.Option[*janitordgxcnvidiacomv1alpha1.TerminateNode]{
+		ttl.WithDefaultTTL[*janitordgxcnvidiacomv1alpha1.TerminateNode](defaultTTL),
+		ttl.WithMetrics[*janitordgxcnvidiacomv1alpha1.TerminateNode](janitormetrics.GlobalMetrics.IncTTLDeletion),
+	}
+	if err := ttl.Setup[*janitordgxcnvidiacomv1alpha1.TerminateNode](mgr, "terminatenode-ttl", tnOpts...); err != nil {
+		slog.Error("Unable to create TTL reconciler", "kind", "TerminateNode", "error", err)
+		return fmt.Errorf("setup terminatenode ttl: %w", err)
+	}
+
+	slog.Info("TTL reconcilers registered for RebootNode, GPUReset, TerminateNode",
+		"default-ttl", defaultTTL)
+
+	return nil
 }
