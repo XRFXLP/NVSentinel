@@ -177,6 +177,20 @@ func TestReconciler_IdempotentWhenNotYetExpired(t *testing.T) {
 	assert.Equal(t, firstRV, afterSecond.ResourceVersion, "expected no Update on second reconcile")
 }
 
+func TestReconciler_NilOptionsIgnored(t *testing.T) {
+	// Passing nil to WithClock or WithMetrics must not clobber the defaults;
+	// otherwise Reconcile would panic when calling r.clock.Now() or r.onDeleted(...).
+	c := newFakeClient(t)
+
+	r := NewReconciler[*janitorv1alpha1.RebootNode](c,
+		WithClock[*janitorv1alpha1.RebootNode](nil),
+		WithMetrics[*janitorv1alpha1.RebootNode](nil),
+	)
+
+	assert.NotNil(t, r.clock, "nil clock should be ignored")
+	assert.NotNil(t, r.onDeleted, "nil metrics callback should be ignored")
+}
+
 func TestReconciler_IgnoresObjectBeingDeleted(t *testing.T) {
 	clk := newClock()
 	deletionTime := metav1.NewTime(clk.Now())

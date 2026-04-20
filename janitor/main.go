@@ -35,6 +35,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -344,6 +345,11 @@ func parseFlags() runFlags {
 
 	flag.Parse()
 
+	if rf.defaultTTL < 0 {
+		slog.Error("--default-ttl must be >= 0", "value", rf.defaultTTL)
+		os.Exit(1)
+	}
+
 	slog.Info("Parsed flags",
 		"metrics-bind-address", rf.metricsAddr,
 		"health-probe-bind-address", rf.probeAddr,
@@ -491,35 +497,40 @@ func setupTLSAndServers(rf runFlags) (serverSetup, error) {
 // CR kind. A zero defaultTTL means no system default — per-CR TTL annotations
 // still take effect. The reconcilers share janitor's existing RBAC.
 func registerTTLReconcilers(mgr ctrl.Manager, defaultTTL time.Duration) error {
-	opts := []ttl.Option[*janitordgxcnvidiacomv1alpha1.RebootNode]{
-		ttl.WithDefaultTTL[*janitordgxcnvidiacomv1alpha1.RebootNode](defaultTTL),
-		ttl.WithMetrics[*janitordgxcnvidiacomv1alpha1.RebootNode](janitormetrics.GlobalMetrics.IncTTLDeletion),
-	}
-	if err := ttl.Setup[*janitordgxcnvidiacomv1alpha1.RebootNode](mgr, "rebootnode-ttl", opts...); err != nil {
-		slog.Error("Unable to create TTL reconciler", "kind", "RebootNode", "error", err)
-		return fmt.Errorf("setup rebootnode ttl: %w", err)
+	if err := setupTTL[*janitordgxcnvidiacomv1alpha1.RebootNode](
+		mgr, "rebootnode-ttl", "RebootNode", defaultTTL); err != nil {
+		return err
 	}
 
-	gpOpts := []ttl.Option[*janitordgxcnvidiacomv1alpha1.GPUReset]{
-		ttl.WithDefaultTTL[*janitordgxcnvidiacomv1alpha1.GPUReset](defaultTTL),
-		ttl.WithMetrics[*janitordgxcnvidiacomv1alpha1.GPUReset](janitormetrics.GlobalMetrics.IncTTLDeletion),
-	}
-	if err := ttl.Setup[*janitordgxcnvidiacomv1alpha1.GPUReset](mgr, "gpureset-ttl", gpOpts...); err != nil {
-		slog.Error("Unable to create TTL reconciler", "kind", "GPUReset", "error", err)
-		return fmt.Errorf("setup gpureset ttl: %w", err)
+	if err := setupTTL[*janitordgxcnvidiacomv1alpha1.GPUReset](
+		mgr, "gpureset-ttl", "GPUReset", defaultTTL); err != nil {
+		return err
 	}
 
-	tnOpts := []ttl.Option[*janitordgxcnvidiacomv1alpha1.TerminateNode]{
-		ttl.WithDefaultTTL[*janitordgxcnvidiacomv1alpha1.TerminateNode](defaultTTL),
-		ttl.WithMetrics[*janitordgxcnvidiacomv1alpha1.TerminateNode](janitormetrics.GlobalMetrics.IncTTLDeletion),
-	}
-	if err := ttl.Setup[*janitordgxcnvidiacomv1alpha1.TerminateNode](mgr, "terminatenode-ttl", tnOpts...); err != nil {
-		slog.Error("Unable to create TTL reconciler", "kind", "TerminateNode", "error", err)
-		return fmt.Errorf("setup terminatenode ttl: %w", err)
+	if err := setupTTL[*janitordgxcnvidiacomv1alpha1.TerminateNode](
+		mgr, "terminatenode-ttl", "TerminateNode", defaultTTL); err != nil {
+		return err
 	}
 
 	slog.Info("TTL reconcilers registered for RebootNode, GPUReset, TerminateNode",
 		"default-ttl", defaultTTL)
+
+	return nil
+}
+
+// setupTTL wires a single TTL reconciler for type T with the standard options
+// used by janitor (default TTL + metrics callback). Kept generic so a new
+// maintenance CR kind can be added with one line in registerTTLReconcilers.
+func setupTTL[T client.Object](mgr ctrl.Manager, name, kind string, defaultTTL time.Duration) error {
+	err := ttl.Setup[T](mgr, name,
+		ttl.WithDefaultTTL[T](defaultTTL),
+		ttl.WithMetrics[T](janitormetrics.GlobalMetrics.IncTTLDeletion),
+	)
+	if err != nil {
+		slog.Error("Unable to create TTL reconciler", "kind", kind, "error", err)
+
+		return fmt.Errorf("setup %s ttl: %w", kind, err)
+	}
 
 	return nil
 }

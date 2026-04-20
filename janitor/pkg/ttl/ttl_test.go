@@ -45,89 +45,175 @@ func newRebootNode(name string) *janitorv1alpha1.RebootNode {
 	}
 }
 
-func TestProcess_BeingDeleted_ReturnsNoop(t *testing.T) {
-	rn := newRebootNode("foo")
+// TestProcess covers the single-call behavior of Process across all the input
+// shapes that matter: missing/present annotations, valid/invalid durations,
+// preserve escape hatch, deletion timestamp, and the requeue cap. Multi-call
+// scenarios (expiry persistence, clock advance past TTL) are exercised in
+// separate tests below because they don't fit the single-input table shape.
+func TestProcess(t *testing.T) {
+	deletingObj := newRebootNode("deleting")
 	deletionTime := metav1.NewTime(fixedNow)
-	rn.DeletionTimestamp = &deletionTime
+	deletingObj.DeletionTimestamp = &deletionTime
 
-	result, err := Process(context.Background(), rn, time.Hour, newClock())
+	cases := []struct {
+		name           string
+		obj            *janitorv1alpha1.RebootNode
+		initialAnnots  map[string]string
+		defaultTTL     time.Duration
+		expectedAction Action
+		expectedChange bool
+		// assertTTL, if non-empty, is the expected value of the TTL annotation
+		// after Process runs.
+		assertTTL string
+		// assertHasExpiry indicates whether the ExpiryAnnotation should exist
+		// after Process runs.
+		assertHasExpiry bool
+		// assertRequeueAtMost, if > 0, bounds the expected RequeueAfter.
+		assertRequeueAtMost time.Duration
+	}{
+		{
+			name:           "being deleted → Noop",
+			obj:            deletingObj,
+			defaultTTL:     time.Hour,
+			expectedAction: ActionNoop,
+		},
+		{
+			name:           "preserve annotation → Noop",
+			obj:            newRebootNode("preserved"),
+			initialAnnots:  map[string]string{PreserveAnnotation: "true"},
+			defaultTTL:     time.Hour,
+			expectedAction: ActionNoop,
+		},
+		{
+			name:           "no TTL and no default → Noop",
+			obj:            newRebootNode("bare"),
+			defaultTTL:     0,
+			expectedAction: ActionNoop,
+		},
+		{
+			name:            "default TTL applied when missing",
+			obj:             newRebootNode("default-applied"),
+			defaultTTL:      14 * 24 * time.Hour,
+			expectedAction:  ActionRequeue,
+			expectedChange:  true,
+			assertTTL:       "336h0m0s",
+			assertHasExpiry: true,
+			// TTL (14d) exceeds maxRequeueInterval; requeue should be capped.
+			assertRequeueAtMost: maxRequeueInterval,
+		},
+		{
+			name:            "existing TTL annotation not overwritten by default",
+			obj:             newRebootNode("explicit-ttl"),
+			initialAnnots:   map[string]string{TTLAnnotation: "1h"},
+			defaultTTL:      336 * time.Hour,
+			expectedAction:  ActionRequeue,
+			expectedChange:  true, // expiry gets written on first pass
+			assertTTL:       "1h",
+			assertHasExpiry: true,
+		},
+		{
+			name:           "invalid TTL annotation → Noop",
+			obj:            newRebootNode("invalid-ttl"),
+			initialAnnots:  map[string]string{TTLAnnotation: "not-a-duration"},
+			defaultTTL:     0,
+			expectedAction: ActionNoop,
+		},
+		{
+			name:           "zero TTL annotation → Noop",
+			obj:            newRebootNode("zero-ttl"),
+			initialAnnots:  map[string]string{TTLAnnotation: "0"},
+			defaultTTL:     0,
+			expectedAction: ActionNoop,
+		},
+		{
+			name: "invalid expiry is recomputed",
+			obj:  newRebootNode("bad-expiry"),
+			initialAnnots: map[string]string{
+				TTLAnnotation:    "1h",
+				ExpiryAnnotation: "not-a-time",
+			},
+			defaultTTL:      0,
+			expectedAction:  ActionRequeue,
+			expectedChange:  true,
+			assertTTL:       "1h",
+			assertHasExpiry: true,
+		},
+		{
+			name: "expired-by-annotation returns ActionExpired",
+			obj:  newRebootNode("expired"),
+			initialAnnots: map[string]string{
+				TTLAnnotation:    "1h",
+				ExpiryAnnotation: fixedNow.Add(-5 * time.Minute).Format(time.RFC3339),
+			},
+			defaultTTL:     0,
+			expectedAction: ActionExpired,
+		},
+		{
+			name: "expiry at exact now → ActionExpired (boundary)",
+			obj:  newRebootNode("edge"),
+			initialAnnots: map[string]string{
+				TTLAnnotation:    "1h",
+				ExpiryAnnotation: fixedNow.Format(time.RFC3339),
+			},
+			defaultTTL:     0,
+			expectedAction: ActionExpired,
+		},
+		{
+			name:                "requeue capped at maxRequeueInterval",
+			obj:                 newRebootNode("long-ttl"),
+			defaultTTL:          30 * 24 * time.Hour,
+			expectedAction:      ActionRequeue,
+			expectedChange:      true,
+			assertHasExpiry:     true,
+			assertRequeueAtMost: maxRequeueInterval,
+		},
+		{
+			name: "nil annotation map is initialized",
+			// Don't seed annotations; Process should not panic and should
+			// materialize a map when it needs to write.
+			obj:             newRebootNode("nil-annots"),
+			defaultTTL:      time.Hour,
+			expectedAction:  ActionRequeue,
+			expectedChange:  true,
+			assertHasExpiry: true,
+		},
+	}
 
-	require.NoError(t, err)
-	assert.Equal(t, ActionNoop, result.Action)
-	assert.False(t, result.Changed)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.initialAnnots != nil {
+				tc.obj.Annotations = tc.initialAnnots
+			}
+
+			result, err := Process(context.Background(), tc.obj, tc.defaultTTL, newClock())
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedAction, result.Action)
+			assert.Equal(t, tc.expectedChange, result.Changed)
+
+			if tc.assertTTL != "" {
+				assert.Equal(t, tc.assertTTL, tc.obj.Annotations[TTLAnnotation])
+			}
+
+			if tc.assertHasExpiry {
+				assert.NotEmpty(t, tc.obj.Annotations[ExpiryAnnotation])
+			}
+
+			if tc.assertRequeueAtMost > 0 {
+				assert.LessOrEqual(t, result.RequeueAfter, tc.assertRequeueAtMost)
+			}
+		})
+	}
 }
 
-func TestProcess_PreserveAnnotation_ReturnsNoop(t *testing.T) {
-	rn := newRebootNode("foo")
-	rn.Annotations = map[string]string{PreserveAnnotation: "true"}
-
-	result, err := Process(context.Background(), rn, time.Hour, newClock())
-
-	require.NoError(t, err)
-	assert.Equal(t, ActionNoop, result.Action)
-	assert.False(t, result.Changed)
-}
-
-func TestProcess_NoTTLAndNoDefault_ReturnsNoop(t *testing.T) {
-	rn := newRebootNode("foo")
-
-	result, err := Process(context.Background(), rn, 0, newClock())
-
-	require.NoError(t, err)
-	assert.Equal(t, ActionNoop, result.Action)
-	assert.False(t, result.Changed)
-	assert.NotContains(t, rn.Annotations, TTLAnnotation)
-}
-
-func TestProcess_AppliesDefaultTTLWhenMissing(t *testing.T) {
-	rn := newRebootNode("foo")
-	clk := newClock()
-
-	result, err := Process(context.Background(), rn, 14*24*time.Hour, clk)
-
-	require.NoError(t, err)
-	assert.Equal(t, ActionRequeue, result.Action)
-	assert.True(t, result.Changed)
-	assert.Equal(t, "336h0m0s", rn.Annotations[TTLAnnotation])
-	assert.Equal(t, fixedNow.Add(14*24*time.Hour).Format(time.RFC3339), rn.Annotations[ExpiryAnnotation])
-}
-
-func TestProcess_ExistingTTLAnnotationNotOverwritten(t *testing.T) {
-	rn := newRebootNode("foo")
-	rn.Annotations = map[string]string{TTLAnnotation: "1h"}
-
-	result, err := Process(context.Background(), rn, 336*time.Hour, newClock())
-
-	require.NoError(t, err)
-	assert.Equal(t, ActionRequeue, result.Action)
-	assert.Equal(t, "1h", rn.Annotations[TTLAnnotation])
-}
-
-func TestProcess_InvalidTTLAnnotation_ReturnsNoop(t *testing.T) {
-	rn := newRebootNode("foo")
-	rn.Annotations = map[string]string{TTLAnnotation: "not-a-duration"}
-
-	result, err := Process(context.Background(), rn, 0, newClock())
-
-	require.NoError(t, err)
-	assert.Equal(t, ActionNoop, result.Action)
-}
-
-func TestProcess_ZeroTTLAnnotation_ReturnsNoop(t *testing.T) {
-	rn := newRebootNode("foo")
-	rn.Annotations = map[string]string{TTLAnnotation: "0"}
-
-	result, err := Process(context.Background(), rn, 0, newClock())
-
-	require.NoError(t, err)
-	assert.Equal(t, ActionNoop, result.Action)
-}
-
+// TestProcess_ExpiryPersistedAndReused exercises two back-to-back calls to
+// Process: the first writes the expiry annotation; the second (within TTL,
+// after a clock advance) reuses it without mutating anything.
+// This scenario doesn't fit the single-input table in TestProcess.
 func TestProcess_ExpiryPersistedAndReused(t *testing.T) {
-	rn := newRebootNode("foo")
+	rn := newRebootNode("persistent")
 	clk := newClock()
 
-	// First pass: expiry should be written.
 	result, err := Process(context.Background(), rn, time.Hour, clk)
 	require.NoError(t, err)
 	require.Equal(t, ActionRequeue, result.Action)
@@ -135,7 +221,6 @@ func TestProcess_ExpiryPersistedAndReused(t *testing.T) {
 	firstExpiry := rn.Annotations[ExpiryAnnotation]
 	require.NotEmpty(t, firstExpiry)
 
-	// Advance the clock by a bit (still within TTL) and reprocess.
 	clk.advance(10 * time.Minute)
 
 	result, err = Process(context.Background(), rn, time.Hour, clk)
@@ -145,30 +230,16 @@ func TestProcess_ExpiryPersistedAndReused(t *testing.T) {
 	assert.Equal(t, firstExpiry, rn.Annotations[ExpiryAnnotation])
 }
 
-func TestProcess_InvalidExpiryAnnotation_Recomputed(t *testing.T) {
-	rn := newRebootNode("foo")
-	rn.Annotations = map[string]string{
-		TTLAnnotation:    "1h",
-		ExpiryAnnotation: "not-a-time",
-	}
-
-	result, err := Process(context.Background(), rn, 0, newClock())
-
-	require.NoError(t, err)
-	assert.Equal(t, ActionRequeue, result.Action)
-	assert.True(t, result.Changed)
-	assert.Equal(t, fixedNow.Add(time.Hour).Format(time.RFC3339), rn.Annotations[ExpiryAnnotation])
-}
-
-func TestProcess_ExpiredReturnsActionExpired(t *testing.T) {
-	rn := newRebootNode("foo")
+// TestProcess_ExpiredAfterClockAdvance verifies that the same object, given
+// enough time, transitions from Requeue to Expired.
+func TestProcess_ExpiredAfterClockAdvance(t *testing.T) {
+	rn := newRebootNode("lives-and-dies")
 	clk := newClock()
 
 	result, err := Process(context.Background(), rn, time.Hour, clk)
 	require.NoError(t, err)
 	require.Equal(t, ActionRequeue, result.Action)
 
-	// Jump past the TTL.
 	clk.advance(2 * time.Hour)
 
 	result, err = Process(context.Background(), rn, time.Hour, clk)
@@ -176,50 +247,11 @@ func TestProcess_ExpiredReturnsActionExpired(t *testing.T) {
 	assert.Equal(t, ActionExpired, result.Action)
 }
 
-func TestProcess_ExpiryAtExactNow_ReturnsExpired(t *testing.T) {
-	// Boundary: when clock.Now() == expiry, the CR should be deleted, not requeued.
-	rn := newRebootNode("foo")
-	clk := newClock()
-	rn.Annotations = map[string]string{
-		TTLAnnotation:    "1h",
-		ExpiryAnnotation: fixedNow.Format(time.RFC3339),
-	}
-
-	result, err := Process(context.Background(), rn, 0, clk)
-
-	require.NoError(t, err)
-	assert.Equal(t, ActionExpired, result.Action)
-}
-
-func TestProcess_CapsRequeueAtMaxInterval(t *testing.T) {
-	// A TTL of many days should still cause a requeue no later than maxRequeueInterval.
-	rn := newRebootNode("foo")
-
-	result, err := Process(context.Background(), rn, 30*24*time.Hour, newClock())
-
-	require.NoError(t, err)
-	require.Equal(t, ActionRequeue, result.Action)
-	assert.Equal(t, maxRequeueInterval, result.RequeueAfter)
-}
-
-func TestProcess_InitializesNilAnnotationMap(t *testing.T) {
-	rn := newRebootNode("foo")
-	assert.Nil(t, rn.Annotations)
-
-	result, err := Process(context.Background(), rn, time.Hour, newClock())
-
-	require.NoError(t, err)
-	assert.Equal(t, ActionRequeue, result.Action)
-	assert.NotNil(t, rn.Annotations)
-}
-
-func TestKindFromType_RebootNode(t *testing.T) {
+// TestKindFromType confirms the reflect-based kind extraction works for
+// both our CRDs and standard core/v1 types, guarding against a future
+// refactor that accidentally breaks the helper.
+func TestKindFromType(t *testing.T) {
 	assert.Equal(t, "RebootNode", kindFromType[*janitorv1alpha1.RebootNode]())
-}
-
-func TestKindFromType_ConfigMap(t *testing.T) {
-	// Sanity-check the helper against a standard core/v1 type, to confirm
-	// the extraction works beyond janitor CRDs.
 	assert.Equal(t, "ConfigMap", kindFromType[*corev1.ConfigMap]())
 }
 

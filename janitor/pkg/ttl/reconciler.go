@@ -40,8 +40,13 @@ func WithDefaultTTL[T client.Object](d time.Duration) Option[T] {
 }
 
 // WithClock injects a custom clock for deterministic testing.
+// A nil clock is ignored so the caller cannot accidentally clear the default.
 func WithClock[T client.Object](c Clock) Option[T] {
 	return func(r *Reconciler[T]) {
+		if c == nil {
+			return
+		}
+
 		r.clock = c
 	}
 }
@@ -49,8 +54,13 @@ func WithClock[T client.Object](c Clock) Option[T] {
 // WithMetrics registers a callback invoked once per successful TTL deletion,
 // letting the caller increment a component-scoped metric (e.g. a Prometheus
 // counter) without the ttl package taking a dependency on the metrics layout.
+// A nil fn is ignored so the caller cannot accidentally clear the default no-op.
 func WithMetrics[T client.Object](fn func(kind string)) Option[T] {
 	return func(r *Reconciler[T]) {
+		if fn == nil {
+			return
+		}
+
 		r.onDeleted = fn
 	}
 }
