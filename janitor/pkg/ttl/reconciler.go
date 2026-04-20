@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"time"
 
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -107,7 +108,7 @@ func (r *Reconciler[T]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if result.Changed {
-		if err := r.Update(ctx, obj); err != nil {
+		if err := r.applyAnnotations(ctx, obj); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update %s %q annotations: %w", r.kind, obj.GetName(), err)
 		}
 	}
@@ -137,6 +138,35 @@ func (r *Reconciler[T]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 // Ensure Reconciler implements reconcile.Reconciler.
 var _ reconcile.Reconciler = (*Reconciler[client.Object])(nil)
+
+// applyAnnotations writes the TTL annotations from obj, refetching on
+// conflict so a racing writer (e.g. GPUReset's finalizer) doesn't block us.
+func (r *Reconciler[T]) applyAnnotations(ctx context.Context, obj T) error {
+	mine := obj.GetAnnotations()
+	key := client.ObjectKeyFromObject(obj)
+
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh := newZeroRef[T]()
+		if err := r.Get(ctx, key, fresh); err != nil {
+			return err
+		}
+
+		annots := fresh.GetAnnotations()
+		if annots == nil {
+			annots = map[string]string{}
+		}
+
+		for _, k := range []string{TTLAnnotation, ExpiryAnnotation} {
+			if v, ok := mine[k]; ok {
+				annots[k] = v
+			}
+		}
+
+		fresh.SetAnnotations(annots)
+
+		return r.Update(ctx, fresh)
+	})
+}
 
 // newZeroRef returns a zero-value instance of T. For T = *RebootNode,
 // it returns &RebootNode{}.
