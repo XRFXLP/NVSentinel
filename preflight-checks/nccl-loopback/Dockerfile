@@ -14,8 +14,8 @@
 
 # PyTorch version determines CUDA runtime version - must match cluster's GPU driver
 # See: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#id4
-#   25.01-py3 = CUDA 12.8 (driver 570+)
-ARG PYTORCH_VERSION=25.01-py3
+#   26.03-py3 = CUDA 13.2 (Ubuntu 24.04, Python 3.12)
+ARG PYTORCH_VERSION=26.03-py3
 ARG NCCL_TESTS_VERSION=v2.13.11
 
 # =============================================================================
@@ -82,22 +82,6 @@ RUN git clone -b ${NCCL_TESTS_VERSION} https://github.com/NVIDIA/nccl-tests.git 
                       -gencode=arch=compute_89,code=sm_89 \
                       -gencode=arch=compute_90,code=sm_90 \
                       -gencode=arch=compute_100,code=sm_100"
-
-RUN apt-get update && \
-    apt-get upgrade -y git git-man gnupg gpgv gpgsm gpgconf keyboxd && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir \
-    "wheel==0.46.2" \
-    "urllib3==2.6.3" \
-    "tornado==6.5.5" \
-    "h11==0.16.0" \
-    "pillow==12.1.1" \
-    "onnx==1.21.0" \
-    "protobuf==5.29.6" \
-    "aiohttp==3.13.3" \
-    "nbconvert==7.17.0" \
-    "black==26.3.1"
 
 WORKDIR /app
 

@@ -33,10 +33,6 @@ RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w -X main.version=${VERSI
 
 FROM nvcr.io/nvidia/cuda:13.2.0-base-ubuntu22.04
 
-RUN apt-get update && \
-    apt-get upgrade -y gnupg gpgv gpgsm gpgconf gpg-wks-server && \
-    rm -rf /var/lib/apt/lists/*
-
 RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
 
 WORKDIR /app

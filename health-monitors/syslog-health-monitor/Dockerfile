@@ -52,9 +52,7 @@ RUN cd health-monitors/syslog-health-monitor && \
 FROM public.ecr.aws/docker/library/debian:bookworm-slim AS runtime
 
 # Install required system libraries for systemd journal
-RUN apt-get update && \
-    apt-get upgrade -y openssl libssl3 && \
-    apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libsystemd0 \
     liblz4-1 \
     libzstd1 \

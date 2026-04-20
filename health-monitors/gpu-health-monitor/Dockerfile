@@ -46,7 +46,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries && \
     apt-get update && \
-    apt-get upgrade -y gnupg gpgv gpgsm gpg-wks-server gpg-wks-client gpgconf && \
     apt-get install -y --no-install-recommends \
         apt-transport-https \
         ca-certificates \

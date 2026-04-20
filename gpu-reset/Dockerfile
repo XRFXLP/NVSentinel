@@ -14,10 +14,6 @@
 
 FROM nvcr.io/nvidia/cuda:13.2.0-runtime-ubuntu24.04
 
-RUN apt-get update && \
-    apt-get upgrade -y gnupg gpgv gpgsm gpgconf keyboxd && \
-    rm -rf /var/lib/apt/lists/*
-
 COPY gpu-reset/gpu_reset.sh /usr/local/bin/gpu_reset.sh
 
 RUN chmod +x /usr/local/bin/gpu_reset.sh
