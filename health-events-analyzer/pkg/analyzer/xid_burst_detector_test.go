@@ -40,6 +40,23 @@ func createXidEvent(nodeName, xidCode string, timestamp time.Time) *protos.Healt
 	}
 }
 
+// Helper function to create test XID events for a specific GPU (by UUID or ordinal).
+// Uses the production "GPU_UUID" entity type emitted by the syslog health monitor.
+func createXidEventForGPU(nodeName, xidCode, gpuUUID string, timestamp time.Time) *protos.HealthEvent {
+	return &protos.HealthEvent{
+		NodeName:  nodeName,
+		ErrorCode: []string{xidCode},
+		GeneratedTimestamp: &timestamppb.Timestamp{
+			Seconds: timestamp.Unix(),
+		},
+		ComponentClass: "GPU",
+		IsHealthy:      false,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU_UUID", EntityValue: gpuUUID},
+		},
+	}
+}
+
 func TestXidBurstDetector_SingleBurst_NoTrigger(t *testing.T) {
 	detector := NewXidBurstDetector()
 
@@ -337,4 +354,109 @@ func TestXidBurstDetector_BurstWindowExceeded(t *testing.T) {
 	}
 
 	assert.Equal(t, 3, burstCount, "Events with >3 minute gaps should create separate bursts")
+}
+
+// TestXidBurstDetector_DifferentGPUs_DoNotCombine is a regression test for
+// https://github.com/NVIDIA/NVSentinel/issues/1191: bursts on different GPUs on
+// the same node must be tracked independently and must NOT be summed together.
+//
+// Scenario mirrors the issue (with a non-sticky XID so burst boundaries are
+// unambiguous):
+//   - GPU-0 has 3 bursts in 24 hours
+//   - GPU-3 has 2 bursts in 24 hours
+//   - Neither GPU individually meets the threshold of 5 bursts
+//   - The detector must NOT incorrectly trigger by counting 3 + 2 = 5.
+func TestXidBurstDetector_DifferentGPUs_DoNotCombine(t *testing.T) {
+	detector := NewXidBurstDetector()
+
+	baseTime := time.Now()
+	nodeName := "test-node-1"
+	xidCode := "120" // Non-sticky: 5-minute gaps reliably create new bursts.
+
+	// GPU-0: 3 distinct bursts (below threshold of 5).
+	for burst := 0; burst < 3; burst++ {
+		burstStart := baseTime.Add(time.Duration(burst) * 5 * time.Minute)
+		detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, "GPU-0", burstStart))
+		detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, "GPU-0",
+			burstStart.Add(30*time.Second)))
+	}
+
+	// GPU-3: 2 distinct bursts interleaved in the same 24h window (below
+	// threshold). Any event here must NOT be combined with GPU-0's history.
+	var shouldTrigger bool
+
+	var burstCount int
+
+	for burst := 0; burst < 2; burst++ {
+		burstStart := baseTime.Add(time.Duration(burst+3) * 5 * time.Minute)
+		detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, "GPU-3", burstStart))
+		shouldTrigger, burstCount = detector.ProcessEvent(
+			createXidEventForGPU(nodeName, xidCode, "GPU-3", burstStart.Add(30*time.Second)))
+	}
+
+	assert.False(t, shouldTrigger,
+		"Bursts on different GPUs must not be combined (issue #1191)")
+	assert.Equal(t, 2, burstCount,
+		"Last processed event was on GPU-3 which should only have 2 bursts")
+
+	stats := detector.GetBurstStats()
+	assert.Equal(t, 10, stats[nodeName],
+		"Aggregated stats across GPUs should include all events (6 on GPU-0 + 4 on GPU-3)")
+}
+
+// TestXidBurstDetector_SameGPU_TriggersAcrossBursts verifies that five bursts
+// on the same GPU (identified by GPU_UUID, the production entity type) DO
+// trigger, even while another GPU on the same node has its own independent
+// event stream.
+func TestXidBurstDetector_SameGPU_TriggersAcrossBursts(t *testing.T) {
+	detector := NewXidBurstDetector()
+
+	baseTime := time.Now()
+	nodeName := "test-node-1"
+	xidCode := "120" // Non-sticky XID
+
+	// Noise on GPU-3: a few events on another GPU that must not leak into GPU-0.
+	for i := 0; i < 4; i++ {
+		detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, "GPU-3",
+			baseTime.Add(time.Duration(i)*5*time.Minute)))
+	}
+
+	var shouldTrigger bool
+
+	var burstCount int
+
+	for burst := 0; burst < 5; burst++ {
+		burstStart := baseTime.Add(time.Duration(burst) * 5 * time.Minute)
+		detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, "GPU-0", burstStart))
+		shouldTrigger, burstCount = detector.ProcessEvent(
+			createXidEventForGPU(nodeName, xidCode, "GPU-0", burstStart.Add(30*time.Second)))
+	}
+
+	assert.True(t, shouldTrigger, "5 bursts on the same GPU must trigger")
+	assert.Equal(t, 5, burstCount, "Reported burst count should reflect GPU-0's 5 bursts")
+}
+
+// TestXidBurstDetector_ClearNodeHistory_ClearsAllGPUs verifies that clearing a
+// node's history wipes per-GPU histories for every GPU on that node.
+func TestXidBurstDetector_ClearNodeHistory_ClearsAllGPUs(t *testing.T) {
+	detector := NewXidBurstDetector()
+
+	baseTime := time.Now()
+	nodeName := "test-node-1"
+	xidCode := "79"
+
+	detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, "GPU-0", baseTime))
+	detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, "GPU-1",
+		baseTime.Add(1*time.Second)))
+	detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, "GPU-2",
+		baseTime.Add(2*time.Second)))
+
+	stats := detector.GetBurstStats()
+	assert.Equal(t, 3, stats[nodeName],
+		"Stats should aggregate events across all GPUs on the node")
+
+	detector.ClearNodeHistory(nodeName)
+
+	stats = detector.GetBurstStats()
+	assert.Equal(t, 0, stats[nodeName], "All per-GPU histories should be cleared")
 }
