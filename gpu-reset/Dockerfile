@@ -14,6 +14,10 @@
 
 FROM nvcr.io/nvidia/cuda:13.2.0-runtime-ubuntu24.04
 
+# TODO: Remove after CVE verification — prints base image package versions in build logs
+RUN echo "=== CVE DEBUG: CUDA runtime gnupg versions ===" && \
+    dpkg -l 2>/dev/null | grep -E "gnupg|gpgv|gpgsm|gpgconf|keyboxd" || true
+
 COPY gpu-reset/gpu_reset.sh /usr/local/bin/gpu_reset.sh
 
 RUN chmod +x /usr/local/bin/gpu_reset.sh
