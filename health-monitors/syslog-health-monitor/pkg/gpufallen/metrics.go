@@ -37,9 +37,5 @@ var (
 // Calling PreInitialize is idempotent; WithLabelValues(...).Add(0) is a no-op
 // on an already-materialized counter.
 func PreInitialize(nodeName string) {
-	if nodeName == "" {
-		return
-	}
-
 	gpuFallenCounterMetric.WithLabelValues(nodeName).Add(0)
 }

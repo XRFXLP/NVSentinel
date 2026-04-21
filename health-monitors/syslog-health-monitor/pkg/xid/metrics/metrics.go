@@ -67,10 +67,6 @@ var (
 // Calling PreInitialize is idempotent; WithLabelValues(...).Add(0) is a no-op
 // on an already-materialized counter.
 func PreInitialize(nodeName string, xidCodes []int) {
-	if nodeName == "" {
-		return
-	}
-
 	for _, code := range xidCodes {
 		XidCounterMetric.WithLabelValues(nodeName, strconv.Itoa(code)).Add(0)
 	}

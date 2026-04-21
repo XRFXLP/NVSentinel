@@ -249,10 +249,6 @@ func applyKataConfig(list []fd.CheckDefinition) []fd.CheckDefinition {
 // DaemonSet deployment that only runs a subset of the checks (e.g. Kata mode
 // disables SXID) does not export counters for disabled subsystems.
 func preInitializeMetrics(nodeName string, enabledChecks []fd.CheckDefinition) {
-	if nodeName == "" {
-		return
-	}
-
 	enabled := make(map[string]bool, len(enabledChecks))
 	for _, c := range enabledChecks {
 		enabled[c.Name] = true
@@ -290,7 +286,7 @@ func preInitializeMetrics(nodeName string, enabledChecks []fd.CheckDefinition) {
 func knownXIDCodes() ([]int, error) {
 	m, err := common.LoadErrorResolutionMap()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load XID error resolution map: %w", err)
 	}
 
 	codes := make([]int, 0, len(m))
