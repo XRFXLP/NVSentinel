@@ -42,10 +42,6 @@ RUN poetry export --format requirements.txt --output constraints.txt --without-h
 
 FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS runtime
 
-# TODO: Remove after CVE verification — prints base image package versions in build logs
-RUN echo "=== CVE DEBUG: DCGM base gnupg versions ===" && \
-    dpkg -l 2>/dev/null | grep -E "gnupg|gpgv|gpgsm|gpgconf|gpg-wks" || true
-
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries && \

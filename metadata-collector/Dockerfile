@@ -33,10 +33,6 @@ RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w -X main.version=${VERSI
 
 FROM nvcr.io/nvidia/cuda:13.2.0-base-ubuntu22.04
 
-# TODO: Remove after CVE verification — prints base image package versions in build logs
-RUN echo "=== CVE DEBUG: CUDA base gnupg versions ===" && \
-    dpkg -l 2>/dev/null | grep -E "gnupg|gpgv|gpgsm|gpgconf|gpg-wks" || true
-
 RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
 
 WORKDIR /app

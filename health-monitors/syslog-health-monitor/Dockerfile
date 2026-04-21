@@ -52,10 +52,6 @@ RUN cd health-monitors/syslog-health-monitor && \
 FROM public.ecr.aws/docker/library/debian:bookworm-slim AS runtime
 
 # Install required system libraries for systemd journal
-# TODO: Remove after CVE verification — prints base image package versions in build logs
-RUN echo "=== CVE DEBUG: bookworm-slim OpenSSL versions ===" && \
-    dpkg -l 2>/dev/null | grep -E "openssl|libssl" || true
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsystemd0 \
     liblz4-1 \

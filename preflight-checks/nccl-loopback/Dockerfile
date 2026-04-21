@@ -83,12 +83,6 @@ RUN git clone -b ${NCCL_TESTS_VERSION} https://github.com/NVIDIA/nccl-tests.git 
                       -gencode=arch=compute_90,code=sm_90 \
                       -gencode=arch=compute_100,code=sm_100"
 
-# TODO: Remove after CVE verification — prints base image package versions in build logs
-RUN echo "=== CVE DEBUG: PyTorch NGC package versions ===" && \
-    dpkg -l 2>/dev/null | grep -E "gnupg|gpgv|gpgsm|gpgconf|keyboxd|git " || true && \
-    echo "=== CVE DEBUG: pip packages ===" && \
-    pip list 2>/dev/null | grep -iE "wheel|urllib3|tornado|h11|pillow|onnx|protobuf|aiohttp|nbconvert|black|torch" || true
-
 WORKDIR /app
 
 COPY --from=go-builder /go/src/preflight-checks/nccl-loopback/nccl-loopback-check .

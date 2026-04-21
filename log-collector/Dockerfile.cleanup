@@ -33,12 +33,6 @@ RUN poetry export --format requirements.txt --output constraints.txt --without-h
 
 FROM public.ecr.aws/docker/library/python:3.13-alpine AS runtime
 
-# TODO: Remove after CVE verification — prints base image package versions in build logs
-RUN echo "=== CVE DEBUG: Alpine OpenSSL versions ===" && \
-    apk list --installed 2>/dev/null | grep -E "libssl|libcrypto" && \
-    echo "=== CVE DEBUG: pip packages ===" && \
-    pip list 2>/dev/null | grep -iE "wheel|jaraco" || true
-
 ENV PYTHONUNBUFFERED=1
 
 COPY --from=build /app/dist/*.whl ./
