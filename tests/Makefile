@@ -24,10 +24,7 @@ IS_GO_MODULE := 1
 TEST_EXTRA_FLAGS := -timeout 45m -count 1 -failfast
 
 # Database-aware test tags:
-# - USE_POSTGRESQL=1: excludes mongodb-only tests (e.g., health_events_analyzer_test.go,
-#   which covers rules whose MongoDB aggregation pipelines use operators not yet
-#   supported by the PostgreSQL translator). Backend-agnostic HEA tests live in
-#   health_events_analyzer_common_test.go and run on both backends.
+# - USE_POSTGRESQL=1: excludes mongodb-only tests (e.g., health_events_analyzer_test.go)
 # - Default (MongoDB): includes all tests
 ifeq ($(USE_POSTGRESQL),1)
     TEST_TAGS ?= amd64_group,arm64_group
