@@ -496,23 +496,36 @@ func (b *Burst) hasXid(xidCode string) bool {
 	return b.xidCodes[xidCode]
 }
 
-// extractGPUIDs extracts GPU entity values from the entities impacted list.
-// It accepts both "GPU_UUID" (used by the syslog health monitor and the MongoDB
-// aggregation pipeline) and "GPU" (used by some health monitors / tests).
+// extractGPUIDs returns the deduplicated set of GPU UUIDs affected by this
+// event. Only "GPU_UUID" entities are considered - that is the entity type
+// emitted by every production monitor that reports GPU-level XID errors and
+// is what the MongoDB aggregation pipeline keys on. Events that carry "GPU"
+// ordinal entries alongside "GPU_UUID" would otherwise be double-counted
+// (once per key) for a single physical GPU.
+//
+// Deduplication also guards against the same UUID appearing twice in a
+// single event's entity list, which would cause the same XID event to be
+// appended to the same history bucket more than once.
 func extractGPUIDs(entities []*protos.Entity) []string {
-	var gpuIDs []string
+	var (
+		uuids []string
+		seen  = make(map[string]struct{})
+	)
 
 	for _, entity := range entities {
-		if entity == nil {
+		if entity == nil || entity.EntityType != "GPU_UUID" {
 			continue
 		}
 
-		if entity.EntityType == "GPU_UUID" || entity.EntityType == "GPU" {
-			gpuIDs = append(gpuIDs, entity.EntityValue)
+		if _, ok := seen[entity.EntityValue]; ok {
+			continue
 		}
+
+		seen[entity.EntityValue] = struct{}{}
+		uuids = append(uuids, entity.EntityValue)
 	}
 
-	return gpuIDs
+	return uuids
 }
 
 // cleanupOldEvents removes events older than the lookback window

@@ -467,3 +467,43 @@ func TestXidBurstDetector_ClearNodeHistory_ClearsAllGPUs(t *testing.T) {
 	stats = detector.GetBurstStats()
 	assert.Equal(t, 0, stats[nodeName], "All per-GPU histories should be cleared")
 }
+
+// TestXidBurstDetector_MixedAndDuplicateEntities_CountedOnce verifies that a
+// single event carrying mixed (GPU_UUID + GPU) or duplicate GPU_UUID entries
+// for the same physical GPU is counted exactly once, in a single per-GPU
+// bucket keyed by the GPU_UUID. Non-UUID GPU entries are ignored to avoid
+// double-counting the same device under two keys.
+func TestXidBurstDetector_MixedAndDuplicateEntities_CountedOnce(t *testing.T) {
+	detector := NewXidBurstDetector()
+
+	nodeName := "test-node-1"
+	xidCode := "120"
+	gpuUUID := "GPU-11111111-1111-1111-1111-111111111111"
+
+	// Mirrors what the sxid handler emits: both a GPU ordinal and a GPU_UUID
+	// for the same device, plus a duplicate GPU_UUID entry.
+	event := &protos.HealthEvent{
+		NodeName:           nodeName,
+		ErrorCode:          []string{xidCode},
+		GeneratedTimestamp: &timestamppb.Timestamp{Seconds: time.Now().Unix()},
+		ComponentClass:     "GPU",
+		IsHealthy:          false,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU_UUID", EntityValue: gpuUUID},
+			{EntityType: "GPU", EntityValue: "3"},
+			{EntityType: "GPU_UUID", EntityValue: gpuUUID},
+			{EntityType: "PCI", EntityValue: "0001:00:00"},
+		},
+	}
+
+	detector.ProcessEvent(event)
+
+	perGPU := detector.GetPerGPUBurstStats()
+	nodeStats := perGPU[nodeName]
+	assert.Equal(t, 1, len(nodeStats),
+		"event must land in exactly one per-GPU bucket, not be split across GPU and GPU_UUID")
+	assert.Equal(t, 1, nodeStats[gpuUUID],
+		"event must be counted once under the GPU_UUID key")
+	assert.Equal(t, 1, detector.GetBurstStats()[nodeName],
+		"aggregate count should reflect the single event")
+}
