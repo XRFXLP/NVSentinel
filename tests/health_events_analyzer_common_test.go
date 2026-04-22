@@ -33,32 +33,126 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-// Tests in this file exercise health-events-analyzer rules that are known to
-// be backed by database-agnostic logic on the PostgreSQL path:
+// Tests in this file exercise health-events-analyzer rules that are backed by
+// database-agnostic logic: either the Go-based XID burst detector (which is
+// the PostgreSQL path, and equivalent to the MongoDB $setWindowFields pipeline
+// on MongoDB) or rules whose MongoDB aggregation pipelines use only $match /
+// $count stages that are also supported by the PostgreSQL aggregation
+// translator (store-client/pkg/client/postgresql_client.go). As such, these
+// tests are expected to pass against both backends and intentionally omit the
+// "mongodb" build tag.
 //
-//   - TestRepeatedXIDOnSameGPU — uses the Go-based XidBurstDetector on
-//     PostgreSQL (equivalent to the MongoDB $setWindowFields pipeline).
-//     This is the primary regression gate for
-//     https://github.com/NVIDIA/NVSentinel/issues/1191.
-//   - TestSoloNoBurstRule — the XIDErrorSoloNoBurst rule uses only $match
-//     expressions that the PostgreSQL aggregation translator supports.
-//   - TestHealthEventsAnalyzerStoreOnlyStrategy — exercises the reconciler's
-//     STORE_ONLY processing-strategy path, independent of the rule body.
-//
-// These tests intentionally omit the "mongodb" build tag and are expected to
-// pass against both backends.
-//
-// The counterpart file health_events_analyzer_test.go holds tests whose rules
-// rely on MongoDB-only pipeline features (complex $addFields with
-// $arrayToObject/$map/$filter, bitmask expressions, self-referencing
-// expressions against JSONB fields, etc.) and remain gated behind the
-// "mongodb" build tag until those rules are ported to a database-agnostic
-// evaluation framework (tracking issue:
+// The counterpart file health_events_analyzer_test.go contains tests whose
+// rules rely on MongoDB-only pipeline features (complex $addFields with
+// $arrayToObject/$map/$filter, bitmask expressions, etc.) and remain gated
+// behind the "mongodb" build tag until those rules are ported to a
+// database-agnostic evaluation framework (tracking issue:
 // https://github.com/NVIDIA/NVSentinel/issues/606).
 
 const (
 	keyOriginalArgsContextKey contextKey = "originalArgs"
 )
+
+func TestMultipleRemediationsCompleted(t *testing.T) {
+	feature := features.New("TestMultipleRemediationsCompleted").
+		WithLabel("suite", "health-event-analyzer")
+
+	var testCtx *helpers.HealthEventsAnalyzerTestContext
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", "")
+
+		t.Log("Triggering multiple remediations cycle")
+		client, err := c.NewClient()
+		require.NoError(t, err)
+		helpers.TriggerMultipleRemediationsCycle(ctx, t, client, testCtx.NodeName)
+
+		return newCtx
+	})
+
+	feature.Assess("Check if MultipleRemediations node condition is added", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create client")
+		gpuNodeName := testCtx.NodeName
+
+		event := helpers.NewHealthEvent(gpuNodeName).
+			WithFatal(true).
+			WithErrorCode(helpers.ERRORCODE_31).
+			WithRecommendedAction(int(pb.RecommendedAction_RESTART_VM))
+		helpers.SendHealthEvent(ctx, t, event)
+
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, gpuNodeName, "MultipleRemediations",
+			"ErrorCode:31 GPU:0 Recommended Action=CONTACT_SUPPORT;", "MultipleRemediationsIsNotHealthy", v1.ConditionTrue)
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+
+		return helpers.TeardownHealthEventsAnalyzer(ctx, t, c, testCtx.NodeName, testCtx.ConfigMapBackup)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestMultipleRemediationsNotTriggered(t *testing.T) {
+	feature := features.New("TestMultipleRemediationsNotTriggered").
+		WithLabel("suite", "health-event-analyzer")
+
+	var testCtx *helpers.HealthEventsAnalyzerTestContext
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+		testNodeName := helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
+
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
+
+		gpuNodeName := testCtx.NodeName
+
+		t.Logf("Injecting non-fatal events to node %s", gpuNodeName)
+		for range 5 {
+			event := helpers.NewHealthEvent(gpuNodeName).
+				WithFatal(false).
+				WithErrorCode(helpers.ERRORCODE_13).
+				WithRecommendedAction(int(pb.RecommendedAction_RESTART_VM))
+
+			helpers.SendHealthEvent(ctx, t, event)
+
+			helpers.SendHealthyEvent(ctx, t, gpuNodeName)
+		}
+
+		return newCtx
+	})
+
+	feature.Assess("Check if MultipleRemediations node condition is NOT added for non-fatal events", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		gpuNodeName := testCtx.NodeName
+
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create client")
+
+		event := helpers.NewHealthEvent(gpuNodeName).
+			WithFatal(false).
+			WithErrorCode(helpers.ERRORCODE_13).
+			WithRecommendedAction(int(pb.RecommendedAction_RESTART_VM))
+		helpers.SendHealthEvent(ctx, t, event)
+
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, gpuNodeName, "MultipleRemediations")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+
+		return helpers.TeardownHealthEventsAnalyzer(ctx, t, c, testCtx.NodeName, testCtx.ConfigMapBackup)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
 
 func TestRepeatedXIDOnSameGPU(t *testing.T) {
 	// Works with both MongoDB ($setWindowFields pipeline) and PostgreSQL (XidBurstDetector).
@@ -444,6 +538,45 @@ func TestHealthEventsAnalyzerStoreOnlyStrategy(t *testing.T) {
 		helpers.WaitForDeploymentRollout(ctx, t, client, helpers.HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME, helpers.NVSentinelNamespace)
 
 		return helpers.TeardownHealthEventsAnalyzer(ctx, t, c, testNodeName, testCtx.ConfigMapBackup)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestHealthEventsAnalyzerProcessingStrategyRuleOverride(t *testing.T) {
+	feature := features.New("TestHealthEventsAnalyzerRuleOverride").
+		WithLabel("suite", "health-event-analyzer")
+
+	var testCtx *helpers.HealthEventsAnalyzerTestContext
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-rule-override.yaml", "health-events-analyzer-test", "")
+		t.Logf("Using node: %s", testCtx.NodeName)
+		return ctx
+	})
+
+	feature.Assess("Verify node condition is not added for the rule MultipleRemediations as rule strategy is overridden to STORE_ONLY", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Triggering multiple remediations cycle")
+		helpers.TriggerMultipleRemediationsCycle(ctx, t, client, testCtx.NodeName)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithFatal(true).
+			WithErrorCode(helpers.ERRORCODE_31).
+			WithRecommendedAction(int(pb.RecommendedAction_RESTART_VM))
+		helpers.SendHealthEvent(ctx, t, event)
+
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testCtx.NodeName, "MultipleRemediations")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+
+		return helpers.TeardownHealthEventsAnalyzer(ctx, t, c, testCtx.NodeName, testCtx.ConfigMapBackup)
 	})
 
 	testEnv.Test(t, feature.Feature())
