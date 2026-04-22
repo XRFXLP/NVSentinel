@@ -568,6 +568,28 @@ func (d *XidBurstDetector) GetBurstStats() map[string]int {
 	return stats
 }
 
+// GetPerGPUBurstStats returns tracked event counts keyed by (nodeName, gpuKey).
+// The outer map is keyed by nodeName; the inner map is keyed by the GPU UUID
+// (or ordinal string) extracted from the event's entities. The empty-string
+// inner key is used for events that did not carry a GPU entity.
+func (d *XidBurstDetector) GetPerGPUBurstStats() map[string]map[string]int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	stats := make(map[string]map[string]int, len(d.nodeEvents))
+
+	for nodeName, gpuHistories := range d.nodeEvents {
+		perGPU := make(map[string]int, len(gpuHistories))
+		for gpuKey, history := range gpuHistories {
+			perGPU[gpuKey] = len(history.events)
+		}
+
+		stats[nodeName] = perGPU
+	}
+
+	return stats
+}
+
 // ClearNodeHistory clears all XID event history for a specific node across
 // every GPU. This should be called when a healthy event is received for the
 // node, indicating that the GPU issues have been resolved and we should start
