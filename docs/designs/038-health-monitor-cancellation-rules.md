@@ -22,7 +22,7 @@ The natural owner of cancellation pairs is therefore the monitor that produces t
 
 ## Decision
 
-When a monitor's parser observes an event matching a configured rule, the monitor emits one or more synthetic healthy `HealthEvent`s in the same gRPC batch. Those events flow through the unchanged platform-connector pipeline and are folded by every downstream consumer (K8s connector, store, device connector, fault-quarantine) exactly as if produced by a real recovery observation.
+When a monitor's parser observes an event matching a configured rule, the monitor emits one or more synthetic healthy `HealthEvent`s in the same gRPC batch. Those events flow through the unchanged platform-connector pipeline and are folded by every downstream consumer (K8s connector, store, device connector, fault-quarantine) exactly as if produced by a real recovery observation. Two downstream clearers that today ignore `ErrorCode` are extended to honour it, so a cancellation event clears only the targeted code on the targeted entity rather than every code on that entity (see *Error-code precision in downstream clearers* in Implementation).
 
 Initial schema (`syslog-health-monitor`):
 
@@ -105,7 +105,23 @@ if h.cancellations != nil {
 return &pb.HealthEvents{Version: 1, Events: events}
 ```
 
-`buildCancellationEvent` constructs the synthetic event per the table above. No other call site changes.
+`buildCancellationEvent` constructs the synthetic event per the table above. No other call site in `XIDHandler` changes.
+
+### Error-code precision in downstream clearers
+
+Today the K8s connector and fault-quarantine clear by `EntitiesImpacted` only — `ErrorCode` is not consulted. Multiple XIDs on the same GPU collapse to one node-condition message stream and one annotation-map entry. A real GPU-recovery healthy event clears them all together, which is the right semantic for an actual recovery: the GPU has been reset, every prior XID on it is moot. A configured cancellation rule is different: the operator declared "XID 162 cancels XID 163" — they did **not** authorise clearing XID 98 if it happens to also be active. Without `ErrorCode` precision in the clearers, the rule would over-clear, masking unrelated faults.
+
+This ADR therefore extends both clearers to honour `ErrorCode` when the healthy event carries one. Real GPU-recovery events (which today have empty `ErrorCode`) are unaffected — they continue to clear by entity alone, preserving today's "reset clears everything on the GPU" semantic.
+
+**Platform connector** (`platform-connectors/pkg/connectors/kubernetes/process_node_events.go`):
+
+`removeImpactedEntitiesMessages` becomes `removeImpactedEntitiesMessagesScoped(messages, entities, errorCodes)`. When `errorCodes` is empty, behaviour is unchanged. When non-empty, a message is removed only if it matches both an entity prefix *and* one of the supplied `ErrorCode:<code>` tokens. The healthy-event branch in `aggregateEventMessages` passes `event.ErrorCode` through.
+
+**Fault-quarantine** (`fault-quarantine/pkg/healthEventsAnnotation/health_events_annotation_map.go`):
+
+`HealthEventKey` (built by `CreateEventKeyForEntity`) gains an `ErrorCode` component. `createEventKeys` emits one key per `(entity, errorCode)` pair when `ErrorCode` is set, falling back to the legacy entity-only key when it is empty. `RemoveEvent` matches keys with the same fallback rule. Real recovery events (empty `ErrorCode`) match every key for the entity exactly as today; cancellation events match only the targeted code.
+
+Both changes are additive: existing callers that produce healthy events without `ErrorCode` see no behavioural change. Unit tests in both packages cover (a) entity-only healthy event clears all error codes for the entity, (b) entity + `ErrorCode` healthy event clears only matching codes, (c) entity + non-matching `ErrorCode` clears nothing.
 
 ### Helm
 
@@ -131,12 +147,11 @@ One new counter: `syslog_health_monitor_cancellations_emitted_total{check, sourc
 ### Positive
 
 - Adds a declarative resolution path without any change to platform-connectors or fault-quarantine.
-- Synthetic events are persisted with `Metadata["nvsentinel.io/cancel-source-error-code"]`, providing a join from the trigger to its cancellation.
+- Synthetic events carry additional metadata (`Metadata["nvsentinel.io/cancel-source-error-code"]`) for correlation between the trigger and its cancellation.
 - The existing hardcoded GPU-reset cancel in `createHealthEventGPUResetEvent` becomes a candidate for later migration onto this same mechanism.
 
 ### Negative
 
-- **Entity-level granularity.** The K8s connector's `removeImpactedEntitiesMessages` and the fault-quarantine annotation map both clear by `EntitiesImpacted`, ignoring `ErrorCode`. A synthetic healthy event for one XID will also clear other XIDs on the same entity until they re-fire. Tightening this to error-code precision requires changes to both clearers and is out of scope.
 - **No cross-monitor cancellations.** A rule defined in one monitor cannot cancel another monitor's events.
 - **Misconfiguration can mask faults.** Validation catches typos and self-cancels but not semantic correctness.
 
