@@ -7,7 +7,7 @@ A fatal `HealthEvent` quarantines a node and is released only by:
 1. **Manual uncordon** — operator runs `kubectl uncordon`; fault-quarantine detects the transition and calls `CancelLatestQuarantiningEvents`. See [`cancelling-breakfix.md`](../cancelling-breakfix.md).
 2. **Reboot / device reset** — a monitor (typically syslog) observes the recovery and emits a healthy `HealthEvent` for the same `CheckName`, which flips `node.status.conditions` to `False` and clears the fault-quarantine annotation map.
 
-There is no way to express that a *different* observation clears a prior fault. An operator who knows that XID 162 implies recovery from XID 163 cannot configure NVSentinel to act on that knowledge — they must wait for a device-specific recovery signal that may never fire, or uncordon manually.
+There is no way to express that a *different* error code clears a prior fault. An operator who knows that XID 162 implies recovery from XID 163 cannot configure NVSentinel to act on that knowledge — they must wait for a device-specific recovery signal that may never fire, or uncordon manually.
 
 This ADR adds a third path: **per-monitor cancellation rules** that declare "observation A clears observation B" pairs in configuration owned by the monitor that produces both observations.
 
