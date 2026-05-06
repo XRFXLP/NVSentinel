@@ -18,7 +18,7 @@ These reach fault-quarantine and node-drainer as distinct events: redundant drai
 
 ### Assumption: single dominant XID per burst
 
-Production XID bursts on a given GPU are dominated by a single XID code (e.g., XID 31, 45, 95 producing ~100k repeated events). Distinct XID codes arriving back-to-back within the same burst window have not been observed in field data. This justifies tracking only one `(currentXidCode, seenMessages)` slot per `(node, GPU_UUID)`: a different XID arriving on the same GPU is treated as a state transition that supersedes the prior slot.
+Production XID bursts on a given GPU are dominated by a single XID code (e.g., XID 31, 45, 95 producing ~100k repeated events). Distinct XID codes arriving back-to-back within the same burst window are rarely observed in field data, except XID 162 <-> XID 163 pair. This justifies tracking only one `(currentXidCode, seenMessages)` slot per `(node, GPU_UUID)`: a different XID arriving on the same GPU is treated as a state transition that supersedes the prior slot.
 
 ## Decision
 
@@ -63,6 +63,8 @@ SXID has no runtime healthy signal (recommended action is `CONTACT_SUPPORT`), so
 ### TTL semantics
 
 The seen-message TTL is the **burst window** — the smallest gap between two error lines that should still count as the same burst. Entries older than `BurstWindow` are evicted, so every gap larger than the burst window produces a fresh event: a stuck GPU still emits one event per burst at the kernel's pace.
+
+Default: **3 minutes**. Configurable via the helm value `syslog-health-monitor.burstWindow` (Go duration string, e.g. `"3m"`, `"180s"`).
 
 ## Implementation
 
@@ -150,7 +152,7 @@ type syslogMonitorState struct {
 
 No state-file version bump; old files load with `Slots == nil`.
 
-In `NewSyslogMonitorWithFactory`, the constructor builds one tracker per dedup-eligible check, restoring from `state.Slots[check.Name]` if present, with `ttl := burstWindow` read from configuration.
+In `NewSyslogMonitorWithFactory`, the constructor builds one tracker per dedup-eligible check, restoring from `state.Slots[check.Name]` if present, with `ttl` parsed from the `BURST_WINDOW` env var rendered by the chart from `syslog-health-monitor.burstWindow` (default `"3m"`).
 
 ### Event-sending path
 
