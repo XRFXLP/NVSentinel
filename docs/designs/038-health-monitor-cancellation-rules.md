@@ -146,7 +146,7 @@ One new counter: `syslog_health_monitor_cancellations_emitted_total{check, sourc
 
 ### Positive
 
-- Adds a declarative resolution path without any change to platform-connectors or fault-quarantine.
+- Adds a declarative resolution path. The only platform-connector and fault-quarantine touch is additive `ErrorCode`-aware matching in two clearers; existing call sites are unaffected.
 - **Additive, never mutating.** The original observation is left intact, so the upstream signal stays auditable and its own semantics (metrics, downstream rules keyed off the source code) are unaffected. A single source code can fan out to multiple cancellations, which mutation could not express.
 - Synthetic events carry additional metadata (`Metadata["nvsentinel.io/cancel-source-error-code"]`) for correlation between the trigger and its cancellation.
 - The existing hardcoded GPU-reset cancel in `createHealthEventGPUResetEvent` becomes a candidate for later migration onto this same mechanism.
@@ -188,4 +188,4 @@ Emit `CheckName = "GpuXid163"`, `"GpuXid162"`, etc., and use the existing per-ch
 - [Cancelling Break-Fix Workflows](../cancelling-breakfix.md)
 - `health-monitors/syslog-health-monitor/pkg/xid/xid_handler.go`
 - `platform-connectors/pkg/connectors/kubernetes/process_node_events.go`
-- `fault-quarantine/pkg/eventwatcher/event_watcher.go`
+- `fault-quarantine/pkg/healthEventsAnnotation/health_events_annotation_map.go`
