@@ -22,7 +22,7 @@ The natural owner of cancellation pairs is therefore the monitor that produces t
 
 ## Decision
 
-When a monitor's parser observes an event matching a configured rule, the monitor emits one or more synthetic healthy `HealthEvent`s in the same gRPC batch. Those events flow through the unchanged platform-connector pipeline and are folded by every downstream consumer (K8s connector, store, device connector, fault-quarantine) exactly as if produced by a real recovery observation. Two downstream clearers that today ignore `ErrorCode` are extended to honour it, so a cancellation event clears only the targeted code on the targeted entity rather than every code on that entity (see *Error-code precision in downstream clearers* in Implementation).
+On a configured rule match, the monitor appends synthetic healthy `HealthEvent`s to the same gRPC batch alongside the original; the original is never mutated. Each synthetic event flows through the unchanged platform-connector pipeline and is folded by every downstream consumer exactly like a real recovery event. Two downstream clearers are extended to honour `ErrorCode` so a cancellation clears only its targeted code (see *Error-code precision in downstream clearers*).
 
 Initial schema (`syslog-health-monitor`):
 
@@ -147,6 +147,7 @@ One new counter: `syslog_health_monitor_cancellations_emitted_total{check, sourc
 ### Positive
 
 - Adds a declarative resolution path without any change to platform-connectors or fault-quarantine.
+- **Additive, never mutating.** The original observation is left intact, so the upstream signal stays auditable and its own semantics (metrics, downstream rules keyed off the source code) are unaffected. A single source code can fan out to multiple cancellations, which mutation could not express.
 - Synthetic events carry additional metadata (`Metadata["nvsentinel.io/cancel-source-error-code"]`) for correlation between the trigger and its cancellation.
 - The existing hardcoded GPU-reset cancel in `createHealthEventGPUResetEvent` becomes a candidate for later migration onto this same mechanism.
 
