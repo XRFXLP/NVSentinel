@@ -18,7 +18,7 @@ These reach fault-quarantine and node-drainer as distinct events: redundant drai
 
 ### Assumption: single dominant XID per burst
 
-Production XID bursts on a given GPU are dominated by a single XID code (e.g., XID 31, 45, 95 producing ~100k repeated events). Distinct XID codes arriving back-to-back within the same burst window have not been observed in field data. This justifies tracking only one `(currentXidCode, seenMessages)` slot per `(node, GPU_UUID)`: a different XID arriving on the same GPU is treated as a state transition that supersedes the prior slot. If field data ever contradicts this, the slot can be widened to a small set of recent XIDs without other structural changes.
+Production XID bursts on a given GPU are dominated by a single XID code (e.g., XID 31, 45, 95 producing ~100k repeated events). Distinct XID codes arriving back-to-back within the same burst window have not been observed in field data. This justifies tracking only one `(currentXidCode, seenMessages)` slot per `(node, GPU_UUID)`: a different XID arriving on the same GPU is treated as a state transition that supersedes the prior slot.
 
 ## Decision
 
@@ -62,7 +62,7 @@ SXID has no runtime healthy signal (recommended action is `CONTACT_SUPPORT`), so
 
 ### TTL semantics
 
-The seen-message TTL is the cluster's configured **burst window** — the smallest gap between two error lines that should still count as the same burst. Reusing this value rather than introducing a second knob keeps a single operator-controlled definition of "burst" across the system: every gap larger than `BurstWindow` produces a fresh event, so a stuck GPU still emits one event per burst at the kernel's pace.
+The seen-message TTL is the **burst window** — the smallest gap between two error lines that should still count as the same burst. Entries older than `BurstWindow` are evicted, so every gap larger than the burst window produces a fresh event: a stuck GPU still emits one event per burst at the kernel's pace.
 
 ## Implementation
 
@@ -74,7 +74,7 @@ package dedup
 type Tracker struct {
     mu     sync.RWMutex
     perGPU map[string]*gpuSlot   // key: GPU_UUID; "" for events without GPU attribution
-    ttl    time.Duration         // cluster's burst window (shared configmap field)
+    ttl    time.Duration         // BurstWindow
     now    func() time.Time      // injectable for tests
 }
 
@@ -145,17 +145,12 @@ type syslogMonitorState struct {
     BootID           string                           `json:"boot_id"`
     CheckLastCursors map[string]string                `json:"check_last_cursors"`
     Slots            map[string][]dedup.SlotSnapshot  `json:"slots,omitempty"`
-
-    // Deprecated: legacy seen-message set from the pre-slot design.
-    // Read on load for backward compatibility, never written. The first new
-    // event on any GPU evicts these via the XID-change reset.
-    SeenMessages     map[string][]string              `json:"seen_messages,omitempty"`
 }
 ```
 
 No state-file version bump; old files load with `Slots == nil`.
 
-In `NewSyslogMonitorWithFactory`, the constructor builds one tracker per dedup-eligible check, restoring from `state.Slots[check.Name]` if present, with `ttl := burstWindow` read from the shared configmap field.
+In `NewSyslogMonitorWithFactory`, the constructor builds one tracker per dedup-eligible check, restoring from `state.Slots[check.Name]` if present, with `ttl := burstWindow` read from configuration.
 
 ### Event-sending path
 
@@ -219,7 +214,7 @@ func (sm *SyslogMonitor) clearDedupForHealthyEvent(checkName string, event *pb.H
 }
 ```
 
-`handleBootIDChange` clears every tracker alongside the existing cursor reset. `saveCurrentState` snapshots each tracker into `state.Slots[checkName]` and never writes the deprecated `SeenMessages`. State persistence already happens after each check in `executeCheck` — no new save calls.
+`handleBootIDChange` clears every tracker alongside the existing cursor reset. `saveCurrentState` snapshots each tracker into `state.Slots[checkName]`. State persistence already happens after each check in `executeCheck` — no new save calls.
 
 ### Files touched
 
@@ -227,14 +222,14 @@ func (sm *SyslogMonitor) clearDedupForHealthyEvent(checkName string, event *pb.H
 |--------------------------------------------|-------------------------------------------------------------------------------------------------|
 | `pkg/dedup/tracker.go`                     | **New** — `Tracker`, `SlotSnapshot`, `NormalizeMessage`                                         |
 | `pkg/dedup/tracker_test.go`                | **New** — unit tests: TTL eviction, XID-change reset, snapshot round-trip                       |
-| `pkg/syslog-monitor/types.go`              | Add `dedupTrackers` to `SyslogMonitor`; add `Slots` (and deprecated `SeenMessages`) to state    |
+| `pkg/syslog-monitor/types.go`              | Add `dedupTrackers` to `SyslogMonitor`; add `Slots` to state                                    |
 | `pkg/syslog-monitor/syslogmonitor.go`      | Constructor wiring; `applyDedup`, `clearDedupForHealthyEvent`; updates to `handleBootIDChange` and `saveCurrentState` |
 | `pkg/syslog-monitor/syslogmonitor_test.go` | Integration tests: suppression, healthy-clears, reboot-clears, XID-change reset, state round-trip |
 
 ## Rationale
 
 - **Monitor-level dedup** keeps the `Handler` interface and every handler implementation untouched.
-- **TTL = cluster `burstWindow`** ensures dedup operates within a burst rather than across bursts, using the same value the cluster already defines for what counts as a burst — no second knob.
+- **TTL = `BurstWindow`** ensures dedup operates within a burst rather than across bursts.
 - **Single slot per GPU** — see Assumption.
 - **State persistence** carries dedup across pod restarts within the current burst window.
 
@@ -248,8 +243,6 @@ func (sm *SyslogMonitor) clearDedupForHealthyEvent(checkName string, event *pb.H
 ### Negative
 - Same XID with rotating pid or process name is intentionally not deduped — different pids may be different occurrences.
 - An XID alternating between two codes on the same GPU (X→Y→X→Y) re-emits on every transition. Alternation is itself a signal worth surfacing.
-- The legacy `SeenMessages` field is read-only-carried for one release.
-
 State-file size is bounded by `O(GPUs per node)`, regardless of message-set size or burst length.
 
 ## Alternatives Considered
@@ -264,17 +257,9 @@ Rely on `deduplicateMessagesByIdentity` in the platform connector instead of sup
 
 **Rejected:** that operates on node-condition annotations, not the gRPC event stream. Redundant events still consume bandwidth, storage, and inflate counts.
 
-### TTL with an independent tuning knob
-A user-set TTL unrelated to the cluster's `burstWindow`.
-
-**Rejected:** two configuration knobs for the same operational concept (the burst window) drift over time and confuse operators. Reusing the existing shared value avoids the second knob entirely.
-
 ## Notes
 
-- The kernel timestamp regex covers all observed formats (`[ 1108.858286] `, `[73309.599396] `, `[123] `). New formats only require a regex update.
 - The unknown-GPU bucket (slot key `""`) handles events without GPU attribution and is single-XID-slotted with the same semantics as a real GPU bucket.
-- `GPUFallenOff` is excluded — its 5-minute PCI-keyed correlation in `gpufallen_handler.go` would interfere.
-
 ## References
 
 - [ADR-020: NVSentinel GPU Reset](020-nvsentinel-gpu-reset.md) — the GPU reset detection that serves as the XID remediation signal.
