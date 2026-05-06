@@ -42,16 +42,17 @@ Initial schema (`syslog-health-monitor`):
 
 For each entry in `cancelErrorCodes`:
 
-| Field | Value |
-|---|---|
-| `Agent`, `ComponentClass`, `CheckName`, `Version`, `NodeName`, `EntitiesImpacted` | copied from the source event |
-| `IsHealthy` | `true` |
-| `IsFatal` | `false` |
-| `RecommendedAction` | `NONE` |
-| `ErrorCode` | `[targetCode]` |
-| `Message` | `Cancelled by <CheckName> error code <onErrorCode>` |
-| `Metadata["nvsentinel.io/cancel-source-error-code"]` | the rule's `onErrorCode` |
-| `GeneratedTimestamp` | `time.Now()` |
+| Field                                                                             | Value                                                               |
+|-----------------------------------------------------------------------------------|---------------------------------------------------------------------|
+| `Agent`, `ComponentClass`, `CheckName`, `Version`, `NodeName`, `EntitiesImpacted` | copied from the source event                                        |
+| `IsHealthy`                                                                       | `true`                                                              |
+| `IsFatal`                                                                         | `false`                                                             |
+| `RecommendedAction`                                                               | `NONE`                                                              |
+| `ErrorCode`                                                                       | the matched entry from `cancelErrorCodes`, as a single-element list |
+| `Message`                                                                         | `Cancelled by <CheckName> error code <onErrorCode>`                 |
+| `Metadata["nvsentinel.io/cancel-source-error-code"]`                              | the rule's `onErrorCode`                                            |
+| `GeneratedTimestamp`                                                              | `time.Now()`                                                        |
+
 
 The source event is unchanged; synthetic events are appended to the same `*pb.HealthEvents` batch.
 
