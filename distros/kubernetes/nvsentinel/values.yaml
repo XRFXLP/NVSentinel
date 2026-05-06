@@ -106,7 +106,7 @@ global:
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 
   # DCGM (Data Center GPU Manager) configuration
-  # Shared by gpu-health-monitor and preflight dcgm-diag
+  # Used by gpu-health-monitor
   dcgm:
     # Enable DCGM Kubernetes service integration
     enabled: true
@@ -119,9 +119,8 @@ global:
   # OpenTelemetry tracing configuration
   tracing:
     enabled: false # Enable/disable tracing for all components
-    insecure: false # Set to true if the collector endpoint does not use TLS
-    # OTLP gRPC endpoint (host:port) where services send traces.
-    # Point this to your tracing backend's (Tempo, Jaeger, Zipkin, etc.) gRPC ingestion endpoint.
+    insecure: false # Set to true to disable TLS for the collector connection
+    # OTel collector's OTLP gRPC endpoint (host:port) for trace ingestion
     endpoint: ""
 
   # Audit logging configuration
@@ -179,7 +178,9 @@ global:
     enabled: false
   slurmDrainMonitor:
     enabled: false
-    
+  nicHealthMonitor:
+    enabled: false
+
 # Network policy configuration
 # The metrics-access network policy restricts ingress to metrics ports only.
 # This can block other services (e.g., cert-manager webhook) when deployed
@@ -278,7 +279,13 @@ platformConnector:
         - "cloud.google.com/gce-topology-block"
         - "cloud.google.com/gce-topology-host"
         - "cloud.google.com/gce-topology-subblock"
-    
+        # Topograph-applied topology labels (present when Topograph is deployed in the cluster;
+        # see https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md)
+        - "network.topology.nvidia.com/accelerator"
+        - "network.topology.nvidia.com/leaf"
+        - "network.topology.nvidia.com/spine"
+        - "network.topology.nvidia.com/core"
+
     # Property overrides - uses CEL expressions to override event properties
     OverrideTransformer:
       rules: []

@@ -447,6 +447,27 @@ func TestInjectInitContainers(t *testing.T) {
 			expectCheckNames: "preflight-dcgm-diag",
 		},
 		{
+			name: "imagePullSecrets injected into target pod",
+			cfg: func() *config.Config {
+				c := testConfig()
+				c.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "gcr-pull"}}
+				return c
+			}(),
+			pod:           gpuPod(),
+			expectPatches: true,
+			validatePatches: func(t *testing.T, patches []PatchOperation) {
+				t.Helper()
+				p := findPatchByPath(patches, "/spec/imagePullSecrets")
+				require.NotNil(t, p, "expected /spec/imagePullSecrets patch")
+				assert.Equal(t, "add", p.Op)
+
+				secrets, ok := p.Value.([]corev1.LocalObjectReference)
+				require.True(t, ok)
+				require.Len(t, secrets, 1)
+				assert.Equal(t, "gcr-pull", secrets[0].Name)
+			},
+		},
+		{
 			name: "unknown check name returns error",
 			cfg:  testConfig(),
 			pod: func() *corev1.Pod {
@@ -561,25 +582,6 @@ func TestBuildInitContainers(t *testing.T) {
 
 		assert.Equal(t, resource.MustParse("200m"), containers[0].Resources.Requests[corev1.ResourceCPU])
 		assert.Equal(t, resource.MustParse("1Gi"), containers[0].Resources.Requests[corev1.ResourceMemory])
-	})
-
-	t.Run("DCGM env only for dcgm-diag container", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.InitContainers = []config.InitContainerSpec{
-			{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
-			{Container: corev1.Container{Name: "preflight-nccl-allreduce", Image: "nccl:latest"}},
-		}
-		injector := NewInjector(cfg, nil)
-
-		containers := injector.buildInitContainers(gpuPod(), corev1.ResourceList{
-			"nvidia.com/gpu": resource.MustParse("8"),
-		}, nil, cfg.InitContainers)
-		require.Len(t, containers, 2)
-
-		assert.True(t, hasEnvVar(containers[0], "DCGM_DIAG_LEVEL"), "dcgm-diag should have DCGM_DIAG_LEVEL")
-		assert.True(t, hasEnvVar(containers[0], "DCGM_HOSTENGINE_ADDR"), "dcgm-diag should have DCGM_HOSTENGINE_ADDR")
-		assert.False(t, hasEnvVar(containers[1], "DCGM_DIAG_LEVEL"), "nccl container should NOT have DCGM_DIAG_LEVEL")
-		assert.False(t, hasEnvVar(containers[1], "DCGM_HOSTENGINE_ADDR"), "nccl container should NOT have DCGM_HOSTENGINE_ADDR")
 	})
 
 	t.Run("common env injected", func(t *testing.T) {
@@ -1055,6 +1057,84 @@ func TestInjectVolumes(t *testing.T) {
 	})
 }
 
+func TestInjectImagePullSecrets(t *testing.T) {
+	t.Run("no config secrets returns nil", func(t *testing.T) {
+		injector := &Injector{cfg: testConfig()}
+		patches := injector.injectImagePullSecrets(&corev1.Pod{})
+		assert.Nil(t, patches)
+	})
+
+	t.Run("creates array when pod has none", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "gcr-pull"}}
+		injector := &Injector{cfg: cfg}
+
+		patches := injector.injectImagePullSecrets(&corev1.Pod{})
+		require.Len(t, patches, 1)
+		assert.Equal(t, "add", patches[0].Op)
+		assert.Equal(t, "/spec/imagePullSecrets", patches[0].Path)
+
+		secrets, ok := patches[0].Value.([]corev1.LocalObjectReference)
+		require.True(t, ok)
+		require.Len(t, secrets, 1)
+		assert.Equal(t, "gcr-pull", secrets[0].Name)
+	})
+
+	t.Run("appends when pod already has secrets", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "gcr-pull"}}
+		injector := &Injector{cfg: cfg}
+
+		pod := &corev1.Pod{
+			Spec: corev1.PodSpec{
+				ImagePullSecrets: []corev1.LocalObjectReference{{Name: "existing"}},
+			},
+		}
+
+		patches := injector.injectImagePullSecrets(pod)
+		require.Len(t, patches, 1)
+		assert.Equal(t, "add", patches[0].Op)
+		assert.Equal(t, "/spec/imagePullSecrets/-", patches[0].Path)
+	})
+
+	t.Run("skips duplicates", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.ImagePullSecrets = []corev1.LocalObjectReference{
+			{Name: "already-there"},
+			{Name: "new-one"},
+		}
+		injector := &Injector{cfg: cfg}
+
+		pod := &corev1.Pod{
+			Spec: corev1.PodSpec{
+				ImagePullSecrets: []corev1.LocalObjectReference{{Name: "already-there"}},
+			},
+		}
+
+		patches := injector.injectImagePullSecrets(pod)
+		require.Len(t, patches, 1)
+
+		secret, ok := patches[0].Value.(corev1.LocalObjectReference)
+		require.True(t, ok)
+		assert.Equal(t, "new-one", secret.Name)
+	})
+
+	t.Run("all secrets already present returns nil", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "existing"}}
+		injector := &Injector{cfg: cfg}
+
+		pod := &corev1.Pod{
+			Spec: corev1.PodSpec{
+				ImagePullSecrets: []corev1.LocalObjectReference{{Name: "existing"}},
+			},
+		}
+
+		patches := injector.injectImagePullSecrets(pod)
+		assert.Nil(t, patches)
+	})
+}
+
 // TestParseHostPathType covers all 7 valid K8s HostPathType values,
 // empty string (nil), and invalid strings (rejected).
 func TestParseHostPathType(t *testing.T) {
@@ -1124,12 +1204,8 @@ func testConfig() *config.Config {
 			GPUResourceNames:       []string{"nvidia.com/gpu"},
 			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
 			InitContainerPlacement: config.PlacementAppend,
-			DCGM: config.DCGMConfig{
-				HostengineAddr:     "localhost:5555",
-				DiagLevel:          1,
-				ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
-				ProcessingStrategy: "EXECUTE_REMEDIATION",
-			},
+			ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
+			ProcessingStrategy: "EXECUTE_REMEDIATION",
 		},
 	}
 }

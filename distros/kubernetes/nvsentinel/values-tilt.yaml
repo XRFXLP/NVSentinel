@@ -93,6 +93,9 @@ global:
   slurmDrainMonitor:
     enabled: true
 
+  nicHealthMonitor:
+    enabled: true
+
   eventExporter:
     enabled: true
 
@@ -102,8 +105,6 @@ global:
   metricsPort: 2112
 
 # Preflight subchart: use Tilt fake DCGM (nvidia-dcgm.gpu-operator.svc) and quick diag for faster E2E pass.
-# global.dcgm already points to nvidia-dcgm.gpu-operator.svc:5555; override diagLevel so dcgm-diag init runs
-# the quick test and returns Pass (fake DCGM returns Pass for dcgmi diag -r 4).
 # Init containers (name, image, volumeMounts, env) are declared in charts/preflight/values.yaml; here we
 # override to only inject preflight-dcgm-diag for Tilt (NCCL inits need real GPUs and would fail/hang).
 preflight:
@@ -117,8 +118,6 @@ preflight:
       version: "v2alpha2"
       resource: "podgroups"
     minCountExpr: "podGroup.spec.minMember"
-  dcgm:
-    diagLevel: 3
   initContainers:
     - name: preflight-dcgm-diag
       image:
@@ -316,6 +315,8 @@ fault-remediation:
           name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
           labels:
             app.kubernetes.io/managed-by: nvsentinel
+          annotations:
+            nvsentinel.nvidia.com/ttl: "336h"
         spec:
           nodeName: {{ .HealthEvent.NodeName }}
 
@@ -3776,6 +3777,7 @@ janitor:
               enabledValue: "true"
               disabledValue: "false"
         resetJob:
+          writeSysLogEvent: false
           runtimeClassName: ""
           image:
             repository: "public.ecr.aws/docker/library/alpine"
