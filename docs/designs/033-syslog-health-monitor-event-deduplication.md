@@ -1,4 +1,4 @@
-# ADR-033: Syslog Health Monitor — Event Deduplication Until Remediation
+# ADR-039: Syslog Health Monitor — Event Deduplication Until Remediation
 
 ## Context
 
