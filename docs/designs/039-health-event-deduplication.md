@@ -17,7 +17,7 @@ These reach fault-quarantine and node-drainer as distinct events: redundant drai
 Add a **deduplication filter** to the platform-connector event-processing pipeline (see [ADR-023](./023-health-event-transformer-pipeline.md)), after the existing transformers `MetadataAugmentor` and `OverrideTransformer`. The filter uses a generic key derived from the event itself:
 
 ```
-key = (NodeName, canonical(EntitiesImpacted), canonical(ErrorCode), IsHealthy)
+key = (NodeName, CheckName, canonical(EntitiesImpacted), canonical(ErrorCode), IsHealthy)
 ```
 
 Within a configurable **burst window** TTL, an event whose key is already in the seen set is suppressed. Once the entry expires, the next event with that key emits as the start of a fresh burst.
@@ -28,7 +28,7 @@ flowchart TD
     Pipe --> MA["MetadataAugmentor<br/>(transformer)"]
     MA --> OT["OverrideTransformer<br/>(transformer)"]
     OT --> Dedup["DeduplicationFilter<br/>(filter)"]
-    Dedup --> KeyExtract["key = (NodeName,<br/>canonical(EntitiesImpacted),<br/>canonical(ErrorCode),<br/>IsHealthy)"]
+    Dedup --> KeyExtract["key = (NodeName,<br/>CheckName,<br/>canonical(EntitiesImpacted),<br/>canonical(ErrorCode),<br/>IsHealthy)"]
     KeyExtract --> Seen{"key in seen set<br/>and within TTL?"}
     Seen -->|Yes| Drop["Drop event<br/>(log Info, increment counter)"]
     Seen -->|No| Mark["Mark seen<br/>(timestamp = now)"]
@@ -37,21 +37,22 @@ flowchart TD
 
 ### Canonicalisation
 
+- `CheckName` is included so that two distinct checks producing the same `(entities, ErrorCode)` for the same physical resource don't collide. NIC monitor is the canonical example: `InfiniBandStateCheck` and `InfiniBandDegradationCheck` can both fire for the same port, neither sets `ErrorCode`, and without `CheckName` in the key they would suppress each other.
 - `EntitiesImpacted` is a slice; the same logical set may arrive in different orders. The dedup stage sorts entities lexicographically by `(EntityType, EntityValue)` before hashing.
 - `ErrorCode` is `[]string`; sorted lexicographically before hashing.
-- `IsHealthy` is a bool; included in the key so that healthy events of the same `(node, entities, ErrorCode)` shape as a prior unhealthy event are not suppressed against it. This matters specifically for the synthetic healthy events emitted by the cancellation rules in [ADR-038](./038-health-monitor-cancellation-rules.md), which by design carry the same `ErrorCode` as the unhealthy event they cancel.
+- `IsHealthy` is a bool; included so healthy events with the same `(node, check, entities, ErrorCode)` shape as a prior unhealthy event are not suppressed against it. This matters for the synthetic healthy events emitted by the cancellation rules in [ADR-038](./038-health-monitor-cancellation-rules.md), which by design carry the same `ErrorCode` as the unhealthy event they cancel.
 - The hash function is stable across processes (e.g., FNV-1a over the canonical encoding) so state files round-trip cleanly.
 
 ### What clears the dedup
 
 | Signal                                                          | Cleared                                                                                              |
 |-----------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
-| Healthy event passes the filter for `(node, entities, ErrorCode)` | The corresponding unhealthy entry (same tuple, `IsHealthy=false`) — fresh recurrence emits as new   |
+| Healthy event passes the filter for `(node, check, entities, ErrorCode)` | The corresponding unhealthy entry (same tuple, `IsHealthy=false`) — fresh recurrence emits as new   |
 | TTL elapses on a seen entry                                     | That entry only — next identical event re-emits                                                      |
 | System reboot (boot ID change)                                  | All entries                                                                                          |
 | Platform-connector restart                                      | Nothing — entries restored from state file                                                           |
 
-A healthy event passing through the filter (i.e., itself not a duplicate) clears the entry whose key matches `(node, entities, ErrorCode)` with `IsHealthy=false`, so a fresh recurrence of the same unhealthy condition after a cancellation or recovery emits as a new event rather than being suppressed against the pre-recovery cache. Repeated healthy events still dedup against each other, so clearing signals don't fire downstream more than once per burst.
+A healthy event passing through the filter (i.e., itself not a duplicate) clears the entry whose key matches `(node, check, entities, ErrorCode)` with `IsHealthy=false`, so a fresh recurrence of the same unhealthy condition after a cancellation or recovery emits as a new event rather than being suppressed against the pre-recovery cache. Repeated healthy events still dedup against each other, so clearing signals don't fire downstream more than once per burst.
 
 ### TTL semantics
 
@@ -74,6 +75,7 @@ type Tracker struct {
 // Snapshot is the on-disk representation of a single seen entry.
 type Snapshot struct {
     Node       string   `json:"node"`
+    CheckName  string   `json:"checkName"`
     Entities   []Entity `json:"entities"`   // sorted
     ErrorCode  []string `json:"errorCode"`  // sorted
     IsHealthy  bool     `json:"isHealthy"`
@@ -92,7 +94,7 @@ func NewTrackerFromSnapshot(ttl time.Duration, snap []Snapshot) *Tracker  // dro
 func Key(event *pb.HealthEvent) uint64
 
 // IsDuplicate is true iff the event's key is already in the tracker and within ttl.
-// Side effect: evicts TTL-expired entries it scans.
+// Side effect: evicts the queried key if expired (lazy eviction).
 func (t *Tracker) IsDuplicate(event *pb.HealthEvent) bool
 
 // Mark records the event's key.
@@ -101,6 +103,12 @@ func (t *Tracker) Mark(event *pb.HealthEvent)
 // ClearUnhealthyCounterpart removes the seen entry that matches the given
 // healthy event with IsHealthy flipped to false. No-op if no match.
 func (t *Tracker) ClearUnhealthyCounterpart(event *pb.HealthEvent)
+
+// EvictExpired walks the entire seen set and removes entries past ttl.
+// Required because IsDuplicate only evicts keys it queries — keys whose
+// events never recur would otherwise stay in memory indefinitely.
+// The platform connector calls this on a timer (default: every 60s).
+func (t *Tracker) EvictExpired()
 
 func (t *Tracker) Clear()
 func (t *Tracker) Snapshot() []Snapshot
@@ -135,14 +143,20 @@ func (d *Deduplicator) Filter(ctx context.Context, event *pb.HealthEvent) (bool,
     if d.skip[event.CheckName] {
         return true, nil
     }
+
+    // A healthy event always invalidates its unhealthy counterpart, even if
+    // this particular healthy event is itself a duplicate of a recent one.
+    // Otherwise an unhealthy recurrence between two healthy emissions can
+    // remain stuck behind the first healthy's TTL.
+    if event.IsHealthy {
+        d.tracker.ClearUnhealthyCounterpart(event)
+    }
+
     if d.tracker.IsDuplicate(event) {
         dedupSuppressedCounter.WithLabelValues(event.CheckName, event.NodeName, errCodeLabel(event)).Inc()
         return false, nil
     }
     d.tracker.Mark(event)
-    if event.IsHealthy {
-        d.tracker.ClearUnhealthyCounterpart(event)
-    }
     return true, nil
 }
 ```
@@ -184,7 +198,7 @@ rate(syslog_health_monitor_xid_errors{node="gpu-node-1"}[5m])
 
 ### State persistence and reboot detection
 
-The platform connector runs as a DaemonSet (one pod per node) with a hostPath-backed state directory. The dedup tracker snapshots its seen set on a timer (e.g., every 30s) and on graceful shutdown:
+The platform connector runs as a DaemonSet (one pod per node) with a hostPath-backed state directory. The dedup tracker is driven by two background timers: one calls `EvictExpired()` (default every 60s) so non-recurring entries don't accumulate past `BurstWindow`, and one snapshots its seen set to disk (default every 30s) and on graceful shutdown:
 
 ```go
 type platformConnectorState struct {
@@ -234,7 +248,7 @@ State-file size is bounded by `O(distinct active faults across all monitors on t
 ### Monitor-side dedup with a domain-specific key
 Use `(GPU_UUID, XID, normalized message)` for syslog and a different key for each future monitor.
 
-**Rejected:** the generic `(node, EntitiesImpacted, ErrorCode)` triple captures the same identity for syslog and works for every other monitor without per-monitor key design. The kernel-timestamp normalisation regex, the per-GPU slot model, and the XID-change reset all become unnecessary.
+**Rejected:** the generic `(node, check, EntitiesImpacted, ErrorCode)` tuple captures the same identity for syslog and works for every other monitor without per-monitor key design. The kernel-timestamp normalisation regex, the per-GPU slot model, and the XID-change reset all become unnecessary.
 
 ## Notes
 
@@ -244,6 +258,6 @@ Use `(GPU_UUID, XID, normalized message)` for syslog and a different key for eac
 ## References
 
 - [ADR-023: Health Event Transformer Pipeline](./023-health-event-transformer-pipeline.md) — the pipeline this ADR adds a stage to.
-- [ADR-038: Health Monitor Cancellation Rules](./038-health-monitor-cancellation-rules.md) — produces synthetic healthy events whose dedup key collides with the targeted unhealthy event on `(node, entities, ErrorCode)`; the `IsHealthy` component of the key keeps them distinct.
+- [ADR-038: Health Monitor Cancellation Rules](./038-health-monitor-cancellation-rules.md) — produces synthetic healthy events whose dedup key collides with the targeted unhealthy event on `(node, check, entities, ErrorCode)`; the `IsHealthy` component of the key keeps them distinct.
 - [ADR-020: NVSentinel GPU Reset](./020-nvsentinel-gpu-reset.md) — the GPU reset detection that produces the canonical "healthy event" pattern.
 - [ADR-001: Health Event Detection Interface](./001-health-event-detection-interface.md) — the `Handler` interface this ADR leaves unchanged.
