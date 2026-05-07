@@ -44,13 +44,14 @@ flowchart TD
 
 ### What clears the dedup
 
-| Signal                          | Cleared                                             |
-|---------------------------------|-----------------------------------------------------|
-| TTL elapses on a seen entry     | That entry only — next identical event re-emits     |
-| System reboot (boot ID change)  | All entries                                         |
-| Platform-connector restart      | Nothing — entries restored from state file          |
+| Signal                                                          | Cleared                                                                                              |
+|-----------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
+| Healthy event passes the filter for `(node, entities, ErrorCode)` | The corresponding unhealthy entry (same tuple, `IsHealthy=false`) — fresh recurrence emits as new   |
+| TTL elapses on a seen entry                                     | That entry only — next identical event re-emits                                                      |
+| System reboot (boot ID change)                                  | All entries                                                                                          |
+| Platform-connector restart                                      | Nothing — entries restored from state file                                                           |
 
-There is no explicit "healthy event clears the corresponding unhealthy key" hook. A healthy event has its own dedup key (`IsHealthy=true` separates it from any unhealthy event with the same `(node, entities, ErrorCode)` shape) and is itself deduplicated against repeated healthy emissions; the corresponding unhealthy entry just TTL-expires.
+A healthy event passing through the filter (i.e., itself not a duplicate) clears the entry whose key matches `(node, entities, ErrorCode)` with `IsHealthy=false`, so a fresh recurrence of the same unhealthy condition after a cancellation or recovery emits as a new event rather than being suppressed against the pre-recovery cache. Repeated healthy events still dedup against each other, so clearing signals don't fire downstream more than once per burst.
 
 ### TTL semantics
 
@@ -97,6 +98,10 @@ func (t *Tracker) IsDuplicate(event *pb.HealthEvent) bool
 // Mark records the event's key.
 func (t *Tracker) Mark(event *pb.HealthEvent)
 
+// ClearUnhealthyCounterpart removes the seen entry that matches the given
+// healthy event with IsHealthy flipped to false. No-op if no match.
+func (t *Tracker) ClearUnhealthyCounterpart(event *pb.HealthEvent)
+
 func (t *Tracker) Clear()
 func (t *Tracker) Snapshot() []Snapshot
 ```
@@ -135,6 +140,9 @@ func (d *Deduplicator) Filter(ctx context.Context, event *pb.HealthEvent) (bool,
         return false, nil
     }
     d.tracker.Mark(event)
+    if event.IsHealthy {
+        d.tracker.ClearUnhealthyCounterpart(event)
+    }
     return true, nil
 }
 ```
@@ -186,12 +194,12 @@ type platformConnectorState struct {
 }
 ```
 
-On startup the platform connector reads the kernel boot id from `/proc/sys/kernel/random/boot_id` (no hostPath mount required — `/proc` is namespaced per-container but the kernel's boot id is the same value for every container on the host). It then compares to the `BootID` field of the loaded state file:
+On startup the platform connector compares its current kernel boot id against the `BootID` field of the loaded state file:
 
 - If they differ → the node was rebooted; the dedup tracker is initialised empty (the persisted entries refer to the previous boot and are not meaningful in the current one), and the new boot id is written to state on the next save.
 - If they match → restore the tracker from the persisted snapshot, dropping any entry already past `BurstWindow` from now.
 
-This mirrors `fetchCurrentBootID` and `handleBootIDChange` in the syslog monitor today.
+The platform connector reads the boot id from `/proc/sys/kernel/random/boot_id` in its own container's procfs — no hostPath mount — mirroring `fetchCurrentBootID` in `syslog-health-monitor` (`pkg/syslog-monitor/syslogmonitor.go:336`). Kernel sysctl values are not PID-namespaced, so the file resolves to the host kernel's boot id from inside an unprivileged container.
 
 ### Files touched
 
