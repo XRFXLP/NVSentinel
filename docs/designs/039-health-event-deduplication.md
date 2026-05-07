@@ -41,7 +41,7 @@ flowchart TD
 - `EntitiesImpacted` is a slice; the same logical set may arrive in different orders. The dedup stage sorts entities lexicographically by `(EntityType, EntityValue)` before hashing.
 - `ErrorCode` is `[]string`; sorted lexicographically before hashing.
 - `IsHealthy` is a bool; included so healthy events with the same `(node, check, entities, ErrorCode)` shape as a prior unhealthy event are not suppressed against it. This matters for the synthetic healthy events emitted by the cancellation rules in [ADR-038](./038-health-monitor-cancellation-rules.md), which by design carry the same `ErrorCode` as the unhealthy event they cancel.
-- The hash function is stable across processes (e.g., FNV-1a over the canonical encoding) so state files round-trip cleanly.
+- The hash function (e.g., FNV-1a over the canonical encoding) is deterministic so the same event always maps to the same key.
 
 ### What clears the dedup
 
@@ -49,10 +49,9 @@ flowchart TD
 |-----------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
 | Healthy event passes the filter for `(node, check, entities, ErrorCode)` | The corresponding unhealthy entry (same tuple, `IsHealthy=false`) — fresh recurrence emits as new   |
 | TTL elapses on a seen entry                                     | That entry only — next identical event re-emits                                                      |
-| System reboot (boot ID change)                                  | All entries                                                                                          |
-| Platform-connector restart                                      | Nothing — entries restored from state file                                                           |
+| Platform-connector pod restart                                  | All entries (state is in-memory only)                                                                |
 
-A healthy event passing through the filter (i.e., itself not a duplicate) clears the entry whose key matches `(node, check, entities, ErrorCode)` with `IsHealthy=false`, so a fresh recurrence of the same unhealthy condition after a cancellation or recovery emits as a new event rather than being suppressed against the pre-recovery cache. Repeated healthy events still dedup against each other, so clearing signals don't fire downstream more than once per burst.
+A healthy event clears the entry whose key matches `(node, check, entities, ErrorCode)` with `IsHealthy=false` before its own duplicate check runs, so a fresh recurrence of the unhealthy condition after the healthy emits as a new event. Repeated healthy events still dedup against each other.
 
 ### TTL semantics
 
@@ -72,23 +71,7 @@ type Tracker struct {
     now    func() time.Time       // injectable for tests
 }
 
-// Snapshot is the on-disk representation of a single seen entry.
-type Snapshot struct {
-    Node       string   `json:"node"`
-    CheckName  string   `json:"checkName"`
-    Entities   []Entity `json:"entities"`   // sorted
-    ErrorCode  []string `json:"errorCode"`  // sorted
-    IsHealthy  bool     `json:"isHealthy"`
-    FirstSeen  string   `json:"firstSeen"`  // RFC3339
-}
-
-type Entity struct {
-    Type  string `json:"type"`
-    Value string `json:"value"`
-}
-
 func NewTracker(ttl time.Duration) *Tracker
-func NewTrackerFromSnapshot(ttl time.Duration, snap []Snapshot) *Tracker  // drops already-expired entries
 
 // Key extracts the canonical key from an event.
 func Key(event *pb.HealthEvent) uint64
@@ -111,8 +94,9 @@ func (t *Tracker) ClearUnhealthyCounterpart(event *pb.HealthEvent)
 func (t *Tracker) EvictExpired()
 
 func (t *Tracker) Clear()
-func (t *Tracker) Snapshot() []Snapshot
 ```
+
+The tracker holds no persistent state; on platform-connector pod restart it starts empty.
 
 ### Pipeline extension
 
@@ -196,36 +180,21 @@ rate(nvsentinel_platform_connector_dedup_suppressed_total{check="SysLogsXIDError
 rate(syslog_health_monitor_xid_errors{node="gpu-node-1"}[5m])
 ```
 
-### State persistence and reboot detection
+### Lifecycle
 
-The platform connector runs as a DaemonSet (one pod per node) with a hostPath-backed state directory. The dedup tracker is driven by two background timers: one calls `EvictExpired()` (default every 60s) so non-recurring entries don't accumulate past `BurstWindow`, and one snapshots its seen set to disk (default every 30s) and on graceful shutdown:
-
-```go
-type platformConnectorState struct {
-    Version    int               `json:"version"`
-    BootID     string            `json:"boot_id"`
-    DedupSeen  []dedup.Snapshot  `json:"dedup_seen,omitempty"`
-}
-```
-
-On startup the platform connector compares its current kernel boot id against the `BootID` field of the loaded state file:
-
-- If they differ → the node was rebooted; the dedup tracker is initialised empty (the persisted entries refer to the previous boot and are not meaningful in the current one), and the new boot id is written to state on the next save.
-- If they match → restore the tracker from the persisted snapshot, dropping any entry already past `BurstWindow` from now.
-
-The platform connector reads the boot id from `/proc/sys/kernel/random/boot_id` in its own container's procfs — no hostPath mount — mirroring `fetchCurrentBootID` in `syslog-health-monitor` (`pkg/syslog-monitor/syslogmonitor.go:336`). Kernel sysctl values are not PID-namespaced, so the file resolves to the host kernel's boot id from inside an unprivileged container.
+The dedup tracker lives entirely in memory. A single background goroutine calls `EvictExpired()` on a timer (default every 60s) so entries whose events stop recurring don't accumulate past `BurstWindow`. There is no on-disk state, no boot-id detection, and no startup restore: pod restart and node reboot both result in an empty tracker, and currently-active faults re-emit once each as the kernel re-observes them.
 
 ### Files touched
 
-| File                                                          | Change                                                                |
-|---------------------------------------------------------------|-----------------------------------------------------------------------|
-| `commons/pkg/dedup/tracker.go`                                | **New** — `Tracker`, `Snapshot`, `Entity`, `Key`, `NormalizeMessage`  |
-| `commons/pkg/dedup/tracker_test.go`                           | **New** — unit tests: TTL eviction, canonicalisation, snapshot round-trip |
+| File                                                          | Change                                                                                   |
+|---------------------------------------------------------------|------------------------------------------------------------------------------------------|
+| `commons/pkg/dedup/tracker.go`                                | **New** — `Tracker`, `Key`, canonicalisation                                             |
+| `commons/pkg/dedup/tracker_test.go`                           | **New** — unit tests: TTL eviction, canonicalisation, healthy-clears-unhealthy           |
 | `platform-connectors/pkg/pipeline/pipeline.go`                | Add `Filter` interface and `filters` field on `Pipeline`; run filters after transformers |
-| `platform-connectors/pkg/filters/dedup/factory.go`            | **New** — registers `Deduplicator` in pipeline registry                |
-| `platform-connectors/pkg/filters/dedup/filter.go`             | **New** — `Deduplicator.Filter`, state load/save                       |
-| `platform-connectors/pkg/server/platform_connector_server.go` | Collect per-event drop verdicts from filters before ring-buffer enqueue |
-| `distros/kubernetes/nvsentinel/charts/platform-connectors/values.yaml` | Add `dedup` config block                                       |
+| `platform-connectors/pkg/filters/dedup/factory.go`            | **New** — registers `Deduplicator` in pipeline registry                                  |
+| `platform-connectors/pkg/filters/dedup/filter.go`             | **New** — `Deduplicator.Filter`, periodic `EvictExpired` timer                           |
+| `platform-connectors/pkg/server/platform_connector_server.go` | Collect per-event drop verdicts from filters before ring-buffer enqueue                  |
+| `distros/kubernetes/nvsentinel/charts/platform-connectors/values.yaml` | Add `dedup` config block                                                        |
 
 ## Consequences
 
@@ -239,9 +208,9 @@ The platform connector reads the boot id from `/proc/sys/kernel/random/boot_id` 
 - Events still travel monitor → platform-connector before being suppressed; the gRPC traffic between them is unchanged. The hop is a co-located Unix socket, not a network call.
 - Dedup behaviour is governed entirely by what producers put in `EntitiesImpacted` and `ErrorCode`. Two events with the same triple are treated as the same fault — including two XID 79 emissions whose only difference is `pid` in the `Message` text. A monitor that needs to distinguish those must include pid as an entity.
 - Entity and `ErrorCode` slices are now canonicalised by sorting; producers must treat them as sets, not ordered lists.
-- Boot-ID-based clearing is scoped to the platform-connector's own host, not the affected nodes whose events it tracks. For centrally-deployed monitors (e.g., `kubernetes-object-monitor`), a reboot of the platform-connector's host clears dedup state for events about *other* nodes; those events re-emit post-restart even if their affected nodes never rebooted.
+- Dedup state is in-memory only. On a platform-connector pod restart, currently-active faults re-emit once each as their next emission arrives, then dedup picks up from there.
 
-State-file size is bounded by `O(distinct active faults across all monitors on the node)`.
+In-memory size is bounded by `O(distinct active faults across all monitors on the node)`.
 
 ## Alternatives Considered
 
