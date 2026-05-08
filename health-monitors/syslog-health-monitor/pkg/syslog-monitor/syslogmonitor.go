@@ -220,9 +220,19 @@ func initHandlerForCheck(
 	}
 }
 
-// Run executes all configured checks
+// Run executes all configured checks. If a previous bootID-change had
+// to defer its healthy events because platform-connector was missing,
+// retry that flush first so recovery is bounded by one polling cadence
+// after PC returns rather than by process lifetime.
 func (sm *SyslogMonitor) Run() error {
 	var jointError error = nil
+
+	if err := sm.tryFlushPostRebootBootIDClear(); err != nil {
+		slog.Error("Pending post-reboot bootID flush failed",
+			"error", err)
+
+		jointError = errors.Join(jointError, err)
+	}
 
 	for _, check := range sm.checks {
 		err := sm.executeCheck(check)
@@ -373,55 +383,98 @@ func fetchCurrentBootID() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// handleBootIDChange handles system reboot detection and cursor reset
+// handleBootIDChange handles system reboot detection and cursor reset.
+//
+// On reboot the journal cursors persisted on disk no longer point at
+// valid offsets, so we clear them and emit one healthy event per check
+// to clear any stuck quarantine state in fault-quarantine.
+//
+// The new BootID is persisted to disk only after every healthy event
+// has been delivered. If any send is skipped (platform-connector
+// socket missing), sm.pendingPostRebootBootID is left set so Run()
+// retries the flush at the top of each poll cycle, bounding recovery
+// to one polling cadence after PC returns.
 func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
-	if oldBootID != newBootID {
-		slog.Info("Detected bootID change",
-			"oldBootID", oldBootID,
-			"newBootID", newBootID)
-
-		// Clear all cursors on reboot since journal cursors become invalid
-		for checkName := range sm.checkLastCursors {
-			delete(sm.checkLastCursors, checkName)
-		}
-
-		// Save updated state
-		state := syslogMonitorState{
-			Version:          stateFileVersion,
-			BootID:           newBootID,
-			CheckLastCursors: sm.checkLastCursors,
-		}
-
-		if err := saveState(sm.stateFilePath, state); err != nil {
-			return fmt.Errorf("failed to save state after boot ID change: %w", err)
-		}
-
-		slog.Info("Cleared all cursors due to system reboot")
-
-		for _, check := range sm.checks {
-			message := "No Health Failures"
-			errRes := types.ErrorResolution{
-				RecommendedAction: pb.RecommendedAction_NONE,
-			}
-
-			healthEvents := sm.prepareHealthEventWithAction(check, message, true, errRes)
-			if err := sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second); err != nil {
-				// Don't abort startup on a transient platform-connector
-				// outage; the next poll re-evaluates the underlying
-				// state and re-emits with a fresh GeneratedTimestamp.
-				if errors.Is(err, healthpub.ErrPlatformConnectorUnavailable) {
-					slog.Warn("Deferring post-reboot healthy event: platform-connector unavailable.",
-						"check", check.Name)
-
-					continue
-				}
-
-				return fmt.Errorf("failed to send health event: %w", err)
-			}
-
-			slog.Info("Published healthy event after system reboot", "check", check.Name)
-		}
+	if oldBootID == newBootID {
+		return nil
 	}
+
+	slog.Info("Detected bootID change",
+		"oldBootID", oldBootID,
+		"newBootID", newBootID)
+
+	// Clear cursors in memory so the rest of this process polls the
+	// journal from its current position. Persistence is deferred to
+	// tryFlushPostRebootBootIDClear, conditional on all sends landing.
+	for checkName := range sm.checkLastCursors {
+		delete(sm.checkLastCursors, checkName)
+	}
+
+	sm.pendingPostRebootBootID = newBootID
+
+	return sm.tryFlushPostRebootBootIDClear()
+}
+
+// tryFlushPostRebootBootIDClear emits one healthy event per check for
+// the pending bootID change and persists the new BootID + cleared
+// cursors only when all events land. On a healthpub-skip
+// (ErrPlatformConnectorUnavailable) the pending flag is left set so
+// the next call retries; on any other send error the function returns
+// fatal — that surface bubbles up to Run() which the main ticker loop
+// already retries with backoff.
+//
+// Idempotent and safe to call repeatedly. A no-op when there is no
+// pending bootID change.
+func (sm *SyslogMonitor) tryFlushPostRebootBootIDClear() error {
+	if sm.pendingPostRebootBootID == "" {
+		return nil
+	}
+
+	allDelivered := true
+
+	for _, check := range sm.checks {
+		message := "No Health Failures"
+		errRes := types.ErrorResolution{
+			RecommendedAction: pb.RecommendedAction_NONE,
+		}
+
+		healthEvents := sm.prepareHealthEventWithAction(check, message, true, errRes)
+		if err := sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second); err != nil {
+			if errors.Is(err, healthpub.ErrPlatformConnectorUnavailable) {
+				slog.Warn("Deferring post-reboot healthy event: platform-connector unavailable.",
+					"check", check.Name)
+
+				allDelivered = false
+
+				continue
+			}
+
+			return fmt.Errorf("failed to send health event: %w", err)
+		}
+
+		slog.Info("Published healthy event after system reboot", "check", check.Name)
+	}
+
+	if !allDelivered {
+		slog.Warn("Post-reboot healthy events deferred; will retry on next poll cycle.")
+
+		return nil
+	}
+
+	state := syslogMonitorState{
+		Version:          stateFileVersion,
+		BootID:           sm.pendingPostRebootBootID,
+		CheckLastCursors: sm.checkLastCursors,
+	}
+
+	if err := saveState(sm.stateFilePath, state); err != nil {
+		return fmt.Errorf("failed to save state after boot ID change: %w", err)
+	}
+
+	slog.Info("Cleared all cursors due to system reboot",
+		"bootID", sm.pendingPostRebootBootID)
+
+	sm.pendingPostRebootBootID = ""
 
 	return nil
 }
