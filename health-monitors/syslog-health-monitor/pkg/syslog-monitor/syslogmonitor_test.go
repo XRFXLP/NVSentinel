@@ -401,8 +401,7 @@ func TestJournalProcessingLogic(t *testing.T) {
 		"http://localhost:8080",
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
-		"",
-		"", "",
+		"",	"", "",
 	)
 	assert.NoError(t, err)
 
@@ -506,8 +505,7 @@ func TestJournalStateManagement(t *testing.T) {
 		"http://localhost:8080",
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
-		"",
-		"", "",
+		"",	"", "",
 	)
 	assert.NoError(t, err)
 
@@ -540,8 +538,7 @@ func TestJournalStateManagement(t *testing.T) {
 		"http://localhost:8080",
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
-		"", "",
-		"",
+		"", "", "",
 	)
 	assert.NoError(t, err)
 
@@ -590,8 +587,7 @@ func TestBootIDChangeHandling(t *testing.T) {
 		"http://localhost:8080",
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
-		"",
-		"", "",
+		"", "", "",
 	)
 	assert.NoError(t, err)
 
@@ -643,6 +639,7 @@ func TestBootIDChange_StateNotPersistedWhenSendSkipped(t *testing.T) {
 		"http://localhost:8080",
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "",
 		"unix://"+socketPathTest,
 	)
 	assert.NoError(t, err, "monitor must construct successfully even when send is skipped")
