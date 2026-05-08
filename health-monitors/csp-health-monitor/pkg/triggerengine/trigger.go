@@ -23,8 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -82,10 +80,11 @@ func NewEngine(
 	processingStrategy pb.ProcessingStrategy,
 ) *Engine {
 	return &Engine{
-		config:             cfg,
-		store:              store,
-		udsClient:          udsClient,
-		pub:                healthpub.New(udsClient, udsTarget, agentName, healthpub.WithRetryPolicy(udsMaxRetries, udsRetryDelay, 1.5, 0.1)),
+		config:    cfg,
+		store:     store,
+		udsClient: udsClient,
+		pub: healthpub.New(udsClient, udsTarget, agentName,
+			healthpub.WithRetryPolicy(udsMaxRetries, udsRetryDelay, 1.5, 0.1)),
 		pollInterval:       time.Duration(cfg.MaintenanceEventPollIntervalSeconds) * time.Second,
 		k8sClient:          k8sClient,
 		monitorInterval:    defaultMonitorInterval,
@@ -376,21 +375,6 @@ func (e *Engine) mapMaintenanceEventToHealthEvent(
 	return healthEvent, nil
 }
 
-// isRetryableGRPCError checks if a gRPC error code indicates a potentially transient issue.
-func isRetryableGRPCError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		// If it's not a gRPC status error, assume it's not retryable for simplicity
-		return false
-	}
-	// Only retry on Unavailable, typically indicating temporary network or server issues
-	return st.Code() == codes.Unavailable
-}
-
 // sendHealthEventWithRetry forwards a HealthEvent to platform-connector
 // via the shared healthpub publisher.
 //
@@ -409,7 +393,9 @@ func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.H
 		"healthy", healthEvent.IsHealthy)
 
 	sendStart := time.Now()
+
 	err := e.pub.Publish(ctx, healthEvents)
+
 	metrics.TriggerUDSSendDuration.Observe(time.Since(sendStart).Seconds())
 
 	if err == nil {

@@ -358,51 +358,6 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 	}
 }
 
-func TestIsRetryableGRPCError(t *testing.T) {
-	tests := []struct {
-		name   string
-		err    error
-		expect bool
-	}{
-		{
-			name:   "Nil error",
-			err:    nil,
-			expect: false,
-		},
-		{
-			name:   "Non-gRPC error",
-			err:    errors.New("some random error"),
-			expect: false,
-		},
-		{
-			name:   "gRPC Unavailable error",
-			err:    status.Error(codes.Unavailable, "server unavailable"),
-			expect: true,
-		},
-		{
-			name:   "gRPC Internal error",
-			err:    status.Error(codes.Internal, "internal server error"),
-			expect: false,
-		},
-		{
-			name:   "gRPC DeadlineExceeded error",
-			err:    status.Error(codes.DeadlineExceeded, "deadline exceeded"),
-			expect: false,
-		},
-		{
-			name:   "gRPC NotFound error",
-			err:    status.Error(codes.NotFound, "not found"),
-			expect: false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.expect, isRetryableGRPCError(tc.err))
-		})
-	}
-}
-
 func TestProcessAndSendTrigger(t *testing.T) {
 	ctx := context.Background()
 	cfg := newTestConfig()

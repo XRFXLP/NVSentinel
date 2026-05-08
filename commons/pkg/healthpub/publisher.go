@@ -46,12 +46,9 @@ import (
 // the next poll re-emits with a fresh GeneratedTimestamp.
 var ErrPlatformConnectorUnavailable = errors.New("platform-connector unix socket missing; send skipped")
 
-// gRPC accepts multiple URI forms for Unix-socket targets — both
-// "unix:///path" and "unix:/path" are honoured by the gate.
-const (
-	unixSchemeDoubleSlash = "unix://"
-	unixSchemeSingleColon = "unix:"
-)
+// unixScheme covers both gRPC Unix-target forms: "unix:///path" (with
+// empty authority) and "unix:/path" (no authority).
+const unixScheme = "unix:"
 
 const (
 	defaultMaxRetries     = 5
@@ -293,14 +290,15 @@ func isRetryable(err error) bool {
 // relative-path forms (which would require resolving a working dir the
 // publisher does not own).
 func unixSocketPathFromTarget(target string) string {
-	if rest, ok := strings.CutPrefix(target, unixSchemeDoubleSlash); ok {
-		return rest
+	rest, ok := strings.CutPrefix(target, unixScheme)
+	if !ok {
+		return ""
 	}
-
-	if rest, ok := strings.CutPrefix(target, unixSchemeSingleColon); ok {
-		if strings.HasPrefix(rest, "/") {
-			return rest
-		}
+	// Collapse the empty-authority form ("unix:///path") to the
+	// no-authority form ("unix:/path") so both reduce to a leading "/".
+	rest = strings.TrimPrefix(rest, "//")
+	if strings.HasPrefix(rest, "/") {
+		return rest
 	}
 
 	return ""

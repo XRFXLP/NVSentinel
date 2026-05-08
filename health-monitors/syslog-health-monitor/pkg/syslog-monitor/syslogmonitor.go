@@ -1031,6 +1031,7 @@ func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents,
 			slog.Warn("Skipped health event send: platform-connector unavailable. "+
 				"Next poll will re-evaluate and re-stamp.",
 				"events", healthEvents)
+
 			return fmt.Errorf("failed all attempts to send health events: %w", err)
 		}
 
