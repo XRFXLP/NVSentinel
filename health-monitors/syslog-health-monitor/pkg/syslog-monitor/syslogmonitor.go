@@ -224,6 +224,12 @@ func initHandlerForCheck(
 // to defer its healthy events because platform-connector was missing,
 // retry that flush first so recovery is bounded by one polling cadence
 // after PC returns rather than by process lifetime.
+//
+// When the flush is still deferred at the end of this attempt the rest
+// of the cycle is skipped: executeCheck calls saveCurrentState which
+// would otherwise persist sm.currentBootID (the new BootID) and clobber
+// the on-disk old BootID, silently breaking the "retry until delivered"
+// guarantee. The next Run() retries the flush.
 func (sm *SyslogMonitor) Run() error {
 	var jointError error = nil
 
@@ -232,6 +238,14 @@ func (sm *SyslogMonitor) Run() error {
 			"error", err)
 
 		jointError = errors.Join(jointError, err)
+	}
+
+	if sm.pendingPostRebootBootID != "" {
+		slog.Warn("Skipping check execution: post-reboot bootID flush still pending. " +
+			"Will retry on next cycle; not running checks to avoid persisting the new " +
+			"BootID before the post-reboot healthy events have been delivered.")
+
+		return jointError
 	}
 
 	for _, check := range sm.checks {
