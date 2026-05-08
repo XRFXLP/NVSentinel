@@ -17,7 +17,6 @@ package trigger
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -190,7 +189,7 @@ func TestNewEngine(t *testing.T) {
 	mUDSClient := new(MockUDSClient)
 	mockClient := createMockClientWithReadyNodes()
 
-	engine := NewEngine(cfg, mStore, mUDSClient, mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+	engine := NewEngine(cfg, mStore, mUDSClient, "", mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 	assert.NotNil(t, engine)
 	assert.Equal(t, cfg, engine.config)
@@ -204,7 +203,7 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 	cfg := newTestConfig()
 	mStore := new(MockDatastore)     // Not strictly needed for this func, but engine needs it
 	mUDSClient := new(MockUDSClient) // Not strictly needed for this func, but engine needs it
-	engine := NewEngine(cfg, mStore, mUDSClient, nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+	engine := NewEngine(cfg, mStore, mUDSClient, "", nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 	tests := []struct {
 		name          string
@@ -576,8 +575,14 @@ func TestProcessAndSendTrigger(t *testing.T) {
 					Return(nil, status.Error(codes.Unavailable, "UDS unavailable")).
 					Times(udsMaxRetries)
 			},
-			expectError:           true,
-			expectedErrorContains: fmt.Sprintf("failed to send health event after %d retries (timeout)", udsMaxRetries),
+			expectError: true,
+			// healthpub.Publisher (commons/pkg/healthpub) wraps
+			// wait.ExponentialBackoffWithContext, which surfaces
+			// retry exhaustion as ErrWaitTimeout. We assert the
+			// substring that wrapper produces rather than re-asserting
+			// a per-monitor count, so this test is robust to
+			// retry-budget tuning.
+			expectedErrorContains: "timed out waiting for the condition",
 			verifyMocks: func(t *testing.T, mStore *MockDatastore, mUDSClient *MockUDSClient) {
 				mUDSClient.AssertExpectations(t)
 				mStore.AssertNotCalled(t, "UpdateEventStatus", mock.Anything, mock.Anything, mock.Anything)
@@ -612,7 +617,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mStore := new(MockDatastore)
 			mUDSClient := new(MockUDSClient)
-			engine := NewEngine(cfg, mStore, mUDSClient, nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+			engine := NewEngine(cfg, mStore, mUDSClient, "", nil, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 			tc.setupMocks(mStore, mUDSClient, tc.event, tc.targetDBStatus)
 
@@ -793,7 +798,7 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 			mStore := new(MockDatastore)
 			mUDSClient := new(MockUDSClient)
 			mockClient := createMockClientWithReadyNodes("node-q1", "node-h1", "q-no-node")
-			engine := NewEngine(cfg, mStore, mUDSClient, mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+			engine := NewEngine(cfg, mStore, mUDSClient, "", mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 			if tc.setupMocks != nil {
 				tc.setupMocks(mStore, mUDSClient)
@@ -839,7 +844,7 @@ func TestHealthyTriggerWaitsForNodeReady(t *testing.T) {
 	mUDSClient.On("HealthEventOccurredV1", mock.Anything, mock.Anything, mock.Anything).Return(&emptypb.Empty{}, nil).Once()
 	mStore.On("UpdateEventStatus", mock.AnythingOfType("*context.timerCtx"), healthyEvent.EventID, model.StatusHealthyTriggered).Return(nil).Once()
 
-	engine := NewEngine(cfg, mStore, mUDSClient, mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+	engine := NewEngine(cfg, mStore, mUDSClient, "", mockClient, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 	engine.monitorInterval = 3 * time.Second
 
 	err := engine.checkAndTriggerEvents(ctx)

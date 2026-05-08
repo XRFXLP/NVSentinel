@@ -17,15 +17,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"k8s.io/apimachinery/pkg/util/wait"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 )
 
@@ -33,14 +30,24 @@ const (
 	agentName = "kubernetes-object-monitor"
 )
 
+// Publisher publishes health events to the platform-connector via the
+// shared healthpub publisher (commons/pkg/healthpub), which owns both
+// the gRPC retry policy and the platform-connector socket-presence
+// gate.
 type Publisher struct {
-	pcClient           pb.PlatformConnectorClient
+	pub                *healthpub.Publisher
 	processingStrategy pb.ProcessingStrategy
 }
 
-func New(client pb.PlatformConnectorClient, processingStrategy pb.ProcessingStrategy) *Publisher {
+// New constructs a Publisher.
+//
+// target must be the same gRPC target string used to dial `client`
+// (typically "unix:///var/run/nvsentinel.sock"); healthpub uses it to
+// derive the socket path for the existence gate. If `client` was dialed
+// against a non-unix target, the gate is skipped (TCP fall-through).
+func New(client pb.PlatformConnectorClient, target string, processingStrategy pb.ProcessingStrategy) *Publisher {
 	return &Publisher{
-		pcClient:           client,
+		pub:                healthpub.New(client, target, agentName),
 		processingStrategy: processingStrategy,
 	}
 }
@@ -102,45 +109,7 @@ func (p *Publisher) PublishHealthEvent(ctx context.Context,
 
 	slog.Info("Publishing health event", "event", event)
 
-	return p.sendWithRetry(ctx, healthEvents)
-}
-
-func (p *Publisher) sendWithRetry(ctx context.Context, events *pb.HealthEvents) error {
-	backoff := wait.Backoff{
-		Steps:    5,
-		Duration: 2 * time.Second,
-		Factor:   1.5,
-		Jitter:   0.1,
-	}
-
-	return wait.ExponentialBackoff(backoff, func() (bool, error) {
-		_, err := p.pcClient.HealthEventOccurredV1(ctx, events)
-		if err == nil {
-			slog.Info("Successfully sent health event", "events", events)
-			return true, nil
-		}
-
-		if isRetryable(err) {
-			slog.Warn("Retryable error sending health event", "error", err)
-			return false, nil
-		}
-
-		slog.Error("Non-retryable error sending health event", "error", err)
-
-		return false, fmt.Errorf("non-retryable error: %w", err)
-	})
-}
-
-func isRetryable(err error) bool {
-	if s, ok := status.FromError(err); ok {
-		return s.Code() == codes.Unavailable || s.Code() == codes.DeadlineExceeded
-	}
-
-	errStr := err.Error()
-
-	return strings.Contains(errStr, "connection reset") ||
-		strings.Contains(errStr, "broken pipe") ||
-		strings.Contains(errStr, "EOF")
+	return p.pub.Publish(ctx, healthEvents)
 }
 
 func mapRecommendedAction(action string) pb.RecommendedAction {

@@ -65,6 +65,13 @@ type SyslogMonitor struct {
 	checkToHandlerMap map[string]types.Handler
 	// Endpoint to the XID analyser service
 	xidAnalyserEndpoint string
+	// Original gRPC target string used to dial pcClient (e.g.
+	// "unix:///var/run/nvsentinel.sock"). Set via
+	// SetPlatformConnectorTarget after construction in production wiring.
+	// When empty, the shared healthpub publisher's socket-existence gate
+	// is disabled (TCP fall-through) — this is the test-default and is
+	// intentionally non-fatal: tests do not hit the gate.
+	platformConnectorTarget string
 }
 
 // CheckDefinition matches the structure of each check in the YAML config file

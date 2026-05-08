@@ -29,9 +29,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"k8s.io/apimachinery/pkg/util/wait"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/gpufallen"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/nicdriver"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/sxid"
@@ -1012,43 +1012,56 @@ func (sm *SyslogMonitor) prepareHealthEventWithAction(
 	}
 }
 
-// sendHealthEventWithRetry sends health events to platform connector with retry logic
+// SetPlatformConnectorTarget records the gRPC target string that was
+// used to dial sm.pcClient. The shared healthpub publisher uses this
+// path to gate sends on the platform-connector Unix socket actually
+// being present, so we don't preserve a stale GeneratedTimestamp
+// through a platform-connector outage. Production wiring (main.go) sets
+// this immediately after NewSyslogMonitor; tests that don't call this
+// keep the existing TCP fall-through behaviour and so don't change.
+func (sm *SyslogMonitor) SetPlatformConnectorTarget(target string) {
+	sm.platformConnectorTarget = target
+}
+
+// sendHealthEventWithRetry sends health events to the platform connector
+// via the shared healthpub publisher.
+//
+// We build the publisher per call so tests that swap `sm.pcClient` to a
+// mock after construction still take effect. The allocation is a small
+// struct with a few fields; the cost is negligible compared to the
+// gRPC round-trip itself.
+//
+// The maxRetries/retryDelay parameters are honoured by the shared
+// publisher's backoff config; they are intentionally kept on the method
+// signature so callers (and tests) don't have to change.
 func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents,
 	maxRetries int, retryDelay time.Duration) error {
 	slog.Info("Attempting to send health event", "events", healthEvents)
 
-	backoff := wait.Backoff{
-		Steps:    maxRetries,
-		Duration: retryDelay,
-		Factor:   1.5,
-		Jitter:   0.1,
-	}
+	pub := healthpub.New(sm.pcClient, sm.platformConnectorTarget, sm.defaultAgentName,
+		healthpub.WithRetryPolicy(maxRetries, retryDelay, 1.5, 0.1))
 
-	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
-		_, err := sm.pcClient.HealthEventOccurredV1(context.Background(), healthEvents)
-		if err == nil {
-			slog.Info("Successfully sent health events", "events", healthEvents)
-			return true, nil
+	if err := pub.Publish(context.Background(), healthEvents); err != nil {
+		if errors.Is(err, healthpub.ErrPlatformConnectorUnavailable) {
+			slog.Warn("Skipped health event send: platform-connector unavailable. "+
+				"Next poll will re-evaluate and re-stamp.",
+				"events", healthEvents)
+			return fmt.Errorf("failed all attempts to send health events: %w", err)
 		}
 
-		if isRetryableError(err) {
-			slog.Warn("Retryable error sending health event, will retry", "error", err)
-			return false, nil
-		}
-
-		slog.Error("Non-retryable error sending health event", "error", err)
-
-		return false, fmt.Errorf("non-retryable error sending health event: %w", err)
-	})
-	if err != nil {
 		slog.Error("All retry attempts to send health event failed", "error", err)
+
 		return fmt.Errorf("failed all attempts to send health events: %w", err)
 	}
+
+	slog.Info("Successfully sent health events", "events", healthEvents)
 
 	return nil
 }
 
-// isRetryableError determines if an error is retryable
+// isRetryableError determines if an error is retryable. Retained for
+// the existing journal-read retry helper (getJournalMessage) which uses
+// it for non-RPC errors; the gRPC retry path now lives in healthpub.
 func isRetryableError(err error) bool {
 	if err == nil {
 		return false

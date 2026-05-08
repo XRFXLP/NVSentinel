@@ -16,6 +16,7 @@ package trigger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -27,10 +28,10 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
@@ -38,6 +39,7 @@ import (
 )
 
 const (
+	agentName     = "csp-health-monitor"
 	udsMaxRetries = 5
 	udsRetryDelay = 5 * time.Second
 	// Standard messages for health events
@@ -58,6 +60,7 @@ const (
 type Engine struct {
 	store              datastore.Store
 	udsClient          pb.PlatformConnectorClient
+	pub                *healthpub.Publisher
 	config             *config.Config
 	pollInterval       time.Duration
 	k8sClient          kubernetes.Interface
@@ -67,10 +70,19 @@ type Engine struct {
 }
 
 // NewEngine constructs a ready-to-run Engine instance.
+//
+// udsTarget must be the same gRPC target string that was used to dial
+// `udsClient` (e.g. "unix:/var/run/nvsentinel.sock"); the shared
+// healthpub publisher uses it to derive the Unix-socket path for the
+// existence gate that prevents stale-timestamp delivery during
+// platform-connector outages. An empty udsTarget disables the gate
+// (TCP fall-through behaviour) — useful in tests that wire a mock
+// client directly.
 func NewEngine(
 	cfg *config.Config,
 	store datastore.Store,
 	udsClient pb.PlatformConnectorClient,
+	udsTarget string,
 	k8sClient kubernetes.Interface,
 	processingStrategy pb.ProcessingStrategy,
 ) *Engine {
@@ -78,6 +90,7 @@ func NewEngine(
 		config:             cfg,
 		store:              store,
 		udsClient:          udsClient,
+		pub:                healthpub.New(udsClient, udsTarget, agentName, healthpub.WithRetryPolicy(udsMaxRetries, udsRetryDelay, 1.5, 0.1)),
 		pollInterval:       time.Duration(cfg.MaintenanceEventPollIntervalSeconds) * time.Second,
 		k8sClient:          k8sClient,
 		monitorInterval:    defaultMonitorInterval,
@@ -383,87 +396,64 @@ func isRetryableGRPCError(err error) bool {
 	return st.Code() == codes.Unavailable
 }
 
-// sendHealthEventWithRetry attempts to send a HealthEvent via UDS, with retries and metrics.
+// sendHealthEventWithRetry forwards a HealthEvent to the platform
+// connector via the shared healthpub publisher, which gates on the
+// platform-connector Unix socket being present and applies bounded
+// exponential backoff for genuinely transient gRPC errors.
+//
+// We layer two csp-specific concerns on top of the shared publisher:
+//
+//  1. TriggerUDSSendDuration / TriggerUDSSendErrors metrics are
+//     preserved so existing csp dashboards keep working. Note that
+//     TriggerUDSSendErrors now increments once per terminal failure
+//     (skip due to socket missing OR retries exhausted), not once
+//     per retry attempt as before — the per-attempt count was double
+//     counting the retry budget against an outage. The shared
+//     `nvsentinel_health_events_publisher_*` metrics expose richer
+//     break-downs.
+//
+//  2. ErrPlatformConnectorUnavailable is mapped to a distinct error
+//     message so existing log filters and tests that grep "skipped"
+//     still surface those events.
 func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.HealthEvent) error {
-	backoff := wait.Backoff{
-		Steps:    udsMaxRetries,
-		Duration: udsRetryDelay,
-		Factor:   1.5,
-		Jitter:   0.1,
+	healthEvents := &pb.HealthEvents{
+		Events: []*pb.HealthEvent{healthEvent},
 	}
 
-	var lastErr error
+	slog.Debug("Attempting to send health event via UDS",
+		"node", healthEvent.NodeName,
+		"check", healthEvent.CheckName,
+		"fatal", healthEvent.IsFatal,
+		"healthy", healthEvent.IsHealthy)
 
-	sendStart := time.Now() // Start timer before backoff loop
+	sendStart := time.Now()
+	err := e.pub.Publish(ctx, healthEvents)
+	metrics.TriggerUDSSendDuration.Observe(time.Since(sendStart).Seconds())
 
-	err := wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
-		healthEvents := &pb.HealthEvents{
-			Events: []*pb.HealthEvent{healthEvent},
-		}
-
-		slog.Debug("Attempting to send health event via UDS",
+	if err == nil {
+		slog.Debug("Successfully sent health event via UDS",
 			"node", healthEvent.NodeName,
-			"check", healthEvent.CheckName,
-			"fatal", healthEvent.IsFatal,
-			"healthy", healthEvent.IsHealthy)
+			"check", healthEvent.CheckName)
 
-		_, attemptErr := e.udsClient.HealthEventOccurredV1(ctx, healthEvents)
-
-		lastErr = attemptErr // Store the error from this attempt
-		if attemptErr == nil {
-			slog.Debug("Successfully sent health event via UDS",
-				"node", healthEvent.NodeName,
-				"check", healthEvent.CheckName)
-
-			return true, nil // Success
-		}
-
-		// Increment UDS error metric on each failed attempt
-		metrics.TriggerUDSSendErrors.Inc()
-
-		if isRetryableGRPCError(attemptErr) {
-			slog.Warn(
-				"Retryable error sending health event via UDS. Retrying...",
-				"node", healthEvent.NodeName,
-				"error", attemptErr,
-			)
-
-			return false, nil // Retryable error, continue loop
-		}
-
-		slog.Error(
-			"Non-retryable error sending health event via UDS. Stopping retries.",
-			"node", healthEvent.NodeName,
-			"error", attemptErr,
-		)
-
-		return false, attemptErr // Non-retryable error, stop loop and return this error
-	})
-
-	// Observe duration after the entire backoff process completes (success or failure)
-	duration := time.Since(sendStart).Seconds()
-	metrics.TriggerUDSSendDuration.Observe(duration)
-
-	if wait.Interrupted(err) {
-		// The loop timed out after all retries
-		slog.Error("Failed to send health event via UDS after timeout",
-			"node", healthEvent.NodeName,
-			"maxRetries", udsMaxRetries,
-			"lastError", lastErr)
-
-		return fmt.Errorf("failed to send health event after %d retries (timeout): %w", udsMaxRetries, lastErr)
+		return nil
 	}
 
-	if err != nil {
-		// This is the non-retryable error returned from the callback
-		slog.Error("Failed to send health event via UDS due to non-retryable error",
+	metrics.TriggerUDSSendErrors.Inc()
+
+	if errors.Is(err, healthpub.ErrPlatformConnectorUnavailable) {
+		slog.Warn("Skipped health event send: platform-connector unavailable. "+
+			"Next poll will re-evaluate and re-stamp.",
 			"node", healthEvent.NodeName,
-			"error", err)
+			"check", healthEvent.CheckName)
 
 		return fmt.Errorf("failed to send health event (Node: %s): %w", healthEvent.NodeName, err)
 	}
 
-	return nil // Success
+	slog.Error("Failed to send health event via UDS",
+		"node", healthEvent.NodeName,
+		"error", err)
+
+	return fmt.Errorf("failed to send health event (Node: %s): %w", healthEvent.NodeName, err)
 }
 
 func (e *Engine) isNodeReady(ctx context.Context, nodeName string) (bool, error) {
