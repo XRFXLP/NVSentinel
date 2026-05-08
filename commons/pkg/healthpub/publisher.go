@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"strings"
@@ -200,26 +201,42 @@ func (p *Publisher) attemptSend(
 	return true, nil
 }
 
-// socketPresent returns true when the configured Unix socket path
-// exists (or no path is configured, i.e. TCP fall-through). On absence
-// it bumps the skip counter and emits warnMsg.
+// socketPresent reports whether the configured Unix socket path exists.
+// Returns true when no path is configured (TCP fall-through).
+//
+// Only ENOENT (file genuinely absent) is treated as "PC unavailable":
+// other stat errors (EACCES, EIO, etc.) return true so the caller
+// proceeds and surfaces the real error via the normal gRPC path rather
+// than masking it as a connector outage.
 func (p *Publisher) socketPresent(warnMsg string) bool {
 	if p.socketPath == "" {
 		return true
 	}
 
-	if _, err := os.Stat(p.socketPath); err != nil {
-		sendsSkippedPCUnavailable.WithLabelValues(p.monitor).Inc()
-		slog.Warn(warnMsg,
+	_, err := os.Stat(p.socketPath)
+	if err == nil {
+		return true
+	}
+
+	if !errors.Is(err, fs.ErrNotExist) {
+		// Unexpected stat error — let the gRPC dial surface it.
+		slog.Warn("Platform-connector socket stat failed; proceeding to gRPC.",
 			"monitor", p.monitor,
 			"socket", p.socketPath,
 			"stat_error", err,
 		)
 
-		return false
+		return true
 	}
 
-	return true
+	sendsSkippedPCUnavailable.WithLabelValues(p.monitor).Inc()
+	slog.Warn(warnMsg,
+		"monitor", p.monitor,
+		"socket", p.socketPath,
+		"stat_error", err,
+	)
+
+	return false
 }
 
 // finalize converts the (loopErr, lastErr) pair from

@@ -65,8 +65,8 @@ type SyslogMonitor struct {
 	checkToHandlerMap map[string]types.Handler
 	// Endpoint to the XID analyser service
 	xidAnalyserEndpoint string
-	// gRPC target string used to dial pcClient. Set via
-	// SetPlatformConnectorTarget; "" disables the healthpub gate.
+	// gRPC target string used to dial pcClient, set at construction.
+	// "" disables the healthpub gate.
 	platformConnectorTarget string
 }
 

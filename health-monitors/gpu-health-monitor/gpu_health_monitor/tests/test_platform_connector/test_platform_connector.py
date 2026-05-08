@@ -1330,21 +1330,22 @@ class TestPlatformConnectors(unittest.TestCase):
             f.write("test_boot_id")
             state_file_path = f.name
 
-        # Shorten the retry budget so a regression makes the test slow.
+        metadata_path = metadata_file()
+
         original_max_retries = platform_connector.MAX_RETRIES
         original_initial_delay = platform_connector.INITIAL_DELAY
         platform_connector.MAX_RETRIES = 3
         platform_connector.INITIAL_DELAY = 1
 
         try:
-            exit = Event()
+            stop_event = Event()
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
                 socket_path=nonexistent_socket,
                 node_name=node_name,
-                exit=exit,
+                exit=stop_event,
                 dcgm_errors_info_dict={},
                 state_file_path=state_file_path,
-                metadata_path="/tmp/test_metadata.json",
+                metadata_path=metadata_path,
                 processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
 
@@ -1365,13 +1366,20 @@ class TestPlatformConnectors(unittest.TestCase):
         finally:
             platform_connector.MAX_RETRIES = original_max_retries
             platform_connector.INITIAL_DELAY = original_initial_delay
-            if os.path.exists(state_file_path):
-                os.unlink(state_file_path)
+            for p in (state_file_path, metadata_path):
+                if os.path.exists(p):
+                    os.unlink(p)
             if os.path.exists(tmpdir):
                 os.rmdir(tmpdir)
 
     def test_send_skipped_when_socket_missing_health_event_occurred(self) -> None:
-        """Same gate must apply to the per-watch publishing path."""
+        """Same gate must apply to the per-watch publishing path.
+
+        We pre-seed the connectivity cache key as healthy so
+        clear_dcgm_connectivity_failure short-circuits and only the
+        per-watch unhealthy InforomWatch event triggers a publish — that
+        gives us exactly one skip to assert against.
+        """
         tmpdir = tempfile.mkdtemp(prefix="ghm_no_socket_")
         nonexistent_socket = os.path.join(tmpdir, "nvsentinel.sock")
         assert not os.path.exists(nonexistent_socket)
@@ -1379,6 +1387,8 @@ class TestPlatformConnectors(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
             f.write("test_boot_id")
             state_file_path = f.name
+
+        metadata_path = metadata_file()
 
         original_max_retries = platform_connector.MAX_RETRIES
         original_initial_delay = platform_connector.INITIAL_DELAY
@@ -1392,18 +1402,25 @@ class TestPlatformConnectors(unittest.TestCase):
                 callbacks=[],
                 dcgm_k8s_service_enabled=False,
             )
-            exit = Event()
+            stop_event = Event()
             dcgm_errors_info_dict = {"DCGM_FR_CORRUPT_INFOROM": "COMPONENT_RESET"}
 
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
                 socket_path=nonexistent_socket,
                 node_name=node_name,
-                exit=exit,
+                exit=stop_event,
                 dcgm_errors_info_dict=dcgm_errors_info_dict,
                 state_file_path=state_file_path,
-                metadata_path="/tmp/test_metadata.json",
+                metadata_path=metadata_path,
                 processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
+
+            # Pre-seed connectivity cache as healthy so the clear path
+            # is suppressed; only the per-watch publish path runs.
+            connectivity_key = platform_connector_processor._build_cache_key(
+                "GpuDcgmConnectivityFailure", "DCGM", "ALL"
+            )
+            platform_connector_processor.entity_cache[connectivity_key] = platform_connector.EntityCacheEntry()
 
             dcgm_health_events = watcher._get_health_status_dict()
             dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
@@ -1427,12 +1444,13 @@ class TestPlatformConnectors(unittest.TestCase):
             assert elapsed < 1.0, f"expected fast-skip, took {elapsed:.2f}s"
             assert gpu_cache_key not in platform_connector_processor.entity_cache
             after_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
-            assert after_skipped > before_skipped
+            assert after_skipped - before_skipped == 1
         finally:
             platform_connector.MAX_RETRIES = original_max_retries
             platform_connector.INITIAL_DELAY = original_initial_delay
-            if os.path.exists(state_file_path):
-                os.unlink(state_file_path)
+            for p in (state_file_path, metadata_path):
+                if os.path.exists(p):
+                    os.unlink(p)
             if os.path.exists(tmpdir):
                 os.rmdir(tmpdir)
 
@@ -1448,15 +1466,17 @@ class TestPlatformConnectors(unittest.TestCase):
             f.write("test_boot_id")
             state_file_path = f.name
 
+        metadata_path = metadata_file()
+
         try:
-            exit = Event()
+            stop_event = Event()
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
                 socket_path=socket_path,
                 node_name=node_name,
-                exit=exit,
+                exit=stop_event,
                 dcgm_errors_info_dict={},
                 state_file_path=state_file_path,
-                metadata_path="/tmp/test_metadata.json",
+                metadata_path=metadata_path,
                 processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
 
@@ -1474,5 +1494,6 @@ class TestPlatformConnectors(unittest.TestCase):
             assert after_skipped == before_skipped
         finally:
             server.stop(0)
-            if os.path.exists(state_file_path):
-                os.unlink(state_file_path)
+            for p in (state_file_path, metadata_path):
+                if os.path.exists(p):
+                    os.unlink(p)

@@ -36,7 +36,14 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid"
 )
 
-// NewSyslogMonitor creates a new SyslogMonitor instance
+// NewSyslogMonitor creates a new SyslogMonitor instance.
+//
+// platformConnectorTarget is the gRPC target used to dial pcClient
+// (e.g. "unix:///var/run/nvsentinel.sock"). Pass it through here so the
+// shared healthpub publisher's socket-existence gate is active from the
+// first send (in particular, the post-reboot healthy events emitted by
+// handleBootIDChange during construction). An empty string disables
+// the gate.
 func NewSyslogMonitor(
 	nodeName string,
 	checks []CheckDefinition,
@@ -50,16 +57,20 @@ func NewSyslogMonitor(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	platformConnectorTarget string,
 ) (*SyslogMonitor, error) {
 	return NewSyslogMonitorWithFactory(nodeName, checks, pcClient, defaultAgentName,
 		defaultComponentClass, pollingInterval, stateFilePath, GetDefaultJournalFactory(),
 		xidAnalyserEndpoint, metadataPath,
 		processingStrategy,
 		nicDriverConfigPath, sysfsRoot,
+		platformConnectorTarget,
 	)
 }
 
-// NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory
+// NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with
+// a specific journal factory. See NewSyslogMonitor for the meaning of
+// platformConnectorTarget.
 func NewSyslogMonitorWithFactory(
 	nodeName string,
 	checks []CheckDefinition,
@@ -74,6 +85,7 @@ func NewSyslogMonitorWithFactory(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	platformConnectorTarget string,
 ) (*SyslogMonitor, error) {
 	// Load state from file
 	state, err := loadState(stateFilePath)
@@ -90,19 +102,20 @@ func NewSyslogMonitorWithFactory(
 	}
 
 	sm := &SyslogMonitor{
-		nodeName:              nodeName,
-		checks:                checks,
-		pcClient:              pcClient,
-		defaultAgentName:      defaultAgentName,
-		defaultComponentClass: defaultComponentClass,
-		processingStrategy:    processingStrategy,
-		pollingInterval:       pollingInterval,
-		checkLastCursors:      state.CheckLastCursors,
-		journalFactory:        journalFactory,
-		currentBootID:         currentBootID,
-		stateFilePath:         stateFilePath,
-		checkToHandlerMap:     make(map[string]types.Handler),
-		xidAnalyserEndpoint:   xidAnalyserEndpoint,
+		nodeName:                nodeName,
+		checks:                  checks,
+		pcClient:                pcClient,
+		defaultAgentName:        defaultAgentName,
+		defaultComponentClass:   defaultComponentClass,
+		processingStrategy:      processingStrategy,
+		pollingInterval:         pollingInterval,
+		checkLastCursors:        state.CheckLastCursors,
+		journalFactory:          journalFactory,
+		currentBootID:           currentBootID,
+		stateFilePath:           stateFilePath,
+		checkToHandlerMap:       make(map[string]types.Handler),
+		xidAnalyserEndpoint:     xidAnalyserEndpoint,
+		platformConnectorTarget: platformConnectorTarget,
 	}
 
 	if err := initHandlers(sm, checks, nodeName, defaultAgentName, defaultComponentClass,
@@ -393,6 +406,16 @@ func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
 
 			healthEvents := sm.prepareHealthEventWithAction(check, message, true, errRes)
 			if err := sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second); err != nil {
+				// Don't abort startup on a transient platform-connector
+				// outage; the next poll re-evaluates the underlying
+				// state and re-emits with a fresh GeneratedTimestamp.
+				if errors.Is(err, healthpub.ErrPlatformConnectorUnavailable) {
+					slog.Warn("Deferring post-reboot healthy event: platform-connector unavailable.",
+						"check", check.Name)
+
+					continue
+				}
+
 				return fmt.Errorf("failed to send health event: %w", err)
 			}
 
@@ -1007,13 +1030,6 @@ func (sm *SyslogMonitor) prepareHealthEventWithAction(
 		Version: 1,
 		Events:  []*pb.HealthEvent{event},
 	}
-}
-
-// SetPlatformConnectorTarget records the gRPC target used to dial
-// sm.pcClient so the shared healthpub publisher can gate on the Unix
-// socket being present.
-func (sm *SyslogMonitor) SetPlatformConnectorTarget(target string) {
-	sm.platformConnectorTarget = target
 }
 
 // sendHealthEventWithRetry forwards health events via the shared

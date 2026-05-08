@@ -406,8 +406,8 @@ func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.H
 		return nil
 	}
 
-	metrics.TriggerUDSSendErrors.Inc()
-
+	// Connector-unavailable skips are not UDS failures — the gRPC call
+	// never happened. Don't increment TriggerUDSSendErrors for them.
 	if errors.Is(err, healthpub.ErrPlatformConnectorUnavailable) {
 		slog.Warn("Skipped health event send: platform-connector unavailable. "+
 			"Next poll will re-evaluate and re-stamp.",
@@ -417,6 +417,7 @@ func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.H
 		return fmt.Errorf("failed to send health event (Node: %s): %w", healthEvent.NodeName, err)
 	}
 
+	metrics.TriggerUDSSendErrors.Inc()
 	slog.Error("Failed to send health event via UDS",
 		"node", healthEvent.NodeName,
 		"error", err)
