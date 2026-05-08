@@ -30,8 +30,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
@@ -69,15 +69,10 @@ type Engine struct {
 	processingStrategy pb.ProcessingStrategy
 }
 
-// NewEngine constructs a ready-to-run Engine instance.
-//
-// udsTarget must be the same gRPC target string that was used to dial
-// `udsClient` (e.g. "unix:/var/run/nvsentinel.sock"); the shared
-// healthpub publisher uses it to derive the Unix-socket path for the
-// existence gate that prevents stale-timestamp delivery during
-// platform-connector outages. An empty udsTarget disables the gate
-// (TCP fall-through behaviour) — useful in tests that wire a mock
-// client directly.
+// NewEngine constructs a ready-to-run Engine instance. udsTarget must
+// match the gRPC target string used to dial udsClient (typically
+// "unix:/var/run/nvsentinel.sock"); pass "" in tests to disable the
+// healthpub socket-existence gate.
 func NewEngine(
 	cfg *config.Config,
 	store datastore.Store,
@@ -396,25 +391,12 @@ func isRetryableGRPCError(err error) bool {
 	return st.Code() == codes.Unavailable
 }
 
-// sendHealthEventWithRetry forwards a HealthEvent to the platform
-// connector via the shared healthpub publisher, which gates on the
-// platform-connector Unix socket being present and applies bounded
-// exponential backoff for genuinely transient gRPC errors.
+// sendHealthEventWithRetry forwards a HealthEvent to platform-connector
+// via the shared healthpub publisher.
 //
-// We layer two csp-specific concerns on top of the shared publisher:
-//
-//  1. TriggerUDSSendDuration / TriggerUDSSendErrors metrics are
-//     preserved so existing csp dashboards keep working. Note that
-//     TriggerUDSSendErrors now increments once per terminal failure
-//     (skip due to socket missing OR retries exhausted), not once
-//     per retry attempt as before — the per-attempt count was double
-//     counting the retry budget against an outage. The shared
-//     `nvsentinel_health_events_publisher_*` metrics expose richer
-//     break-downs.
-//
-//  2. ErrPlatformConnectorUnavailable is mapped to a distinct error
-//     message so existing log filters and tests that grep "skipped"
-//     still surface those events.
+// TriggerUDSSendDuration and TriggerUDSSendErrors are preserved for csp
+// dashboards. TriggerUDSSendErrors now increments once per terminal
+// failure (not once per retry attempt as before).
 func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.HealthEvent) error {
 	healthEvents := &pb.HealthEvents{
 		Events: []*pb.HealthEvent{healthEvent},

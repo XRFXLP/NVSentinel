@@ -575,13 +575,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 					Return(nil, status.Error(codes.Unavailable, "UDS unavailable")).
 					Times(udsMaxRetries)
 			},
-			expectError: true,
-			// healthpub.Publisher (commons/pkg/healthpub) wraps
-			// wait.ExponentialBackoffWithContext, which surfaces
-			// retry exhaustion as ErrWaitTimeout. We assert the
-			// substring that wrapper produces rather than re-asserting
-			// a per-monitor count, so this test is robust to
-			// retry-budget tuning.
+			expectError:           true,
 			expectedErrorContains: "timed out waiting for the condition",
 			verifyMocks: func(t *testing.T, mStore *MockDatastore, mUDSClient *MockUDSClient) {
 				mUDSClient.AssertExpectations(t)

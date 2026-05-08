@@ -35,10 +35,8 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-// fakePCClient is a minimal stand-in for pb.PlatformConnectorClient.
-// Each test wires its own behaviour via responseFn (call number is
-// 1-based) and the publisher invokes it via the ordinary gRPC client
-// interface.
+// fakePCClient stands in for pb.PlatformConnectorClient. responseFn
+// receives a 1-based call number; nil return is treated as success.
 type fakePCClient struct {
 	calls      atomic.Int64
 	responseFn func(call int) error
@@ -71,15 +69,12 @@ func sampleEvents() *pb.HealthEvents {
 	}
 }
 
-// fastRetryOpt configures a publisher whose retry budget is small
-// enough that "all retries exhausted" tests complete quickly without
-// changing the semantics under test.
+// fastRetryOpt makes "all retries exhausted" tests complete in ms.
 func fastRetryOpt() Option {
 	return WithRetryPolicy(3, 5*time.Millisecond, 1.0, 0)
 }
 
-// touchSocket creates an empty file to simulate a present Unix socket.
-// We don't bind a real listener; the publisher only stat()s the path.
+// touchSocket creates an empty file at path; the publisher only stats.
 func touchSocket(t *testing.T, path string) {
 	t.Helper()
 
@@ -88,10 +83,9 @@ func touchSocket(t *testing.T, path string) {
 	require.NoError(t, f.Close())
 }
 
-// TestPublish_SkipsWhenSocketMissing reproduces the dominant production
-// scenario from the w-0366 incident: platform-connector restart removes
-// the socket file, and the producer must skip rather than queue the
-// event with a stale GeneratedTimestamp.
+// TestPublish_SkipsWhenSocketMissing: with the socket absent, Publish
+// must skip without invoking gRPC, increment the skip counter, and
+// return ErrPlatformConnectorUnavailable.
 func TestPublish_SkipsWhenSocketMissing(t *testing.T) {
 	tmp := t.TempDir()
 	target := "unix://" + filepath.Join(tmp, "nvsentinel.sock") // path does NOT exist
@@ -124,8 +118,8 @@ func TestPublish_SkipsWhenSocketMissing(t *testing.T) {
 		"success counter must not move when the call was skipped")
 }
 
-// TestPublish_SuccessWhenSocketPresent covers the happy path: socket
-// is there, gRPC accepts on first attempt, no skip recorded.
+// TestPublish_SuccessWhenSocketPresent: happy path — gRPC accepts on
+// first attempt, success counter +1, skip counter unchanged.
 func TestPublish_SuccessWhenSocketPresent(t *testing.T) {
 	tmp := t.TempDir()
 	socket := filepath.Join(tmp, "nvsentinel.sock")
@@ -152,9 +146,8 @@ func TestPublish_SuccessWhenSocketPresent(t *testing.T) {
 		"success counter must increment on a successful send")
 }
 
-// TestPublish_RetriesOnTransientErrorThenSucceeds verifies that genuine
-// transient gRPC errors (Unavailable returned despite the socket file
-// being present) still benefit from the retry loop.
+// TestPublish_RetriesOnTransientErrorThenSucceeds: a transient
+// Unavailable with the socket present must be retried.
 func TestPublish_RetriesOnTransientErrorThenSucceeds(t *testing.T) {
 	tmp := t.TempDir()
 	socket := filepath.Join(tmp, "nvsentinel.sock")
@@ -179,10 +172,8 @@ func TestPublish_RetriesOnTransientErrorThenSucceeds(t *testing.T) {
 		"first call should fail Unavailable, second should succeed")
 }
 
-// TestPublish_AbortsMidRetryWhenSocketDisappears covers the rare but
-// real case where platform-connector exits between the entry probe and
-// a subsequent retry attempt. We must detect the disappearance and stop
-// burning retries against a moving target.
+// TestPublish_AbortsMidRetryWhenSocketDisappears: socket vanishing
+// between attempts must abort the loop and charge the skip counter.
 func TestPublish_AbortsMidRetryWhenSocketDisappears(t *testing.T) {
 	tmp := t.TempDir()
 	socket := filepath.Join(tmp, "nvsentinel.sock")
@@ -192,9 +183,7 @@ func TestPublish_AbortsMidRetryWhenSocketDisappears(t *testing.T) {
 
 	fc := &fakePCClient{
 		responseFn: func(call int) error {
-			// First attempt: fail transiently AND remove the socket
-			// file, so the next iteration's pre-call probe sees it
-			// gone.
+			// First attempt fails transiently AND removes the socket.
 			if call == 1 {
 				_ = os.Remove(socket)
 				return status.Error(codes.Unavailable, "transient")
@@ -219,8 +208,8 @@ func TestPublish_AbortsMidRetryWhenSocketDisappears(t *testing.T) {
 		"in-loop disappearance must charge the skip counter (not the error counter)")
 }
 
-// TestPublish_NonRetryableErrorReturnsImmediately verifies we don't
-// burn the retry budget on permanent errors like InvalidArgument.
+// TestPublish_NonRetryableErrorReturnsImmediately: permanent errors
+// like InvalidArgument must not consume the retry budget.
 func TestPublish_NonRetryableErrorReturnsImmediately(t *testing.T) {
 	tmp := t.TempDir()
 	socket := filepath.Join(tmp, "nvsentinel.sock")
@@ -243,10 +232,8 @@ func TestPublish_NonRetryableErrorReturnsImmediately(t *testing.T) {
 		"non-retryable errors must NOT trigger retries")
 }
 
-// TestUnixSocketPathFromTarget covers the URI variants gRPC accepts for
-// Unix-socket targets so each monitor's preferred form actually triggers
-// the gate. csp-health-monitor uses "unix:%s" (single colon), the others
-// use "unix:///path" (double slash).
+// TestUnixSocketPathFromTarget covers both Unix-socket URI variants
+// gRPC accepts, plus the negative TCP/dns/empty cases.
 func TestUnixSocketPathFromTarget(t *testing.T) {
 	cases := []struct {
 		target string
@@ -254,7 +241,7 @@ func TestUnixSocketPathFromTarget(t *testing.T) {
 	}{
 		{"unix:///var/run/nvsentinel.sock", "/var/run/nvsentinel.sock"},
 		{"unix:/var/run/nvsentinel.sock", "/var/run/nvsentinel.sock"},
-		{"unix:relative/path", ""}, // relative paths intentionally skipped
+		{"unix:relative/path", ""},
 		{"127.0.0.1:5555", ""},
 		{"dns:///host:5555", ""},
 		{"", ""},
@@ -266,9 +253,8 @@ func TestUnixSocketPathFromTarget(t *testing.T) {
 	}
 }
 
-// TestPublish_TCPTargetSkipsGate verifies that callers using a non-unix
-// gRPC target (TCP, etc.) bypass the socket-existence probe entirely
-// and fall straight through to the retry loop.
+// TestPublish_TCPTargetSkipsGate: non-unix targets must bypass the
+// socket-existence probe entirely.
 func TestPublish_TCPTargetSkipsGate(t *testing.T) {
 	monitor := "test-tcp-target"
 
@@ -283,8 +269,8 @@ func TestPublish_TCPTargetSkipsGate(t *testing.T) {
 		"TCP target must reach the gRPC call without gating on a file")
 }
 
-// TestPublish_NilOrEmptyEventsIsNoOp asserts the no-op contract for
-// empty batches.
+// TestPublish_NilOrEmptyEventsIsNoOp: empty batches short-circuit
+// before any gRPC call.
 func TestPublish_NilOrEmptyEventsIsNoOp(t *testing.T) {
 	monitor := "test-noop"
 
@@ -300,9 +286,8 @@ func TestPublish_NilOrEmptyEventsIsNoOp(t *testing.T) {
 		"empty input must short-circuit before any gRPC call")
 }
 
-// TestNew_EmptyMonitorPanics ensures library users get a loud failure
-// for what would otherwise be a silent dashboarding bug (events
-// skipped against an empty `monitor` label).
+// TestNew_EmptyMonitorPanics: an empty monitor label would be a silent
+// dashboarding bug, so New must panic loudly.
 func TestNew_EmptyMonitorPanics(t *testing.T) {
 	defer func() {
 		if recover() == nil {
@@ -313,9 +298,8 @@ func TestNew_EmptyMonitorPanics(t *testing.T) {
 	_ = New(&fakePCClient{}, "unix:///x", "")
 }
 
-// TestPublish_ContextCancellationStopsRetries verifies that a cancelled
-// context causes the retry loop to abort, instead of exhausting the
-// full retry budget against a long-running outage.
+// TestPublish_ContextCancellationStopsRetries: a cancelled context
+// must abort the retry loop early.
 func TestPublish_ContextCancellationStopsRetries(t *testing.T) {
 	tmp := t.TempDir()
 	socket := filepath.Join(tmp, "nvsentinel.sock")
@@ -337,9 +321,7 @@ func TestPublish_ContextCancellationStopsRetries(t *testing.T) {
 
 	err := p.Publish(ctx, sampleEvents())
 	require.Error(t, err)
-	// The error may be `context.DeadlineExceeded` itself, or
-	// `wait.ErrWaitTimeout` — both indicate the loop terminated due to
-	// context cancellation rather than retries succeeding.
+	// Accept either context.DeadlineExceeded or wait.ErrWaitTimeout.
 	assert.True(t,
 		errors.Is(err, context.DeadlineExceeded) ||
 			errors.Is(err, context.Canceled) ||

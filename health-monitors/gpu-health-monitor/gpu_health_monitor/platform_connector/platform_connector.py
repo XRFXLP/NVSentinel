@@ -310,52 +310,39 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         return platformconnector_pb2.RecommendedAction.CONTACT_SUPPORT
 
     def _is_platform_connector_socket_present(self) -> bool:
-        # The platform-connector creates the Unix socket file inside its own
-        # process (see platform-connectors/main.go: it `os.Remove`s any stale
-        # path on startup and on shutdown). So in steady state the file is
-        # present iff platform-connector is running on this node. Probing the
-        # path before issuing a gRPC call lets us skip the send entirely
-        # during a platform-connector outage instead of holding the event in
-        # the retry loop with a stale `generatedTimestamp`.
+        # platform-connector removes the socket file on shutdown and on
+        # startup before binding, so file-presence is a faithful proxy
+        # for "PC is up" on this node.
         return os.path.exists(self._socket_path)
 
     def send_health_event_with_retries(self, health_events: list[platformconnector_pb2.HealthEvent]) -> bool:
         """Send health events to the platform connector with retries.
 
-        If the platform-connector Unix socket is absent at send time, the send
-        is skipped immediately: no gRPC call, no buffering, no cache mutation.
-        The caller's `entity_cache` is left unchanged so the next health-check
-        poll re-enters the same code path, re-stamps `generatedTimestamp` with
-        a fresh `now()`, and re-attempts. This bounds the producer-side
-        `generatedTimestamp` staleness by the polling cadence regardless of
-        how long platform-connector is down (see ADR-039 context).
+        If the platform-connector Unix socket is absent at send time the send
+        is skipped immediately (no gRPC call, no buffering, no cache mutation)
+        and `False` is returned. The caller's cache must be left untouched so
+        the next poll re-emits with a fresh `generatedTimestamp`.
 
         Returns:
-            True if the send was successful. False if the socket was missing
-            (skip) or all retries were exhausted (genuine RPC failure). Cache
-            updates should only be performed by the caller when this returns
-            True.
+            True on success. False if the socket was missing or all retries
+            were exhausted. Callers must update their cache only on True.
         """
         if not self._is_platform_connector_socket_present():
             metrics.health_events_insertion_skipped_pc_unavailable.inc()
             log.warning(
-                "Platform-connector socket %s is missing; skipping send. "
-                "Next health-check poll will re-evaluate and re-stamp the event.",
+                "Platform-connector socket %s is missing; skipping send.",
                 self._socket_path,
             )
             return False
 
         delay = INITIAL_DELAY
         for attempt in range(MAX_RETRIES):
-            # Re-check on each iteration so the retry budget isn't burned
-            # against a socket that disappeared mid-flight (e.g. a platform-
-            # connector restart that lands between the entry check and a
-            # subsequent retry).
+            # Re-check between retries so a connector that disappears
+            # mid-flight short-circuits instead of burning the budget.
             if attempt > 0 and not self._is_platform_connector_socket_present():
                 metrics.health_events_insertion_skipped_pc_unavailable.inc()
                 log.warning(
-                    "Platform-connector socket %s disappeared mid-retry; aborting send. "
-                    "Next health-check poll will re-evaluate and re-stamp the event.",
+                    "Platform-connector socket %s disappeared mid-retry; aborting send.",
                     self._socket_path,
                 )
                 return False

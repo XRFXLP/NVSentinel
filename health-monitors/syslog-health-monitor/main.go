@@ -335,10 +335,6 @@ func createSyslogMonitor(
 		return nil, 0, fmt.Errorf("error creating syslog health monitor: %w", err)
 	}
 
-	// Wire the same gRPC target string we used to dial the
-	// platform-connector into the monitor so the shared healthpub
-	// publisher can gate sends on the Unix socket actually being
-	// present (avoids stale GeneratedTimestamp during PC restarts).
 	monitor.SetPlatformConnectorTarget(*platformConnectorSocket)
 
 	pollingInterval, err := time.ParseDuration(*pollingIntervalFlag)

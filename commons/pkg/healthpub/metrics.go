@@ -19,12 +19,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// All counters are registered against the default registry via promauto.
-// The `monitor` label distinguishes which agent skipped/sent the event.
-//
-// Cardinality note: the `code` label on sendsError is a gRPC status-code
-// string (e.g. "Unavailable", "DeadlineExceeded"). gRPC defines ~17 such
-// codes, so per-monitor cardinality is bounded by that small set.
+// Counters are registered against the default registry via promauto.
+// The `monitor` label is the agent name; `code` on sendsError is a gRPC
+// status-code string (bounded cardinality, ~17 values).
 var (
 	sendsSkippedPCUnavailable = promauto.NewCounterVec(
 		prometheus.CounterOpts{

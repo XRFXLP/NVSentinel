@@ -21,8 +21,8 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 )
 
@@ -30,21 +30,15 @@ const (
 	agentName = "kubernetes-object-monitor"
 )
 
-// Publisher publishes health events to the platform-connector via the
-// shared healthpub publisher (commons/pkg/healthpub), which owns both
-// the gRPC retry policy and the platform-connector socket-presence
-// gate.
+// Publisher publishes health events to the platform connector via the
+// shared healthpub publisher (commons/pkg/healthpub).
 type Publisher struct {
 	pub                *healthpub.Publisher
 	processingStrategy pb.ProcessingStrategy
 }
 
-// New constructs a Publisher.
-//
-// target must be the same gRPC target string used to dial `client`
-// (typically "unix:///var/run/nvsentinel.sock"); healthpub uses it to
-// derive the socket path for the existence gate. If `client` was dialed
-// against a non-unix target, the gate is skipped (TCP fall-through).
+// New constructs a Publisher. target must match the gRPC target string
+// used to dial client (typically "unix:///var/run/nvsentinel.sock").
 func New(client pb.PlatformConnectorClient, target string, processingStrategy pb.ProcessingStrategy) *Publisher {
 	return &Publisher{
 		pub:                healthpub.New(client, target, agentName),

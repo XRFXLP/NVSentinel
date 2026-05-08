@@ -24,8 +24,8 @@ import (
 	"strings"
 	"time"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/checks"
 	"github.com/nvidia/nvsentinel/health-monitors/nic-health-monitor/pkg/metrics"
 )
@@ -53,15 +53,10 @@ type NICHealthMonitor struct {
 	stateInterval time.Duration
 }
 
-// NewNICHealthMonitor constructs a NICHealthMonitor. The allChecks slice
-// is automatically partitioned into state and counter categories based
-// on each check's name.
-//
-// target must be the same gRPC target string used to dial pcClient
-// (typically "unix:///var/run/nvsentinel.sock"); the shared healthpub
-// publisher uses it to derive the Unix-socket path for the existence
-// gate that prevents stale-timestamp delivery during platform-connector
-// outages.
+// NewNICHealthMonitor constructs a NICHealthMonitor. The allChecks
+// slice is automatically partitioned into state and counter categories
+// based on each check's name. target must match the gRPC target string
+// used to dial pcClient (typically "unix:///var/run/nvsentinel.sock").
 func NewNICHealthMonitor(
 	nodeName string,
 	pcClient pb.PlatformConnectorClient,

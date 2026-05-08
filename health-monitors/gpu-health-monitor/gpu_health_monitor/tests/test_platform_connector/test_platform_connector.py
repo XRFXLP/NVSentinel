@@ -1319,14 +1319,9 @@ class TestPlatformConnectors(unittest.TestCase):
                 os.unlink(state_file_path)
 
     def test_send_skipped_when_socket_missing_dcgm_connectivity_failure(self) -> None:
-        """When the platform-connector Unix socket is absent, dcgm_connectivity_failed
-        must skip the send (no gRPC attempt, no buffering), leave the entity_cache
-        untouched so the next poll re-attempts with a fresh generatedTimestamp, and
-        increment the skip counter. Reproduces the scenario in production where
-        platform-connector restarts and the producer's retry loop preserved a stale
-        generatedTimestamp through the outage window.
+        """Socket missing -> dcgm_connectivity_failed must skip without invoking gRPC,
+        leave entity_cache empty, and increment the skip counter.
         """
-        # Use a guaranteed-non-existent socket path so the gate fires.
         tmpdir = tempfile.mkdtemp(prefix="ghm_no_socket_")
         nonexistent_socket = os.path.join(tmpdir, "nvsentinel.sock")
         assert not os.path.exists(nonexistent_socket)
@@ -1335,8 +1330,7 @@ class TestPlatformConnectors(unittest.TestCase):
             f.write("test_boot_id")
             state_file_path = f.name
 
-        # Shorten the retry budget so a regression (gate not firing) makes the
-        # test slow rather than passing by accident.
+        # Shorten the retry budget so a regression makes the test slow.
         original_max_retries = platform_connector.MAX_RETRIES
         original_initial_delay = platform_connector.INITIAL_DELAY
         platform_connector.MAX_RETRIES = 3
@@ -1362,23 +1356,12 @@ class TestPlatformConnectors(unittest.TestCase):
             platform_connector_processor.dcgm_connectivity_failed()
             elapsed = time.monotonic() - start
 
-            # Gate must short-circuit: retries skipped entirely, well under the
-            # accumulated retry budget (1 + 1.5 + 2.25 = 4.75s).
-            assert elapsed < 1.0, (
-                f"dcgm_connectivity_failed should fast-skip when socket is missing, "
-                f"but took {elapsed:.2f}s — likely the retry loop was entered."
-            )
+            # Gate must short-circuit; retry budget would be ~4.75s.
+            assert elapsed < 1.0, f"expected fast-skip, took {elapsed:.2f}s"
 
-            assert cache_key not in platform_connector_processor.entity_cache, (
-                "entity_cache must not be mutated when send is skipped due to missing socket; "
-                "leaving it empty is what allows the next poll to re-attempt."
-            )
-
+            assert cache_key not in platform_connector_processor.entity_cache
             after_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
-            assert after_skipped == before_skipped + 1, (
-                f"skip counter must increment exactly once per skipped send "
-                f"(before={before_skipped}, after={after_skipped})"
-            )
+            assert after_skipped == before_skipped + 1
         finally:
             platform_connector.MAX_RETRIES = original_max_retries
             platform_connector.INITIAL_DELAY = original_initial_delay
@@ -1388,12 +1371,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 os.rmdir(tmpdir)
 
     def test_send_skipped_when_socket_missing_health_event_occurred(self) -> None:
-        """Same gate must apply to the per-watch health-event publishing path,
-        not just dcgm_connectivity_failed. Otherwise a platform-connector outage
-        during a normal DCGM poll would still backdate generatedTimestamp on the
-        observed unhealthy events and inflate fault-quarantine's time-to-cordon
-        histogram.
-        """
+        """Same gate must apply to the per-watch publishing path."""
         tmpdir = tempfile.mkdtemp(prefix="ghm_no_socket_")
         nonexistent_socket = os.path.join(tmpdir, "nvsentinel.sock")
         assert not os.path.exists(nonexistent_socket)
@@ -1446,18 +1424,10 @@ class TestPlatformConnectors(unittest.TestCase):
             platform_connector_processor.health_event_occurred(dcgm_health_events, [0])
             elapsed = time.monotonic() - start
 
-            assert elapsed < 1.0, (
-                f"health_event_occurred should fast-skip when socket is missing, "
-                f"but took {elapsed:.2f}s — likely the retry loop was entered."
-            )
-            assert (
-                gpu_cache_key not in platform_connector_processor.entity_cache
-            ), "entity_cache must not be mutated when send is skipped due to missing socket"
+            assert elapsed < 1.0, f"expected fast-skip, took {elapsed:.2f}s"
+            assert gpu_cache_key not in platform_connector_processor.entity_cache
             after_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
-            assert after_skipped > before_skipped, (
-                f"skip counter must increment when socket is missing during health_event_occurred "
-                f"(before={before_skipped}, after={after_skipped})"
-            )
+            assert after_skipped > before_skipped
         finally:
             platform_connector.MAX_RETRIES = original_max_retries
             platform_connector.INITIAL_DELAY = original_initial_delay
@@ -1467,10 +1437,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 os.rmdir(tmpdir)
 
     def test_send_proceeds_normally_when_socket_present(self) -> None:
-        """Sanity check: gate must NOT skip when the socket exists — verifies the
-        happy path is unchanged. Catches a regression where the gate would
-        accidentally treat a present socket as missing.
-        """
+        """Happy path: gate must NOT skip when the socket exists."""
         healthEventProcessor = PlatformConnectorServicer()
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
         platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
@@ -1498,18 +1465,13 @@ class TestPlatformConnectors(unittest.TestCase):
             time.sleep(1)
 
             cache_key = platform_connector_processor._build_cache_key("GpuDcgmConnectivityFailure", "DCGM", "ALL")
-            assert (
-                cache_key in platform_connector_processor.entity_cache
-            ), "entity_cache must be updated after a successful send when socket is present"
+            assert cache_key in platform_connector_processor.entity_cache
             assert healthEventProcessor.health_events is not None
             assert len(healthEventProcessor.health_events) == 1
             assert healthEventProcessor.health_events[0].checkName == "GpuDcgmConnectivityFailure"
 
             after_skipped = pc_metrics.health_events_insertion_skipped_pc_unavailable._value.get()
-            assert after_skipped == before_skipped, (
-                f"skip counter must NOT increment when socket is present "
-                f"(before={before_skipped}, after={after_skipped})"
-            )
+            assert after_skipped == before_skipped
         finally:
             server.stop(0)
             if os.path.exists(state_file_path):
