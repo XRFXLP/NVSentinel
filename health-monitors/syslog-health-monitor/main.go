@@ -329,6 +329,15 @@ func createSyslogMonitor(
 		return nil, 0, fmt.Errorf("cancellations config %s validation failed: %w", *cancellationsConfigPath, err)
 	}
 
+	enabledCheckNames := make([]string, 0, len(list))
+	for _, c := range list {
+		enabledCheckNames = append(enabledCheckNames, c.Name)
+	}
+
+	if err := cancellation.ValidateAgainstEnabledChecks(cancellationsCfg, enabledCheckNames); err != nil {
+		return nil, 0, fmt.Errorf("cancellations config %s validation failed: %w", *cancellationsConfigPath, err)
+	}
+
 	slog.Info("Loaded cancellations config",
 		"path", *cancellationsConfigPath,
 		"checksConfigured", len(cancellationsCfg.Checks))

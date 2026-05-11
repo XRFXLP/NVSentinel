@@ -151,21 +151,31 @@ func validateNonEmptyTrimmed(value string) error {
 // ValidateSupportedChecks rejects rules for checks whose handlers do not
 // attach a Resolver. Prevents silent-no-op rules from loading.
 func ValidateSupportedChecks(cfg *Config, supported []string) error {
+	return validateAgainstSet(cfg, supported,
+		"does not have cancellation support wired in this monitor (supported: %v)")
+}
+
+// ValidateAgainstEnabledChecks rejects rules for checks not present in the
+// process's --checks list. Catches the "supported but not enabled" gap that
+// ValidateSupportedChecks does not cover.
+func ValidateAgainstEnabledChecks(cfg *Config, enabled []string) error {
+	return validateAgainstSet(cfg, enabled,
+		"is not enabled in this monitor (--checks: %v)")
+}
+
+func validateAgainstSet(cfg *Config, allowed []string, suffixFmt string) error {
 	if cfg == nil {
 		return nil
 	}
 
-	supportedSet := make(map[string]struct{}, len(supported))
-	for _, name := range supported {
-		supportedSet[name] = struct{}{}
+	set := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		set[name] = struct{}{}
 	}
 
 	for i, check := range cfg.Checks {
-		if _, ok := supportedSet[check.Name]; !ok {
-			return fmt.Errorf(
-				"checks[%d]: name %q does not have cancellation support wired in this monitor (supported: %v)",
-				i, check.Name, supported,
-			)
+		if _, ok := set[check.Name]; !ok {
+			return fmt.Errorf("checks[%d]: name %q "+suffixFmt, i, check.Name, allowed)
 		}
 	}
 

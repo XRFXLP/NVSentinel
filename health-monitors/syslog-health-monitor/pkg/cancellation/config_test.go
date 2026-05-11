@@ -92,6 +92,23 @@ func TestFindCheck_UnknownReturnsNil(t *testing.T) {
 	assert.Nil(t, nilCfg.FindCheck("anything"))
 }
 
+func TestValidateAgainstEnabledChecks(t *testing.T) {
+	cfg := &Config{Checks: []CheckCancellations{{Name: "SysLogsXIDError", Enabled: true}}}
+
+	// Enabled set includes the rule's check → passes.
+	require.NoError(t, ValidateAgainstEnabledChecks(cfg,
+		[]string{"SysLogsXIDError", "SysLogsSXIDError"}))
+
+	// Enabled set excludes it → rejected with "not enabled" message.
+	err := ValidateAgainstEnabledChecks(cfg,
+		[]string{"SysLogsSXIDError", "SysLogsGPUFallenOff"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `name "SysLogsXIDError" is not enabled`)
+
+	// nil cfg is a no-op.
+	assert.NoError(t, ValidateAgainstEnabledChecks(nil, nil))
+}
+
 func TestValidateSupportedChecks(t *testing.T) {
 	tests := []struct {
 		name      string
