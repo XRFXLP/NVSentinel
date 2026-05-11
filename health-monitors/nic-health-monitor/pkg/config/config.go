@@ -17,6 +17,7 @@ package config
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -34,10 +35,143 @@ const (
 	recommendedActionMarker = "Recommended Action="
 )
 
-var supportedCounterPathPrefixes = []string{
-	"counters/",
-	"hw_counters/",
-	"statistics/",
+type counterDefinition struct {
+	path        string
+	isFatal     bool
+	description string
+}
+
+var counterDefinitions = map[string]counterDefinition{
+	// /sys/class/infiniband/<dev>/ports/<port>/counters/
+	"excessive_buffer_overrun_errors": {
+		path:        "counters/excessive_buffer_overrun_errors",
+		isFatal:     true,
+		description: "HCA internal buffer overflow - lossless contract violated",
+	},
+	"link_downed": {
+		path:        "counters/link_downed",
+		isFatal:     true,
+		description: "Port Training State Machine failed - QP disconnect",
+	},
+	"link_error_recovery": {
+		path:        "counters/link_error_recovery",
+		isFatal:     false,
+		description: "Link retraining events - micro-flapping",
+	},
+	"local_link_integrity_errors": {
+		path:        "counters/local_link_integrity_errors",
+		isFatal:     true,
+		description: "Physical errors exceed LocalPhyErrors hardware cap",
+	},
+	"port_rcv_discards": {
+		path:        "counters/port_rcv_discards",
+		isFatal:     false,
+		description: "RX discards due to congestion or buffer pressure",
+	},
+	"port_rcv_errors": {
+		path:        "counters/port_rcv_errors",
+		isFatal:     false,
+		description: "Malformed packets received",
+	},
+	"port_rcv_remote_physical_errors": {
+		path:        "counters/port_rcv_remote_physical_errors",
+		isFatal:     false,
+		description: "Remote physical-layer errors received on this port",
+	},
+	"port_rcv_switch_relay_errors": {
+		path:        "counters/port_rcv_switch_relay_errors",
+		isFatal:     false,
+		description: "Packets discarded because switch relay forwarding failed",
+	},
+	"port_xmit_discards": {
+		path:        "counters/port_xmit_discards",
+		isFatal:     false,
+		description: "TX discards due to congestion",
+	},
+	"port_xmit_wait": {
+		path:        "counters/port_xmit_wait",
+		isFatal:     false,
+		description: "TX wait ticks - congestion backpressure",
+	},
+	"symbol_error": {
+		path:        "counters/symbol_error",
+		isFatal:     false,
+		description: "PHY bit errors before FEC - physical layer degradation",
+	},
+	"symbol_error_fatal": {
+		path:        "counters/symbol_error",
+		isFatal:     true,
+		description: "Symbol errors exceed IBTA BER threshold (10E-12) - link outside spec",
+	},
+
+	// /sys/class/infiniband/<dev>/ports/<port>/hw_counters/
+	"implied_nak_seq_err": {
+		path:        "hw_counters/implied_nak_seq_err",
+		isFatal:     false,
+		description: "Implied NAK sequence errors - retransmission pressure",
+	},
+	"local_ack_timeout_err": {
+		path:        "hw_counters/local_ack_timeout_err",
+		isFatal:     false,
+		description: "ACK timeout - potential fabric black hole",
+	},
+	"out_of_sequence": {
+		path:        "hw_counters/out_of_sequence",
+		isFatal:     false,
+		description: "Fabric routing issues - out of sequence packets",
+	},
+	"packet_seq_err": {
+		path:        "hw_counters/packet_seq_err",
+		isFatal:     false,
+		description: "Packet sequence errors - retransmission pressure",
+	},
+	"req_transport_retries_exceeded": {
+		path:        "hw_counters/req_transport_retries_exceeded",
+		isFatal:     true,
+		description: "Requester transport retry limit exceeded",
+	},
+	"rnr_nak_retry_err": {
+		path:        "hw_counters/rnr_nak_retry_err",
+		isFatal:     true,
+		description: "Receiver Not Ready NAK retry exhausted - connection severed",
+	},
+	"roce_slow_restart": {
+		path:        "hw_counters/roce_slow_restart",
+		isFatal:     false,
+		description: "Victim flow oscillation",
+	},
+
+	// /sys/class/net/<iface>/statistics/
+	"carrier_changes": {
+		path:        "statistics/carrier_changes",
+		isFatal:     false,
+		description: "Link instability - carrier state changes",
+	},
+	"rx_crc_errors": {
+		path:        "statistics/rx_crc_errors",
+		isFatal:     false,
+		description: "RX packets with CRC/FCS errors",
+	},
+	"rx_errors": {
+		path:        "statistics/rx_errors",
+		isFatal:     false,
+		description: "Aggregate RX packet errors",
+	},
+	"rx_missed_errors": {
+		path:        "statistics/rx_missed_errors",
+		isFatal:     false,
+		description: "RX packets missed due to receive-side capacity pressure",
+	},
+	"tx_carrier_errors": {
+		path:        "statistics/tx_carrier_errors",
+		isFatal:     false,
+		description: "TX carrier-sense errors",
+	},
+	"tx_errors": {
+		path:        "statistics/tx_errors",
+		isFatal:     false,
+		description: "Aggregate TX packet errors",
+	},
 }
 
 // Config represents the NIC Health Monitor configuration loaded from TOML.
@@ -68,13 +202,13 @@ type CounterDetectionConfig struct {
 // CounterConfig defines a single counter to monitor.
 type CounterConfig struct {
 	Name          string  `toml:"name"`
-	Path          string  `toml:"path"`
+	Path          string  `toml:"-"`
 	Enabled       bool    `toml:"enabled"`
-	IsFatal       bool    `toml:"isFatal"`
+	IsFatal       bool    `toml:"-"`
 	ThresholdType string  `toml:"thresholdType"`
 	Threshold     float64 `toml:"threshold"`
 	VelocityUnit  string  `toml:"velocityUnit,omitempty"`
-	Description   string  `toml:"description"`
+	Description   string  `toml:"-"`
 }
 
 // LoadConfig reads and parses the TOML configuration file.
@@ -138,7 +272,7 @@ func validateCounterDetection(cd *CounterDetectionConfig) error {
 			continue
 		}
 
-		if err := validateCounter(c); err != nil {
+		if err := validateCounter(&cd.Counters[i]); err != nil {
 			return fmt.Errorf("counters[%d] (%q): %w", i, c.Name, err)
 		}
 
@@ -158,17 +292,13 @@ var validVelocityUnits = map[string]struct{}{
 	velocityUnitHour:   {},
 }
 
-func validateCounter(c CounterConfig) error {
+func validateCounter(c *CounterConfig) error {
 	if c.Name == "" {
 		return fmt.Errorf("name must not be empty")
 	}
 
-	if c.Path == "" {
-		return fmt.Errorf("path must not be empty")
-	}
-
-	if err := validateCounterPath(c.Path); err != nil {
-		return fmt.Errorf("path: %w", err)
+	if err := applyCounterDefinition(c); err != nil {
+		return err
 	}
 
 	switch c.ThresholdType {
@@ -189,17 +319,31 @@ func validateCounter(c CounterConfig) error {
 	return nil
 }
 
-func validateCounterPath(path string) error {
-	for _, prefix := range supportedCounterPathPrefixes {
-		if strings.HasPrefix(path, prefix) && len(path) > len(prefix) {
-			return nil
-		}
+func applyCounterDefinition(c *CounterConfig) error {
+	def, ok := counterDefinitions[c.Name]
+	if !ok {
+		return fmt.Errorf(
+			"counter name %q is not allowed; allowed counters: %s",
+			c.Name, strings.Join(allowedCounterNames(), ", "),
+		)
 	}
 
-	return fmt.Errorf(
-		"%q is invalid; must start with one of: %s",
-		path, strings.Join(supportedCounterPathPrefixes, ", "),
-	)
+	c.Path = def.path
+	c.IsFatal = def.isFatal
+	c.Description = def.description
+
+	return nil
+}
+
+func allowedCounterNames() []string {
+	names := make([]string, 0, len(counterDefinitions))
+	for name := range counterDefinitions {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	return names
 }
 
 func validateDescription(desc string) error {
