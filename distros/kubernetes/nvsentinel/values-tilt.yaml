@@ -3819,7 +3819,44 @@ syslog-health-monitor:
     - SysLogsXIDError
     - SysLogsSXIDError
     - SysLogsGPUFallenOff
+    # Tilt-only: production defaults intentionally leave SysLogsNICDriverError
+    # disabled. Enable it here so e2e tests can exercise NIC driver syslog detection.
     - SysLogsNICDriverError
+  # Tilt-only: production defaults intentionally do not enable any NIC driver
+  # syslog pattern names. The regexes, severities, and actions are owned by code.
+  nicDriverDetection:
+    patterns:
+      - name: cmd_exec_timeout
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: health_poll_failed
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: unrecoverable_err
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: netdev_watchdog
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: pci_power_insufficient
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: port_module_high_temp
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: access_reg_failed
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: module_unplugged
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
 
 csp-health-monitor:
   logLevel: debug

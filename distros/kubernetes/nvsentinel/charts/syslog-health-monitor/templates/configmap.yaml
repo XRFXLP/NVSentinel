@@ -20,14 +20,14 @@ metadata:
     {{- include "syslog-health-monitor.labels" . | nindent 4 }}
 data:
   config.toml: |
-    {{- range .Values.nicDriverDetection.patterns }}
+    [nicDriverDetection]
+    {{- $patterns := (default (list) ((default dict .Values.nicDriverDetection).patterns)) }}
+    {{- range $patterns }}
 
     [[nicDriverDetection.patterns]]
     name = {{ .name | quote }}
-    regex = '''{{ .regex }}'''
     enabled = {{ .enabled }}
-    isFatal = {{ .isFatal }}
-    recommendedAction = {{ .recommendedAction | quote }}
+    {{ if .processingStrategy }}
     processingStrategy = {{ .processingStrategy | quote }}
-    description = {{ .description | quote }}
+    {{ end }}
     {{- end }}
