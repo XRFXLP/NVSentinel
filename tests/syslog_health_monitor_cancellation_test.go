@@ -195,6 +195,14 @@ func TestSyslogHealthMonitorCancellationUncordonsNode(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
+		// Apply a quarantine rule that cordons fatal syslog-health-monitor
+		// GPU events. The default test-cluster fault-quarantine ConfigMap
+		// only matches gpu-health-monitor events, so without this our
+		// XID 119 syslog event would never trigger a cordon. The setup
+		// helper backs up the existing config and the matching teardown
+		// (TeardownQuarantineTest) restores it.
+		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/syslog-xid-cordon-configmap.yaml")
+
 		backup, err := helpers.BackupConfigMap(ctx, client,
 			helpers.SyslogConfigMapName, helpers.NVSentinelNamespace)
 		require.NoError(t, err, "failed to back up syslog-health-monitor ConfigMap")
@@ -313,6 +321,10 @@ func TestSyslogHealthMonitorCancellationUncordonsNode(t *testing.T) {
 		}
 
 		helpers.TearDownSyslogHealthMonitor(ctx, t, client, nodeName, stopChan, originalArgs, syslogPod)
+
+		// Restore the original fault-quarantine ConfigMap so subsequent
+		// tests in the same run see the chart-deployed default rules.
+		helpers.RestoreQuarantineConfig(ctx, t, c)
 
 		return ctx
 	})
