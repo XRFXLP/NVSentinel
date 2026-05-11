@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package cancellation declares per-monitor "observation A clears observation
-// B" rules: when a check emits a fault carrying onErrorCode, the handler
-// additionally emits one synthetic healthy event per cancelErrorCodes entry
-// to clear matching prior faults on the same impacted entities.
+// Package cancellation defines per-check rules of the form
+// "observing onErrorCode emits synthetic healthy events for cancelErrorCodes".
 package cancellation
 
 import (
@@ -27,30 +25,23 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 )
 
-// CancellationRule declares that a single source error code should emit
-// synthetic healthy events for one or more target error codes.
 type CancellationRule struct {
 	OnErrorCode      string   `toml:"onErrorCode"`
 	CancelErrorCodes []string `toml:"cancelErrorCodes"`
 }
 
-// CheckCancellations groups all cancellation rules owned by a single check.
 type CheckCancellations struct {
 	Name    string             `toml:"name"`
 	Enabled bool               `toml:"enabled"`
 	Rules   []CancellationRule `toml:"cancellations"`
 }
 
-// Config is the top-level TOML schema for the cancellations file.
 type Config struct {
 	Checks []CheckCancellations `toml:"checks"`
 }
 
-// LoadConfig reads and validates a cancellations TOML file.
-//
-// A non-existent path is treated as "no cancellations configured" and returns
-// an empty Config with no error: cancellations are an optional feature and the
-// monitor must remain functional when the file is absent.
+// LoadConfig reads and validates a cancellations TOML file. A missing file
+// returns an empty Config with no error.
 func LoadConfig(path string) (*Config, error) {
 	var cfg Config
 
@@ -69,17 +60,9 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Validate enforces the following load-time invariants and rejects:
-//   - empty or whitespace-padded check.Name / OnErrorCode / CancelErrorCodes
-//   - empty CancelErrorCodes list
-//   - duplicate OnErrorCode within a check
-//   - self-cancel (OnErrorCode appears in CancelErrorCodes)
-//   - duplicate CancelErrorCodes within a single rule
-//   - duplicate Name across checks
-//
-// Padded values (e.g. "162 ") are rejected rather than silently trimmed
-// because they would never match a real error code emitted at runtime; failing
-// fast surfaces typos in the operator's TOML.
+// Validate rejects empty/padded names and codes, empty cancelErrorCodes,
+// duplicate onErrorCode within a check, self-cancel, duplicate cancel target,
+// and duplicate check names.
 func Validate(cfg *Config) error {
 	if cfg == nil {
 		return nil
@@ -152,10 +135,7 @@ func validateCheckRules(check *CheckCancellations) error {
 	return nil
 }
 
-// validateNonEmptyTrimmed returns nil iff value is non-empty and equals its
-// strings.TrimSpace(value) representation, i.e. the operator wrote no
-// leading/trailing whitespace. Returned errors are intentionally short so
-// callers can wrap them with positional context.
+// validateNonEmptyTrimmed rejects "" and any value with surrounding whitespace.
 func validateNonEmptyTrimmed(value string) error {
 	if value == "" {
 		return fmt.Errorf("must be set")
@@ -168,8 +148,31 @@ func validateNonEmptyTrimmed(value string) error {
 	return nil
 }
 
-// FindCheck returns the configured cancellations for the named check, or nil if
-// the check is not configured or is explicitly disabled.
+// ValidateSupportedChecks rejects rules for checks whose handlers do not
+// attach a Resolver. Prevents silent-no-op rules from loading.
+func ValidateSupportedChecks(cfg *Config, supported []string) error {
+	if cfg == nil {
+		return nil
+	}
+
+	supportedSet := make(map[string]struct{}, len(supported))
+	for _, name := range supported {
+		supportedSet[name] = struct{}{}
+	}
+
+	for i, check := range cfg.Checks {
+		if _, ok := supportedSet[check.Name]; !ok {
+			return fmt.Errorf(
+				"checks[%d]: name %q does not have cancellation support wired in this monitor (supported: %v)",
+				i, check.Name, supported,
+			)
+		}
+	}
+
+	return nil
+}
+
+// FindCheck returns the named check, or nil if absent or disabled.
 func (c *Config) FindCheck(name string) *CheckCancellations {
 	if c == nil {
 		return nil

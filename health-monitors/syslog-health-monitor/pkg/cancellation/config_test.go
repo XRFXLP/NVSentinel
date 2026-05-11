@@ -92,6 +92,81 @@ func TestFindCheck_UnknownReturnsNil(t *testing.T) {
 	assert.Nil(t, nilCfg.FindCheck("anything"))
 }
 
+func TestValidateSupportedChecks(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       *Config
+		supported []string
+		wantErr   string
+	}{
+		{
+			name:      "nil config is a no-op",
+			cfg:       nil,
+			supported: []string{"SysLogsXIDError"},
+		},
+		{
+			name:      "empty config passes",
+			cfg:       &Config{},
+			supported: []string{"SysLogsXIDError"},
+		},
+		{
+			name: "supported check passes",
+			cfg: &Config{
+				Checks: []CheckCancellations{{Name: "SysLogsXIDError", Enabled: true}},
+			},
+			supported: []string{"SysLogsXIDError"},
+		},
+		{
+			name: "unsupported check is rejected",
+			cfg: &Config{
+				Checks: []CheckCancellations{{Name: "SysLogsSXIDError", Enabled: true}},
+			},
+			supported: []string{"SysLogsXIDError"},
+			wantErr:   `name "SysLogsSXIDError" does not have cancellation support`,
+		},
+		{
+			name: "unsupported disabled check is still rejected",
+			cfg: &Config{
+				Checks: []CheckCancellations{{Name: "SysLogsSXIDError", Enabled: false}},
+			},
+			supported: []string{"SysLogsXIDError"},
+			wantErr:   `name "SysLogsSXIDError" does not have cancellation support`,
+		},
+		{
+			name: "empty supported list rejects every check",
+			cfg: &Config{
+				Checks: []CheckCancellations{{Name: "SysLogsXIDError", Enabled: true}},
+			},
+			supported: nil,
+			wantErr:   `name "SysLogsXIDError" does not have cancellation support`,
+		},
+		{
+			name: "first unsupported check wins (positional error)",
+			cfg: &Config{
+				Checks: []CheckCancellations{
+					{Name: "SysLogsXIDError", Enabled: true},
+					{Name: "Bogus", Enabled: true},
+				},
+			},
+			supported: []string{"SysLogsXIDError"},
+			wantErr:   `checks[1]: name "Bogus"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateSupportedChecks(tc.cfg, tc.supported)
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
 func TestValidate_RejectsInvalidConfigs(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -29,44 +29,31 @@ const (
 	SyslogDaemonSetName = "syslog-health-monitor-regular"
 )
 
-// ReplaceConfigMapFromBackup restores a ConfigMap from a YAML backup produced
-// by BackupConfigMap. It is a thin exported wrapper around
-// createConfigMapFromBytes so test files outside the helpers package can use
-// the same restore semantics that other component setup helpers use
-// internally.
+// ReplaceConfigMapFromBackup restores a ConfigMap from a BackupConfigMap blob.
 func ReplaceConfigMapFromBackup(
 	ctx context.Context, c klient.Client, backup []byte, name, namespace string,
 ) error {
 	return createConfigMapFromBytes(ctx, c, backup, name, namespace)
 }
 
-// SyslogConfigMapName is the unified ConfigMap that holds every file
-// configuration owned by the syslog-health-monitor pod (NIC driver patterns,
-// cancellation rules, ...). Each data key becomes a file under
-// /etc/syslog-health-monitor/.
-const SyslogConfigMapName = "syslog-health-monitor-config"
+const (
+	SyslogConfigMapName          = "syslog-health-monitor-config"
+	SyslogCancellationsConfigKey = "cancellations.toml"
+)
 
-// SyslogCancellationsConfigKey is the data key inside SyslogConfigMapName
-// that holds the rendered cancellations TOML.
-const SyslogCancellationsConfigKey = "cancellations.toml"
-
-// SyslogCancellationRule mirrors the production
-// cancellation.CancellationRule TOML schema so tests can construct rules
-// without importing the syslog-health-monitor module.
+// Mirror of cancellation.CancellationRule for tests; avoids importing the
+// syslog-health-monitor module from the tests/ go.mod.
 type SyslogCancellationRule struct {
 	OnErrorCode      string   `toml:"onErrorCode"`
 	CancelErrorCodes []string `toml:"cancelErrorCodes"`
 }
 
-// SyslogCheckCancellations mirrors cancellation.CheckCancellations.
 type SyslogCheckCancellations struct {
 	Name    string                   `toml:"name"`
 	Enabled bool                     `toml:"enabled"`
 	Rules   []SyslogCancellationRule `toml:"cancellations"`
 }
 
-// SyslogCancellationsConfig mirrors cancellation.Config; the TOML round-trip
-// performed by UpdateConfigMapTOMLField only sees fields declared here.
 type SyslogCancellationsConfig struct {
 	Checks []SyslogCheckCancellations `toml:"checks"`
 }
@@ -169,13 +156,8 @@ func TearDownSyslogHealthMonitor(ctx context.Context, t *testing.T, client klien
 	}
 }
 
-// SetSyslogCancellationRules replaces every cancellation rule in the
-// cancellations.toml key of the unified syslog-health-monitor ConfigMap with
-// the supplied checks. Callers are expected to BackupConfigMap first and
-// restore via ReplaceConfigMapFromBackup during teardown so subsequent tests
-// run against pristine config. Caller is responsible for restarting the
-// syslog pod after this returns; the running pod will not pick up the change
-// otherwise.
+// SetSyslogCancellationRules overwrites the cancellations.toml key. Caller
+// must BackupConfigMap before and restart the pod after.
 func SetSyslogCancellationRules(
 	ctx context.Context, c klient.Client, checks []SyslogCheckCancellations,
 ) error {

@@ -15,16 +15,10 @@
 package cancellation
 
 // Resolver maps a source error code to the error codes it cancels.
-//
-// The zero value (a nil map) is a valid empty resolver: a lookup against it
-// returns the zero value (nil slice), and len(nil) == 0, so callers can use
-// the standard `targets := r[code]; if len(targets) == 0` pattern without a
-// nil-check on the resolver itself.
+// The nil map is a valid empty resolver (lookups return nil).
 type Resolver map[string][]string
 
-// NewResolver builds a Resolver from a single CheckCancellations entry.
-// Returns nil for a nil or disabled check; nil is a fully usable empty
-// resolver (see the type's doc comment).
+// NewResolver returns nil for a nil or disabled check.
 func NewResolver(check *CheckCancellations) Resolver {
 	if check == nil || !check.Enabled {
 		return nil

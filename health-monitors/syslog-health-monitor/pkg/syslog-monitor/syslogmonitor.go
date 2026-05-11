@@ -40,10 +40,7 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid"
 )
 
-// NewSyslogMonitor creates a new SyslogMonitor instance.
-//
-// cancellationsCfg may be nil; nil is equivalent to an empty Config and
-// disables cancellation event emission for every check.
+// NewSyslogMonitor creates a new SyslogMonitor instance. cancellationsCfg may be nil.
 func NewSyslogMonitor(
 	nodeName string,
 	checks []CheckDefinition,
@@ -69,8 +66,6 @@ func NewSyslogMonitor(
 }
 
 // NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory.
-//
-// cancellationsCfg may be nil to disable per-handler cancellation rules.
 func NewSyslogMonitorWithFactory(
 	nodeName string,
 	checks []CheckDefinition,
@@ -188,8 +183,6 @@ func initHandlerForCheck(
 			return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
 		}
 
-		// Per-check cancellation rules. A nil resolver is a safe default
-		// and disables synthetic cancellation event emission for this handler.
 		h.SetCancellationResolver(cancellation.NewResolver(cancellationsCfg.FindCheck(check.Name)))
 
 		return h, nil

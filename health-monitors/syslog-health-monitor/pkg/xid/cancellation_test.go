@@ -97,7 +97,7 @@ func TestProcessLine_EmitsCancellationEventForMatchingRule(t *testing.T) {
 	assert.False(t, cancel.IsFatal)
 	assert.Equal(t, pb.RecommendedAction_NONE, cancel.RecommendedAction)
 	assert.Equal(t, "Cancelled by SysLogsXIDError error code 162", cancel.Message)
-	assert.Equal(t, "162", cancel.Metadata["nvsentinel.io/cancel-source-error-code"])
+	assert.Equal(t, "162", cancel.Metadata["nvsentinel.nvidia.com/cancel-source-error-code"])
 	// Identifying fields propagate so downstream entity-and-error-code matching
 	// can clear the prior fault.
 	assert.Equal(t, source.Agent, cancel.Agent)

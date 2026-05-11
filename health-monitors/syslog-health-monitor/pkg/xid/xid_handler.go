@@ -36,11 +36,9 @@ const (
 	gpuResetFailureErrorCode  = "GPU_RESET_FAILURE"
 	gpuResetFailureMessage    = "GPU reset failed, proceeding with a node reboot"
 
-	// cancelSourceErrorCodeMetadataKey is the metadata key on a synthetic
-	// cancellation event that records the source error code which triggered
-	// the cancellation. Downstream consumers can correlate the synthetic
-	// healthy event back to the unhealthy observation that produced it.
-	cancelSourceErrorCodeMetadataKey = "nvsentinel.io/cancel-source-error-code"
+	// cancelSourceErrorCodeMetadataKey records the error code that triggered
+	// a synthetic cancellation event, for correlation downstream.
+	cancelSourceErrorCodeMetadataKey = "nvsentinel.nvidia.com/cancel-source-error-code"
 )
 
 func NewXIDHandler(nodeName, defaultAgentName,
@@ -74,10 +72,8 @@ func NewXIDHandler(nodeName, defaultAgentName,
 	}, nil
 }
 
-// SetCancellationResolver attaches a per-check cancellation resolver to the
-// handler. Passing a nil or empty resolver disables synthetic cancellation
-// event emission. Safe to call once during startup before the handler is used
-// concurrently.
+// SetCancellationResolver attaches a Resolver to the handler. A nil or empty
+// resolver disables synthetic event emission. Call once at startup.
 func (xidHandler *XIDHandler) SetCancellationResolver(resolver cancellation.Resolver) {
 	xidHandler.cancellations = resolver
 }
@@ -279,13 +275,8 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 	}
 }
 
-// buildCancellationEvents returns the synthetic healthy events that the
-// configured cancellation rules require for the given source XID. The slice is
-// nil when no resolver is configured or when no rule matches. Each synthetic
-// event copies identifying fields (Agent, CheckName, ComponentClass,
-// NodeName, EntitiesImpacted, Version, ProcessingStrategy) from the source so
-// downstream entity-and-error-code matching clears only the targeted prior
-// fault.
+// buildCancellationEvents returns synthetic healthy events for every target
+// the configured rule maps sourceErrorCode to, or nil when no rule matches.
 func (xidHandler *XIDHandler) buildCancellationEvents(
 	sourceErrorCode string,
 	entities []*pb.Entity,
@@ -309,15 +300,13 @@ func (xidHandler *XIDHandler) buildCancellationEvents(
 	return synthetic
 }
 
-// buildCancellationEvent constructs one synthetic healthy event that cancels a
-// prior fault carrying targetErrorCode on the same entities as source.
+// buildCancellationEvent constructs one synthetic healthy event scoped to
+// targetErrorCode on the same entities as source.
 func (xidHandler *XIDHandler) buildCancellationEvent(
 	targetErrorCode string,
 	entities []*pb.Entity,
 	source *pb.HealthEvent,
 ) *pb.HealthEvent {
-	// Defensive copy of entities: downstream consumers must not be able to
-	// mutate the source event's slice via the synthetic event.
 	clonedEntities := make([]*pb.Entity, len(entities))
 	for i, e := range entities {
 		clonedEntities[i] = &pb.Entity{EntityType: e.EntityType, EntityValue: e.EntityValue}

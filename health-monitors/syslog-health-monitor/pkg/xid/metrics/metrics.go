@@ -46,11 +46,7 @@ var (
 		},
 	)
 
-	// CancellationsEmittedMetric counts synthetic cancellation HealthEvents
-	// emitted by configured cancellation rules. Labels:
-	//   - check:             the source CheckName (e.g. SysLogsXIDError)
-	//   - source_error_code: the error code on the triggering observation
-	//   - target_error_code: the error code carried by the synthetic event
+	// CancellationsEmittedMetric counts synthetic cancellation events.
 	CancellationsEmittedMetric = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "syslog_health_monitor_cancellations_emitted_total",

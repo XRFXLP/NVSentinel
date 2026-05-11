@@ -25,6 +25,7 @@ import (
 	"tests/helpers"
 
 	"github.com/stretchr/testify/require"
+	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
@@ -37,19 +38,9 @@ const (
 	keyCancellationsOrigArgs  contextKey = "cancellationsOriginalArgs"
 )
 
-// TestSyslogHealthMonitorCancellationRules verifies the per-monitor
-// cancellation pipeline end-to-end:
-//
-//  1. Configure a rule: observing XID 79 cancels XID 119.
-//  2. Inject XID 119 on GPU-2 (PCI:0002:00:00) and XID 94 on GPU-2.
-//     Both must appear in the SysLogsXIDError node condition.
-//  3. Inject XID 79 on GPU-2. The handler emits the original XID 79 fault
-//     plus a synthetic healthy XID 119 event in the same gRPC batch. The
-//     downstream entity-and-error-code-aware clearer must remove the XID 119
-//     entry while leaving the unrelated XID 94 entry on the same GPU intact.
-//
-// The third step exercises both the "rule fires" path and the "scoped clear
-// preserves unrelated faults on the same entity" path.
+// TestSyslogHealthMonitorCancellationRules: rule "79 cancels 119" — XID 79
+// must clear XID 119 from the node condition without touching unrelated
+// XID 94 on the same GPU.
 func TestSyslogHealthMonitorCancellationRules(t *testing.T) {
 	feature := features.New("Syslog Health Monitor - Cancellation Rules").
 		WithLabel("suite", "syslog-health-monitor").
@@ -59,18 +50,12 @@ func TestSyslogHealthMonitorCancellationRules(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		// Snapshot the unified syslog-health-monitor ConfigMap before
-		// mutating its cancellations.toml key; teardown restores it so
-		// subsequent tests run against a pristine config.
-		t.Logf("Backing up syslog-health-monitor ConfigMap %s/%s",
-			helpers.NVSentinelNamespace, helpers.SyslogConfigMapName)
 		backup, err := helpers.BackupConfigMap(ctx, client,
 			helpers.SyslogConfigMapName, helpers.NVSentinelNamespace)
 		require.NoError(t, err, "failed to back up syslog-health-monitor ConfigMap")
 
 		ctx = context.WithValue(ctx, keyCancellationsCMBackup, backup)
 
-		t.Log("Patching cancellations ConfigMap with rule: SysLogsXIDError on XID 79 cancels XID 119")
 		require.NoError(t, helpers.SetSyslogCancellationRules(ctx, client,
 			[]helpers.SyslogCheckCancellations{
 				{
@@ -83,9 +68,7 @@ func TestSyslogHealthMonitorCancellationRules(t *testing.T) {
 			},
 		), "failed to update cancellations ConfigMap")
 
-		// SetUpSyslogHealthMonitor restarts the syslog-health-monitor pod
-		// after metadata injection; the restarted pod loads the patched
-		// cancellation rules from the mounted ConfigMap.
+		// Pod restart inside SetUpSyslogHealthMonitor picks up the patched config.
 		testNodeName, syslogPod, stopChan, originalArgs := helpers.SetUpSyslogHealthMonitor(ctx, t, client, nil, false)
 
 		ctx = context.WithValue(ctx, keyCancellationsTestNode, testNodeName)
@@ -104,9 +87,8 @@ func TestSyslogHealthMonitorCancellationRules(t *testing.T) {
 
 		nodeName := ctx.Value(keyCancellationsTestNode).(string)
 
-		// XID 119 → COMPONENT_RESET (fatal). XID 94 is overridden to fatal
-		// CONTACT_SUPPORT in values-tilt.yaml. Both target GPU-2
-		// (PCI:0002:00:00 → GPU-22222222-...).
+		// XID 119 → COMPONENT_RESET. XID 94 → CONTACT_SUPPORT (overridden in
+		// values-tilt.yaml). Both fatal, both on GPU-2 (PCI:0002:00:00).
 		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, []string{
 			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
 			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 94, pid=789012, name=process, Contained ECC error.",
@@ -135,51 +117,26 @@ func TestSyslogHealthMonitorCancellationRules(t *testing.T) {
 
 		nodeName := ctx.Value(keyCancellationsTestNode).(string)
 
-		// XID 79 itself is fatal (CONTACT_SUPPORT) so the source event will
-		// also surface as a new entry on GPU-2; the synthetic healthy event
-		// fans out alongside it in the same gRPC batch and clears XID 119.
+		// XID 79 is itself fatal so it surfaces as a new entry; the synthetic
+		// healthy XID 119 event fans out alongside it and clears XID 119.
 		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, []string{
 			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 79, pid=123456, name=test-cancel, GPU has fallen off the bus.",
 		})
 
-		t.Log("Verifying that XID 119 is cleared but XID 94 (unrelated, same entity) remains")
 		require.Eventually(t, func() bool {
 			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
 				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy")
 			if err != nil || condition == nil {
-				t.Logf("Condition not found yet: %v", err)
 				return false
 			}
 
 			msg := condition.Message
 
-			// New fault from XID 79 is expected (it triggered the
-			// cancellation but is itself an unhealthy observation).
-			if !strings.Contains(msg, "ErrorCode:79") {
-				t.Logf("Waiting for XID 79 source event to appear: %s", msg)
-				return false
-			}
-
-			// XID 94 must remain — the cancellation rule targeted XID 119
-			// only; the entity-and-error-code-aware clearer must leave
-			// unrelated codes on the same entity intact.
-			if !strings.Contains(msg, "ErrorCode:94") {
-				t.Logf("FAIL: XID 94 was incorrectly cleared by XID-119-scoped cancellation: %s", msg)
-				return false
-			}
-
-			// XID 119 must be gone — the synthetic healthy XID 119 event
-			// emitted alongside XID 79 should have removed it.
-			if entryCount(msg, "ErrorCode:119") != 0 {
-				t.Logf("Waiting for synthetic cancellation of XID 119 to take effect: %s", msg)
-				return false
-			}
-
-			t.Logf("PASS: XID 119 cleared by cancellation, XID 94 preserved, XID 79 surfaced: %s", msg)
-
-			return true
+			return strings.Contains(msg, "ErrorCode:79") &&
+				strings.Contains(msg, "ErrorCode:94") &&
+				entryCount(msg, "ErrorCode:119") == 0
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
-			"Synthetic cancellation should clear XID 119 while leaving XID 94 on the same GPU intact")
+			"XID 119 should be cleared, XID 94 preserved, XID 79 surfaced")
 
 		return ctx
 	})
@@ -193,16 +150,9 @@ func TestSyslogHealthMonitorCancellationRules(t *testing.T) {
 		stopChan := ctx.Value(keyCancellationsStopChan).(chan struct{})
 		originalArgs, _ := ctx.Value(keyCancellationsOrigArgs).([]string)
 
-		// Restore the original cancellations ConfigMap so subsequent tests
-		// see no rules. The pod restart in TearDownSyslogHealthMonitor will
-		// then reload the empty config.
+		// Restore the ConfigMap; t.Errorf (not t.Logf) — a leaked rule would
+		// poison every subsequent test in the same run.
 		if backup, ok := ctx.Value(keyCancellationsCMBackup).([]byte); ok && backup != nil {
-			t.Logf("Restoring original syslog-health-monitor ConfigMap")
-
-			// Mark the test failed (but keep going so the rest of teardown
-			// still runs) when we fail to restore the ConfigMap. A leaked
-			// cancellation rule would silently affect every subsequent test
-			// in the same run, so the failure must be visible.
 			if restoreErr := helpers.ReplaceConfigMapFromBackup(
 				ctx, client, backup,
 				helpers.SyslogConfigMapName, helpers.NVSentinelNamespace,
@@ -219,9 +169,7 @@ func TestSyslogHealthMonitorCancellationRules(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
-// entryCount returns how many ";"-separated condition message entries contain
-// the given substring. Used to assert that a particular ErrorCode token has
-// been removed entirely from the node condition.
+// entryCount counts ";"-separated message entries containing substr.
 func entryCount(message, substr string) int {
 	count := 0
 
@@ -232,4 +180,142 @@ func entryCount(message, substr string) int {
 	}
 
 	return count
+}
+
+// TestSyslogHealthMonitorCancellationUncordonsNode: rule "13 cancels 119" —
+// fatal XID 119 cordons the node; non-fatal XID 13 emits a synthetic healthy
+// XID 119 that uncordons it. XID 13 (RecommendedAction=NONE) is itself
+// non-fatal so it doesn't satisfy fault-quarantine's cordon CEL on its own.
+func TestSyslogHealthMonitorCancellationUncordonsNode(t *testing.T) {
+	feature := features.New("Syslog Health Monitor - Cancellation Uncordons Node").
+		WithLabel("suite", "syslog-health-monitor").
+		WithLabel("component", "cancellation-uncordon")
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		backup, err := helpers.BackupConfigMap(ctx, client,
+			helpers.SyslogConfigMapName, helpers.NVSentinelNamespace)
+		require.NoError(t, err, "failed to back up syslog-health-monitor ConfigMap")
+
+		ctx = context.WithValue(ctx, keyCancellationsCMBackup, backup)
+
+		require.NoError(t, helpers.SetSyslogCancellationRules(ctx, client,
+			[]helpers.SyslogCheckCancellations{
+				{
+					Name:    "SysLogsXIDError",
+					Enabled: true,
+					Rules: []helpers.SyslogCancellationRule{
+						{OnErrorCode: "13", CancelErrorCodes: []string{"119"}},
+					},
+				},
+			},
+		), "failed to update cancellations ConfigMap")
+
+		// setManagedByNVSentinel=true is required for fault-quarantine's
+		// syslog cordon CEL to match this node.
+		testNodeName, syslogPod, stopChan, originalArgs := helpers.SetUpSyslogHealthMonitor(ctx, t, client, nil, true)
+
+		ctx = context.WithValue(ctx, keyCancellationsTestNode, testNodeName)
+		ctx = context.WithValue(ctx, keyCancellationsSyslogPod, syslogPod.Name)
+		ctx = context.WithValue(ctx, keyCancellationsStopChan, stopChan)
+		ctx = context.WithValue(ctx, keyCancellationsOrigArgs, originalArgs)
+
+		return ctx
+	})
+
+	feature.Assess("fatal XID 119 cordones the node and writes the FQ annotation", func(
+		ctx context.Context, t *testing.T, c *envconf.Config,
+	) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keyCancellationsTestNode).(string)
+
+		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, []string{
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
+		})
+
+		require.Eventually(t, func() bool {
+			return helpers.VerifyNodeConditionMatchesSequence(t, ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy", []string{
+					`ErrorCode:119 PCI:0002:00:00 GPU_UUID:GPU-22222222-2222-2222-2222-222222222222 kernel:.*?NVRM: Xid \(PCI:0002:00:00\): 119.*?Recommended Action=COMPONENT_RESET`,
+				})
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"Node condition should contain the XID 119 fault entry")
+
+		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: true,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: true},
+			},
+		})
+
+		return ctx
+	})
+
+	feature.Assess("non-fatal XID 13 cancellation triggers full uncordon", func(
+		ctx context.Context, t *testing.T, c *envconf.Config,
+	) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keyCancellationsTestNode).(string)
+
+		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, []string{
+			"kernel: [103859.498995] NVRM: Xid (PCI:0002:00:00): 13, pid=2519562, name=python3, Graphics Exception: ChID 000c, Class 0000cbc0, Offset 00000000, Data 00000000",
+		})
+
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsHealthy")
+			if err != nil {
+				return false
+			}
+
+			// Condition either gone or flipped to False with no XID 119 entry.
+			if condition == nil {
+				return true
+			}
+
+			return condition.Status == v1.ConditionFalse &&
+				entryCount(condition.Message, "ErrorCode:119") == 0
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"XID 119 should be cleared from the SysLogsXIDError condition")
+
+		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
+		})
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keyCancellationsTestNode).(string)
+		syslogPod := ctx.Value(keyCancellationsSyslogPod).(string)
+		stopChan := ctx.Value(keyCancellationsStopChan).(chan struct{})
+		originalArgs, _ := ctx.Value(keyCancellationsOrigArgs).([]string)
+
+		if backup, ok := ctx.Value(keyCancellationsCMBackup).([]byte); ok && backup != nil {
+			if restoreErr := helpers.ReplaceConfigMapFromBackup(
+				ctx, client, backup,
+				helpers.SyslogConfigMapName, helpers.NVSentinelNamespace,
+			); restoreErr != nil {
+				t.Errorf("failed to restore syslog-health-monitor ConfigMap: %v", restoreErr)
+			}
+		}
+
+		helpers.TearDownSyslogHealthMonitor(ctx, t, client, nodeName, stopChan, originalArgs, syslogPod)
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
 }
