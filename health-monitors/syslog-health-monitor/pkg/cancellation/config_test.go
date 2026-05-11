@@ -108,7 +108,7 @@ func TestValidate_RejectsInvalidConfigs(t *testing.T) {
     onErrorCode      = ""
     cancelErrorCodes = ["163"]
 `,
-			wantErr: "onErrorCode must be set",
+			wantErr: "onErrorCode: must be set",
 		},
 		{
 			name: "empty cancelErrorCodes",
@@ -171,7 +171,7 @@ func TestValidate_RejectsInvalidConfigs(t *testing.T) {
     onErrorCode      = "162"
     cancelErrorCodes = ["163", ""]
 `,
-			wantErr: "contains an empty entry",
+			wantErr: "cancelErrorCodes[1]: must be set",
 		},
 		{
 			name: "duplicate check name",
@@ -201,7 +201,43 @@ func TestValidate_RejectsInvalidConfigs(t *testing.T) {
     onErrorCode      = "162"
     cancelErrorCodes = ["163"]
 `,
-			wantErr: "name must be set",
+			wantErr: "name: must be set",
+		},
+		{
+			name: "padded check name",
+			body: `
+[[checks]]
+  name    = "SysLogsXIDError "
+  enabled = true
+  [[checks.cancellations]]
+    onErrorCode      = "162"
+    cancelErrorCodes = ["163"]
+`,
+			wantErr: "must not have leading or trailing whitespace",
+		},
+		{
+			name: "padded onErrorCode",
+			body: `
+[[checks]]
+  name    = "SysLogsXIDError"
+  enabled = true
+  [[checks.cancellations]]
+    onErrorCode      = " 162"
+    cancelErrorCodes = ["163"]
+`,
+			wantErr: "onErrorCode: must not have leading or trailing whitespace",
+		},
+		{
+			name: "padded cancelErrorCode entry",
+			body: `
+[[checks]]
+  name    = "SysLogsXIDError"
+  enabled = true
+  [[checks.cancellations]]
+    onErrorCode      = "162"
+    cancelErrorCodes = ["163 "]
+`,
+			wantErr: "cancelErrorCodes[0]: must not have leading or trailing whitespace",
 		},
 	}
 

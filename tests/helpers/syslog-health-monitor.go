@@ -40,12 +40,14 @@ func ReplaceConfigMapFromBackup(
 	return createConfigMapFromBytes(ctx, c, backup, name, namespace)
 }
 
-// SyslogCancellationsConfigMapName is the name of the ConfigMap that mounts
-// /etc/nvsentinel/cancellations.toml into the syslog-health-monitor pod.
-const SyslogCancellationsConfigMapName = "syslog-health-monitor-cancellations"
+// SyslogConfigMapName is the unified ConfigMap that holds every file
+// configuration owned by the syslog-health-monitor pod (NIC driver patterns,
+// cancellation rules, ...). Each data key becomes a file under
+// /etc/syslog-health-monitor/.
+const SyslogConfigMapName = "syslog-health-monitor-config"
 
-// SyslogCancellationsConfigKey is the data key inside
-// SyslogCancellationsConfigMapName that holds the rendered cancellations TOML.
+// SyslogCancellationsConfigKey is the data key inside SyslogConfigMapName
+// that holds the rendered cancellations TOML.
 const SyslogCancellationsConfigKey = "cancellations.toml"
 
 // SyslogCancellationRule mirrors the production
@@ -168,16 +170,17 @@ func TearDownSyslogHealthMonitor(ctx context.Context, t *testing.T, client klien
 }
 
 // SetSyslogCancellationRules replaces every cancellation rule in the
-// syslog-health-monitor cancellations ConfigMap with the supplied checks.
-// Callers are expected to BackupConfigMap first and restore via
-// ReplaceConfigMapFromBackup during teardown so subsequent tests run against
-// pristine config. Caller is responsible for restarting the syslog pod after
-// this returns; the running pod will not pick up the change otherwise.
+// cancellations.toml key of the unified syslog-health-monitor ConfigMap with
+// the supplied checks. Callers are expected to BackupConfigMap first and
+// restore via ReplaceConfigMapFromBackup during teardown so subsequent tests
+// run against pristine config. Caller is responsible for restarting the
+// syslog pod after this returns; the running pod will not pick up the change
+// otherwise.
 func SetSyslogCancellationRules(
 	ctx context.Context, c klient.Client, checks []SyslogCheckCancellations,
 ) error {
 	return UpdateConfigMapTOMLField(ctx, c,
-		SyslogCancellationsConfigMapName, NVSentinelNamespace, SyslogCancellationsConfigKey,
+		SyslogConfigMapName, NVSentinelNamespace, SyslogCancellationsConfigKey,
 		func(cfg *SyslogCancellationsConfig) error {
 			cfg.Checks = checks
 			return nil

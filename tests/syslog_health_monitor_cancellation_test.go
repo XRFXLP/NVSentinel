@@ -59,13 +59,14 @@ func TestSyslogHealthMonitorCancellationRules(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		// Snapshot the cancellations ConfigMap before mutating it; teardown
-		// restores it so subsequent tests run against a pristine config.
-		t.Logf("Backing up cancellations ConfigMap %s/%s",
-			helpers.NVSentinelNamespace, helpers.SyslogCancellationsConfigMapName)
+		// Snapshot the unified syslog-health-monitor ConfigMap before
+		// mutating its cancellations.toml key; teardown restores it so
+		// subsequent tests run against a pristine config.
+		t.Logf("Backing up syslog-health-monitor ConfigMap %s/%s",
+			helpers.NVSentinelNamespace, helpers.SyslogConfigMapName)
 		backup, err := helpers.BackupConfigMap(ctx, client,
-			helpers.SyslogCancellationsConfigMapName, helpers.NVSentinelNamespace)
-		require.NoError(t, err, "failed to back up cancellations ConfigMap")
+			helpers.SyslogConfigMapName, helpers.NVSentinelNamespace)
+		require.NoError(t, err, "failed to back up syslog-health-monitor ConfigMap")
 
 		ctx = context.WithValue(ctx, keyCancellationsCMBackup, backup)
 
@@ -196,13 +197,17 @@ func TestSyslogHealthMonitorCancellationRules(t *testing.T) {
 		// see no rules. The pod restart in TearDownSyslogHealthMonitor will
 		// then reload the empty config.
 		if backup, ok := ctx.Value(keyCancellationsCMBackup).([]byte); ok && backup != nil {
-			t.Logf("Restoring original cancellations ConfigMap")
+			t.Logf("Restoring original syslog-health-monitor ConfigMap")
 
+			// Mark the test failed (but keep going so the rest of teardown
+			// still runs) when we fail to restore the ConfigMap. A leaked
+			// cancellation rule would silently affect every subsequent test
+			// in the same run, so the failure must be visible.
 			if restoreErr := helpers.ReplaceConfigMapFromBackup(
 				ctx, client, backup,
-				helpers.SyslogCancellationsConfigMapName, helpers.NVSentinelNamespace,
+				helpers.SyslogConfigMapName, helpers.NVSentinelNamespace,
 			); restoreErr != nil {
-				t.Logf("Warning: failed to restore cancellations ConfigMap: %v", restoreErr)
+				t.Errorf("failed to restore syslog-health-monitor ConfigMap: %v", restoreErr)
 			}
 		}
 

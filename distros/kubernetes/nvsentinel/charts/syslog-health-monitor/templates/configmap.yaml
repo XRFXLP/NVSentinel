@@ -12,14 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Single ConfigMap holding every file configuration owned by the
+# syslog-health-monitor pod. Each data key becomes a file under the mount
+# directory (/etc/syslog-health-monitor/) and is referenced by the matching
+# CLI flag in the DaemonSet args.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: '{{ include "syslog-health-monitor.fullname" . }}-nic-driver'
+  name: '{{ include "syslog-health-monitor.fullname" . }}-config'
   labels:
     {{- include "syslog-health-monitor.labels" . | nindent 4 }}
 data:
-  config.toml: |
+  nic-driver.toml: |
     {{- range .Values.nicDriverDetection.patterns }}
 
     [[nicDriverDetection.patterns]]
@@ -31,18 +35,6 @@ data:
     processingStrategy = {{ .processingStrategy | quote }}
     description = {{ .description | quote }}
     {{- end }}
----
-# Per-monitor cancellation rules. Rendered as TOML so the syslog monitor's
-# --cancellations-config flag can load it directly. The map key
-# 'cancellations.toml' is fixed; the daemonset mounts this ConfigMap at
-# /etc/nvsentinel which is the parent directory of the configured flag path.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: '{{ include "syslog-health-monitor.fullname" . }}-cancellations'
-  labels:
-    {{- include "syslog-health-monitor.labels" . | nindent 4 }}
-data:
   cancellations.toml: |
     {{- range .Values.cancellations }}
 

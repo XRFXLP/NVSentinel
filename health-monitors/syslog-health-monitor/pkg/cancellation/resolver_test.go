@@ -79,3 +79,21 @@ func TestResolver_DefensiveCopy(t *testing.T) {
 
 	assert.Equal(t, []string{"163"}, r.Lookup("162"))
 }
+
+// Mutating the slice returned by Lookup must not affect the resolver's
+// internal state — Lookup returns its own copy on every call.
+func TestResolver_LookupReturnsDefensiveCopy(t *testing.T) {
+	r := NewResolver(&CheckCancellations{
+		Name:    "SysLogsXIDError",
+		Enabled: true,
+		Rules: []CancellationRule{
+			{OnErrorCode: "162", CancelErrorCodes: []string{"163", "164"}},
+		},
+	})
+
+	got := r.Lookup("162")
+	got[0] = "MUTATED"
+
+	assert.Equal(t, []string{"163", "164"}, r.Lookup("162"),
+		"a caller mutating the returned slice must not corrupt the resolver")
+}

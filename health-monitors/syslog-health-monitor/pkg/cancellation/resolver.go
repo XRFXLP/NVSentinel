@@ -48,14 +48,20 @@ func NewResolver(check *CheckCancellations) *Resolver {
 // Lookup returns the list of error codes that should be cancelled when the
 // given source error code is observed. Returns nil when no rule matches.
 //
-// Callers must not mutate the returned slice; it shares storage with the
-// resolver's internal map.
+// The returned slice is a defensive copy; callers may mutate it freely
+// without affecting the resolver's internal state, mirroring the input-side
+// copy that NewResolver performs on construction.
 func (r *Resolver) Lookup(sourceErrorCode string) []string {
 	if r == nil {
 		return nil
 	}
 
-	return r.rules[sourceErrorCode]
+	targets, ok := r.rules[sourceErrorCode]
+	if !ok {
+		return nil
+	}
+
+	return slices.Clone(targets)
 }
 
 // Empty returns true when the resolver carries no rules.

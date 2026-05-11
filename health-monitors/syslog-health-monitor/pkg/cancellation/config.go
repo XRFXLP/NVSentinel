@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -74,12 +75,16 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // Validate enforces the following load-time invariants and rejects:
-//   - empty OnErrorCode
-//   - empty CancelErrorCodes
+//   - empty or whitespace-padded check.Name / OnErrorCode / CancelErrorCodes
+//   - empty CancelErrorCodes list
 //   - duplicate OnErrorCode within a check
 //   - self-cancel (OnErrorCode appears in CancelErrorCodes)
 //   - duplicate CancelErrorCodes within a single rule
 //   - duplicate Name across checks
+//
+// Padded values (e.g. "162 ") are rejected rather than silently trimmed
+// because they would never match a real error code emitted at runtime; failing
+// fast surfaces typos in the operator's TOML.
 func Validate(cfg *Config) error {
 	if cfg == nil {
 		return nil
@@ -89,8 +94,8 @@ func Validate(cfg *Config) error {
 
 	for i := range cfg.Checks {
 		check := &cfg.Checks[i]
-		if check.Name == "" {
-			return fmt.Errorf("checks[%d]: name must be set", i)
+		if err := validateNonEmptyTrimmed(check.Name); err != nil {
+			return fmt.Errorf("checks[%d]: name: %w", i, err)
 		}
 
 		if _, dup := seenChecks[check.Name]; dup {
@@ -112,8 +117,8 @@ func validateCheckRules(check *CheckCancellations) error {
 
 	for j := range check.Rules {
 		rule := &check.Rules[j]
-		if rule.OnErrorCode == "" {
-			return fmt.Errorf("cancellations[%d]: onErrorCode must be set", j)
+		if err := validateNonEmptyTrimmed(rule.OnErrorCode); err != nil {
+			return fmt.Errorf("cancellations[%d]: onErrorCode: %w", j, err)
 		}
 
 		if _, dup := seenOn[rule.OnErrorCode]; dup {
@@ -129,10 +134,10 @@ func validateCheckRules(check *CheckCancellations) error {
 
 		seenTargets := make(map[string]struct{}, len(rule.CancelErrorCodes))
 
-		for _, target := range rule.CancelErrorCodes {
-			if target == "" {
-				return fmt.Errorf("cancellations[%d] (onErrorCode=%s): cancelErrorCodes contains an empty entry",
-					j, rule.OnErrorCode)
+		for k, target := range rule.CancelErrorCodes {
+			if err := validateNonEmptyTrimmed(target); err != nil {
+				return fmt.Errorf("cancellations[%d] (onErrorCode=%s): cancelErrorCodes[%d]: %w",
+					j, rule.OnErrorCode, k, err)
 			}
 
 			if target == rule.OnErrorCode {
@@ -147,6 +152,22 @@ func validateCheckRules(check *CheckCancellations) error {
 
 			seenTargets[target] = struct{}{}
 		}
+	}
+
+	return nil
+}
+
+// validateNonEmptyTrimmed returns nil iff value is non-empty and equals its
+// strings.TrimSpace(value) representation, i.e. the operator wrote no
+// leading/trailing whitespace. Returned errors are intentionally short so
+// callers can wrap them with positional context.
+func validateNonEmptyTrimmed(value string) error {
+	if value == "" {
+		return fmt.Errorf("must be set")
+	}
+
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("must not have leading or trailing whitespace (got %q)", value)
 	}
 
 	return nil

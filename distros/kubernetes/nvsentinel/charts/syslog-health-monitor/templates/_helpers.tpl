@@ -130,11 +130,11 @@ spec:
             - "--processing-strategy"
             - "{{ $root.Values.processingStrategy }}"
             - "--nic-driver-config"
-            - "/etc/nic-driver-syslog/config.toml"
+            - "/etc/syslog-health-monitor/nic-driver.toml"
             - "--sysfs-root"
             - "/nvsentinel/sys"
             - "--cancellations-config"
-            - "/etc/nvsentinel/cancellations.toml"
+            - "/etc/syslog-health-monitor/cancellations.toml"
           resources:
             {{- toYaml $root.Values.resources | nindent 12 }}
           ports:
@@ -195,11 +195,8 @@ spec:
             - name: sys-vol
               mountPath: /nvsentinel/sys
               readOnly: true
-            - name: nic-driver-config
-              mountPath: /etc/nic-driver-syslog
-              readOnly: true
-            - name: cancellations-config
-              mountPath: /etc/nvsentinel
+            - name: syslog-health-monitor-config
+              mountPath: /etc/syslog-health-monitor
               readOnly: true
         {{- if and $root.Values.xidSideCar.enabled (not (semverCompare ">=1.29-0" $root.Capabilities.KubeVersion.Version)) }}
         - name: xid-analyzer-sidecar
@@ -258,12 +255,9 @@ spec:
           hostPath:
             path: /sys
             type: Directory
-        - name: nic-driver-config
+        - name: syslog-health-monitor-config
           configMap:
-            name: {{ include "syslog-health-monitor.fullname" $root }}-nic-driver
-        - name: cancellations-config
-          configMap:
-            name: {{ include "syslog-health-monitor.fullname" $root }}-cancellations
+            name: {{ include "syslog-health-monitor.fullname" $root }}-config
         - name: proc-vol    
           hostPath:
             path: /proc

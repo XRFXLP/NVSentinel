@@ -75,11 +75,11 @@ var (
 		"Path to GPU metadata JSON file.")
 	processingStrategyFlag = flag.String("processing-strategy", "EXECUTE_REMEDIATION",
 		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY")
-	nicDriverConfigPath = flag.String("nic-driver-config", "/etc/nic-driver-syslog/config.toml",
+	nicDriverConfigPath = flag.String("nic-driver-config", "/etc/syslog-health-monitor/nic-driver.toml",
 		"Path to NIC driver syslog pattern config (TOML). Used only when SysLogsNICDriverError is in --checks.")
 	sysfsRoot = flag.String("sysfs-root", "/nvsentinel/sys",
 		"Root path for sysfs reads (BDF→driver resolution). Typically a container mount point.")
-	cancellationsConfigPath = flag.String("cancellations-config", "/etc/nvsentinel/cancellations.toml",
+	cancellationsConfigPath = flag.String("cancellations-config", "/etc/syslog-health-monitor/cancellations.toml",
 		"Path to per-monitor cancellation rules (TOML). Missing file is treated as no rules.")
 )
 
