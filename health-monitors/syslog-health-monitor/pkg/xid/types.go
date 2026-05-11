@@ -39,8 +39,7 @@ type XIDHandler struct {
 	parser         parser.Parser
 	metadataReader *metadata.Reader
 
-	// cancellations is the per-check cancellation rule resolver. A nil
-	// resolver (or one returning Empty()) disables synthetic cancellation
-	// event emission.
-	cancellations *cancellation.Resolver
+	// cancellations is the per-check cancellation rule resolver. A nil/empty
+	// map disables synthetic cancellation event emission.
+	cancellations cancellation.Resolver
 }

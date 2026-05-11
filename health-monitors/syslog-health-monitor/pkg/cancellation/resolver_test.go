@@ -20,31 +20,31 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestResolver_Lookup(t *testing.T) {
-	check := &CheckCancellations{
+func TestNewResolver_Lookup(t *testing.T) {
+	r := NewResolver(&CheckCancellations{
 		Name:    "SysLogsXIDError",
 		Enabled: true,
 		Rules: []CancellationRule{
 			{OnErrorCode: "162", CancelErrorCodes: []string{"163"}},
 			{OnErrorCode: "31", CancelErrorCodes: []string{"13", "43"}},
 		},
-	}
+	})
 
-	r := NewResolver(check)
-
-	assert.Equal(t, []string{"163"}, r.Lookup("162"))
-	assert.Equal(t, []string{"13", "43"}, r.Lookup("31"))
-	assert.Nil(t, r.Lookup("999"))
-	assert.False(t, r.Empty())
+	assert.Equal(t, []string{"163"}, r["162"])
+	assert.Equal(t, []string{"13", "43"}, r["31"])
+	assert.Nil(t, r["999"])
+	assert.Len(t, r, 2)
 }
 
-func TestResolver_NilCheckIsEmpty(t *testing.T) {
+func TestNewResolver_NilCheckIsEmpty(t *testing.T) {
 	r := NewResolver(nil)
-	assert.True(t, r.Empty())
-	assert.Nil(t, r.Lookup("162"))
+	assert.Nil(t, r)
+	// Nil map lookup is the canonical "no rule" path used by callers.
+	assert.Nil(t, r["162"])
+	assert.Equal(t, 0, len(r))
 }
 
-func TestResolver_DisabledCheckIsEmpty(t *testing.T) {
+func TestNewResolver_DisabledCheckIsEmpty(t *testing.T) {
 	r := NewResolver(&CheckCancellations{
 		Name:    "SysLogsXIDError",
 		Enabled: false,
@@ -53,47 +53,6 @@ func TestResolver_DisabledCheckIsEmpty(t *testing.T) {
 		},
 	})
 
-	assert.True(t, r.Empty())
-	assert.Nil(t, r.Lookup("162"))
-}
-
-func TestResolver_NilReceiverSafe(t *testing.T) {
-	var r *Resolver
-	assert.Nil(t, r.Lookup("162"))
-	assert.True(t, r.Empty())
-}
-
-// Mutating the input rule slice after constructing the resolver must not
-// affect the resolver's view — Lookup returns the resolver's own copy.
-func TestResolver_DefensiveCopy(t *testing.T) {
-	check := &CheckCancellations{
-		Name:    "SysLogsXIDError",
-		Enabled: true,
-		Rules: []CancellationRule{
-			{OnErrorCode: "162", CancelErrorCodes: []string{"163"}},
-		},
-	}
-
-	r := NewResolver(check)
-	check.Rules[0].CancelErrorCodes[0] = "999"
-
-	assert.Equal(t, []string{"163"}, r.Lookup("162"))
-}
-
-// Mutating the slice returned by Lookup must not affect the resolver's
-// internal state — Lookup returns its own copy on every call.
-func TestResolver_LookupReturnsDefensiveCopy(t *testing.T) {
-	r := NewResolver(&CheckCancellations{
-		Name:    "SysLogsXIDError",
-		Enabled: true,
-		Rules: []CancellationRule{
-			{OnErrorCode: "162", CancelErrorCodes: []string{"163", "164"}},
-		},
-	})
-
-	got := r.Lookup("162")
-	got[0] = "MUTATED"
-
-	assert.Equal(t, []string{"163", "164"}, r.Lookup("162"),
-		"a caller mutating the returned slice must not corrupt the resolver")
+	assert.Nil(t, r)
+	assert.Nil(t, r["162"])
 }

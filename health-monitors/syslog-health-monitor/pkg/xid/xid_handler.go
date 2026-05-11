@@ -78,7 +78,7 @@ func NewXIDHandler(nodeName, defaultAgentName,
 // handler. Passing a nil or empty resolver disables synthetic cancellation
 // event emission. Safe to call once during startup before the handler is used
 // concurrently.
-func (xidHandler *XIDHandler) SetCancellationResolver(resolver *cancellation.Resolver) {
+func (xidHandler *XIDHandler) SetCancellationResolver(resolver cancellation.Resolver) {
 	xidHandler.cancellations = resolver
 }
 
@@ -291,11 +291,7 @@ func (xidHandler *XIDHandler) buildCancellationEvents(
 	entities []*pb.Entity,
 	source *pb.HealthEvent,
 ) []*pb.HealthEvent {
-	if xidHandler.cancellations.Empty() {
-		return nil
-	}
-
-	targets := xidHandler.cancellations.Lookup(sourceErrorCode)
+	targets := xidHandler.cancellations[sourceErrorCode]
 	if len(targets) == 0 {
 		return nil
 	}
