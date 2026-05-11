@@ -24,7 +24,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/BurntSushi/toml"
+	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 )
 
 // CancellationRule declares that a single source error code should emit
@@ -52,19 +52,14 @@ type Config struct {
 // an empty Config with no error: cancellations are an optional feature and the
 // monitor must remain functional when the file is absent.
 func LoadConfig(path string) (*Config, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
+	var cfg Config
+
+	if err := configmanager.LoadTOMLConfig(path, &cfg); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return &Config{}, nil
 		}
 
-		return nil, fmt.Errorf("failed to read cancellations config %s: %w", path, err)
-	}
-
-	var cfg Config
-
-	if _, err := toml.Decode(string(content), &cfg); err != nil {
-		return nil, fmt.Errorf("failed to decode cancellations config %s: %w", path, err)
+		return nil, err
 	}
 
 	if err := Validate(&cfg); err != nil {
