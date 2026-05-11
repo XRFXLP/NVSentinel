@@ -80,10 +80,8 @@ type Publisher struct {
 // Option configures a Publisher.
 type Option func(*Publisher)
 
-// WithRetryPolicy overrides the default exponential-backoff parameters
-// (defaults: maxRetries=5, initialBackoff=2s, factor=1.5, jitter=0.1).
-// With the pre-send gate in place the retry loop runs only for
-// transient gRPC errors, so defaults are usually fine.
+// WithRetryPolicy overrides the default backoff (5 / 2s / 1.5 / 0.1).
+// Primarily for tests; production should accept defaults.
 func WithRetryPolicy(maxRetries int, initialBackoff time.Duration, factor, jitter float64) Option {
 	return func(p *Publisher) {
 		if maxRetries > 0 {
@@ -104,16 +102,10 @@ func WithRetryPolicy(maxRetries int, initialBackoff time.Duration, factor, jitte
 	}
 }
 
-// New constructs a Publisher. The publisher does not dial; pass an
-// already-constructed client. target is the gRPC target string used
-// when dialing client; only its unix-socket path is consumed (for the
-// existence gate). Non-unix targets bypass the gate. monitor is the
-// agent name used as a Prometheus label and panics on empty.
+// New constructs a Publisher. client must already be dialed. target is
+// the gRPC dial target; its unix-socket path drives the existence gate
+// (non-unix schemes bypass the gate). monitor is the Prometheus label.
 func New(client pb.PlatformConnectorClient, target, monitor string, opts ...Option) *Publisher {
-	if monitor == "" {
-		panic("healthpub.New: monitor name must be non-empty")
-	}
-
 	p := &Publisher{
 		client:         client,
 		monitor:        monitor,
@@ -145,7 +137,11 @@ func (p *Publisher) Publish(ctx context.Context, events *pb.HealthEvents) error 
 		return nil
 	}
 
-	if !p.socketPresent("Platform-connector socket missing; skipping send.") {
+	if !p.socketPresent() {
+		sendsSkippedPCUnavailable.WithLabelValues(p.monitor).Inc()
+		slog.Warn("Platform-connector socket missing; skipping send.",
+			"monitor", p.monitor, "socket", p.socketPath)
+
 		return ErrPlatformConnectorUnavailable
 	}
 
@@ -173,8 +169,13 @@ func (p *Publisher) Publish(ctx context.Context, events *pb.HealthEvents) error 
 func (p *Publisher) attemptSend(
 	ctx context.Context, events *pb.HealthEvents, lastErr *error,
 ) (bool, error) {
-	if !p.socketPresent("Platform-connector socket disappeared mid-retry; aborting send.") {
+	if !p.socketPresent() {
+		sendsSkippedPCUnavailable.WithLabelValues(p.monitor).Inc()
+		slog.Warn("Platform-connector socket disappeared mid-retry; aborting send.",
+			"monitor", p.monitor, "socket", p.socketPath)
+
 		*lastErr = ErrPlatformConnectorUnavailable
+
 		return false, ErrPlatformConnectorUnavailable
 	}
 
@@ -201,14 +202,12 @@ func (p *Publisher) attemptSend(
 	return true, nil
 }
 
-// socketPresent reports whether the configured Unix socket path exists.
-// Returns true when no path is configured (TCP fall-through).
-//
-// Only ENOENT (file genuinely absent) is treated as "PC unavailable":
-// other stat errors (EACCES, EIO, etc.) return true so the caller
-// proceeds and surfaces the real error via the normal gRPC path rather
-// than masking it as a connector outage.
-func (p *Publisher) socketPresent(warnMsg string) bool {
+// socketPresent reports whether the Unix socket exists. True for
+// non-unix targets (TCP fall-through) and for non-ENOENT stat errors —
+// those are surfaced through the normal gRPC path rather than masked
+// as a connector outage. Callers are responsible for logging and the
+// skip-counter on a false return.
+func (p *Publisher) socketPresent() bool {
 	if p.socketPath == "" {
 		return true
 	}
@@ -219,7 +218,6 @@ func (p *Publisher) socketPresent(warnMsg string) bool {
 	}
 
 	if !errors.Is(err, fs.ErrNotExist) {
-		// Unexpected stat error — let the gRPC dial surface it.
 		slog.Warn("Platform-connector socket stat failed; proceeding to gRPC.",
 			"monitor", p.monitor,
 			"socket", p.socketPath,
@@ -228,13 +226,6 @@ func (p *Publisher) socketPresent(warnMsg string) bool {
 
 		return true
 	}
-
-	sendsSkippedPCUnavailable.WithLabelValues(p.monitor).Inc()
-	slog.Warn(warnMsg,
-		"monitor", p.monitor,
-		"socket", p.socketPath,
-		"stat_error", err,
-	)
 
 	return false
 }

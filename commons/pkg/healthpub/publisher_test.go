@@ -286,18 +286,6 @@ func TestPublish_NilOrEmptyEventsIsNoOp(t *testing.T) {
 		"empty input must short-circuit before any gRPC call")
 }
 
-// TestNew_EmptyMonitorPanics: an empty monitor label would be a silent
-// dashboarding bug, so New must panic loudly.
-func TestNew_EmptyMonitorPanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatalf("New must panic on empty monitor name")
-		}
-	}()
-
-	_ = New(&fakePCClient{}, "unix:///x", "")
-}
-
 // TestPublish_ContextCancellationStopsRetries: a cancelled context
 // must abort the retry loop early.
 func TestPublish_ContextCancellationStopsRetries(t *testing.T) {
