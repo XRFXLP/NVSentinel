@@ -232,13 +232,23 @@ func findNodeCondition(node *corev1.Node,
 // aggregateEventMessages builds the consolidated message list for a node condition.
 // Events are pre-filtered by buildConditionEventsMap to IsHealthy || IsFatal,
 // so !IsHealthy here implies IsFatal && !IsHealthy (a fatal fault event).
+//
+// For healthy events with impacted entities, ErrorCode is forwarded to the
+// scoped clearer. When ErrorCode is empty (the common case for real
+// component-recovery events such as a successful GPU reset), the clearer falls
+// back to its legacy behaviour of removing every message that mentions the
+// entity. When ErrorCode is non-empty (synthetic events emitted by configured
+// cancellation rules), the clearer narrows the match so only messages whose
+// ErrorCode matches are removed; this prevents an operator's "X cancels Y"
+// rule from inadvertently clearing an unrelated active fault Z on the same
+// entity.
 func (r *K8sConnector) aggregateEventMessages(messages []string, events []*protos.HealthEvent) []string {
 	for _, event := range events {
 		switch {
 		case !event.IsHealthy:
 			messages = r.addMessageIfNotExist(messages, event)
 		case len(event.EntitiesImpacted) > 0:
-			messages = r.removeImpactedEntitiesMessages(messages, event.EntitiesImpacted)
+			messages = r.removeImpactedEntitiesMessagesScoped(messages, event.EntitiesImpacted, event.ErrorCode)
 		default: // healthy event with no impacted entities — full recovery, clear all messages
 			messages = []string{}
 		}
@@ -349,8 +359,24 @@ func deduplicateMessagesByIdentity(messages []string) []string {
 	return result
 }
 
-func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string,
-	entities []*protos.Entity) []string {
+// removeImpactedEntitiesMessagesScoped removes node-condition messages that
+// match the supplied entities, optionally narrowed by ErrorCode.
+//
+// When errorCodes is empty, behaviour matches the legacy clearer: a message is
+// removed if it mentions any supplied entity. This preserves the contract for
+// real recovery events (e.g. a successful GPU reset emits a healthy event with
+// no ErrorCode and clears every prior fault on that GPU).
+//
+// When errorCodes is non-empty, the message must additionally carry an
+// "ErrorCode:<code> " token whose code appears in errorCodes. This narrowing
+// is what makes synthetic cancellation events safe: when an operator declares
+// that XID 162 cancels XID 163, we must clear only the XID 163 message and
+// leave any unrelated XID still active on the same entity intact.
+func (r *K8sConnector) removeImpactedEntitiesMessagesScoped(
+	messages []string,
+	entities []*protos.Entity,
+	errorCodes []string,
+) []string {
 	var newMessages []string
 
 	for _, msg := range messages {
@@ -365,12 +391,36 @@ func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string,
 			}
 		}
 
+		if entityFound && !messageMatchesAnyErrorCode(msg, errorCodes) {
+			// Entity matches but ErrorCode scoping rejected the message:
+			// keep it.
+			entityFound = false
+		}
+
 		if !entityFound {
 			newMessages = append(newMessages, msg)
 		}
 	}
 
 	return newMessages
+}
+
+// messageMatchesAnyErrorCode reports whether msg carries an ErrorCode token for
+// any of the supplied codes. An empty errorCodes slice matches every message
+// (the legacy entity-only behaviour).
+func messageMatchesAnyErrorCode(msg string, errorCodes []string) bool {
+	if len(errorCodes) == 0 {
+		return true
+	}
+
+	for _, code := range errorCodes {
+		token := fmt.Sprintf("ErrorCode:%s ", code)
+		if strings.Contains(msg, token) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, nodeName string) error {

@@ -143,3 +143,25 @@ nicDriverDetection:
       recommendedAction: NONE
       processingStrategy: EXECUTE_REMEDIATION
       description: "SFP/transceiver cable unplugged"
+
+# Per-monitor health-event cancellation rules.
+#
+# When the named check observes `onErrorCode`, the monitor appends synthetic
+# healthy HealthEvents — one per `cancelErrorCodes` entry — to the same gRPC
+# batch alongside the original. Each synthetic event carries the same impacted
+# entities as the source so downstream consumers (platform-connector node
+# conditions, fault-quarantine annotation map) clear the targeted prior fault.
+#
+# Validation rejects empty onErrorCode, empty cancelErrorCodes, duplicate
+# onErrorCode within a check, self-cancel, and duplicate check names.
+#
+# The chart ships with no rules by default. Operators that know an XID code
+# implies recovery from another can opt in here. Example:
+#
+# cancellations:
+#   - name: SysLogsXIDError
+#     enabled: true
+#     rules:
+#       - onErrorCode: "162"
+#         cancelErrorCodes: ["163"]
+cancellations: []

@@ -133,6 +133,8 @@ spec:
             - "/etc/nic-driver-syslog/config.toml"
             - "--sysfs-root"
             - "/nvsentinel/sys"
+            - "--cancellations-config"
+            - "/etc/nvsentinel/cancellations.toml"
           resources:
             {{- toYaml $root.Values.resources | nindent 12 }}
           ports:
@@ -196,6 +198,9 @@ spec:
             - name: nic-driver-config
               mountPath: /etc/nic-driver-syslog
               readOnly: true
+            - name: cancellations-config
+              mountPath: /etc/nvsentinel
+              readOnly: true
         {{- if and $root.Values.xidSideCar.enabled (not (semverCompare ">=1.29-0" $root.Capabilities.KubeVersion.Version)) }}
         - name: xid-analyzer-sidecar
           image: {{ $root.Values.xidSideCar.image.repository }}:{{ $root.Values.xidSideCar.image.tag }}
@@ -256,6 +261,9 @@ spec:
         - name: nic-driver-config
           configMap:
             name: {{ include "syslog-health-monitor.fullname" $root }}-nic-driver
+        - name: cancellations-config
+          configMap:
+            name: {{ include "syslog-health-monitor.fullname" $root }}-cancellations
         - name: proc-vol    
           hostPath:
             path: /proc

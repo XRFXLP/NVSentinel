@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/cancellation"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/gpufallen"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/nicdriver"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/sxid"
@@ -39,7 +40,10 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid"
 )
 
-// NewSyslogMonitor creates a new SyslogMonitor instance
+// NewSyslogMonitor creates a new SyslogMonitor instance.
+//
+// cancellationsCfg may be nil; nil is equivalent to an empty Config and
+// disables cancellation event emission for every check.
 func NewSyslogMonitor(
 	nodeName string,
 	checks []CheckDefinition,
@@ -53,16 +57,20 @@ func NewSyslogMonitor(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
 ) (*SyslogMonitor, error) {
 	return NewSyslogMonitorWithFactory(nodeName, checks, pcClient, defaultAgentName,
 		defaultComponentClass, pollingInterval, stateFilePath, GetDefaultJournalFactory(),
 		xidAnalyserEndpoint, metadataPath,
 		processingStrategy,
 		nicDriverConfigPath, sysfsRoot,
+		cancellationsCfg,
 	)
 }
 
-// NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory
+// NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory.
+//
+// cancellationsCfg may be nil to disable per-handler cancellation rules.
 func NewSyslogMonitorWithFactory(
 	nodeName string,
 	checks []CheckDefinition,
@@ -77,6 +85,7 @@ func NewSyslogMonitorWithFactory(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
 ) (*SyslogMonitor, error) {
 	// Load state from file
 	state, err := loadState(stateFilePath)
@@ -110,7 +119,7 @@ func NewSyslogMonitorWithFactory(
 
 	if err := initHandlers(sm, checks, nodeName, defaultAgentName, defaultComponentClass,
 		xidAnalyserEndpoint, metadataPath, processingStrategy,
-		nicDriverConfigPath, sysfsRoot); err != nil {
+		nicDriverConfigPath, sysfsRoot, cancellationsCfg); err != nil {
 		return nil, err
 	}
 
@@ -136,11 +145,12 @@ func initHandlers(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
 ) error {
 	for _, check := range checks {
 		handler, err := initHandlerForCheck(check, nodeName, defaultAgentName, defaultComponentClass,
 			xidAnalyserEndpoint, metadataPath, processingStrategy,
-			nicDriverConfigPath, sysfsRoot)
+			nicDriverConfigPath, sysfsRoot, cancellationsCfg)
 		if err != nil {
 			return err
 		}
@@ -167,6 +177,7 @@ func initHandlerForCheck(
 	processingStrategy pb.ProcessingStrategy,
 	nicDriverConfigPath string,
 	sysfsRoot string,
+	cancellationsCfg *cancellation.Config,
 ) (types.Handler, error) {
 	switch check.Name {
 	case XIDErrorCheck:
@@ -176,6 +187,10 @@ func initHandlerForCheck(
 			slog.Error("Error initializing XID handler", "error", err.Error())
 			return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
 		}
+
+		// Per-check cancellation rules. A nil resolver is a safe default
+		// and disables synthetic cancellation event emission for this handler.
+		h.SetCancellationResolver(cancellation.NewResolver(cancellationsCfg.FindCheck(check.Name)))
 
 		return h, nil
 	case SXIDErrorCheck:

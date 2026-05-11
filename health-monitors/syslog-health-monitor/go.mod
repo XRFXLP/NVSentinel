@@ -5,6 +5,7 @@ go 1.26.0
 toolchain go1.26.2
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/hashicorp/go-retryablehttp v0.7.8
 	github.com/nvidia/nvsentinel/commons v0.0.0
@@ -19,7 +20,6 @@ require (
 )
 
 require (
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

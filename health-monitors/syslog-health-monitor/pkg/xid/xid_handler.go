@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/cancellation"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/metadata"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/metrics"
@@ -34,6 +35,12 @@ const (
 	healthyHealthEventMessage = "No Health Failures"
 	gpuResetFailureErrorCode  = "GPU_RESET_FAILURE"
 	gpuResetFailureMessage    = "GPU reset failed, proceeding with a node reboot"
+
+	// cancelSourceErrorCodeMetadataKey is the metadata key on a synthetic
+	// cancellation event that records the source error code which triggered
+	// the cancellation. Downstream consumers can correlate the synthetic
+	// healthy event back to the unhealthy observation that produced it.
+	cancelSourceErrorCodeMetadataKey = "nvsentinel.io/cancel-source-error-code"
 )
 
 func NewXIDHandler(nodeName, defaultAgentName,
@@ -65,6 +72,14 @@ func NewXIDHandler(nodeName, defaultAgentName,
 		parser:                xidParser,
 		metadataReader:        metadataReader,
 	}, nil
+}
+
+// SetCancellationResolver attaches a per-check cancellation resolver to the
+// handler. Passing a nil or empty resolver disables synthetic cancellation
+// event emission. Safe to call once during startup before the handler is used
+// concurrently.
+func (xidHandler *XIDHandler) SetCancellationResolver(resolver *cancellation.Resolver) {
+	xidHandler.cancellations = resolver
 }
 
 func (xidHandler *XIDHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
@@ -255,9 +270,85 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 		ProcessingStrategy: xidHandler.processingStrategy,
 	}
 
+	events := []*pb.HealthEvent{event}
+	events = append(events, xidHandler.buildCancellationEvents(xidResp.Result.DecodedXIDStr, entities, event)...)
+
 	return &pb.HealthEvents{
 		Version: 1,
-		Events:  []*pb.HealthEvent{event},
+		Events:  events,
+	}
+}
+
+// buildCancellationEvents returns the synthetic healthy events that the
+// configured cancellation rules require for the given source XID. The slice is
+// nil when no resolver is configured or when no rule matches. Each synthetic
+// event copies identifying fields (Agent, CheckName, ComponentClass,
+// NodeName, EntitiesImpacted, Version, ProcessingStrategy) from the source so
+// downstream entity-and-error-code matching clears only the targeted prior
+// fault.
+func (xidHandler *XIDHandler) buildCancellationEvents(
+	sourceErrorCode string,
+	entities []*pb.Entity,
+	source *pb.HealthEvent,
+) []*pb.HealthEvent {
+	if xidHandler.cancellations.Empty() {
+		return nil
+	}
+
+	targets := xidHandler.cancellations.Lookup(sourceErrorCode)
+	if len(targets) == 0 {
+		return nil
+	}
+
+	synthetic := make([]*pb.HealthEvent, 0, len(targets))
+
+	for _, target := range targets {
+		synthetic = append(synthetic, xidHandler.buildCancellationEvent(target, entities, source))
+
+		metrics.CancellationsEmittedMetric.WithLabelValues(
+			xidHandler.checkName, sourceErrorCode, target,
+		).Inc()
+	}
+
+	return synthetic
+}
+
+// buildCancellationEvent constructs one synthetic healthy event that cancels a
+// prior fault carrying targetErrorCode on the same entities as source.
+func (xidHandler *XIDHandler) buildCancellationEvent(
+	targetErrorCode string,
+	entities []*pb.Entity,
+	source *pb.HealthEvent,
+) *pb.HealthEvent {
+	// Defensive copy of entities: downstream consumers must not be able to
+	// mutate the source event's slice via the synthetic event.
+	clonedEntities := make([]*pb.Entity, len(entities))
+	for i, e := range entities {
+		clonedEntities[i] = &pb.Entity{EntityType: e.EntityType, EntityValue: e.EntityValue}
+	}
+
+	srcCode := ""
+	if len(source.ErrorCode) > 0 {
+		srcCode = source.ErrorCode[0]
+	}
+
+	return &pb.HealthEvent{
+		Version:            source.Version,
+		Agent:              source.Agent,
+		CheckName:          source.CheckName,
+		ComponentClass:     source.ComponentClass,
+		GeneratedTimestamp: timestamppb.New(time.Now()),
+		EntitiesImpacted:   clonedEntities,
+		Message:            fmt.Sprintf("Cancelled by %s error code %s", source.CheckName, srcCode),
+		IsFatal:            false,
+		IsHealthy:          true,
+		NodeName:           source.NodeName,
+		RecommendedAction:  pb.RecommendedAction_NONE,
+		ErrorCode:          []string{targetErrorCode},
+		Metadata: map[string]string{
+			cancelSourceErrorCodeMetadataKey: srcCode,
+		},
+		ProcessingStrategy: source.ProcessingStrategy,
 	}
 }
 

@@ -25,6 +25,12 @@ import (
 // IMPORTANT: This struct is used ONLY for matching/comparison.
 // The full event details (including IsFatal, IsHealthy, ErrorCodes, Message) are stored
 // in the annotation for visibility, but matching only uses these identifying fields.
+//
+// ErrorCode is included in the key so that synthetic cancellation events,
+// which carry a targeted error code, clear only the matching prior fault. A
+// real component-recovery event (e.g. successful GPU reset) carries an empty
+// ErrorCode and continues to clear every prior fault on the entity via the
+// fallback path in createEventKeys / RemoveEvent.
 type HealthEventKey struct {
 	Agent          string // e.g., "gpu-health-monitor"
 	ComponentClass string // e.g., "GPU"
@@ -33,6 +39,10 @@ type HealthEventKey struct {
 	// Entity-specific fields for granular tracking
 	EntityType  string // e.g., "GPU", "NIC"
 	EntityValue string // e.g., "1", "eth0"
+	// ErrorCode scopes the key to a specific error code; empty when the event
+	// has no ErrorCode (real recovery events) so the legacy entity-only key is
+	// used.
+	ErrorCode string // e.g., "163"
 	// Version is included in the key to distinguish between different versions of the same event
 	Version uint32 // e.g., 1
 }
@@ -50,6 +60,10 @@ func NewHealthEventsAnnotationMap() *HealthEventsAnnotationMap {
 }
 
 // CreateEventKeyForEntity creates a comparable key for a specific entity in a HealthEvent
+//
+// The ErrorCode field on the returned key is left empty. Callers that want
+// per-error-code scoping should set ErrorCode after calling this function or
+// use createEventKeys, which fans out one key per (entity, errorCode) pair.
 func CreateEventKeyForEntity(
 	event *protos.HealthEvent,
 	entity *protos.Entity,
@@ -71,16 +85,71 @@ func CreateEventKeyForEntity(
 	return key
 }
 
-// createEventKeys creates keys for all entities in a HealthEvent
+// createEventKeys creates keys for all (entity, errorCode) pairs in a
+// HealthEvent.
+//
+// Behaviour matrix:
+//   - No entities, no ErrorCode → one entity-only, error-code-empty key (legacy).
+//   - No entities, with ErrorCode(s) → one key per error code (check-level
+//     synthetic event scoped to specific error codes).
+//   - Entities, no ErrorCode → one entity-only key per entity (legacy: a real
+//     recovery event clears every prior error code on the entity).
+//   - Entities, with ErrorCode(s) → one key per (entity, errorCode) pair so a
+//     synthetic cancellation event clears only its targeted code.
 func createEventKeys(event *protos.HealthEvent) []HealthEventKey {
-	if len(event.EntitiesImpacted) == 0 {
+	entities := event.EntitiesImpacted
+	errorCodes := event.ErrorCode
+
+	if len(entities) == 0 {
+		return createCheckLevelKeys(event, errorCodes)
+	}
+
+	return createEntityKeys(event, entities, errorCodes)
+}
+
+// createCheckLevelKeys returns keys for an event with no impacted entities.
+// One key per error code is emitted, or a single entity-empty key when no
+// error codes are present.
+func createCheckLevelKeys(event *protos.HealthEvent, errorCodes []string) []HealthEventKey {
+	if len(errorCodes) == 0 {
 		return []HealthEventKey{CreateEventKeyForEntity(event, nil)}
 	}
 
-	keys := make([]HealthEventKey, 0, len(event.EntitiesImpacted))
+	keys := make([]HealthEventKey, 0, len(errorCodes))
+	for _, code := range errorCodes {
+		key := CreateEventKeyForEntity(event, nil)
+		key.ErrorCode = code
+		keys = append(keys, key)
+	}
 
-	for _, entity := range event.EntitiesImpacted {
-		keys = append(keys, CreateEventKeyForEntity(event, entity))
+	return keys
+}
+
+// createEntityKeys returns keys for an event with at least one impacted
+// entity. When error codes are present, one key per (entity, errorCode) pair
+// is emitted; otherwise one entity-only key per entity (legacy behaviour).
+func createEntityKeys(
+	event *protos.HealthEvent,
+	entities []*protos.Entity,
+	errorCodes []string,
+) []HealthEventKey {
+	if len(errorCodes) == 0 {
+		keys := make([]HealthEventKey, 0, len(entities))
+		for _, entity := range entities {
+			keys = append(keys, CreateEventKeyForEntity(event, entity))
+		}
+
+		return keys
+	}
+
+	keys := make([]HealthEventKey, 0, len(entities)*len(errorCodes))
+
+	for _, entity := range entities {
+		for _, code := range errorCodes {
+			key := CreateEventKeyForEntity(event, entity)
+			key.ErrorCode = code
+			keys = append(keys, key)
+		}
 	}
 
 	return keys
@@ -106,16 +175,17 @@ func (he *HealthEventsAnnotationMap) AddOrUpdateEvent(event *protos.HealthEvent)
 // Returns the stored event for the first matching entity
 // If the event has no entities (empty EntitiesImpacted), it performs check-level matching
 // to find any stored event with the same Agent/ComponentClass/CheckName/Version
+//
+// ErrorCode semantics: when the incoming event has no ErrorCode, an entity
+// match against any stored key wins regardless of the stored key's ErrorCode
+// (preserving the "real recovery clears every code" contract). When the
+// incoming event has ErrorCode set, only stored keys whose ErrorCode matches
+// one of the incoming codes are considered.
 func (he *HealthEventsAnnotationMap) GetEvent(
 	event *protos.HealthEvent,
 ) (*protos.HealthEvent, bool) {
-	keys := createEventKeys(event)
-
-	// Try entity-level matching first
-	for _, key := range keys {
-		if storedEvent, exists := he.Events[key]; exists {
-			return storedEvent, true
-		}
+	if storedEvent, ok := he.findFirstMatch(event); ok {
+		return storedEvent, true
 	}
 
 	// If no entities in incoming event (check-level event), do check-level matching
@@ -125,6 +195,64 @@ func (he *HealthEventsAnnotationMap) GetEvent(
 	}
 
 	return nil, false
+}
+
+// findFirstMatch returns the first stored event that matches one of the keys
+// derived from the incoming event under the asymmetric ErrorCode rule
+// described on GetEvent.
+func (he *HealthEventsAnnotationMap) findFirstMatch(event *protos.HealthEvent) (*protos.HealthEvent, bool) {
+	for storedKey, storedEvent := range he.Events {
+		if keyMatchesEvent(storedKey, event) {
+			return storedEvent, true
+		}
+	}
+
+	return nil, false
+}
+
+// keyMatchesEvent reports whether storedKey matches the supplied event.
+// Identifying fields (Agent, ComponentClass, CheckName, Version, NodeName)
+// must always match. Entity matching uses any of the event's entities (or
+// matches every key when the event carries no entities — handled by the
+// caller). ErrorCode uses the asymmetric rule documented on GetEvent.
+func keyMatchesEvent(storedKey HealthEventKey, event *protos.HealthEvent) bool {
+	if storedKey.Agent != event.Agent ||
+		storedKey.ComponentClass != event.ComponentClass ||
+		storedKey.CheckName != event.CheckName ||
+		storedKey.NodeName != event.NodeName ||
+		storedKey.Version != event.Version {
+		return false
+	}
+
+	if len(event.EntitiesImpacted) > 0 && !entityInEvent(storedKey, event) {
+		return false
+	}
+
+	if len(event.ErrorCode) > 0 && !errorCodeMatches(storedKey.ErrorCode, event.ErrorCode) {
+		return false
+	}
+
+	return true
+}
+
+func entityInEvent(key HealthEventKey, event *protos.HealthEvent) bool {
+	for _, e := range event.EntitiesImpacted {
+		if e.EntityType == key.EntityType && e.EntityValue == key.EntityValue {
+			return true
+		}
+	}
+
+	return false
+}
+
+func errorCodeMatches(stored string, incoming []string) bool {
+	for _, c := range incoming {
+		if c == stored {
+			return true
+		}
+	}
+
+	return false
 }
 
 // getEventByCheck finds any stored event matching the check (ignoring entities)
@@ -145,11 +273,12 @@ func (he *HealthEventsAnnotationMap) getEventByCheck(
 	return nil, false
 }
 
-// HasMatchingEntities checks if the event has any entities that match stored events
+// HasMatchingEntities checks if the event has any entities that match stored
+// events. Honours the same asymmetric ErrorCode rule as GetEvent / RemoveEvent
+// so callers see consistent matching across the API.
 func (he *HealthEventsAnnotationMap) HasMatchingEntities(event *protos.HealthEvent) bool {
-	keys := createEventKeys(event)
-	for _, key := range keys {
-		if _, exists := he.Events[key]; exists {
+	for storedKey := range he.Events {
+		if keyMatchesEvent(storedKey, event) {
 			return true
 		}
 	}
@@ -171,46 +300,57 @@ func (he *HealthEventsAnnotationMap) Count() int {
 // This is used when a healthy event clears specific entity failures
 // If the event has no entities (empty EntitiesImpacted), it removes ALL entities for that check
 // This handles check-level healthy events that mean "all entities for this check are healthy"
+//
+// ErrorCode semantics: a healthy event with empty ErrorCode removes every
+// stored key for the matching entities (preserving real component-recovery
+// semantics). A healthy event with ErrorCode set removes only stored keys
+// whose ErrorCode is in the supplied list.
 func (he *HealthEventsAnnotationMap) RemoveEvent(event *protos.HealthEvent) int {
-	keys := createEventKeys(event)
-
 	// If no entities specified (check-level healthy event), remove all entities for this check
 	if len(event.EntitiesImpacted) == 0 {
 		return he.removeAllEntitiesForCheck(event)
 	}
 
-	// Entity-level removal: count matches first
-	removed := 0
+	keysToRemove := make([]HealthEventKey, 0)
 
-	for _, key := range keys {
-		if _, exists := he.Events[key]; exists {
-			removed++
+	for storedKey := range he.Events {
+		if keyMatchesEvent(storedKey, event) {
+			keysToRemove = append(keysToRemove, storedKey)
 		}
 	}
 
-	for _, key := range keys {
+	for _, key := range keysToRemove {
 		delete(he.Events, key)
 	}
 
-	return removed
+	return len(keysToRemove)
 }
 
 // removeAllEntitiesForCheck removes all entities for a specific check
 // Used when a healthy event has no entities, meaning "all entities for this check are healthy"
+//
+// When the incoming event carries an ErrorCode, the removal is narrowed to
+// keys whose ErrorCode appears in the incoming list. An empty ErrorCode
+// preserves today's "clear everything for this check" semantic.
 func (he *HealthEventsAnnotationMap) removeAllEntitiesForCheck(event *protos.HealthEvent) int {
 	removed := 0
 	keysToRemove := []HealthEventKey{}
 
-	// Find all keys matching this check (regardless of entity)
 	for key := range he.Events {
-		if key.Agent == event.Agent &&
-			key.ComponentClass == event.ComponentClass &&
-			key.CheckName == event.CheckName &&
-			key.Version == event.Version &&
-			key.NodeName == event.NodeName {
-			keysToRemove = append(keysToRemove, key)
-			removed++
+		if key.Agent != event.Agent ||
+			key.ComponentClass != event.ComponentClass ||
+			key.CheckName != event.CheckName ||
+			key.Version != event.Version ||
+			key.NodeName != event.NodeName {
+			continue
 		}
+
+		if len(event.ErrorCode) > 0 && !errorCodeMatches(key.ErrorCode, event.ErrorCode) {
+			continue
+		}
+
+		keysToRemove = append(keysToRemove, key)
+		removed++
 	}
 
 	for _, key := range keysToRemove {

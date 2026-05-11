@@ -35,6 +35,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/cancellation"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/gpufallen"
 	fd "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
@@ -78,6 +79,8 @@ var (
 		"Path to NIC driver syslog pattern config (TOML). Used only when SysLogsNICDriverError is in --checks.")
 	sysfsRoot = flag.String("sysfs-root", "/nvsentinel/sys",
 		"Root path for sysfs reads (BDF→driver resolution). Typically a container mount point.")
+	cancellationsConfigPath = flag.String("cancellations-config", "/etc/nvsentinel/cancellations.toml",
+		"Path to per-monitor cancellation rules (TOML). Missing file is treated as no rules.")
 )
 
 var checks []fd.CheckDefinition
@@ -317,6 +320,15 @@ func createSyslogMonitor(
 
 	slog.Info("Creating syslog monitor", "checksCount", len(list))
 
+	cancellationsCfg, err := cancellation.LoadConfig(*cancellationsConfigPath)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to load cancellations config %s: %w", *cancellationsConfigPath, err)
+	}
+
+	slog.Info("Loaded cancellations config",
+		"path", *cancellationsConfigPath,
+		"checksConfigured", len(cancellationsCfg.Checks))
+
 	monitor, err := fd.NewSyslogMonitor(
 		nodeName,
 		list,
@@ -330,6 +342,7 @@ func createSyslogMonitor(
 		processingStrategy,
 		*nicDriverConfigPath,
 		*sysfsRoot,
+		cancellationsCfg,
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error creating syslog health monitor: %w", err)

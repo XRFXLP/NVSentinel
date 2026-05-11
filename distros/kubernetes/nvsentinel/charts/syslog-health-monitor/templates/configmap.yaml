@@ -31,3 +31,28 @@ data:
     processingStrategy = {{ .processingStrategy | quote }}
     description = {{ .description | quote }}
     {{- end }}
+---
+# Per-monitor cancellation rules. Rendered as TOML so the syslog monitor's
+# --cancellations-config flag can load it directly. The map key
+# 'cancellations.toml' is fixed; the daemonset mounts this ConfigMap at
+# /etc/nvsentinel which is the parent directory of the configured flag path.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ include "syslog-health-monitor.fullname" . }}-cancellations'
+  labels:
+    {{- include "syslog-health-monitor.labels" . | nindent 4 }}
+data:
+  cancellations.toml: |
+    {{- range .Values.cancellations }}
+
+    [[checks]]
+      name    = {{ .name | quote }}
+      enabled = {{ .enabled }}
+      {{- range .rules }}
+
+      [[checks.cancellations]]
+        onErrorCode      = {{ .onErrorCode | quote }}
+        cancelErrorCodes = [{{ range $i, $c := .cancelErrorCodes }}{{ if $i }}, {{ end }}{{ $c | quote }}{{ end }}]
+      {{- end }}
+    {{- end }}
