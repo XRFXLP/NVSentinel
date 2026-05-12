@@ -648,6 +648,7 @@ func TestBootIDChange_StateNotPersistedWhenSendSkipped(t *testing.T) {
 		"/tmp/metadata.json",
 		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		"", "",
+		nil,
 		"unix://"+socketPathTest,
 	)
 	assert.NoError(t, err, "monitor must construct successfully even when send is skipped")
