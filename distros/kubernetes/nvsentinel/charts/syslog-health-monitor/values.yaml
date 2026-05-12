@@ -80,12 +80,7 @@ nicDriverDetection:
     - name: access_reg_failed
       enabled: false
     - name: module_unplugged
-      regex: 'mlx5_core.*Port module event.*Cable unplugged'
-      enabled: true
-      isFatal: false
-      recommendedAction: NONE
-      processingStrategy: EXECUTE_REMEDIATION
-      description: "SFP/transceiver cable unplugged"
+      enabled: false
 
 # Per-check cancellation rules: when the check observes `onErrorCode`, emit
 # synthetic healthy events for each `cancelErrorCodes` entry on the same
