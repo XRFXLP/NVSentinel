@@ -356,6 +356,7 @@ func createSyslogMonitor(
 		*nicDriverConfigPath,
 		*sysfsRoot,
 		cancellationsCfg,
+		*platformConnectorSocket,
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error creating syslog health monitor: %w", err)
