@@ -1025,6 +1025,211 @@ func TestCRBasedDeduplication(t *testing.T) {
 	}
 }
 
+func TestCloseStaleEquivalentEvents(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "test-node"
+
+	tests := []struct {
+		name              string
+		status            model.Status
+		state             *annotation.RemediationStateAnnotation
+		rawEvents         []datastore.Event
+		expectedUpdates   map[string]bool
+		expectTimestamp   bool
+		unexpectedUpdates []string
+	}{
+		{
+			name:   "UnQuarantined closes only equivalent restart events as remediated",
+			status: model.UnQuarantined,
+			// This annotation is what fault-remediation writes when it creates a maintenance CR.
+			// In production this means "there is/was a restart remediation covering this node".
+			// When fault-quarantine later unquarantines the node, skipped stale events in the
+			// same equivalence group should be closed so cold start cannot replay them.
+			state: &annotation.RemediationStateAnnotation{
+				EquivalenceGroups: map[string]annotation.EquivalenceGroupState{
+					"restart": {MaintenanceCR: "maintenance-test-node-event-a", ActionName: "RESTART_BM"},
+				},
+			},
+			// event-a is the stale event: it needs RESTART_BM, which maps to the restart group,
+			// so the prior restart CR covers it. event-contact-support is intentionally unrelated:
+			// it has no configured remediation group and must not be swept up by node-level cleanup.
+			rawEvents: []datastore.Event{
+				testRawHealthEvent("event-a", nodeName, protos.RecommendedAction_RESTART_BM),
+				testRawHealthEvent("event-contact-support", nodeName, protos.RecommendedAction_CONTACT_SUPPORT),
+			},
+			expectedUpdates: map[string]bool{
+				"event-a": true,
+			},
+			expectTimestamp:   true,
+			unexpectedUpdates: []string{"event-contact-support"},
+		},
+		{
+			name:   "Cancelled closes equivalent restart events as not remediated",
+			status: model.Cancelled,
+			// Cancelled is the external/manual cancellation path, for example someone
+			// manually uncordoned the node. Unlike UnQuarantined, it does not prove the
+			// fault was remediated. FR still needs a durable terminal value so cold start
+			// does not replay the stale event, but that value must be faultremediated=false.
+			state: &annotation.RemediationStateAnnotation{
+				EquivalenceGroups: map[string]annotation.EquivalenceGroupState{
+					"restart": {MaintenanceCR: "maintenance-test-node-event-a", ActionName: "RESTART_BM"},
+				},
+			},
+			rawEvents: []datastore.Event{
+				testRawHealthEvent("event-a", nodeName, protos.RecommendedAction_RESTART_BM),
+			},
+			// expectedUpdates maps event ID -> expected healtheventstatus.faultremediated value.
+			// false here means "terminal, but not successfully remediated".
+			expectedUpdates: map[string]bool{
+				"event-a": false,
+			},
+		},
+		{
+			name:   "No remediation state does not close events",
+			status: model.UnQuarantined,
+			// Without a remediation annotation, FR has no equivalence-group evidence that an
+			// earlier maintenance CR covered these events. The cleanup must therefore do nothing.
+			state: &annotation.RemediationStateAnnotation{
+				EquivalenceGroups: map[string]annotation.EquivalenceGroupState{},
+			},
+			rawEvents: []datastore.Event{
+				testRawHealthEvent("event-a", nodeName, protos.RecommendedAction_RESTART_BM),
+			},
+			expectedUpdates: map[string]bool{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			updates := make(map[string]datastore.HealthEventStatus)
+			mockStore := &MockHealthEventStore{
+				FindHealthEventsByQueryBatchedFn: func(_ context.Context, _ datastore.QueryBuilder, _ int,
+					fn func([]datastore.HealthEventWithStatus) error) error {
+					batch := make([]datastore.HealthEventWithStatus, 0, len(tt.rawEvents))
+					for _, rawEvent := range tt.rawEvents {
+						batch = append(batch, datastore.HealthEventWithStatus{RawEvent: rawEvent})
+					}
+
+					return fn(batch)
+				},
+				UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+					updates[id] = status
+					return nil
+				},
+			}
+
+			mockK8sClient := &MockK8sClient{}
+			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
+			r := NewFaultRemediationReconciler(nil, nil, mockStore, cfg, false)
+
+			err := r.closeStaleEquivalentEvents(ctx, nodeName, tt.status, tt.state, mockStore)
+			assert.NoError(t, err)
+
+			assert.Len(t, updates, len(tt.expectedUpdates))
+			for id, expectedRemediated := range tt.expectedUpdates {
+				status, ok := updates[id]
+				assert.True(t, ok, "expected update for %s", id)
+				assert.NotNil(t, status.FaultRemediated)
+				assert.Equal(t, expectedRemediated, *status.FaultRemediated)
+				if tt.expectTimestamp {
+					assert.NotNil(t, status.LastRemediationTimestamp)
+				} else {
+					assert.Nil(t, status.LastRemediationTimestamp)
+				}
+			}
+
+			for _, id := range tt.unexpectedUpdates {
+				_, ok := updates[id]
+				assert.False(t, ok, "did not expect update for %s", id)
+			}
+		})
+	}
+}
+
+func TestUnsupportedActionSkipMarksEventTerminal(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "test-node"
+	eventID := "unsupported-event"
+	updated := false
+
+	// CONTACT_SUPPORT is not configured as a maintenance action for FR. That is an
+	// intentional skip, but it still needs a durable terminal status; otherwise cold
+	// start will keep replaying the same unsupported event because faultremediated is nil.
+	mockK8sClient := &MockK8sClient{}
+	cfg := ReconcilerConfig{
+		RemediationClient: mockK8sClient,
+		StateManager: &statemanager.MockStateManager{
+			UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
+				statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
+				return true, nil
+			},
+		},
+	}
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+	mockWatcher := &MockChangeStreamWatcher{}
+	mockStore := &MockHealthEventStore{
+		UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+			assert.Equal(t, eventID, id)
+			assert.NotNil(t, status.FaultRemediated)
+			assert.False(t, *status.FaultRemediated)
+			updated = true
+
+			return nil
+		},
+	}
+	healthEventDoc := &events.HealthEventDoc{
+		ID: eventID,
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_CONTACT_SUPPORT,
+			},
+			HealthEventStatus: &protos.HealthEventStatus{},
+		},
+	}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(eventID, nodeName, protos.RecommendedAction_CONTACT_SUPPORT),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	_, err, done := r.trySkipEvent(ctx, healthEventDoc, nil, eventWithToken, mockWatcher, mockStore, nodeName)
+	assert.True(t, done)
+	assert.NoError(t, err)
+	assert.True(t, updated)
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 1, markProcessedCount)
+}
+
+func testRawHealthEvent(id, nodeName string, action protos.RecommendedAction) datastore.Event {
+	return datastore.Event{
+		"_id": id,
+		"healthevent": map[string]interface{}{
+			"version":           1,
+			"agent":             "test-agent",
+			"componentclass":    "GPU",
+			"checkname":         "test-check",
+			"isfatal":           true,
+			"ishealthy":         false,
+			"message":           "test event",
+			"recommendedaction": int32(action),
+			"errorcode":         []interface{}{"REPRO"},
+			"entitiesimpacted": []interface{}{
+				map[string]interface{}{
+					"entitytype":  "GPU_UUID",
+					"entityvalue": "GPU-test",
+				},
+			},
+			"nodename": nodeName,
+		},
+		"healtheventstatus": map[string]interface{}{
+			"nodequarantined": string(model.AlreadyQuarantined),
+			"userpodsevictionstatus": map[string]interface{}{
+				"status": string(model.AlreadyDrained),
+			},
+		},
+	}
+}
+
 // TestLogCollectorOnlyCalledWhenShouldCreateCR verifies that log collector is only called
 // when shouldCreateCR is true (Issue #441 - prevent duplicate log-collector jobs)
 // This tests the logic that log collector runs AFTER checkExistingCRStatus, not before

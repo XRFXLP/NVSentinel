@@ -151,7 +151,8 @@ func (r *FaultRemediationReconciler) Reconcile(
 	nodeQuarantined := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
 	if nodeQuarantined == string(model.UnQuarantined) || nodeQuarantined == string(model.Cancelled) {
-		return r.handleCancellationEvent(ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, event.ResumeToken)
+		return r.handleCancellationEvent(ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, event.ResumeToken,
+			r.healthEventStore)
 	}
 
 	return r.handleRemediationEvent(ctx, &healthEventWithStatus, *event, r.Watcher, r.healthEventStore)
@@ -373,6 +374,7 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 	status model.Status,
 	watcherInstance datastore.ChangeStreamWatcher,
 	resumeToken []byte,
+	healthEventStore datastore.HealthEventStore,
 ) (ctrl.Result, error) {
 	ctx, span := tracing.StartSpan(ctx, "fault_remediation.cancellation_event")
 	defer span.End()
@@ -380,6 +382,24 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 	slog.InfoContext(ctx, "Cancellation event received, clearing all remediation state",
 		"node", nodeName,
 		"status", status)
+
+	remediationState, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to get remediation state for node",
+			"node", nodeName,
+			"error", err)
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "get_remediation_state_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+
+		return ctrl.Result{}, fmt.Errorf("failed to get remediation state for node: %w", err)
+	}
+
+	if err := r.closeStaleEquivalentEvents(ctx, nodeName, status, remediationState, healthEventStore); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	if err := r.annotationManager.ClearRemediationState(ctx, nodeName); err != nil {
 		slog.ErrorContext(ctx, "Failed to clear remediation state for node",
@@ -424,7 +444,8 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 			"error", err, "event", healthEventWithStatus.ID)
 	}
 
-	res, err, done := r.trySkipEvent(ctx, healthEventWithStatus, groupConfig, eventWithToken, watcherInstance, nodeName)
+	res, err, done := r.trySkipEvent(ctx, healthEventWithStatus, groupConfig, eventWithToken, watcherInstance,
+		healthEventStore, nodeName)
 	if done {
 		span.SetAttributes(
 			attribute.String("fault_remediation.status", "skipped"),
@@ -473,6 +494,7 @@ func (r *FaultRemediationReconciler) trySkipEvent(
 	groupConfig *common.EquivalenceGroupConfig,
 	eventWithToken datastore.EventWithToken,
 	watcherInstance datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
 	nodeName string,
 ) (ctrl.Result, error, bool) {
 	if !r.shouldSkipEvent(ctx, healthEventWithStatus.HealthEventWithStatus, groupConfig) {
@@ -482,11 +504,177 @@ func (r *FaultRemediationReconciler) trySkipEvent(
 	ctx, skipSpan := tracing.StartSpan(ctx, "fault_remediation.skip_event")
 	defer skipSpan.End()
 
+	if shouldMarkSkippedEventUnsupported(healthEventWithStatus.HealthEventWithStatus, groupConfig) {
+		if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, false); err != nil {
+			return ctrl.Result{}, err, true
+		}
+	}
+
 	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
 		return ctrl.Result{}, err, true
 	}
 
 	return ctrl.Result{}, nil, true
+}
+
+func shouldMarkSkippedEventUnsupported(healthEventWithStatus model.HealthEventWithStatus,
+	groupConfig *common.EquivalenceGroupConfig) bool {
+	if healthEventWithStatus.HealthEvent == nil || groupConfig != nil {
+		return false
+	}
+
+	if healthEventWithStatus.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE {
+		return false
+	}
+
+	if healthEventWithStatus.HealthEventStatus != nil && healthEventWithStatus.HealthEventStatus.FaultRemediated != nil &&
+		healthEventWithStatus.HealthEventStatus.FaultRemediated.GetValue() {
+		return false
+	}
+
+	return true
+}
+
+// closeStaleEquivalentEvents closes unresolved remediation-ready events that were
+// covered by the remediation groups recorded on the node annotation.
+//
+// This runs when FQ sends UnQuarantined/Cancelled. At that point the quarantine
+// session is over, so events skipped behind an equivalent in-progress CR must
+// become durable terminal records; otherwise FR cold start can replay them and
+// create duplicate maintenance CRs after the node is schedulable again.
+//
+// The cleanup is equivalence-group scoped. It only closes events whose computed
+// remediation group, or a configured superseding group, matches a group from the
+// remediation annotation snapshot.
+func (r *FaultRemediationReconciler) closeStaleEquivalentEvents(
+	ctx context.Context,
+	nodeName string,
+	status model.Status,
+	remediationState *annotation.RemediationStateAnnotation,
+	healthEventStore datastore.HealthEventStore,
+) error {
+	if healthEventStore == nil || remediationState == nil || len(remediationState.EquivalenceGroups) == 0 {
+		return nil
+	}
+
+	coveredGroups := make(map[string]struct{}, len(remediationState.EquivalenceGroups))
+	for groupName := range remediationState.EquivalenceGroups {
+		coveredGroups[groupName] = struct{}{}
+	}
+
+	remediated := status == model.UnQuarantined
+	q := unresolvedRemediationReadyEventsQuery(nodeName)
+
+	now := time.Now().UTC()
+
+	closeBatch := func(batch []datastore.HealthEventWithStatus) error {
+		return r.closeStaleEquivalentEventBatch(ctx, healthEventStore, nodeName, coveredGroups, remediated, now, batch)
+	}
+
+	return healthEventStore.FindHealthEventsByQueryBatched(ctx, q, coldStartBatchSize, closeBatch)
+}
+
+// closeStaleEquivalentEventBatch evaluates one datastore batch from
+// closeStaleEquivalentEvents and writes the terminal remediation status for
+// matching events.
+func (r *FaultRemediationReconciler) closeStaleEquivalentEventBatch(
+	ctx context.Context,
+	healthEventStore datastore.HealthEventStore,
+	nodeName string,
+	coveredGroups map[string]struct{},
+	remediated bool,
+	now time.Time,
+	batch []datastore.HealthEventWithStatus,
+) error {
+	for _, event := range batch {
+		parsedEvent, err := eventutil.ParseHealthEventFromEvent(event.RawEvent)
+		if err != nil {
+			slog.WarnContext(ctx, "Skipping stale event cleanup for unparsable health event",
+				"node", nodeName,
+				"error", err)
+
+			continue
+		}
+
+		groupConfig, err := common.GetGroupConfigForEvent(
+			r.Config.RemediationClient.GetConfig().RemediationActions,
+			parsedEvent.HealthEvent,
+		)
+		if err != nil || groupConfig == nil || !groupConfigMatchesAny(groupConfig, coveredGroups) {
+			continue
+		}
+
+		documentID, err := utils.ExtractDocumentID(event.RawEvent)
+		if err != nil {
+			slog.WarnContext(ctx, "Skipping stale event cleanup for health event without document ID",
+				"node", nodeName,
+				"error", err)
+
+			continue
+		}
+
+		statusUpdate := datastore.HealthEventStatus{
+			FaultRemediated: &remediated,
+		}
+		if remediated {
+			statusUpdate.LastRemediationTimestamp = timestamppb.New(now)
+		}
+
+		if err := healthEventStore.UpdateHealthEventStatus(ctx, documentID, statusUpdate); err != nil {
+			return fmt.Errorf("failed to close stale equivalent event %s for node %s: %w",
+				documentID, nodeName, err)
+		}
+
+		slog.InfoContext(ctx, "Closed stale equivalent remediation event",
+			"node", nodeName,
+			"eventID", documentID,
+			"remediated", remediated)
+	}
+
+	return nil
+}
+
+// groupConfigMatchesAny reports whether the event's effective remediation group
+// is covered by one of the groups already remediated for this quarantine session.
+// Superseding groups count as coverage; for example, a node restart can cover a
+// GPU reset event when reset declares restart as a superseding equivalence group.
+func groupConfigMatchesAny(groupConfig *common.EquivalenceGroupConfig, groups map[string]struct{}) bool {
+	if _, ok := groups[groupConfig.EffectiveEquivalenceGroup]; ok {
+		return true
+	}
+
+	for _, groupName := range groupConfig.SupersedingEquivalenceGroups {
+		if _, ok := groups[groupName]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// unresolvedRemediationReadyEventsQuery returns the cold-start-style query for
+// events that are drained/quarantined and still lack a fault-remediation terminal
+// status. When nodeName is non-empty, it scopes the query to that node.
+func unresolvedRemediationReadyEventsQuery(nodeName string) datastore.QueryBuilder {
+	return query.New().Build(unresolvedRemediationReadyEventsCondition(nodeName))
+}
+
+// unresolvedRemediationReadyEventsCondition is the reusable condition form of
+// unresolvedRemediationReadyEventsQuery, used when composing larger queries.
+func unresolvedRemediationReadyEventsCondition(nodeName string) query.Condition {
+	conditions := []query.Condition{
+		query.In("healtheventstatus.nodequarantined",
+			[]interface{}{string(model.Quarantined), string(model.AlreadyQuarantined)}),
+		query.In("healtheventstatus.userpodsevictionstatus.status",
+			[]interface{}{string(model.StatusSucceeded), string(model.AlreadyDrained)}),
+		query.Eq("healtheventstatus.faultremediated", nil),
+	}
+
+	if nodeName != "" {
+		conditions = append([]query.Condition{query.Eq("healthevent.nodename", nodeName)}, conditions...)
+	}
+
+	return query.And(conditions...)
 }
 
 // handleExistingCRSkip logs, records metrics, marks the event processed, and returns.
@@ -844,13 +1032,7 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 	q := query.New().Build(
 		query.Or(
 			// Quarantined + drained but not yet remediated
-			query.And(
-				query.In("healtheventstatus.nodequarantined",
-					[]interface{}{string(model.Quarantined), string(model.AlreadyQuarantined)}),
-				query.In("healtheventstatus.userpodsevictionstatus.status",
-					[]interface{}{string(model.StatusSucceeded), string(model.AlreadyDrained)}),
-				query.Eq("healtheventstatus.faultremediated", nil),
-			),
+			unresolvedRemediationReadyEventsCondition(""),
 			// Cancelled/unquarantined events (need cleanup)
 			query.In("healtheventstatus.nodequarantined",
 				[]interface{}{string(model.UnQuarantined), string(model.Cancelled)}),
