@@ -17,7 +17,7 @@ These reach fault-quarantine and node-drainer as distinct events: redundant drai
 Add a **deduplication filter** to the platform-connector event-processing pipeline (see [ADR-023](./023-health-event-transformer-pipeline.md)), after the existing transformers `MetadataAugmentor` and `OverrideTransformer`. The filter uses a generic key derived from the event itself:
 
 ```
-key = (NodeName, CheckName, canonical(EntitiesImpacted), canonical(ErrorCode), IsHealthy)
+key = (NodeName, CheckName, canonical(EntitiesImpacted), canonical(ErrorCode), ProcessingStrategy, IsHealthy)
 ```
 
 Within a configurable **burst window** TTL, an event whose key is already in the seen set is suppressed. Once the entry expires, the next event with that key emits as the start of a fresh burst.
@@ -40,18 +40,19 @@ flowchart TD
 - `CheckName` is included so that two distinct checks producing the same `(entities, ErrorCode)` for the same physical resource don't collide. NIC monitor is the canonical example: `InfiniBandStateCheck` and `InfiniBandDegradationCheck` can both fire for the same port, neither sets `ErrorCode`, and without `CheckName` in the key they would suppress each other.
 - `EntitiesImpacted` is a slice; the same logical set may arrive in different orders. The dedup stage sorts entities lexicographically by `(EntityType, EntityValue)` before hashing.
 - `ErrorCode` is `[]string`; sorted lexicographically before hashing.
-- `IsHealthy` is a bool; included so healthy events with the same `(node, check, entities, ErrorCode)` shape as a prior unhealthy event are not suppressed against it. This matters for the synthetic healthy events emitted by the cancellation rules in [ADR-038](./038-health-monitor-cancellation-rules.md), which by design carry the same `ErrorCode` as the unhealthy event they cancel.
+- `ProcessingStrategy` is included so a `STORE_ONLY` observation cannot suppress a later `EXECUTE_REMEDIATION` event for the same fault identity. This matters for tests and workflows that intentionally send both forms to verify downstream behavior.
+- `IsHealthy` is a bool; included so healthy events with the same `(node, check, entities, ErrorCode, ProcessingStrategy)` shape as a prior unhealthy event are not suppressed against it. This matters for the synthetic healthy events emitted by the cancellation rules in [ADR-038](./038-health-monitor-cancellation-rules.md), which by design carry the same `ErrorCode` as the unhealthy event they cancel.
 - The hash function (e.g., FNV-1a over the canonical encoding) is deterministic so the same event always maps to the same key.
 
 ### What clears the dedup
 
 | Signal                                                          | Cleared                                                                                              |
 |-----------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
-| Healthy event passes the filter for `(node, check, entities, ErrorCode)` | The corresponding unhealthy entry (same tuple, `IsHealthy=false`) — fresh recurrence emits as new   |
+| Healthy event passes the filter for `(node, check, entities, ErrorCode, ProcessingStrategy)` | The corresponding unhealthy entry (same tuple, `IsHealthy=false`) — fresh recurrence emits as new   |
 | TTL elapses on a seen entry                                     | That entry only — next identical event re-emits                                                      |
 | Platform-connector pod restart                                  | All entries (state is in-memory only)                                                                |
 
-A healthy event clears the entry whose key matches `(node, check, entities, ErrorCode)` with `IsHealthy=false` before its own duplicate check runs, so a fresh recurrence of the unhealthy condition after the healthy emits as a new event. Repeated healthy events still dedup against each other.
+A healthy event clears the entry whose key matches `(node, check, entities, ErrorCode, ProcessingStrategy)` with `IsHealthy=false` before its own duplicate check runs. If an unhealthy entry was cleared, the healthy event is forwarded even when it matches a recent healthy key; otherwise fast unhealthy/healthy flaps can leave downstream consumers stuck on the second unhealthy event. Repeated healthy events that do not clear an unhealthy entry still dedup against each other.
 
 ### TTL semantics
 
@@ -206,7 +207,7 @@ The dedup tracker lives entirely in memory. A single background goroutine calls 
 
 ### Negative
 - Events still travel monitor → platform-connector before being suppressed; the gRPC traffic between them is unchanged. The hop is a co-located Unix socket, not a network call.
-- Dedup behaviour is governed entirely by what producers put in `EntitiesImpacted` and `ErrorCode`. Two events with the same triple are treated as the same fault — including two XID 79 emissions whose only difference is `pid` in the `Message` text. A monitor that needs to distinguish those must include pid as an entity.
+- Dedup behaviour is governed entirely by what producers put in `EntitiesImpacted`, `ErrorCode`, and `ProcessingStrategy`. Two events with the same tuple are treated as the same fault — including two XID 79 emissions whose only difference is `pid` in the `Message` text. A monitor that needs to distinguish those must include pid as an entity.
 - Entity and `ErrorCode` slices are now canonicalised by sorting; producers must treat them as sets, not ordered lists.
 - Dedup state is in-memory only. On a platform-connector pod restart, currently-active faults re-emit once each as their next emission arrives, then dedup picks up from there.
 

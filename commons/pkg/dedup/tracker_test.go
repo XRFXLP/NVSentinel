@@ -82,6 +82,24 @@ func TestKey(t *testing.T) {
 			},
 			equal: false,
 		},
+		{
+			name: "includes processing strategy",
+			left: &pb.HealthEvent{
+				NodeName:           "node-a",
+				CheckName:          "SysLogsXIDError",
+				ErrorCode:          []string{"79"},
+				ProcessingStrategy: pb.ProcessingStrategy_STORE_ONLY,
+				EntitiesImpacted:   []*pb.Entity{{EntityType: "gpu", EntityValue: "GPU-1"}},
+			},
+			right: &pb.HealthEvent{
+				NodeName:           "node-a",
+				CheckName:          "SysLogsXIDError",
+				ErrorCode:          []string{"79"},
+				ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+				EntitiesImpacted:   []*pb.Entity{{EntityType: "gpu", EntityValue: "GPU-1"}},
+			},
+			equal: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -155,8 +173,9 @@ func TestClearUnhealthyCounterpart(t *testing.T) {
 	require.True(t, tracker.IsDuplicate(unhealthy))
 	require.True(t, tracker.IsDuplicate(healthy))
 
-	tracker.ClearUnhealthyCounterpart(healthy)
+	cleared := tracker.ClearUnhealthyCounterpart(healthy)
 
+	assert.True(t, cleared)
 	assert.False(t, tracker.IsDuplicate(unhealthy))
 	assert.True(t, tracker.IsDuplicate(healthy))
 }
@@ -167,7 +186,8 @@ func TestClearUnhealthyCounterpartNoopForUnhealthyEvent(t *testing.T) {
 	event := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsXIDError"}
 
 	tracker.Mark(event)
-	tracker.ClearUnhealthyCounterpart(event)
+	cleared := tracker.ClearUnhealthyCounterpart(event)
 
+	assert.False(t, cleared)
 	assert.True(t, tracker.IsDuplicate(event))
 }

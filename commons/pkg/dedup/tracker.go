@@ -95,16 +95,21 @@ func (t *Tracker) Mark(event *pb.HealthEvent) {
 }
 
 // ClearUnhealthyCounterpart removes the prior unhealthy entry that a healthy
-// recovery event resolves. Unhealthy events do not resolve anything, so they are ignored.
-func (t *Tracker) ClearUnhealthyCounterpart(event *pb.HealthEvent) {
+// recovery event resolves. It returns true when an unhealthy entry was removed.
+// Unhealthy events do not resolve anything, so they are ignored.
+func (t *Tracker) ClearUnhealthyCounterpart(event *pb.HealthEvent) bool {
 	if !event.GetIsHealthy() {
-		return
+		return false
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	delete(t.seen, keyWithHealthState(event, false))
+	key := keyWithHealthState(event, false)
+	_, ok := t.seen[key]
+	delete(t.seen, key)
+
+	return ok
 }
 
 // EvictExpired walks the entire seen set and removes entries past ttl.
@@ -153,6 +158,8 @@ func keyWithHealthState(event *pb.HealthEvent, isHealthy bool) uint64 {
 	for _, errorCode := range errorCodes {
 		writeString(h, errorCode)
 	}
+
+	writeUint64(h, uint64(event.GetProcessingStrategy()))
 
 	if isHealthy {
 		_, _ = h.Write([]byte{1})

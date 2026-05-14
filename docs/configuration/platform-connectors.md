@@ -198,10 +198,10 @@ transformers:
 Suppresses repeated health events within a burst window before they are written to the datastore or propagated to Kubernetes. The dedup key is derived from:
 
 ```text
-(nodeName, checkName, canonical entitiesImpacted, canonical errorCode, isHealthy)
+(nodeName, checkName, canonical entitiesImpacted, canonical errorCode, processingStrategy, isHealthy)
 ```
 
-`message`, `pid`, timestamps, and other fields outside the key do not distinguish events. If a producer needs those fields to create distinct faults, it should include them in `entitiesImpacted` or `errorCode`.
+`message`, `pid`, timestamps, and other fields outside the key do not distinguish events. If a producer needs those fields to create distinct faults, it should include them in `entitiesImpacted` or `errorCode`. `processingStrategy` is included so a `STORE_ONLY` observation cannot suppress a later `EXECUTE_REMEDIATION` event for the same fault identity.
 
 ```yaml
 platformConnector:
@@ -229,7 +229,7 @@ List of `checkName` values excluded from platform-connector deduplication. Use t
 
 ### Healthy Event Behavior
 
-Healthy events are keyed separately from unhealthy events, but a healthy event clears the corresponding unhealthy entry before deduplication runs. This allows a fresh recurrence after recovery to emit as a new event while repeated healthy events still deduplicate against each other.
+Healthy events are keyed separately from unhealthy events, but a healthy event clears the corresponding unhealthy entry before deduplication runs. A healthy event that clears an unhealthy entry is forwarded even if it looks like a duplicate of a recent healthy event, so fast unhealthy/healthy flaps can still reach downstream recovery logic. Repeated healthy events that do not clear an unhealthy entry still deduplicate against each other.
 
 ### Operational Notes
 

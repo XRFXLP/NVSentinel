@@ -127,7 +127,7 @@ Processes events through configurable transformer pipeline:
 - Transformers execute in configured order with non-blocking error handling
 
 ### Event Deduplication
-Suppresses repeated events within a configurable burst window before they are persisted or sent to Kubernetes. The key uses `nodeName`, `checkName`, sorted `entitiesImpacted`, sorted `errorCode`, and `isHealthy`; message-only variations do not create distinct faults.
+Suppresses repeated events within a configurable burst window before they are persisted or sent to Kubernetes. The key uses `nodeName`, `checkName`, sorted `entitiesImpacted`, sorted `errorCode`, `processingStrategy`, and `isHealthy`; message-only variations do not create distinct faults.
 
 ### Data Persistence
 Stores health events in the datastore:

@@ -91,7 +91,42 @@ func TestDeduplicatorHealthyClearsUnhealthyCounterpart(t *testing.T) {
 
 	keep, err = filter.Filter(context.Background(), healthy)
 	require.NoError(t, err)
-	assert.False(t, keep)
+	assert.True(t, keep)
+}
+
+func TestDeduplicatorKeepsHealthyEventThatClearsUnhealthyCounterpart(t *testing.T) {
+	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
+	tracker := commondedup.NewTracker(3*time.Minute, commondedup.WithNow(func() time.Time { return now }))
+	filter := NewDeduplicator(tracker, nil)
+	unhealthy := &pb.HealthEvent{
+		NodeName:         "node-a",
+		CheckName:        "gpu-operator-pod-health",
+		ErrorCode:        []string{"GPU_OPERATOR_POD_UNHEALTHY"},
+		EntitiesImpacted: []*pb.Entity{{EntityType: "v1/Pod", EntityValue: "gpu-operator/test-pod"}},
+	}
+	healthy := &pb.HealthEvent{
+		NodeName:         unhealthy.NodeName,
+		CheckName:        unhealthy.CheckName,
+		ErrorCode:        append([]string(nil), unhealthy.ErrorCode...),
+		IsHealthy:        true,
+		EntitiesImpacted: []*pb.Entity{{EntityType: "v1/Pod", EntityValue: "gpu-operator/test-pod"}},
+	}
+
+	keep, err := filter.Filter(context.Background(), unhealthy)
+	require.NoError(t, err)
+	require.True(t, keep)
+
+	keep, err = filter.Filter(context.Background(), healthy)
+	require.NoError(t, err)
+	require.True(t, keep)
+
+	keep, err = filter.Filter(context.Background(), unhealthy)
+	require.NoError(t, err)
+	require.True(t, keep)
+
+	keep, err = filter.Filter(context.Background(), healthy)
+	require.NoError(t, err)
+	assert.True(t, keep)
 }
 
 func TestErrCodeLabelCanonicalizesErrorCodes(t *testing.T) {
