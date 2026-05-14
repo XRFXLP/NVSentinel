@@ -52,7 +52,7 @@ flowchart TD
 | TTL elapses on a seen entry                                     | That entry only — next identical event re-emits                                                      |
 | Platform-connector pod restart                                  | All entries (state is in-memory only)                                                                |
 
-A healthy event clears the entry whose key matches `(node, check, entities, ErrorCode, ProcessingStrategy)` with `IsHealthy=false` before its own duplicate check runs. If an unhealthy entry was cleared, the healthy event is forwarded even when it matches a recent healthy key; otherwise fast unhealthy/healthy flaps can leave downstream consumers stuck on the second unhealthy event. Repeated healthy events that do not clear an unhealthy entry still dedup against each other.
+A healthy event clears entries whose keys match `(node, check, entities, ErrorCode, ProcessingStrategy)` with `IsHealthy=false` before it continues downstream. Healthy events are always forwarded rather than suppressed, because platform-connector cannot know whether a previous healthy baseline or recovery event updated every downstream consumer. Repeated unhealthy fault observations are still deduplicated.
 
 ### TTL semantics
 

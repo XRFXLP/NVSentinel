@@ -75,12 +75,19 @@ func (d *Deduplicator) Filter(ctx context.Context, event *pb.HealthEvent) (bool,
 		return true, nil
 	}
 
-	clearedUnhealthy := false
 	if event.GetIsHealthy() {
-		clearedUnhealthy = d.tracker.ClearUnhealthyCounterpart(event)
+		clearedUnhealthy := d.tracker.ClearUnhealthyCounterpart(event)
+		if clearedUnhealthy {
+			slog.InfoContext(ctx, "Healthy event cleared unhealthy dedup counterpart",
+				"node", event.GetNodeName(),
+				"check", event.GetCheckName(),
+				"err_code", errCodeLabel(event))
+		}
+
+		return true, nil
 	}
 
-	if !clearedUnhealthy && d.tracker.IsDuplicate(event) {
+	if d.tracker.IsDuplicate(event) {
 		dedupSuppressedCounter.WithLabelValues(
 			event.GetCheckName(),
 			event.GetNodeName(),

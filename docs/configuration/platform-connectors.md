@@ -229,7 +229,7 @@ List of `checkName` values excluded from platform-connector deduplication. Use t
 
 ### Healthy Event Behavior
 
-Healthy events are keyed separately from unhealthy events, but a healthy event clears the corresponding unhealthy entry before deduplication runs. A healthy event that clears an unhealthy entry is forwarded even if it looks like a duplicate of a recent healthy event, so fast unhealthy/healthy flaps can still reach downstream recovery logic. Repeated healthy events that do not clear an unhealthy entry still deduplicate against each other.
+Healthy events are not suppressed by the dedup filter. Before they continue downstream, they clear any matching unhealthy entries from the in-memory tracker. This keeps recovery and baseline events reliable even when a previous healthy event did not update every downstream consumer, while repeated unhealthy fault observations are still deduplicated.
 
 ### Operational Notes
 
