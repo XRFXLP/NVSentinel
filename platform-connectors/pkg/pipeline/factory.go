@@ -28,10 +28,21 @@ type Options struct {
 
 type Factory func(cfg *Config, opts Options) (Transformer, error)
 
-var registry = map[string]Factory{}
+// FilterFactory creates a filter from pipeline configuration.
+type FilterFactory func(cfg *Config) (Filter, error)
+
+var (
+	registry       = map[string]Factory{}
+	filterRegistry = map[string]FilterFactory{}
+)
 
 func Register(name string, factory Factory) {
 	registry[name] = factory
+}
+
+// RegisterFilter registers a filter factory by pipeline stage name.
+func RegisterFilter(name string, factory FilterFactory) {
+	filterRegistry[name] = factory
 }
 
 func Create(cfg *Config, opts Options) (Transformer, error) {
@@ -43,26 +54,52 @@ func Create(cfg *Config, opts Options) (Transformer, error) {
 	return factory(cfg, opts)
 }
 
+// CreateFilter instantiates a registered filter from configuration.
+func CreateFilter(cfg *Config) (Filter, error) {
+	factory, ok := filterRegistry[cfg.Name]
+	if !ok {
+		return nil, fmt.Errorf("unknown filter: %s", cfg.Name)
+	}
+
+	return factory(cfg)
+}
+
 // NewFromConfigs creates a Pipeline from a slice of transformer configurations.
-// Disabled transformers are skipped. Returns an error if any enabled transformer
-// fails to initialize.
+// Disabled stages are skipped. Returns an error if any enabled stage fails to initialize.
 func NewFromConfigs(ctx context.Context, configs []Config, opts Options) (*Pipeline, error) {
 	var transformers []Transformer
+	var filters []Filter
 
 	for _, cfg := range configs {
 		if !cfg.Enabled {
-			slog.InfoContext(ctx, "Transformer disabled", "name", cfg.Name)
+			slog.InfoContext(ctx, "Pipeline stage disabled", "name", cfg.Name)
 			continue
 		}
 
-		t, err := Create(&cfg, opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create transformer %s: %w", cfg.Name, err)
+		if factory, ok := registry[cfg.Name]; ok {
+			t, err := factory(&cfg, opts)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create transformer %s: %w", cfg.Name, err)
+			}
+
+			transformers = append(transformers, t)
+			slog.InfoContext(ctx, "Transformer registered", "name", t.Name())
+			continue
 		}
 
-		transformers = append(transformers, t)
-		slog.InfoContext(ctx, "Transformer registered", "name", t.Name())
+		if factory, ok := filterRegistry[cfg.Name]; ok {
+			f, err := factory(&cfg)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create filter %s: %w", cfg.Name, err)
+			}
+
+			filters = append(filters, f)
+			slog.InfoContext(ctx, "Filter registered", "name", f.Name())
+			continue
+		}
+
+		return nil, fmt.Errorf("unknown pipeline stage: %s", cfg.Name)
 	}
 
-	return New(transformers...), nil
+	return NewWithFilters(transformers, filters), nil
 }

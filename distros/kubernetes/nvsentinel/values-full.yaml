@@ -292,6 +292,15 @@ platformConnector:
     # Burst: Maximum burst size above QPS
     burst: 10
 
+  # Health event deduplication filter
+  # Suppresses repeated events with the same node, check, impacted entities, error code, and health state.
+  dedup:
+    enabled: true
+    burstWindow: "3m"
+    evictionInterval: "60s"
+    skipChecks:
+      - SysLogsGPUFallenOff
+
   # Health event transformers pipeline
   # Transformers process health events before storage and propagation
   # They execute in the order specified in the pipeline

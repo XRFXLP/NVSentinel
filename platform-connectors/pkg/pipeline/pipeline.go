@@ -32,15 +32,29 @@ type Transformer interface {
 	Name() string
 }
 
+// Filter inspects a health event and returns whether it should continue downstream.
+type Filter interface {
+	Filter(ctx context.Context, event *pb.HealthEvent) (keep bool, err error)
+	Name() string
+}
+
+// Pipeline runs configured transformers followed by filters for each event.
 type Pipeline struct {
 	transformers []Transformer
+	filters      []Filter
 }
 
 func New(transformers ...Transformer) *Pipeline {
 	return &Pipeline{transformers: transformers}
 }
 
-func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) {
+// NewWithFilters creates a pipeline with transformer and filter stages.
+func NewWithFilters(transformers []Transformer, filters []Filter) *Pipeline {
+	return &Pipeline{transformers: transformers, filters: filters}
+}
+
+// Process applies the pipeline and returns false when a filter drops the event.
+func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) bool {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.pipeline.process")
 	defer span.End()
 
@@ -62,4 +76,36 @@ func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) {
 			))
 		}
 	}
+
+	for _, f := range p.filters {
+		keep, err := f.Filter(ctx, event)
+		if err != nil {
+			failedCount++
+
+			slog.WarnContext(ctx, "Filter failed",
+				"filter", f.Name(),
+				"node", event.NodeName,
+				"error", err)
+			tracing.RecordError(span, err)
+			span.AddEvent("platform_connector.pipeline.filter_failed", trace.WithAttributes(
+				attribute.String("platform_connector.pipeline.failed_filter", f.Name()),
+				attribute.String("platform_connector.pipeline.error.type", "running_filter_failed"),
+				attribute.String("platform_connector.pipeline.error.message", err.Error()),
+			))
+
+			continue
+		}
+
+		if !keep {
+			span.AddEvent("platform_connector.pipeline.event_dropped", trace.WithAttributes(
+				attribute.String("platform_connector.pipeline.filter", f.Name()),
+			))
+
+			return false
+		}
+	}
+
+	span.SetAttributes(attribute.Int("platform_connector.pipeline.failed_stage_count", failedCount))
+
+	return true
 }

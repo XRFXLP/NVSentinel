@@ -19,8 +19,21 @@ import (
 	"testing"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"github.com/stretchr/testify/assert"
 )
+
+type dropCheckFilter struct {
+	checkName string
+}
+
+func (f *dropCheckFilter) Filter(ctx context.Context, event *pb.HealthEvent) (bool, error) {
+	return event.CheckName != f.checkName, nil
+}
+
+func (f *dropCheckFilter) Name() string {
+	return "drop-check"
+}
 
 func TestHealthEventOccurredV1_ProcessingStrategyNormalization(t *testing.T) {
 	tests := []struct {
@@ -65,4 +78,24 @@ func TestHealthEventOccurredV1_ProcessingStrategyNormalization(t *testing.T) {
 			assert.Equal(t, tt.expectedStrategy, healthEvents.Events[0].ProcessingStrategy)
 		})
 	}
+}
+
+func TestHealthEventOccurredV1_DroppedEventsRemovedFromBatch(t *testing.T) {
+	server := &PlatformConnectorServer{
+		Pipeline: pipeline.NewWithFilters(nil, []pipeline.Filter{
+			&dropCheckFilter{checkName: "drop-me"},
+		}),
+	}
+	healthEvents := &pb.HealthEvents{
+		Events: []*pb.HealthEvent{
+			{NodeName: "test-node", CheckName: "keep-me"},
+			{NodeName: "test-node", CheckName: "drop-me"},
+		},
+	}
+
+	_, err := server.HealthEventOccurredV1(context.Background(), healthEvents)
+
+	assert.NoError(t, err)
+	assert.Len(t, healthEvents.Events, 1)
+	assert.Equal(t, "keep-me", healthEvents.Events[0].CheckName)
 }

@@ -251,6 +251,13 @@ platformConnector:
     qps: 5.0
     burst: 10
 
+  dedup:
+    enabled: true
+    burstWindow: "3m"
+    evictionInterval: "60s"
+    skipChecks:
+      - SysLogsGPUFallenOff
+
   # Node metadata enrichment configuration
   # Health event transformers pipeline
   pipeline:

@@ -4137,6 +4137,13 @@ platformConnector:
     compactedHealthEventMsgLen: 72
     qps: 5.0
     burst: 10
+
+  dedup:
+    enabled: true
+    burstWindow: "3m"
+    evictionInterval: "60s"
+    skipChecks:
+      - SysLogsGPUFallenOff
   
   pipeline:
     - name: MetadataAugmentor

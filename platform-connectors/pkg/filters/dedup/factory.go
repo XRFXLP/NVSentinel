@@ -1,0 +1,43 @@
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package dedup
+
+import (
+	"context"
+	"fmt"
+
+	commondedup "github.com/nvidia/nvsentinel/commons/pkg/dedup"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
+)
+
+func init() {
+	pipeline.RegisterFilter(Name, newFromConfig)
+}
+
+func newFromConfig(cfg *pipeline.Config) (pipeline.Filter, error) {
+	dedupCfg, err := LoadConfig(cfg.ConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load dedup configuration: %w", err)
+	}
+
+	if err := dedupCfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid dedup configuration: %w", err)
+	}
+
+	tracker := commondedup.NewTracker(dedupCfg.BurstWindow)
+	startEvictExpired(context.Background(), tracker, dedupCfg.EvictionInterval)
+
+	return NewDeduplicator(tracker, dedupCfg.SkipChecks), nil
+}
