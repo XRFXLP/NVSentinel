@@ -85,6 +85,7 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 				kept = append(kept, he.Events[i])
 			}
 		}
+
 		he.Events = kept
 	}
 

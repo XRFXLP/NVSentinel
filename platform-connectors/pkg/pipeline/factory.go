@@ -68,6 +68,7 @@ func CreateFilter(cfg *Config) (Filter, error) {
 // Disabled stages are skipped. Returns an error if any enabled stage fails to initialize.
 func NewFromConfigs(ctx context.Context, configs []Config, opts Options) (*Pipeline, error) {
 	var transformers []Transformer
+
 	var filters []Filter
 
 	for _, cfg := range configs {
@@ -84,6 +85,7 @@ func NewFromConfigs(ctx context.Context, configs []Config, opts Options) (*Pipel
 
 			transformers = append(transformers, t)
 			slog.InfoContext(ctx, "Transformer registered", "name", t.Name())
+
 			continue
 		}
 
@@ -95,6 +97,7 @@ func NewFromConfigs(ctx context.Context, configs []Config, opts Options) (*Pipel
 
 			filters = append(filters, f)
 			slog.InfoContext(ctx, "Filter registered", "name", f.Name())
+
 			continue
 		}
 

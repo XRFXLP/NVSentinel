@@ -37,6 +37,7 @@ func newFromConfig(cfg *pipeline.Config) (pipeline.Filter, error) {
 	}
 
 	tracker := commondedup.NewTracker(dedupCfg.BurstWindow)
+	//nolint:gosec // cancel is owned by the returned filter and invoked by Pipeline.Close.
 	ctx, cancel := context.WithCancel(context.Background())
 	startEvictExpired(ctx, tracker, dedupCfg.EvictionInterval)
 
