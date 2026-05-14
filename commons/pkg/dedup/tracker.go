@@ -19,6 +19,8 @@ import (
 	"encoding/binary"
 	"hash/fnv"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,7 +41,7 @@ func WithNow(now func() time.Time) Option {
 // Tracker remembers recently seen health-event keys for one burst window.
 type Tracker struct {
 	mu   sync.RWMutex
-	seen map[uint64]time.Time
+	seen map[eventKey]time.Time
 	ttl  time.Duration
 	now  func() time.Time
 }
@@ -47,7 +49,7 @@ type Tracker struct {
 // NewTracker creates a tracker that treats repeated keys within ttl as duplicates.
 func NewTracker(ttl time.Duration, opts ...Option) *Tracker {
 	t := &Tracker{
-		seen: make(map[uint64]time.Time),
+		seen: make(map[eventKey]time.Time),
 		ttl:  ttl,
 		now:  time.Now,
 	}
@@ -61,13 +63,13 @@ func NewTracker(ttl time.Duration, opts ...Option) *Tracker {
 
 // Key extracts the canonical key from an event.
 func Key(event *pb.HealthEvent) uint64 {
-	return keyWithHealthState(event, event.GetIsHealthy())
+	return keyWithHealthState(event, event.GetIsHealthy()).hash()
 }
 
 // IsDuplicate is true iff the event's key is already in the tracker and within ttl.
 // Side effect: evicts the queried key if expired (lazy eviction).
 func (t *Tracker) IsDuplicate(event *pb.HealthEvent) bool {
-	k := Key(event)
+	k := keyWithHealthState(event, event.GetIsHealthy())
 	now := t.now()
 
 	t.mu.Lock()
@@ -91,7 +93,7 @@ func (t *Tracker) Mark(event *pb.HealthEvent) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	t.seen[Key(event)] = t.now()
+	t.seen[keyWithHealthState(event, event.GetIsHealthy())] = t.now()
 }
 
 // ClearUnhealthyCounterpart removes the prior unhealthy entry that a healthy
@@ -105,11 +107,18 @@ func (t *Tracker) ClearUnhealthyCounterpart(event *pb.HealthEvent) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	key := keyWithHealthState(event, false)
-	_, ok := t.seen[key]
-	delete(t.seen, key)
+	clearKey := keyWithHealthState(event, false)
+	cleared := false
 
-	return ok
+	for key := range t.seen {
+		if key.matchesUnhealthyCounterpart(clearKey, event) {
+			delete(t.seen, key)
+
+			cleared = true
+		}
+	}
+
+	return cleared
 }
 
 // EvictExpired walks the entire seen set and removes entries past ttl.
@@ -131,43 +140,71 @@ func (t *Tracker) Clear() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	t.seen = make(map[uint64]time.Time)
+	t.seen = make(map[eventKey]time.Time)
 }
 
 // keyWithHealthState builds the canonical event key while allowing callers to
 // evaluate the same event as healthy or unhealthy. Recovery handling uses this
 // to clear the unhealthy key that corresponds to an incoming healthy event.
-func keyWithHealthState(event *pb.HealthEvent, isHealthy bool) uint64 {
-	h := fnv.New64a()
-
-	writeString(h, event.GetNodeName())
-	writeString(h, event.GetCheckName())
-
+func keyWithHealthState(event *pb.HealthEvent, isHealthy bool) eventKey {
 	entities := canonicalEntities(event.GetEntitiesImpacted())
-	writeUint64(h, uint64(len(entities)))
-
-	for _, entity := range entities {
-		writeString(h, entity.entityType)
-		writeString(h, entity.entityValue)
-	}
-
 	errorCodes := append([]string(nil), event.GetErrorCode()...)
 	sort.Strings(errorCodes)
-	writeUint64(h, uint64(len(errorCodes)))
 
-	for _, errorCode := range errorCodes {
-		writeString(h, errorCode)
+	return eventKey{
+		nodeName:           event.GetNodeName(),
+		checkName:          event.GetCheckName(),
+		entities:           encodeEntities(entities),
+		errorCodes:         encodeStrings(errorCodes),
+		processingStrategy: event.GetProcessingStrategy().String(),
+		isHealthy:          isHealthy,
 	}
+}
 
-	writeString(h, event.GetProcessingStrategy().String())
+type eventKey struct {
+	nodeName           string
+	checkName          string
+	entities           string
+	errorCodes         string
+	processingStrategy string
+	isHealthy          bool
+}
 
-	if isHealthy {
+func (k eventKey) hash() uint64 {
+	h := fnv.New64a()
+
+	writeString(h, k.nodeName)
+	writeString(h, k.checkName)
+	writeString(h, k.entities)
+	writeString(h, k.errorCodes)
+	writeString(h, k.processingStrategy)
+
+	if k.isHealthy {
 		_, _ = h.Write([]byte{1})
 	} else {
 		_, _ = h.Write([]byte{0})
 	}
 
 	return h.Sum64()
+}
+
+func (k eventKey) matchesUnhealthyCounterpart(clearKey eventKey, event *pb.HealthEvent) bool {
+	if k.isHealthy ||
+		k.nodeName != clearKey.nodeName ||
+		k.checkName != clearKey.checkName ||
+		k.processingStrategy != clearKey.processingStrategy {
+		return false
+	}
+
+	if len(event.GetEntitiesImpacted()) > 0 && k.entities != clearKey.entities {
+		return false
+	}
+
+	if len(event.GetErrorCode()) > 0 && k.errorCodes != clearKey.errorCodes {
+		return false
+	}
+
+	return true
 }
 
 type canonicalEntity struct {
@@ -193,6 +230,34 @@ func canonicalEntities(entities []*pb.Entity) []canonicalEntity {
 	})
 
 	return canonical
+}
+
+func encodeEntities(entities []canonicalEntity) string {
+	var b strings.Builder
+
+	for _, entity := range entities {
+		writeCanonicalString(&b, entity.entityType)
+		writeCanonicalString(&b, entity.entityValue)
+	}
+
+	return b.String()
+}
+
+func encodeStrings(values []string) string {
+	var b strings.Builder
+
+	for _, value := range values {
+		writeCanonicalString(&b, value)
+	}
+
+	return b.String()
+}
+
+func writeCanonicalString(b *strings.Builder, value string) {
+	b.WriteString(strconv.Itoa(len(value)))
+	b.WriteByte(':')
+	b.WriteString(value)
+	b.WriteByte(';')
 }
 
 type byteWriter interface {

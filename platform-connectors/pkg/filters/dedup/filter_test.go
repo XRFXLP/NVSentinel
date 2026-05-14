@@ -129,6 +129,36 @@ func TestDeduplicatorKeepsHealthyEventThatClearsUnhealthyCounterpart(t *testing.
 	assert.True(t, keep)
 }
 
+func TestDeduplicatorKeepsCheckLevelHealthyEventThatClearsUnhealthyCounterpart(t *testing.T) {
+	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
+	tracker := commondedup.NewTracker(3*time.Minute, commondedup.WithNow(func() time.Time { return now }))
+	filter := NewDeduplicator(tracker, nil)
+	unhealthy := &pb.HealthEvent{
+		NodeName:           "node-a",
+		CheckName:          "GpuDcgmConnectivityFailure",
+		ErrorCode:          []string{"DCGM_CONNECTIVITY_ERROR"},
+		ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+	}
+	healthy := &pb.HealthEvent{
+		NodeName:           unhealthy.NodeName,
+		CheckName:          unhealthy.CheckName,
+		IsHealthy:          true,
+		ProcessingStrategy: unhealthy.ProcessingStrategy,
+	}
+
+	keep, err := filter.Filter(context.Background(), healthy)
+	require.NoError(t, err)
+	require.True(t, keep)
+
+	keep, err = filter.Filter(context.Background(), unhealthy)
+	require.NoError(t, err)
+	require.True(t, keep)
+
+	keep, err = filter.Filter(context.Background(), healthy)
+	require.NoError(t, err)
+	assert.True(t, keep)
+}
+
 func TestErrCodeLabelCanonicalizesErrorCodes(t *testing.T) {
 	event := &pb.HealthEvent{ErrorCode: []string{"95", "79"}}
 

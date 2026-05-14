@@ -180,6 +180,35 @@ func TestClearUnhealthyCounterpart(t *testing.T) {
 	assert.True(t, tracker.IsDuplicate(healthy))
 }
 
+func TestClearUnhealthyCounterpartWithCheckLevelHealthyEvent(t *testing.T) {
+	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
+	tracker := NewTracker(3*time.Minute, WithNow(func() time.Time { return now }))
+	unhealthy := &pb.HealthEvent{
+		NodeName:           "node-a",
+		CheckName:          "GpuDcgmConnectivityFailure",
+		ErrorCode:          []string{"DCGM_CONNECTIVITY_ERROR"},
+		ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+	}
+	healthy := &pb.HealthEvent{
+		NodeName:           unhealthy.NodeName,
+		CheckName:          unhealthy.CheckName,
+		IsHealthy:          true,
+		ProcessingStrategy: unhealthy.ProcessingStrategy,
+	}
+
+	tracker.Mark(unhealthy)
+	tracker.Mark(healthy)
+
+	require.True(t, tracker.IsDuplicate(unhealthy))
+	require.True(t, tracker.IsDuplicate(healthy))
+
+	cleared := tracker.ClearUnhealthyCounterpart(healthy)
+
+	assert.True(t, cleared)
+	assert.False(t, tracker.IsDuplicate(unhealthy))
+	assert.True(t, tracker.IsDuplicate(healthy))
+}
+
 func TestClearUnhealthyCounterpartNoopForUnhealthyEvent(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
 	tracker := NewTracker(3*time.Minute, WithNow(func() time.Time { return now }))
