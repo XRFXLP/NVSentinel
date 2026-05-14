@@ -17,7 +17,6 @@ package helpers
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"testing"
 	"time"
 
@@ -56,35 +55,6 @@ func CheckPrometheusMetricEmpty(ctx context.Context, t *testing.T, query string,
 	}
 
 	return nil
-}
-
-// GetPrometheusMetricValue executes the Prometheus `query` and returns a numeric value.
-// Empty vectors are treated as zero so tests can compare counters before they exist.
-func GetPrometheusMetricValue(ctx context.Context, query string) (float64, error) {
-	result, err := queryPrometheus(ctx, query)
-	if err != nil {
-		return 0, err
-	}
-
-	switch v := result.(type) {
-	case model.Vector:
-		if len(v) == 0 {
-			return 0, nil
-		}
-		if len(v) > 1 {
-			return 0, fmt.Errorf("query returned %d vector results, expected at most 1", len(v))
-		}
-
-		return strconv.ParseFloat(v[0].Value.String(), 64)
-	case *model.Scalar:
-		if v == nil {
-			return 0, nil
-		}
-
-		return strconv.ParseFloat(v.Value.String(), 64)
-	default:
-		return 0, fmt.Errorf("query returned %T, expected vector or scalar", result)
-	}
 }
 
 // queryPrometheus executes the specified Prometheus `query` and returns the raw result value.

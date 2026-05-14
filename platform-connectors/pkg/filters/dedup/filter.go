@@ -30,19 +30,38 @@ const Name = "Deduplicator"
 type Deduplicator struct {
 	tracker *commondedup.Tracker
 	skip    map[string]bool
+	cancel  context.CancelFunc
 }
 
 // NewDeduplicator creates a filter backed by tracker and a check-name skip list.
-func NewDeduplicator(tracker *commondedup.Tracker, skipChecks []string) *Deduplicator {
+func NewDeduplicator(
+	tracker *commondedup.Tracker,
+	skipChecks []string,
+	cancel ...context.CancelFunc,
+) *Deduplicator {
 	skip := make(map[string]bool, len(skipChecks))
 	for _, check := range skipChecks {
 		skip[check] = true
 	}
 
-	return &Deduplicator{
+	d := &Deduplicator{
 		tracker: tracker,
 		skip:    skip,
 	}
+	if len(cancel) > 0 {
+		d.cancel = cancel[0]
+	}
+
+	return d
+}
+
+// Close stops the background eviction loop, if this filter owns one.
+func (d *Deduplicator) Close() error {
+	if d.cancel != nil {
+		d.cancel()
+	}
+
+	return nil
 }
 
 // Name returns the pipeline stage name.

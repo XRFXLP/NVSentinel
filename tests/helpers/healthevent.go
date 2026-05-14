@@ -194,15 +194,6 @@ func NewSyslogXIDEvent(opts SyslogXIDEventOptions) *HealthEventTemplate {
 		WithProcessingStrategy(int(processingStrategy))
 }
 
-// DedupSuppressedQuery returns the Prometheus query for platform-connector
-// dedup suppressions for one check/node/error-code label set.
-func DedupSuppressedQuery(checkName, nodeName, errorCode string) string {
-	return fmt.Sprintf(
-		`nvsentinel_platform_connector_dedup_suppressed_total{check=%q,node=%q,err_code=%q}`,
-		checkName, nodeName, errorCode,
-	)
-}
-
 // XIDEntities returns the impacted PCI and GPU UUID entities used by syslog XID events.
 // reversed is useful for tests that need to verify entity-order canonicalization.
 func XIDEntities(pci string, gpuUUID string, reversed bool) []EntityImpacted {

@@ -46,7 +46,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	var cfg Config
 	if err := configmanager.LoadTOMLConfig(path, &cfg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load dedup config %s: %w", path, err)
 	}
 
 	return &cfg, nil

@@ -37,7 +37,8 @@ func newFromConfig(cfg *pipeline.Config) (pipeline.Filter, error) {
 	}
 
 	tracker := commondedup.NewTracker(dedupCfg.BurstWindow)
-	startEvictExpired(context.Background(), tracker, dedupCfg.EvictionInterval)
+	ctx, cancel := context.WithCancel(context.Background())
+	startEvictExpired(ctx, tracker, dedupCfg.EvictionInterval)
 
-	return NewDeduplicator(tracker, dedupCfg.SkipChecks), nil
+	return NewDeduplicator(tracker, dedupCfg.SkipChecks, cancel), nil
 }

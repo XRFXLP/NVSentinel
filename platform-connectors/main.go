@@ -500,6 +500,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize pipeline: %w", err)
 	}
+	defer pipeline.Close()
 
 	lis, err := startGRPCServer(ctx, cfg.socket, pipeline)
 	if err != nil {

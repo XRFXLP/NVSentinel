@@ -58,7 +58,11 @@ func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
 			client, err := c.NewClient()
 			require.NoError(t, err, "failed to create kubernetes client")
 
-			nodeName := ctx.Value(keyPlatformConnectorDedupNodeName).(string)
+			nodeName, ok := ctx.Value(keyPlatformConnectorDedupNodeName).(string)
+			if !ok || nodeName == "" {
+				t.Fatalf("missing %s in test context", keyPlatformConnectorDedupNodeName)
+				return ctx
+			}
 
 			events := make([]*helpers.HealthEventTemplate, 0, 26)
 			baseGPUUUID := "GPU-" + uuid.NewString()

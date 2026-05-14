@@ -53,6 +53,20 @@ func NewWithFilters(transformers []Transformer, filters []Filter) *Pipeline {
 	return &Pipeline{transformers: transformers, filters: filters}
 }
 
+// Close releases resources owned by filters that expose a Close method.
+func (p *Pipeline) Close() {
+	for _, f := range p.filters {
+		closer, ok := f.(interface{ Close() error })
+		if !ok {
+			continue
+		}
+
+		if err := closer.Close(); err != nil {
+			slog.Warn("Failed to close pipeline filter", "filter", f.Name(), "error", err)
+		}
+	}
+}
+
 // Process applies the pipeline and returns false when a filter drops the event.
 func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) bool {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.pipeline.process")

@@ -40,9 +40,9 @@ platformConnector:
   affinity: {}
 ```
 
-## Transformer Pipeline
+## Event Processing Pipeline
 
-Configures the event transformation pipeline that processes health events before storage and Kubernetes propagation.
+Configures the event processing pipeline that processes health events before storage and Kubernetes propagation. Transformers mutate events in order; filters inspect transformed events and may drop them before connector fan-out.
 
 ```yaml
 platformConnector:
@@ -54,6 +54,13 @@ platformConnector:
       enabled: false
       config: /etc/config/overrides.toml
   
+  dedup:
+    enabled: true
+    burstWindow: "3m"
+    evictionInterval: "60s"
+    skipChecks:
+      - SysLogsGPUFallenOff
+
   transformers:
     MetadataAugmentor:
       cacheSize: 50
@@ -68,15 +75,20 @@ platformConnector:
 ### Parameters
 
 #### pipeline
-Array of transformers to execute in order:
+Array of transformer stages to execute in order:
 - **name**: Transformer identifier (`MetadataAugmentor`, `OverrideTransformer`)
 - **enabled**: Enable/disable the transformer
 - **config**: Path to transformer-specific configuration file
 
+The chart appends the `Deduplicator` filter stage from `platformConnector.dedup`; operators normally configure deduplication through the `dedup` block rather than adding it manually to `pipeline`.
+
+#### dedup
+Deduplication filter configuration. See [Deduplication Filter Configuration](#deduplication-filter-configuration).
+
 #### transformers
 Transformer-specific configurations, nested by transformer name.
 
-**Note:** Transformers execute sequentially. `MetadataAugmentor` should run first to provide node metadata for subsequent transformers.
+**Note:** Transformers execute sequentially. `MetadataAugmentor` should run first to provide node metadata for subsequent transformers. Filters run after all transformers.
 
 ## Metadata Augmentor Configuration
 
@@ -181,6 +193,49 @@ transformers:
           recommendedAction: "NONE"
 ```
 
+## Deduplication Filter Configuration
+
+Suppresses repeated health events within a burst window before they are written to the datastore or propagated to Kubernetes. The dedup key is derived from:
+
+```text
+(nodeName, checkName, canonical entitiesImpacted, canonical errorCode, isHealthy)
+```
+
+`message`, `pid`, timestamps, and other fields outside the key do not distinguish events. If a producer needs those fields to create distinct faults, it should include them in `entitiesImpacted` or `errorCode`.
+
+```yaml
+platformConnector:
+  dedup:
+    enabled: true
+    burstWindow: "3m"
+    evictionInterval: "60s"
+    skipChecks:
+      - SysLogsGPUFallenOff
+```
+
+### Parameters
+
+#### enabled
+Enables the deduplication filter. When disabled, every event that reaches platform-connectors continues to downstream connectors.
+
+#### burstWindow
+Go duration string that controls how long repeated events with the same key are suppressed. After the window expires, the next matching event is emitted as a fresh burst.
+
+#### evictionInterval
+Go duration string that controls how often the in-memory tracker evicts expired keys that have not recurred.
+
+#### skipChecks
+List of `checkName` values excluded from platform-connector deduplication. Use this for checks that already implement source-specific correlation semantics.
+
+### Healthy Event Behavior
+
+Healthy events are keyed separately from unhealthy events, but a healthy event clears the corresponding unhealthy entry before deduplication runs. This allows a fresh recurrence after recovery to emit as a new event while repeated healthy events still deduplicate against each other.
+
+### Operational Notes
+
+- Dedup state is in-memory only and is cleared on platform-connectors pod restart.
+- The suppression counter is exposed as `nvsentinel_platform_connector_dedup_suppressed_total{check,node,err_code}`.
+- `entitiesImpacted` and `errorCode` are canonicalized as sets for keying; ordering differences do not create distinct events.
 
 ## Kubernetes Connector
 
