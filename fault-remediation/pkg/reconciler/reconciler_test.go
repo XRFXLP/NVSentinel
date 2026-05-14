@@ -65,15 +65,38 @@ func (m *MockK8sClient) GetStatusChecker() crstatus.CRStatusCheckerInterface {
 
 type mockStatusChecker struct {
 	shouldSkip []bool
+	states     []crstatus.CRState
+	stateByCR  map[string]crstatus.CRState
 	callCount  int
 }
 
 func (statusChecker *mockStatusChecker) ShouldSkipCRCreation(context.Context, string, string) bool {
+	return statusChecker.GetCRState(context.Background(), "", "") != crstatus.CRStateFailed
+}
+
+func (statusChecker *mockStatusChecker) GetCRState(_ context.Context, _ string, crName string) crstatus.CRState {
+	if statusChecker.stateByCR != nil {
+		return statusChecker.stateByCR[crName]
+	}
+
+	if statusChecker.states != nil {
+		state := statusChecker.states[statusChecker.callCount]
+		if statusChecker.callCount < len(statusChecker.states)-1 {
+			statusChecker.callCount++
+		}
+
+		return state
+	}
+
 	shouldSkip := statusChecker.shouldSkip[statusChecker.callCount]
 	if statusChecker.callCount < len(statusChecker.shouldSkip)-1 {
 		statusChecker.callCount++
 	}
-	return shouldSkip
+	if shouldSkip {
+		return crstatus.CRStateInProgress
+	}
+
+	return crstatus.CRStateFailed
 }
 
 func (m *MockK8sClient) GetConfig() *config.TomlConfig {
@@ -124,7 +147,9 @@ func (w *MockCRStatusCheckerWrapper) IsSuccessful(ctx context.Context, crName st
 }
 
 type MockNodeAnnotationManager struct {
-	existingCRs map[string]string
+	existingCRs       map[string]string
+	existingCRCreated time.Time
+	createdByGroup    map[string]time.Time
 }
 
 func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nodeName string) (*annotation.RemediationStateAnnotation, *corev1.Node, error) {
@@ -137,10 +162,18 @@ func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nod
 	annotationState := &annotation.RemediationStateAnnotation{
 		EquivalenceGroups: make(map[string]annotation.EquivalenceGroupState),
 	}
+	createdAt := m.existingCRCreated
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
 	for groupName, crName := range m.existingCRs {
+		groupCreatedAt := createdAt
+		if createdAtForGroup, ok := m.createdByGroup[groupName]; ok {
+			groupCreatedAt = createdAtForGroup
+		}
 		annotationState.EquivalenceGroups[groupName] = annotation.EquivalenceGroupState{
 			MaintenanceCR: crName,
-			CreatedAt:     time.Now(),
+			CreatedAt:     groupCreatedAt,
 		}
 	}
 	return annotationState, nil, nil
@@ -932,11 +965,17 @@ func TestCRBasedDeduplication(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name                   string
-		existingCRs            map[string]string
-		shouldSkipCRCreation   []bool // if nil we will not provide a StatusChecker instances
-		groupConfig            *common.EquivalenceGroupConfig
-		expectedShouldCreateCR bool
+		name                      string
+		existingCRs               map[string]string
+		shouldSkipCRCreation      []bool // if nil we will not provide a StatusChecker instances
+		crStates                  []crstatus.CRState
+		crStateByName             map[string]crstatus.CRState
+		groupConfig               *common.EquivalenceGroupConfig
+		eventCreatedAt            time.Time
+		remediationCreatedAt      time.Time
+		remediationCreatedByGroup map[string]time.Time
+		expectedShouldCreateCR    bool
+		expectedRemediated        bool
 	}{
 		{
 			name:                   "NoStatusChecker_AllowRemediation",
@@ -994,12 +1033,50 @@ func TestCRBasedDeduplication(t *testing.T) {
 			groupConfig:            getGroupConfig("restart", []string{"reset-GPU-123"}),
 			expectedShouldCreateCR: true,
 		},
+		{
+			name:                   "CRSucceeded_SameSession_MarksRemediated",
+			existingCRs:            map[string]string{"restart": "maintenance-node-123"},
+			crStates:               []crstatus.CRState{crstatus.CRStateSucceeded},
+			groupConfig:            getGroupConfig("restart", nil),
+			eventCreatedAt:         time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC),
+			remediationCreatedAt:   time.Date(2026, 5, 14, 10, 1, 0, 0, time.UTC),
+			expectedShouldCreateCR: false,
+			expectedRemediated:     true,
+		},
+		{
+			name:                   "CRSucceeded_FutureSession_AllowsRemediation",
+			existingCRs:            map[string]string{"restart": "maintenance-node-123"},
+			crStates:               []crstatus.CRState{crstatus.CRStateSucceeded},
+			groupConfig:            getGroupConfig("restart", nil),
+			eventCreatedAt:         time.Date(2026, 5, 14, 10, 10, 1, 0, time.UTC),
+			remediationCreatedAt:   time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC),
+			expectedShouldCreateCR: true,
+			expectedRemediated:     false,
+		},
+		{
+			name:        "MultipleMatchingGroups_NewestStateEvaluatedFirst",
+			existingCRs: map[string]string{"restart": "maintenance-restart", "reset-GPU-123": "maintenance-reset"},
+			crStateByName: map[string]crstatus.CRState{
+				"maintenance-restart": crstatus.CRStateFailed,
+				"maintenance-reset":   crstatus.CRStateInProgress,
+			},
+			groupConfig:            getGroupConfig("reset-GPU-123", []string{"restart"}),
+			eventCreatedAt:         time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC),
+			expectedShouldCreateCR: false,
+			expectedRemediated:     false,
+			remediationCreatedByGroup: map[string]time.Time{
+				"restart":       time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC),
+				"reset-GPU-123": time.Date(2026, 5, 14, 10, 1, 0, 0, time.UTC),
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockAnnotationManager := &MockNodeAnnotationManager{
-				existingCRs: tt.existingCRs,
+				existingCRs:       tt.existingCRs,
+				existingCRCreated: tt.remediationCreatedAt,
+				createdByGroup:    tt.remediationCreatedByGroup,
 			}
 
 			mockK8sClient := &MockK8sClient{
@@ -1011,6 +1088,16 @@ func TestCRBasedDeduplication(t *testing.T) {
 					shouldSkip: tt.shouldSkipCRCreation,
 				}
 			}
+			if tt.crStates != nil {
+				mockK8sClient.mockStatusChecker = &mockStatusChecker{
+					states: tt.crStates,
+				}
+			}
+			if tt.crStateByName != nil {
+				mockK8sClient.mockStatusChecker = &mockStatusChecker{
+					stateByCR: tt.crStateByName,
+				}
+			}
 
 			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
 			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
@@ -1018,9 +1105,10 @@ func TestCRBasedDeduplication(t *testing.T) {
 			healthEvent := &protos.HealthEvent{
 				NodeName: "test-node",
 			}
-			shouldCreateCR, _, err := r.checkExistingCRStatus(ctx, healthEvent, tt.groupConfig)
+			shouldCreateCR, _, remediated, err := r.checkExistingCRStatus(ctx, healthEvent, tt.eventCreatedAt, tt.groupConfig)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedShouldCreateCR, shouldCreateCR)
+			assert.Equal(t, tt.expectedRemediated, remediated)
 		})
 	}
 }

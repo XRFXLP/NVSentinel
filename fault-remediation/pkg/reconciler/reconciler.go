@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/events"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/metrics"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/remediation"
@@ -50,7 +52,9 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const coldStartBatchSize = 1000
+const (
+	coldStartBatchSize = 1000
+)
 
 type ReconcilerConfig struct {
 	DataStoreConfig    datastore.DataStoreConfig
@@ -454,7 +458,8 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		return res, err
 	}
 
-	shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, healthEvent, groupConfig)
+	shouldCreateCR, existingCR, existingCRRemediated, err := r.checkExistingCRStatus(ctx, healthEvent,
+		healthEventWithStatus.CreatedAt, groupConfig)
 	if err != nil {
 		metrics.ProcessingErrors.WithLabelValues("cr_status_check_error", nodeName).Inc()
 		slog.ErrorContext(ctx, "Error checking existing CR status", "node", nodeName, "error", err)
@@ -469,7 +474,8 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	}
 
 	if !shouldCreateCR {
-		return r.handleExistingCRSkip(ctx, eventWithToken, watcherInstance, nodeName, existingCR)
+		return r.handleExistingCRSkip(ctx, eventWithToken, watcherInstance, healthEventStore, nodeName, existingCR,
+			existingCRRemediated)
 	}
 
 	result, err := r.runLogCollectorAndRemediate(ctx, healthEvent, healthEventWithStatus, eventWithToken,
@@ -682,7 +688,9 @@ func (r *FaultRemediationReconciler) handleExistingCRSkip(
 	ctx context.Context,
 	eventWithToken datastore.EventWithToken,
 	watcherInstance datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
 	nodeName, existingCR string,
+	existingCRRemediated bool,
 ) (ctrl.Result, error) {
 	span := tracing.SpanFromContext(ctx)
 	slog.InfoContext(ctx, "Skipping event for node due to existing CR",
@@ -695,6 +703,12 @@ func (r *FaultRemediationReconciler) handleExistingCRSkip(
 	)
 
 	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusSkipped, nodeName).Inc()
+
+	if existingCRRemediated {
+		if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, true); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
 		return ctrl.Result{}, err
@@ -863,57 +877,102 @@ func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
 }
 
 func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, healthEvent *protos.HealthEvent,
-	groupConfig *common.EquivalenceGroupConfig) (bool, string, error) {
+	eventCreatedAt time.Time, groupConfig *common.EquivalenceGroupConfig) (bool, string, bool, error) {
 	nodeName := healthEvent.NodeName
 
 	if groupConfig == nil {
-		return true, "", nil
+		return true, "", false, nil
 	}
 
 	state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
 	if err != nil {
 		slog.ErrorContext(ctx, "Error getting remediation state", "node", nodeName, "error", err)
-		return true, "", fmt.Errorf("error getting remediation state: %w", err)
+		return true, "", false, fmt.Errorf("error getting remediation state: %w", err)
 	}
 
 	if state == nil {
 		slog.WarnContext(ctx, "Remediation state is nil for node, allowing CR creation",
 			"node", nodeName)
 
-		return true, "", nil
+		return true, "", false, nil
 	}
 
 	statusChecker := r.Config.RemediationClient.GetStatusChecker()
 	if statusChecker == nil {
 		slog.WarnContext(ctx, "Status checker is not available, allowing creation")
-		return true, "", nil
+		return true, "", false, nil
 	}
 
-	groupStates := common.FilterEquivalenceGroupStates(groupConfig, state)
+	groupStates := sortedEquivalenceGroupStates(common.FilterEquivalenceGroupStates(groupConfig, state))
 
 	var groupsToRemove []string
 
-	for groupName, groupState := range groupStates {
-		shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, groupState.ActionName, groupState.MaintenanceCR)
-		if shouldSkip {
+	for _, groupState := range groupStates {
+		crState := statusChecker.GetCRState(ctx, groupState.state.ActionName, groupState.state.MaintenanceCR)
+		if crState == crstatus.CRStateInProgress {
 			slog.InfoContext(ctx, "CR exists and is in progress, skipping event",
-				"node", nodeName, "crName", groupState.MaintenanceCR)
+				"node", nodeName, "crName", groupState.state.MaintenanceCR)
 
-			return false, groupState.MaintenanceCR, nil
+			return false, groupState.state.MaintenanceCR, false, nil
 		}
 
-		slog.InfoContext(ctx, "CR completed or failed, allowing retry", "node", nodeName, "crName", groupState.MaintenanceCR)
+		if crState == crstatus.CRStateSucceeded {
+			if eventCoveredByRemediationSession(eventCreatedAt, groupState.state.CreatedAt) {
+				slog.InfoContext(ctx, "CR completed successfully, marking same-session equivalent event remediated",
+					"node", nodeName, "crName", groupState.state.MaintenanceCR)
 
-		groupsToRemove = append(groupsToRemove, groupName)
+				return false, groupState.state.MaintenanceCR, true, nil
+			}
+
+			slog.InfoContext(ctx, "CR completed successfully but event is outside remediation session, allowing new CR",
+				"node", nodeName, "crName", groupState.state.MaintenanceCR)
+
+			groupsToRemove = append(groupsToRemove, groupState.name)
+
+			continue
+		}
+
+		slog.InfoContext(ctx, "CR completed or failed, allowing retry", "node", nodeName, "crName",
+			groupState.state.MaintenanceCR)
+
+		groupsToRemove = append(groupsToRemove, groupState.name)
 	}
 
 	if len(groupsToRemove) > 0 {
 		if err := r.annotationManager.RemoveGroupsFromState(ctx, nodeName, groupsToRemove); err != nil {
-			return true, "", fmt.Errorf("failed to remove groups from annotation: %w", err)
+			return true, "", false, fmt.Errorf("failed to remove groups from annotation: %w", err)
 		}
 	}
 
-	return true, "", nil
+	return true, "", false, nil
+}
+
+func eventCoveredByRemediationSession(eventCreatedAt, remediationCreatedAt time.Time) bool {
+	if eventCreatedAt.IsZero() || remediationCreatedAt.IsZero() {
+		return false
+	}
+
+	return !eventCreatedAt.After(remediationCreatedAt)
+}
+
+type namedEquivalenceGroupState struct {
+	name  string
+	state annotation.EquivalenceGroupState
+}
+
+func sortedEquivalenceGroupStates(
+	groupStates map[string]annotation.EquivalenceGroupState,
+) []namedEquivalenceGroupState {
+	sortedStates := make([]namedEquivalenceGroupState, 0, len(groupStates))
+	for groupName, groupState := range groupStates {
+		sortedStates = append(sortedStates, namedEquivalenceGroupState{name: groupName, state: groupState})
+	}
+
+	sort.Slice(sortedStates, func(i, j int) bool {
+		return sortedStates[i].state.CreatedAt.After(sortedStates[j].state.CreatedAt)
+	})
+
+	return sortedStates
 }
 
 // parseHealthEvent extracts and parses health event from change stream event
