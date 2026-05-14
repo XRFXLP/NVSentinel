@@ -140,6 +140,7 @@ func keyWithHealthState(event *pb.HealthEvent, isHealthy bool) uint64 {
 
 	entities := canonicalEntities(event.GetEntitiesImpacted())
 	writeUint64(h, uint64(len(entities)))
+
 	for _, entity := range entities {
 		writeString(h, entity.entityType)
 		writeString(h, entity.entityValue)
@@ -148,6 +149,7 @@ func keyWithHealthState(event *pb.HealthEvent, isHealthy bool) uint64 {
 	errorCodes := append([]string(nil), event.GetErrorCode()...)
 	sort.Strings(errorCodes)
 	writeUint64(h, uint64(len(errorCodes)))
+
 	for _, errorCode := range errorCodes {
 		writeString(h, errorCode)
 	}
