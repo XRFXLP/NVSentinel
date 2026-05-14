@@ -908,34 +908,15 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, 
 	var groupsToRemove []string
 
 	for _, groupState := range groupStates {
-		crState := statusChecker.GetCRState(ctx, groupState.state.ActionName, groupState.state.MaintenanceCR)
-		if crState == crstatus.CRStateInProgress {
-			slog.InfoContext(ctx, "CR exists and is in progress, skipping event",
-				"node", nodeName, "crName", groupState.state.MaintenanceCR)
-
-			return false, groupState.state.MaintenanceCR, false, nil
+		decision := r.evaluateExistingCR(ctx, statusChecker, groupState, eventCreatedAt, nodeName)
+		if !decision.shouldCreate {
+			return false, decision.crName, decision.remediated, nil
 		}
 
-		if crState == crstatus.CRStateSucceeded {
-			if eventCoveredByRemediationSession(eventCreatedAt, groupState.state.CreatedAt) {
-				slog.InfoContext(ctx, "CR completed successfully, marking same-session equivalent event remediated",
-					"node", nodeName, "crName", groupState.state.MaintenanceCR)
-
-				return false, groupState.state.MaintenanceCR, true, nil
-			}
-
-			slog.InfoContext(ctx, "CR completed successfully but event is outside remediation session, allowing new CR",
-				"node", nodeName, "crName", groupState.state.MaintenanceCR)
-
+		if decision.removeGroup {
 			groupsToRemove = append(groupsToRemove, groupState.name)
-
 			continue
 		}
-
-		slog.InfoContext(ctx, "CR completed or failed, allowing retry", "node", nodeName, "crName",
-			groupState.state.MaintenanceCR)
-
-		groupsToRemove = append(groupsToRemove, groupState.name)
 	}
 
 	if len(groupsToRemove) > 0 {
@@ -945,6 +926,61 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, 
 	}
 
 	return true, "", false, nil
+}
+
+type existingCRDecision struct {
+	shouldCreate bool
+	crName       string
+	remediated   bool
+	removeGroup  bool
+}
+
+func (r *FaultRemediationReconciler) evaluateExistingCR(
+	ctx context.Context,
+	statusChecker crstatus.CRStatusCheckerInterface,
+	groupState namedEquivalenceGroupState,
+	eventCreatedAt time.Time,
+	nodeName string,
+) existingCRDecision {
+	crName := groupState.state.MaintenanceCR
+	crState := statusChecker.GetCRState(ctx, groupState.state.ActionName, crName)
+
+	switch crState {
+	case crstatus.CRStateInProgress:
+		slog.InfoContext(ctx, "CR exists and is in progress, skipping event", "node", nodeName, "crName", crName)
+
+		return existingCRDecision{shouldCreate: false, crName: crName}
+	case crstatus.CRStateSucceeded:
+		return r.evaluateSucceededCR(ctx, groupState, eventCreatedAt, nodeName)
+	case crstatus.CRStateNotFound, crstatus.CRStateFailed:
+		slog.InfoContext(ctx, "CR completed or failed, allowing retry", "node", nodeName, "crName", crName)
+
+		return existingCRDecision{shouldCreate: true, removeGroup: true}
+	default:
+		slog.WarnContext(ctx, "Unknown CR state, allowing retry", "node", nodeName, "crName", crName, "state", crState)
+
+		return existingCRDecision{shouldCreate: true, removeGroup: true}
+	}
+}
+
+func (r *FaultRemediationReconciler) evaluateSucceededCR(
+	ctx context.Context,
+	groupState namedEquivalenceGroupState,
+	eventCreatedAt time.Time,
+	nodeName string,
+) existingCRDecision {
+	crName := groupState.state.MaintenanceCR
+	if eventCoveredByRemediationSession(eventCreatedAt, groupState.state.CreatedAt) {
+		slog.InfoContext(ctx, "CR completed successfully, marking same-session equivalent event remediated",
+			"node", nodeName, "crName", crName)
+
+		return existingCRDecision{shouldCreate: false, crName: crName, remediated: true}
+	}
+
+	slog.InfoContext(ctx, "CR completed successfully but event is outside remediation session, allowing new CR",
+		"node", nodeName, "crName", crName)
+
+	return existingCRDecision{shouldCreate: true, removeGroup: true}
 }
 
 func eventCoveredByRemediationSession(eventCreatedAt, remediationCreatedAt time.Time) bool {
