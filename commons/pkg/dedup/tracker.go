@@ -159,7 +159,7 @@ func keyWithHealthState(event *pb.HealthEvent, isHealthy bool) uint64 {
 		writeString(h, errorCode)
 	}
 
-	writeUint64(h, uint64(event.GetProcessingStrategy()))
+	writeString(h, event.GetProcessingStrategy().String())
 
 	if isHealthy {
 		_, _ = h.Write([]byte{1})
