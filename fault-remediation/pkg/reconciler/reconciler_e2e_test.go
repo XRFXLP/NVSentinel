@@ -785,10 +785,17 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, shouldCreate, "Should allow retry after failure")
 
-	// Verify annotation cleaned
-	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
-	require.NoError(t, err)
-	assert.NotContains(t, state.EquivalenceGroups, "restart", "Failed CR should clean annotation")
+	// Verify annotation cleaned.
+	// Use Eventually because RemoveGroupsFromState writes to the API server but
+	// GetRemediationState reads from the informer cache, which syncs asynchronously.
+	assert.Eventually(t, func() bool {
+		state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return false
+		}
+		_, exists := state.EquivalenceGroups["restart"]
+		return !exists
+	}, 5*time.Second, 100*time.Millisecond, "Failed CR should clean annotation")
 
 	// Event 5: Create retry CR
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
@@ -950,10 +957,17 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, shouldCreate, "Should allow retry after failure")
 
-	// Verify annotation cleaned
-	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
-	require.NoError(t, err)
-	assert.NotContains(t, state.EquivalenceGroups, "restart", "Failed CR should clean annotation")
+	// Verify annotation cleaned.
+	// Use Eventually because RemoveGroupsFromState writes to the API server but
+	// GetRemediationState reads from the informer cache, which syncs asynchronously.
+	assert.Eventually(t, func() bool {
+		state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return false
+		}
+		_, exists := state.EquivalenceGroups["restart"]
+		return !exists
+	}, 5*time.Second, 100*time.Millisecond, "Failed CR should clean annotation")
 
 	// Event 5: COMPONENT_RESET in group reset with superseding group restart should create CR-2
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
