@@ -1,0 +1,57 @@
+area/ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "scripts/**"
+
+area/docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "fern/**"
+          - "**/*.md"
+
+area/deployment:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "distros/**"
+          - "deployments/**"
+          - "Tiltfile"
+          - ".ctlptl.yaml"
+
+area/health-monitors:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "health-monitors/**"
+
+area/fault-management:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "fault-quarantine/**"
+          - "fault-remediation/**"
+          - "node-drainer/**"
+          - "gpu-reset/**"
+
+area/preflight:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "preflight/**"
+          - "preflight-checks/**"
+
+area/core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "commons/**"
+          - "data-models/**"
+          - "store-client/**"
+          - "platform-connectors/**"
+
+area/plugins:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "plugins/**"
+
+area/tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "tests/**"
