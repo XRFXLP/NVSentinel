@@ -62,6 +62,7 @@ func (r *Reader) ensureLoaded() error {
 	}
 
 	r.loaded = true
+
 	return nil
 }
 
