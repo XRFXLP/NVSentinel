@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Purpose: approve and enable auto-merge for low-risk Dependabot patch updates.
+# Contract: only runs for dependabot[bot], only semver patch updates are merged,
+# and branch protection still decides when GitHub may complete the merge.
+
 name: Dependabot Auto-Merge
 
 on:

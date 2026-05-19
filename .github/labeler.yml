@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Purpose: path rules consumed by actions/labeler in workflows/labeler.yml.
+# Contract: area/* labels here should stay in sync with issue-triage.yml so
+# issue and PR automation use the same taxonomy.
+
 area/ci:
   - changed-files:
       - any-glob-to-any-file:

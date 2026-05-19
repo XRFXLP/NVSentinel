@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Purpose: welcome first-time human issue and PR authors.
+# Contract: skips bot users and checks existing comments before posting so
+# reruns do not create duplicate welcome messages.
+
 name: Welcome First-Time Contributors
 
 on:

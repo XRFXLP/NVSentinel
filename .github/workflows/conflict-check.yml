@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Purpose: detect open PRs that no longer merge cleanly with main.
+# Contract: runs after main moves or on manual dispatch, labels conflicts with
+# needs-rebase, and removes that label once GitHub reports the PR mergeable.
+
 name: PR Merge Conflict Check
 
 on:
