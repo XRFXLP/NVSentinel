@@ -34,7 +34,7 @@ permissions:
 jobs:
   issue-sla:
     name: Check issue SLA
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
       issues: write

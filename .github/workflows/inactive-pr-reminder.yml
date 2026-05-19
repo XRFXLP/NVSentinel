@@ -33,7 +33,7 @@ permissions:
 jobs:
   remind:
     name: Nudge inactive PRs
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
