@@ -46,6 +46,12 @@ area/core:
           - "store-client/**"
           - "platform-connectors/**"
 
+area/api:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "api/**"
+          - "**/*.proto"
+
 area/plugins:
   - changed-files:
       - any-glob-to-any-file:

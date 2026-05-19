@@ -43,7 +43,7 @@ jobs:
         with:
           script: |
             const label = 'needs-rebase';
-            const { data: prs } = await github.rest.pulls.list({
+            const prs = await github.paginate(github.rest.pulls.list, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',

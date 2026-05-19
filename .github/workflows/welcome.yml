@@ -43,12 +43,29 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           script: |
-            const creator = context.payload.issue.user.login;
-            const { data: { total_count } } = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${context.repo.owner}/${context.repo.repo} type:issue author:${creator}`,
+            const author = context.payload.issue.user;
+            const creator = author.login;
+            if (author.type === 'Bot' || creator.endsWith('[bot]')) {
+              return;
+            }
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              creator,
+              per_page: 100,
+            });
+            const authoredIssues = issues.filter((issue) => !issue.pull_request);
+            const currentIssue = context.payload.issue;
+            const earlierIssue = authoredIssues.some((issue) => {
+              const issueCreated = new Date(issue.created_at).getTime();
+              const currentCreated = new Date(currentIssue.created_at).getTime();
+              return issueCreated < currentCreated ||
+                (issueCreated === currentCreated && issue.number < currentIssue.number);
             });
 
-            if (total_count === 1) {
+            if (!earlierIssue) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -68,7 +85,12 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           script: |
-            const creator = context.payload.pull_request.user.login;
+            const author = context.payload.pull_request.user;
+            const creator = author.login;
+            if (author.type === 'Bot' || creator.endsWith('[bot]')) {
+              return;
+            }
+
             const { data: { total_count } } = await github.rest.search.issuesAndPullRequests({
               q: `repo:${context.repo.owner}/${context.repo.repo} type:pr author:${creator}`,
             });
