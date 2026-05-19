@@ -63,6 +63,11 @@ jobs:
 
               const hasLabel = full.labels.some((item) => item.name === label);
 
+              if (full.mergeable === null) {
+                core.info(`PR #${pr.number}: mergeable is null, skipping until GitHub computes it`);
+                continue;
+              }
+
               if (full.mergeable === false && !hasLabel) {
                 await github.rest.issues.addLabels({
                   owner: context.repo.owner,
