@@ -33,7 +33,7 @@ permissions:
 jobs:
   stale-issues:
     name: Mark stale issues
-    if: github.repository == 'nvidia/nvsentinel'
+    if: github.repository == 'xrfxlp/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
       issues: write

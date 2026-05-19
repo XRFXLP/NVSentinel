@@ -33,7 +33,7 @@ permissions:
 jobs:
   lock:
     name: Lock closed threads
-    if: github.repository == 'nvidia/nvsentinel'
+    if: github.repository == 'xrfxlp/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
       issues: write

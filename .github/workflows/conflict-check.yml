@@ -34,7 +34,7 @@ permissions:
 jobs:
   conflicts:
     name: Check open PRs for conflicts
-    if: github.repository == 'nvidia/nvsentinel'
+    if: github.repository == 'xrfxlp/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
       contents: read
