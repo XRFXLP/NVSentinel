@@ -66,18 +66,27 @@ jobs:
             });
 
             if (!earlierIssue) {
-              await github.rest.issues.createComment({
+              const body = [
+                `Welcome to NVSentinel, @${creator}! Thanks for opening your first issue.`,
+                '',
+                'A maintainer will triage this shortly. In the meantime:',
+                `- Check the [Contributing Guide](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md) for project conventions`,
+                `- Browse existing [labels](https://github.com/${context.repo.owner}/${context.repo.repo}/labels) for related topics`,
+              ].join('\n');
+              const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: [
-                  `Welcome to NVSentinel, @${creator}! Thanks for opening your first issue.`,
-                  '',
-                  'A maintainer will triage this shortly. In the meantime:',
-                  `- Check the [Contributing Guide](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md) for project conventions`,
-                  `- Browse existing [labels](https://github.com/${context.repo.owner}/${context.repo.repo}/labels) for related topics`,
-                ].join('\n'),
+                per_page: 100,
               });
+              if (!comments.some((comment) => comment.body.includes(body.split('\n')[0]))) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body,
+                });
+              }
             }
 
       - name: Welcome first-time PR author
@@ -96,19 +105,28 @@ jobs:
             });
 
             if (total_count === 1) {
-              await github.rest.issues.createComment({
+              const body = [
+                `Welcome to NVSentinel, @${creator}! Thanks for your first pull request.`,
+                '',
+                'Before review, please ensure:',
+                `- All commits are signed off per the [DCO](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md)`,
+                '- CI checks pass',
+                '- The PR description explains the reason for the change',
+                '',
+                'A maintainer will review this soon.',
+              ].join('\n');
+              const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.payload.pull_request.number,
-                body: [
-                  `Welcome to NVSentinel, @${creator}! Thanks for your first pull request.`,
-                  '',
-                  'Before review, please ensure:',
-                  `- All commits are signed off per the [DCO](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md)`,
-                  '- CI checks pass',
-                  '- The PR description explains the reason for the change',
-                  '',
-                  'A maintainer will review this soon.',
-                ].join('\n'),
+                per_page: 100,
               });
+              if (!comments.some((comment) => comment.body.includes(body.split('\n')[0]))) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.pull_request.number,
+                  body,
+                });
+              }
             }
