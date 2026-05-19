@@ -43,7 +43,7 @@ jobs:
             const msPerDay = 86400000;
             const skipLabels = ['lifecycle/frozen', 'do-not-merge'];
 
-            const { data: prs } = await github.rest.pulls.list({
+            const prs = await github.paginate(github.rest.pulls.list, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
@@ -64,10 +64,11 @@ jobs:
                 continue;
               }
 
-              const { data: comments } = await github.rest.issues.listComments({
+              const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pr.number,
+                per_page: 100,
               });
 
               const alreadyReminded = comments.some((comment) =>
