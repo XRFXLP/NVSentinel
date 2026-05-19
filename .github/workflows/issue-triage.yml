@@ -24,7 +24,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.issue.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -129,15 +129,9 @@ jobs:
               issue_number: context.issue.number,
             });
             const hasNeedsTriage = labels.some((label) => label.name === 'needs-triage');
-            const hasAreaOrPriority = labels.some((label) =>
-              label.name.startsWith('area/') ||
-              label.name.startsWith('priority/') ||
-              label.name === 'bug' ||
-              label.name === 'enhancement' ||
-              label.name === 'question'
-            );
+            const hasPriority = labels.some((label) => label.name.startsWith('priority/'));
 
-            if (hasNeedsTriage && hasAreaOrPriority) {
+            if (hasNeedsTriage && hasPriority) {
               await github.rest.issues.removeLabel({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
