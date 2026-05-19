@@ -32,7 +32,7 @@ permissions:
 jobs:
   triage:
     name: Auto-triage issues
-    if: github.repository == 'nvidia/nvsentinel'
+    if: github.repository == 'xrfxlp/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
       contents: read
