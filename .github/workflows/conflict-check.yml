@@ -13,8 +13,9 @@
 # limitations under the License.
 
 # Purpose: detect open PRs that no longer merge cleanly with main.
-# Contract: runs after main moves or on manual dispatch, labels conflicts with
-# needs-rebase, and removes that label once GitHub reports the PR mergeable.
+# Contract: sweeps all PRs after main moves/manual dispatch and checks only the
+# event PR on PR events; labels conflicts with needs-rebase and removes that
+# label once GitHub reports the PR mergeable.
 
 name: PR Merge Conflict Check
 
@@ -22,10 +23,12 @@ on:
   push:
     branches:
       - main
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
   workflow_dispatch: {}
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -47,12 +50,14 @@ jobs:
         with:
           script: |
             const label = 'needs-rebase';
-            const prs = await github.paginate(github.rest.pulls.list, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              per_page: 100,
-            });
+            const prs = context.payload.pull_request
+              ? [context.payload.pull_request]
+              : await github.paginate(github.rest.pulls.list, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  per_page: 100,
+                });
 
             for (const pr of prs) {
               const { data: full } = await github.rest.pulls.get({
