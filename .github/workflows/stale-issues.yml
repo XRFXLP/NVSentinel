@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Purpose: mark inactive issues as stale and close them after a grace period.
+# Contract: issue labels named below must exist or be creatable by GitHub; PRs
+# are intentionally excluded from stale handling in this workflow.
+
 name: Stale Issues
 
 on:

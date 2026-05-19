@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Purpose: apply path-based area labels and a size/* label to PRs.
+# Contract: depends on .github/labeler.yml for path rules and requires a PR
+# context; manual dispatch is intentionally omitted because there is no PR input.
+
 name: Auto-Label PRs
 
 on:

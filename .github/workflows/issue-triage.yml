@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Purpose: keep new issues in the triage queue and infer a first area label.
+# Contract: issue templates and label names should stay aligned with the area/*
+# taxonomy in .github/labeler.yml; manual runs are intentionally unsupported.
+
 name: Issue Triage
 
 on:

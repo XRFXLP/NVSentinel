@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Purpose: nudge PR authors before stale automation or reviewer drift kicks in.
+# Contract: runs on a schedule/manual trigger, skips frozen/do-not-merge PRs,
+# and posts at most one bot reminder per PR by checking existing comments.
+
 name: Inactive PR Reminder
 
 on:

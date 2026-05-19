@@ -14,6 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Convert ClamAV stdout into a minimal SARIF 2.1.0 report.
+
+Contract:
+- argv[1] is the workflow/job automation id used in SARIF automationDetails.
+- argv[2] is a clamscan output file generated with infected lines enabled.
+- argv[3] is the SARIF output path consumed by upload-sarif.
+"""
+
 import json
 import sys
 from pathlib import Path

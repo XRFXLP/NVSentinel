@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Purpose: lock long-closed issues and PRs to prevent late thread drift.
+# Contract: processes all closed issues/PRs through pagination and only locks
+# unlocked threads inactive for the configured number of days (90 days).
+
 name: Lock Stale Threads
 
 on:
@@ -42,7 +46,7 @@ jobs:
           script: |
             const now = new Date();
             const msPerDay = 86400000;
-            const inactiveDays = 90;
+            const inactiveDays = 90;  // lock threads inactive for 90 days
 
             const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
