@@ -41,12 +41,17 @@ jobs:
     steps:
       - name: Fetch Dependabot metadata
         id: metadata
+        continue-on-error: true
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Skip when Dependabot metadata is unavailable
+        if: steps.metadata.outcome != 'success'
+        run: echo "Dependabot metadata was not found; skipping auto-merge."
+
       - name: Approve and enable auto-merge for patch updates
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        if: steps.metadata.outcome == 'success' && steps.metadata.outputs.update-type == 'version-update:semver-patch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
