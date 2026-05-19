@@ -1,0 +1,55 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Purpose: approve and enable auto-merge for low-risk Dependabot patch updates.
+# Contract: only runs for dependabot[bot], only semver patch updates are merged,
+# and branch protection still decides when GitHub may complete the merge.
+
+name: Dependabot Auto-Merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  auto-merge:
+    name: Auto-merge patch updates
+    if: github.repository == 'xrfxlp/nvsentinel' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    timeout-minutes: 5
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Approve and enable auto-merge for patch updates
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL"
