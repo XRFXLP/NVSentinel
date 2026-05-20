@@ -23,15 +23,9 @@ on:
     types: [opened, synchronize, reopened]
     branches:
       - main
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: "Existing Dependabot PR number to fix up"
-        required: true
-        type: number
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -42,43 +36,15 @@ jobs:
     name: Sync Go module files
     if: >
       github.repository == 'xrfxlp/nvsentinel' &&
-      (github.event_name == 'pull_request_target' || github.event_name == 'workflow_dispatch')
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'dependabot/go_modules/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: read
     timeout-minutes: 30
     steps:
-      - name: Resolve Dependabot PR
-        id: pr
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
-        with:
-          script: |
-            const prNumber = context.payload.pull_request?.number ?? Number(context.payload.inputs?.pr_number);
-            if (!Number.isInteger(prNumber) || prNumber <= 0) {
-              core.setFailed(`Invalid PR number: ${context.payload.inputs?.pr_number}`);
-              return;
-            }
-
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-            });
-
-            if (pr.user.login !== 'dependabot[bot]') {
-              core.setFailed(`PR #${pr.number} was opened by ${pr.user.login}, not dependabot[bot].`);
-            }
-            if (pr.head.repo.full_name.toLowerCase() !== `${context.repo.owner}/${context.repo.repo}`.toLowerCase()) {
-              core.setFailed(`PR #${pr.number} is not from this repository: ${pr.head.repo.full_name}`);
-            }
-            if (!pr.head.ref.startsWith('dependabot/go_modules/')) {
-              core.setFailed(`PR #${pr.number} branch is not a Dependabot Go module branch: ${pr.head.ref}`);
-            }
-
-            core.setOutput('number', String(pr.number));
-            core.setOutput('head_ref', pr.head.ref);
-
       - name: Guard dependency-only PR
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
@@ -86,7 +52,7 @@ jobs:
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: Number('${{ steps.pr.outputs.number }}'),
+              pull_number: context.payload.pull_request.number,
               per_page: 100,
             });
 
@@ -101,7 +67,7 @@ jobs:
       - name: Checkout Dependabot branch
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          ref: ${{ steps.pr.outputs.head_ref }}
+          ref: ${{ github.event.pull_request.head.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Read Go version
