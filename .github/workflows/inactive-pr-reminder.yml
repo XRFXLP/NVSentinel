@@ -36,6 +36,7 @@ jobs:
     if: github.repository == 'xrfxlp/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
+      issues: write
       pull-requests: write
     timeout-minutes: 10
     steps:
@@ -64,7 +65,7 @@ jobs:
               const updated = new Date(pr.updated_at);
               const minutesInactive = Math.floor((now - updated) / msPerMinute);
 
-              if (minutesInactive < 10 || minutesInactive >= 30) {
+              if (minutesInactive < 1) {
                 continue;
               }
 
