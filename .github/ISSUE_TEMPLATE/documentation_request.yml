@@ -59,6 +59,7 @@ body:
         - Health Monitors
         - Fault Management
         - Preflight
+        - Plugins
         - API/Interface
         - Runbooks
         - Other

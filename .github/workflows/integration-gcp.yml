@@ -30,7 +30,7 @@ permissions:
 jobs:
   integration-test-gcp:
     if: github.repository == 'nvidia/nvsentinel'
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu8
     timeout-minutes: 75
     env:
       CSP: "gcp"

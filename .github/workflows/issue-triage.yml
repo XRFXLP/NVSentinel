@@ -33,7 +33,7 @@ jobs:
   triage:
     name: Auto-triage issues
     if: github.repository == 'nvidia/nvsentinel'
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu8
     permissions:
       contents: read
       issues: write
@@ -69,6 +69,8 @@ jobs:
               ['fault management', 'area/fault-management'],
               ['deployment/config', 'area/deployment'],
               ['api/interface', 'area/api'],
+              ['preflight', 'area/preflight'],
+              ['plugins', 'area/plugins'],
             ]);
 
             const textRules = [

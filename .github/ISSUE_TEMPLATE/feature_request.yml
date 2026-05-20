@@ -70,6 +70,8 @@ body:
         - Fault Management
         - Deployment/Config
         - API/Interface
+        - Preflight
+        - Plugins
         - New Component
         - Multiple Components
     validations:

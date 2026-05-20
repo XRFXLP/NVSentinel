@@ -34,7 +34,7 @@ jobs:
   lock:
     name: Lock closed threads
     if: github.repository == 'nvidia/nvsentinel'
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu8
     permissions:
       issues: write
       pull-requests: write

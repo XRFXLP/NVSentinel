@@ -54,6 +54,8 @@ body:
         - Core Service
         - Fault Management
         - Deployment/Config
+        - Preflight
+        - Plugins
         - Other
     validations:
       required: true
