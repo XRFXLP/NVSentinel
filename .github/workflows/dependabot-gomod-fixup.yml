@@ -36,7 +36,7 @@ jobs:
     name: Sync Go module files
     if: >
       github.repository == 'xrfxlp/nvsentinel' &&
-      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'dependabot/go_modules/')
     runs-on: ubuntu-latest
