@@ -35,11 +35,11 @@ jobs:
   gomod-fixup:
     name: Sync Go module files
     if: >
-      github.repository == 'nvidia/nvsentinel' &&
+      github.repository == 'xrfxlp/nvsentinel' &&
       github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'dependabot/go_modules/')
-    runs-on: linux-amd64-cpu8
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: read
@@ -75,6 +75,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Read Go version
         if: steps.dependency-only.outputs.skip != 'true'
@@ -126,6 +127,9 @@ jobs:
 
       - name: Commit Go module fixups
         if: steps.dependency-only.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           if [ -z "$(git status --porcelain --untracked-files=no)" ]; then
             echo "No Go module fixup changes needed."
@@ -137,4 +141,4 @@ jobs:
 
           git add -- ':(glob)**/go.mod' ':(glob)**/go.sum'
           git commit -m "chore: tidy Dependabot Go module updates"
-          git push
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${HEAD_REF}"
