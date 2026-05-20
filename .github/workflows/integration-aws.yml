@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   integration-test-aws:
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:

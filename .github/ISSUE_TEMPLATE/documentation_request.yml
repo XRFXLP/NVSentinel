@@ -12,20 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Bug Report
-description: Report a bug or unexpected behavior
-title: "[Bug]: "
-labels: ["bug", "needs-triage"]
+name: Documentation Request
+description: Request new or missing NVSentinel documentation
+title: "[Docs]: "
+labels: ["area/docs", "needs-triage"]
 
 body:
   - type: checkboxes
     id: prerequisites
     attributes:
       label: Prerequisites
+      description: Please review existing [documentation issues](https://github.com/NVIDIA/NVSentinel/issues?q=is%3Aopen+is%3Aissue+label%3Aarea%2Fdocs) before submitting.
       options:
-        - label: I searched existing issues
-          required: true
-        - label: I can reproduce this issue
+        - label: I searched existing documentation and open documentation issues
           required: true
 
   - type: checkboxes
@@ -37,59 +36,52 @@ body:
         - label: I agree to follow NVSentinel's Code of Conduct
           required: true
 
-  - type: textarea
-    id: description
+  - type: dropdown
+    id: priority
     attributes:
-      label: Bug Description
-      description: What happened and what did you expect?
+      label: Priority
+      description: How important is this documentation request?
+      options:
+        - Critical (currently preventing usage)
+        - High
+        - Medium
+        - Low (would be nice)
     validations:
       required: true
 
   - type: dropdown
-    id: component
+    id: area
     attributes:
-      label: Component
+      label: Documentation Area
       options:
-        - Health Monitor
-        - Core Service
+        - Installation/Deployment
+        - Configuration
+        - Health Monitors
         - Fault Management
-        - Deployment/Config
+        - Preflight
+        - API/Interface
+        - Runbooks
         - Other
     validations:
       required: true
 
   - type: textarea
-    id: reproduction
+    id: missing_docs
     attributes:
-      label: Steps to Reproduce
-      placeholder: |
-        1. Step one
-        2. Step two
-        3. See error
+      label: Missing Documentation
+      description: What future or missing documentation would help?
+      placeholder: A command, configuration option, or workflow is mentioned but not explained.
     validations:
       required: true
 
   - type: textarea
-    id: environment
+    id: searched_locations
     attributes:
-      label: Environment
+      label: Where did you look?
+      description: List docs, files, or links you checked before opening this request.
       placeholder: |
-        - NVSentinel version:
-        - Kubernetes version:
-        - Deployment method:
-      value: |
-        - NVSentinel version:
-        - Kubernetes version:
-        - Deployment method:
+        - README.md
+        - docs/configuration/README.md
+        - docs/preflight.md
     validations:
-      required: true
-
-  - type: textarea
-    id: logs
-    attributes:
-      label: Logs/Output
-      description: Include relevant logs or error messages
-      placeholder: |
-        ```
-        # Logs here
-        ```
+      required: false

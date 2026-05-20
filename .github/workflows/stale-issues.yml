@@ -20,7 +20,7 @@ name: Stale Issues
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "0 6 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -33,7 +33,7 @@ permissions:
 jobs:
   stale-issues:
     name: Mark stale issues
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -43,8 +43,8 @@ jobs:
         uses: actions/stale@b5d41d4e1d5dceea10e7104786b73624c18a190f  # v10.1.0
         with:
           stale-issue-message: |
-            This issue has been marked as stale due to the temporary workflow test threshold.
-            It will be closed immediately unless there is new activity.
+            This issue has been marked as stale due to 90 days of inactivity.
+            It will be closed in 30 days unless there is new activity.
 
             To keep this issue open:
             - Add a comment with an update
@@ -57,8 +57,8 @@ jobs:
             If you believe this issue is still relevant:
             - Reopen it with a comment providing updated details or context
             - Add the `lifecycle/frozen` label to prevent it from being closed again
-          days-before-stale: 0
-          days-before-close: 0
+          days-before-stale: 90
+          days-before-close: 30
           stale-issue-label: lifecycle/stale
           exempt-issue-labels: lifecycle/frozen,priority/critical,bug,security,release-blocker,good first issue
           days-before-pr-stale: -1

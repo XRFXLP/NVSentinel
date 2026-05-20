@@ -39,7 +39,7 @@ env:
 
 jobs:
   simple-lint:
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 30
     strategy:
@@ -109,7 +109,7 @@ jobs:
         run: make helm-test
 
   health-monitors-lint-test:
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 30
     strategy:
@@ -142,7 +142,7 @@ jobs:
             health-monitors/${{ matrix.component }}/report.xml
 
   preflight-checks-lint-test:
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 30
     strategy:
@@ -161,7 +161,7 @@ jobs:
         run: make -C preflight-checks/${{ matrix.component }} lint-test
 
   modules-lint-test:
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 30
     strategy:
@@ -200,7 +200,7 @@ jobs:
             ${{ matrix.component }}/report.xml
 
   plugins-lint-test:
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 30
     strategy:
@@ -226,7 +226,7 @@ jobs:
             ${{ matrix.component }}/report.xml
 
   tilt-modules-lint-test:
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 30
     strategy:
@@ -252,7 +252,7 @@ jobs:
             ${{ matrix.component }}/report.xml
 
   consolidated-coverage-report:
-    if: github.repository == 'xrfxlp/nvsentinel' && (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/pull-request/'))
+    if: github.repository == 'nvidia/nvsentinel' && (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/pull-request/'))
     runs-on: linux-amd64-cpu16
     timeout-minutes: 15
     needs: [health-monitors-lint-test, preflight-checks-lint-test, modules-lint-test, plugins-lint-test, tilt-modules-lint-test]
@@ -449,7 +449,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   consolidated-coverage-baseline:
-    if: github.repository == 'xrfxlp/nvsentinel' && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.repository == 'nvidia/nvsentinel' && github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 15
     needs: [health-monitors-lint-test, preflight-checks-lint-test, modules-lint-test, plugins-lint-test, tilt-modules-lint-test]

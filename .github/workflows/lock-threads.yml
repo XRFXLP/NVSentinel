@@ -14,13 +14,13 @@
 
 # Purpose: lock long-closed issues and PRs to prevent late thread drift.
 # Contract: processes all closed issues/PRs through pagination and only locks
-# unlocked threads inactive for the configured number of minutes.
+# unlocked threads inactive for the configured number of days (90 days).
 
 name: Lock Stale Threads
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "0 6 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -33,7 +33,7 @@ permissions:
 jobs:
   lock:
     name: Lock closed threads
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -45,8 +45,8 @@ jobs:
         with:
           script: |
             const now = new Date();
-            const msPerMinute = 60000;
-            const inactiveMinutes = 10;  // temporary test threshold
+            const msPerDay = 86400000;
+            const inactiveDays = 90;  // lock threads inactive for 90 days
 
             const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
@@ -63,7 +63,7 @@ jobs:
               }
 
               const updated = new Date(issue.updated_at);
-              if ((now - updated) / msPerMinute < inactiveMinutes) {
+              if ((now - updated) / msPerDay < inactiveDays) {
                 continue;
               }
 
@@ -71,7 +71,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issue.number,
-                body: 'This issue has been automatically locked since it has been closed for 10 minutes with no further activity. Please open a new issue for related concerns.',
+                body: 'This issue has been automatically locked since it has been closed for 90 days with no further activity. Please open a new issue for related concerns.',
               });
               await github.rest.issues.lock({
                 owner: context.repo.owner,
@@ -96,7 +96,7 @@ jobs:
               }
 
               const updated = new Date(pr.updated_at);
-              if ((now - updated) / msPerMinute < inactiveMinutes) {
+              if ((now - updated) / msPerDay < inactiveDays) {
                 continue;
               }
 
@@ -104,7 +104,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pr.number,
-                body: 'This pull request has been automatically locked since it has been closed for 10 minutes with no further activity. Please open a new pull request for related changes.',
+                body: 'This pull request has been automatically locked since it has been closed for 90 days with no further activity. Please open a new pull request for related changes.',
               });
               await github.rest.issues.lock({
                 owner: context.repo.owner,

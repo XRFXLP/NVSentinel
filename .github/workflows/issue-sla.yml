@@ -15,13 +15,13 @@
 # Purpose: flag open issues that are outside NVSentinel's issue SLA policy.
 # Contract: priority labels are priority/P0, priority/P1, priority/P2; issues
 # without one of those labels are unprioritized and must be prioritized within
-# the temporary minute-scale test window. P2 has no fix SLA commitment.
+# seven calendar days. P2 has no fix SLA commitment.
 
 name: Issue SLA Check
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "0 8 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -34,7 +34,7 @@ permissions:
 jobs:
   issue-sla:
     name: Check issue SLA
-    if: github.repository == 'xrfxlp/nvsentinel'
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -44,13 +44,13 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           script: |
-            const msPerMinute = 60000;
+            const msPerDay = 86400000;
             const now = Date.now();
             const slaLabel = 'sla/breached';
             const skipLabels = new Set(['lifecycle/frozen', 'blocked', 'external-dependency']);
-            const prioritySlaMinutes = new Map([
-              ['priority/P0', 10],
-              ['priority/P1', 20],
+            const prioritySlaDays = new Map([
+              ['priority/P0', 30],
+              ['priority/P1', 183],
             ]);
             const priorityLabels = ['priority/P0', 'priority/P1', 'priority/P2'];
 
@@ -71,10 +71,10 @@ jobs:
 
               const labels = issue.labels.map((label) => label.name);
               const priority = priorityLabels.find((label) => labels.includes(label));
-              const slaMinutes = priority ? prioritySlaMinutes.get(priority) : 5;
-              const ageMinutes = Math.floor((now - new Date(issue.created_at).getTime()) / msPerMinute);
+              const slaDays = priority ? prioritySlaDays.get(priority) : 7;
+              const ageDays = Math.floor((now - new Date(issue.created_at).getTime()) / msPerDay);
               const isExempt = labels.some((label) => skipLabels.has(label));
-              const isBreached = !isExempt && priority !== 'priority/P2' && ageMinutes >= slaMinutes;
+              const isBreached = !isExempt && priority !== 'priority/P2' && ageDays >= slaDays;
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -106,8 +106,8 @@ jobs:
 
               breachedCount += 1;
               const reason = priority
-                ? `${priority.replace('priority/', '')} fix SLA is ${slaMinutes} minutes`
-                : 'unprioritized issues must be prioritized within 5 minutes';
+                ? `${priority.replace('priority/', '')} fix SLA is ${slaDays} calendar days`
+                : 'unprioritized issues must be prioritized within 7 calendar days';
 
               if (!labels.includes(slaLabel)) {
                 await github.rest.issues.addLabels({
@@ -121,7 +121,7 @@ jobs:
                 marker,
                 `This issue is outside the NVSentinel issue SLA: ${reason}.`,
                 '',
-                `Current age: ${ageMinutes} minutes.`,
+                `Current age: ${ageDays} calendar days.`,
                 '',
                 'Please update the priority/status or add `lifecycle/frozen`, `blocked`, or `external-dependency` if this should be exempt.',
               ].join('\n');
