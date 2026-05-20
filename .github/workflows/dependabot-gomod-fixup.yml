@@ -35,7 +35,7 @@ jobs:
   gomod-fixup:
     name: Sync Go module files
     if: >
-      github.repository == 'nvidia/nvsentinel' &&
+      github.repository == 'xrfxlp/nvsentinel' &&
       github.actor == 'dependabot[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'dependabot/go_modules/')
