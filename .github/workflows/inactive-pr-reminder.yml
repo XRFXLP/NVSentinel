@@ -20,7 +20,7 @@ name: Inactive PR Reminder
 
 on:
   schedule:
-    - cron: "0 7 * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -33,7 +33,7 @@ permissions:
 jobs:
   remind:
     name: Nudge inactive PRs
-    if: github.repository == 'nvidia/nvsentinel'
+    if: github.repository == 'xrfxlp/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -44,7 +44,7 @@ jobs:
         with:
           script: |
             const now = new Date();
-            const msPerDay = 86400000;
+            const msPerMinute = 60000;
             const skipLabels = ['lifecycle/frozen', 'do-not-merge'];
 
             const prs = await github.paginate(github.rest.pulls.list, {
@@ -62,9 +62,9 @@ jobs:
               }
 
               const updated = new Date(pr.updated_at);
-              const daysInactive = Math.floor((now - updated) / msPerDay);
+              const minutesInactive = Math.floor((now - updated) / msPerMinute);
 
-              if (daysInactive < 14 || daysInactive >= 30) {
+              if (minutesInactive < 10 || minutesInactive >= 30) {
                 continue;
               }
 
@@ -88,6 +88,6 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pr.number,
-                body: `@${pr.user.login} this PR has been inactive for ${daysInactive} days. Do you need help finishing it, or should we close it for now? Feel free to reopen anytime.`,
+                body: `@${pr.user.login} this PR has been inactive for ${minutesInactive} minutes. Do you need help finishing it, or should we close it for now? Feel free to reopen anytime.`,
               });
             }

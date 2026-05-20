@@ -35,7 +35,7 @@ permissions:
 jobs:
   welcome:
     name: Welcome new contributor
-    if: github.repository == 'nvidia/nvsentinel'
+    if: github.repository == 'xrfxlp/nvsentinel'
     runs-on: ubuntu-latest
     permissions:
       issues: write
