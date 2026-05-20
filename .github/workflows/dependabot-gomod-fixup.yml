@@ -43,7 +43,7 @@ jobs:
     if: >
       github.repository == 'xrfxlp/nvsentinel' &&
       (github.event_name == 'pull_request_target' || github.event_name == 'workflow_dispatch')
-    runs-on: linux-amd64-cpu16
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: read
