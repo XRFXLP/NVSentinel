@@ -11,9 +11,7 @@ This ADR is scoped only to built-in drains. Custom drain already has its own act
 
 Built-in drains already avoid redundant work after a previous drain has completed. For an `AlreadyQuarantined` node, node-drainer checks the node's `quarantineHealthEvent` annotation, loads prior events from the store, and skips the current event when a previous completed drain covers the same scope.
 
-The gap is active overlap. If another event for the same node and drain scope arrives while an earlier built-in drain is still `InProgress`, the later event does not currently treat the active drain as covering it. Because events are retried through the workqueue, overlapping events can interleave across queue turns and repeatedly run the same namespace matching, pod listing, eviction, completion-check, timeout, node-event, and retry loop.
-
-This is redundant work rather than a new remediation behavior. Kubernetes eviction is mostly idempotent, and node-drainer currently runs with one worker, but the repeated drain loop adds queue churn, Kubernetes API calls, and operational noise for bursts of events that represent the same physical fault.
+The gap is active overlap. If another event for the same node and drain scope arrives while an earlier built-in drain is still `InProgress`, the later event can repeat the same drain loop across workqueue retries. This is redundant work, not new remediation, and adds queue churn, Kubernetes API calls, and operational noise for bursts that represent the same physical fault.
 
 ## Decision
 
@@ -50,6 +48,8 @@ Required metadata:
 - `drainRole`: `owner` or `follower`.
 - `waitingForEventID`: set on followers to the owner event they are waiting for.
 
+Ownership resolution must read a typed representation that includes `userpodsevictionstatus.metadata`. Add metadata support to the protobuf `OperationStatus` model and preserve it through serialization/deserialization so this remains database-agnostic.
+
 `waitingForEventID` stores the canonical health-event record ID: the same value stored in `HealthEvent.Id`, written into the `quarantineHealthEvent` annotation, and used by `getHealthEventFromId` for store lookup. It must not use the workqueue key or a datastore document ID.
 
 An owner is the only event allowed to perform built-in drain work for a covered scope. A follower is never an eligible owner for another event. This prevents chains such as `C -> B -> A`; followers point only to a real owner.
@@ -58,7 +58,7 @@ Ownership must be claimed before namespace or pod work begins. The owner claim i
 
 This design assumes node-drainer processes events with a single worker and a single replica. The per-event conditional claim prevents stale writes to the current event, and deterministic local election ensures that one worker chooses one owner for a scope. A multi-worker or multi-replica node-drainer must add a scope-level compare/guard, such as a drain-scope lease document or an atomic update keyed by `(node, drainScope)`, before concurrent processing is enabled.
 
-Status updates must preserve ownership metadata. The implementation should use granular datastore updates for `userpodsevictionstatus.status` and `userpodsevictionstatus.message` instead of replacing the whole `userpodsevictionstatus` object. This keeps `drainRole` and `waitingForEventID` intact without changing the protobuf status model. Terminal updates must not clear `drainRole` or `waitingForEventID`.
+Status updates must preserve ownership metadata. The implementation should either update `userpodsevictionstatus.status` and `userpodsevictionstatus.message` granularly, or preserve the existing metadata when writing the full operation-status object. Terminal updates must not clear `drainRole` or `waitingForEventID`.
 
 ## Health Event Representation
 
@@ -147,7 +147,7 @@ Cold-start replay order must not affect correctness. If a follower is processed 
 
 Unclaimed missing-role `InProgress` events are handled as a migration/recovery case. Node-drainer elects one candidate deterministically by `(CreatedAt, HealthEvent.Id)`. Non-elected events wait for the candidate to claim ownership but do not persist follower metadata until the owner claim succeeds. This avoids follower chains.
 
-Waiting on an unclaimed elected candidate is bounded. If the same candidate remains unclaimed after a small fixed number of polls, or cold start cannot recover it, node-drainer reports broken drain state and re-evaluates so another candidate can claim ownership.
+Waiting on an unclaimed elected candidate is bounded. If the same candidate remains unclaimed after a small fixed number of polls, or cold start cannot recover it, node-drainer records that candidate as broken and excludes it from the next election before re-evaluating.
 
 ## Observability
 
