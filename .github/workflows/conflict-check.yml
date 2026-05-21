@@ -14,8 +14,8 @@
 
 # Purpose: detect open PRs that no longer merge cleanly with main.
 # Contract: sweeps all PRs after main moves/manual dispatch and checks only the
-# event PR on PR events; labels conflicts with needs-rebase and removes that
-# label once GitHub reports the PR mergeable.
+# copied PR on pull-request/[0-9]+ pushes; labels conflicts with needs-rebase
+# and removes that label once GitHub reports the PR mergeable.
 
 name: PR Merge Conflict Check
 
@@ -23,8 +23,7 @@ on:
   push:
     branches:
       - main
-  pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review]
+      - "pull-request/[0-9]+"
   workflow_dispatch: {}
 
 concurrency:
@@ -50,8 +49,13 @@ jobs:
         with:
           script: |
             const label = 'needs-rebase';
-            const prs = context.payload.pull_request
-              ? [context.payload.pull_request]
+            const prBranch = context.ref.match(/^refs\/heads\/pull-request\/([0-9]+)$/);
+            const prs = prBranch
+              ? [(await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: Number(prBranch[1]),
+                })).data]
               : await github.paginate(github.rest.pulls.list, {
                   owner: context.repo.owner,
                   repo: context.repo.repo,

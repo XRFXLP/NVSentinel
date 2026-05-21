@@ -14,15 +14,17 @@
 
 # Purpose: welcome first-time human issue and PR authors.
 # Contract: skips bot users and checks existing comments before posting so
-# reruns do not create duplicate welcome messages.
+# reruns do not create duplicate welcome messages. PR welcomes run from trusted
+# pull-request/[0-9]+ branches copied by copy-pr-bot.
 
 name: Welcome First-Time Contributors
 
 on:
   issues:
     types: [opened]
-  pull_request_target:
-    types: [opened]
+  push:
+    branches:
+      - "pull-request/[0-9]+"
   workflow_dispatch: {}
 
 concurrency:
@@ -94,11 +96,17 @@ jobs:
             }
 
       - name: Welcome first-time PR author
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/')
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           script: |
-            const author = context.payload.pull_request.user;
+            const prNumber = Number(process.env.GITHUB_REF_NAME.replace('pull-request/', ''));
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const author = pr.user;
             const creator = author.login;
             if (author.type === 'Bot' || creator.endsWith('[bot]')) {
               return;
@@ -122,14 +130,14 @@ jobs:
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
+                issue_number: prNumber,
                 per_page: 100,
               });
               if (!comments.some((comment) => comment.body.includes(body.split('\n')[0]))) {
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  issue_number: context.payload.pull_request.number,
+                  issue_number: prNumber,
                   body,
                 });
               }

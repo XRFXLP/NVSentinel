@@ -13,14 +13,15 @@
 # limitations under the License.
 
 # Purpose: apply path-based area labels and a size/* label to PRs.
-# Contract: depends on .github/labeler.yml for path rules and requires a PR
-# context; manual dispatch is intentionally omitted because there is no PR input.
+# Contract: depends on .github/labeler.yml for path rules and runs from trusted
+# pull-request/[0-9]+ branches copied by copy-pr-bot.
 
 name: Auto-Label PRs
 
 on:
-  pull_request_target:
-    types: [opened, synchronize]
+  push:
+    branches:
+      - "pull-request/[0-9]+"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -36,13 +37,19 @@ jobs:
     runs-on: linux-amd64-cpu8
     permissions:
       contents: read
+      issues: write
       pull-requests: write
     timeout-minutes: 5
     steps:
+      - name: Extract PR number
+        id: pr
+        run: echo "number=${GITHUB_REF_NAME#pull-request/}" >> "$GITHUB_OUTPUT"
+
       - name: Label by path
         uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213  # v6.1.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-number: ${{ steps.pr.outputs.number }}
           sync-labels: false
 
       - name: Label by size
@@ -52,7 +59,7 @@ jobs:
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.issue.number,
+              pull_number: Number('${{ steps.pr.outputs.number }}'),
             });
 
             const changes = pr.additions + pr.deletions;
@@ -73,7 +80,7 @@ jobs:
             const { data: labels } = await github.rest.issues.listLabelsOnIssue({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: Number('${{ steps.pr.outputs.number }}'),
             });
 
             for (const label of labels) {
@@ -81,7 +88,7 @@ jobs:
                 await github.rest.issues.removeLabel({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  issue_number: context.issue.number,
+                  issue_number: Number('${{ steps.pr.outputs.number }}'),
                   name: label.name,
                 });
               }
@@ -91,7 +98,7 @@ jobs:
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: context.issue.number,
+                issue_number: Number('${{ steps.pr.outputs.number }}'),
                 labels: [size],
               });
             }
