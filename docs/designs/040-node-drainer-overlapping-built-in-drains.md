@@ -17,9 +17,9 @@ The gap is active overlap. If another event for the same node and drain scope ar
 
 Add scope-aware coalescing for built-in drains.
 
-For a built-in drain event, node-drainer should resolve ownership for the drain scope before doing namespace matching, pod listing, eviction, timeout, or completion-check work. One event becomes the drain owner for that scope. Later covered events become followers: they wait for the owner, and when the owner succeeds they become `AlreadyDrained`.
+For a built-in drain event, node-drainer resolves ownership for the drain scope before doing namespace matching, pod listing, eviction, timeout, or completion-check work. One event becomes the drain owner for that scope. Later covered events become followers: they wait for the owner, and when the owner succeeds they become `AlreadyDrained`.
 
-The design preserves the existing completed-drain skip semantics and extends them to active built-in drains. Completed covered drains take priority over active overlaps. Broken or ambiguous overlap state must be observable and bounded; it should not silently retry forever or let stale follower metadata drive drain work.
+The design preserves the existing completed-drain skip semantics and extends them to active built-in drains. Completed covered drains take priority over active overlaps. Broken or ambiguous overlap state is observable and bounded; it should not silently retry forever or let stale follower metadata drive drain work.
 
 ## Scope and Coverage
 
@@ -39,11 +39,11 @@ A full-node drain covers all later built-in drains for the node. A partial drain
 
 Completed coverage wins before active ownership is considered. If any covered prior event has `userpodsevictionstatus.status == Succeeded`, the current event is marked `AlreadyDrained`, even if the current event has stale follower metadata or another covered event is still `InProgress`.
 
-## Ownership Model
+## Ownership Resolution
 
-Node-drainer persists ownership state under `healtheventstatus.userpodsevictionstatus.metadata`.
+Ownership resolution is the gate before built-in drain work. Only an event that has resolved as owner reaches the built-in drain action evaluator.
 
-Required metadata:
+Node-drainer persists ownership state under `healtheventstatus.userpodsevictionstatus.metadata`:
 
 - `drainRole`: `owner` or `follower`.
 - `waitingForEventID`: set on followers to the owner event they are waiting for.
@@ -51,18 +51,6 @@ Required metadata:
 Ownership resolution must read a typed representation that includes `userpodsevictionstatus.metadata`. Add metadata support to the protobuf `OperationStatus` model and preserve it through serialization/deserialization so this remains database-agnostic.
 
 `waitingForEventID` stores the canonical health-event record ID: the same value stored in `HealthEvent.Id`, written into the `quarantineHealthEvent` annotation, and used by `getHealthEventFromId` for store lookup. It must not use the workqueue key or a datastore document ID.
-
-An owner is the only event allowed to perform built-in drain work for a covered scope. A follower is never an eligible owner for another event. This prevents chains such as `C -> B -> A`; followers point only to a real owner.
-
-Ownership must be claimed before namespace or pod work begins. The owner claim is a targeted datastore update that matches only when the current event is still `InProgress` and has no `drainRole` or `waitingForEventID`. If the claim update does not modify the document, node-drainer must re-fetch and re-evaluate before doing any drain work.
-
-This design assumes node-drainer processes events with a single worker and a single replica. The per-event conditional claim prevents stale writes to the current event, and deterministic local election ensures that one worker chooses one owner for a scope. A multi-worker or multi-replica node-drainer must add a scope-level compare/guard, such as a drain-scope lease document or an atomic update keyed by `(node, drainScope)`, before concurrent processing is enabled.
-
-Status updates must preserve ownership metadata. The implementation should either update `userpodsevictionstatus.status` and `userpodsevictionstatus.message` granularly, or preserve the existing metadata when writing the full operation-status object. Terminal updates must not clear `drainRole` or `waitingForEventID`.
-
-## Health Event Representation
-
-Ownership is stored on the existing health-event status object under `userpodsevictionstatus.metadata`.
 
 Owner event:
 
@@ -95,15 +83,71 @@ Follower event:
 }
 ```
 
-When the owner succeeds, its `userpodsevictionstatus.status` becomes `Succeeded`. Followers later observe that completed owner and transition to `AlreadyDrained`, while keeping the metadata available for audit/debugging.
+Status updates must preserve ownership metadata. The implementation should either update `userpodsevictionstatus.status` and `userpodsevictionstatus.message` granularly, or preserve the existing metadata when writing the full operation-status object. Terminal updates must not clear `drainRole` or `waitingForEventID`.
 
-## Evaluation Order
+### In-Memory Ownership Index
 
-Built-in drain processing is split into ownership resolution and drain action evaluation. Only an event that has resolved as owner reaches the built-in drain action evaluator.
+Ownership resolution uses an in-memory per-node drain-scope summary instead of scanning the full annotation for every event. The summary is built from the node's `quarantineHealthEvent` annotation and current store results, rebuilt during cold start, and refreshed as drain events are processed.
+
+For each full-node scope and partial-entity scope, the summary tracks:
+
+- completed drains;
+- active owners;
+- unclaimed `InProgress` candidates.
+
+This makes burst and cold-start processing close to one scan per node plus scope lookups, instead of `O(N)` annotation scans for each of `N` events.
+
+Ownership resolution follows this decision order:
+
+```text
+resolveOwnership(currentEvent):
+  currentScope = deriveDrainScope(currentEvent)
+  scopeSummary = getOrBuildScopeSummary(currentEvent.node)
+
+  if scopeSummary has completed drain covering currentScope:
+    mark currentEvent AlreadyDrained
+    return
+
+  if currentEvent eviction status is empty or NotStarted:
+    set currentEvent InProgress
+    requeue currentEvent
+    return
+
+  if currentEvent is follower:
+    owner = load waitingForEventID
+    if owner is missing or is not the recorded drain owner:
+      report broken drain state
+    else if owner succeeded:
+      mark currentEvent AlreadyDrained
+    else if owner is InProgress and owner scope covers currentScope:
+      wait as follower
+    else if owner was cancelled:
+      stop follower drain processing
+    else if owner failed:
+      clear follower metadata and re-enter ownership resolution
+    else:
+      report broken drain state
+    return
+
+  if currentEvent is owner:
+    evaluate built-in drain actions
+    return
+
+  if scopeSummary has active owner covering currentScope:
+    mark currentEvent as follower of that owner
+    wait as follower
+    return
+
+  candidate = scopeSummary elects unclaimed InProgress event by (CreatedAt, HealthEvent.Id)
+  if candidate is currentEvent:
+    claim owner and requeue as owner
+  else:
+    wait for candidate to claim ownership
+```
 
 ```mermaid
 flowchart TD
-    Start[Load current event and covered prior events] --> Completed{Any covered prior drain succeeded?}
+    Start[Load current event and scope summary] --> Completed{Any covered prior drain succeeded?}
     Completed -->|Yes| AlreadyDrained[Mark current event AlreadyDrained]
     Completed -->|No| NeedsProgress{Current status empty or NotStarted?}
     NeedsProgress -->|Yes| InitProgress[Set InProgress and requeue]
@@ -113,7 +157,9 @@ flowchart TD
     OwnerSucceeded -->|Yes| AlreadyDrained
     OwnerSucceeded -->|No| OwnerActive{Owner InProgress and covers scope?}
     OwnerActive -->|Yes| WaitFollower[Wait as follower]
-    OwnerActive -->|No| OwnerFailed{Owner failed or cancelled?}
+    OwnerActive -->|No| OwnerCancelled{Owner cancelled?}
+    OwnerCancelled -->|Yes| StopFollower[Stop follower drain processing]
+    OwnerCancelled -->|No| OwnerFailed{Owner failed?}
     OwnerFailed -->|Yes| ClearFollower[Clear follower metadata and re-enter ownership resolution]
     OwnerFailed -->|No| Broken[Report broken drain state]
     IsFollower -->|No| IsOwner{Current event is owner?}
@@ -126,13 +172,29 @@ flowchart TD
     CurrentElected -->|No| WaitCandidate[Wait for elected candidate to claim ownership]
 ```
 
-Follower resolution must validate both the referenced owner status and scope. A follower waits only when `waitingForEventID` points to an `InProgress` owner whose derived scope covers the follower's scope. A succeeded owner makes the follower `AlreadyDrained`; a failed or cancelled owner clears follower metadata and re-enters ownership resolution; a missing, invalid, or mismatched owner is reported as broken drain state.
+The key rules are:
 
-Follower metadata must be durable before a delayed overlap wait is scheduled. Marking an event as follower is idempotent when it is already a follower for the same `waitingForEventID`. A mismatched `waitingForEventID` is a conflict and must be re-evaluated through the rate-limited path.
+- An owner is the only event allowed to perform built-in drain work for a covered scope.
+- A follower is never an eligible owner for another event; followers point only to a real owner.
+- Ownership must be claimed before namespace or pod work begins.
+- The owner claim is a targeted datastore update that matches only when the current event is still `InProgress` and has no `drainRole` or `waitingForEventID`.
+- If the owner claim update does not modify the document, node-drainer re-fetches and re-evaluates before doing any drain work.
+- Follower metadata must be durable before a delayed overlap wait is scheduled.
+- Marking an event as follower is idempotent when it is already a follower for the same `waitingForEventID`.
+- A mismatched `waitingForEventID` is a conflict and is re-evaluated through the rate-limited path.
+- `ownershipNone` after preconditions is an invariant violation and must not fall through to drain action evaluation.
 
-Expected overlap waits must use delayed requeue behavior. The existing `ActionWait` path currently logs `WaitDelay` but requeues via the exponential rate limiter. Overlap waits need an explicit wait reason, such as `OverlapActiveDrain`, that the worker maps to `AddAfter`. Existing error waits, such as missing status, namespace lookup failures, and datastore/client errors, continue to use rate-limited retry.
+Follower behavior depends on owner status:
 
-`ownershipNone` after preconditions is an invariant violation. It must be reported as broken drain state and must not fall through to drain action evaluation.
+- A succeeded owner makes the follower `AlreadyDrained`.
+- An active owner keeps the follower waiting, as long as the owner scope still covers the follower scope.
+- A cancelled owner stops follower drain processing, because cancellation represents uncordon or healthy-event recovery rather than a signal to find another drain owner.
+- A failed owner may let the follower clear metadata and re-enter ownership resolution. This is expected to be rare for current built-in drains.
+- A missing, invalid, or mismatched owner is reported as broken drain state.
+
+When a follower is only waiting for its owner, node-drainer should requeue it after the requested delay instead of treating the wait like an error. The existing `ActionWait` path currently logs `WaitDelay` but requeues via the exponential rate limiter. Follower waits need an explicit reason, such as `OverlapActiveDrain`, that the worker maps to `AddAfter`. Real errors, such as missing status, namespace lookup failures, and datastore/client errors, continue to use rate-limited retry.
+
+This design assumes node-drainer processes events with a single worker and a single replica. The per-event conditional claim prevents stale writes to the current event, and deterministic local election ensures that one worker chooses one owner for a scope. A multi-worker or multi-replica node-drainer must add a scope-level compare/guard, such as a drain-scope lease document or an atomic update keyed by `(node, drainScope)`, before concurrent processing is enabled.
 
 ## Recovery and Cold Start
 
@@ -143,7 +205,7 @@ Cold start re-enqueues events that still require node-drainer processing:
 
 Empty or `NotStarted` events first transition to `InProgress` through a conditional update, then re-enter ownership resolution. That update must match only non-terminal events whose current eviction status is still empty or `NotStarted`; if the update loses, node-drainer re-fetches and re-evaluates.
 
-Cold-start replay order must not affect correctness. If a follower is processed before its owner, it uses `waitingForEventID` to resolve the owner state. If the owner completed while the follower was not running, the follower becomes `AlreadyDrained`. If the owner failed or was cancelled, the follower clears follower metadata and re-enters ownership resolution.
+Cold-start replay order must not affect correctness. If a follower is processed before its owner, it uses `waitingForEventID` to resolve the owner state. If the owner completed while the follower was not running, the follower becomes `AlreadyDrained`. If the owner was cancelled, the follower stops drain processing and does not look for another owner. If the owner failed after claiming ownership, the follower may clear follower metadata and re-enter ownership resolution.
 
 Unclaimed missing-role `InProgress` events are handled as a migration/recovery case. Node-drainer elects one candidate deterministically by `(CreatedAt, HealthEvent.Id)`. Non-elected events wait for the candidate to claim ownership but do not persist follower metadata until the owner claim succeeds. This avoids follower chains.
 
@@ -174,8 +236,8 @@ Broken states are operational signals. They should be visible and bounded rather
 
 - Adds ownership metadata that must be preserved by status updates.
 - Adds a pre-drain ownership-resolution phase before built-in drain evaluation.
-- Followers remain `InProgress` until the owner succeeds, fails, or becomes observably broken.
-- The initial design assumes the current single-worker/single-replica node-drainer deployment for scope-level uniqueness.
+- Followers remain `InProgress` until the owner succeeds, fails, is cancelled, or becomes observably broken.
+- The design assumes the current single-worker/single-replica node-drainer deployment for scope-level uniqueness.
 
 ### Mitigations
 
@@ -183,7 +245,6 @@ Broken states are operational signals. They should be visible and bounded rather
 - Preserve metadata with granular updates or model support before enabling coalescing.
 - Emit metrics/logs for cold-start recovery failures and broken overlap state.
 - Add a scope-level guard before any future multi-worker or multi-replica node-drainer deployment.
-
 
 ## References
 
