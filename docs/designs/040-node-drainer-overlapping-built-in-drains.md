@@ -60,6 +60,43 @@ This design assumes node-drainer processes events with a single worker and a sin
 
 Status updates must preserve ownership metadata. The implementation should use granular datastore updates for `userpodsevictionstatus.status` and `userpodsevictionstatus.message` instead of replacing the whole `userpodsevictionstatus` object. This keeps `drainRole` and `waitingForEventID` intact without changing the protobuf status model. Terminal updates must not clear `drainRole` or `waitingForEventID`.
 
+## Health Event Representation
+
+Ownership is stored on the existing health-event status object under `userpodsevictionstatus.metadata`.
+
+Owner event:
+
+```json
+{
+  "healtheventstatus": {
+    "userpodsevictionstatus": {
+      "status": "InProgress",
+      "metadata": {
+        "drainRole": "owner"
+      }
+    }
+  }
+}
+```
+
+Follower event:
+
+```json
+{
+  "healtheventstatus": {
+    "userpodsevictionstatus": {
+      "status": "InProgress",
+      "metadata": {
+        "drainRole": "follower",
+        "waitingForEventID": "<owner HealthEvent.Id>"
+      }
+    }
+  }
+}
+```
+
+When the owner succeeds, its `userpodsevictionstatus.status` becomes `Succeeded`. Followers later observe that completed owner and transition to `AlreadyDrained`, while keeping the metadata available for audit/debugging.
+
 ## Evaluation Order
 
 Built-in drain processing is split into ownership resolution and drain action evaluation. Only an event that has resolved as owner reaches the built-in drain action evaluator.
@@ -76,20 +113,20 @@ flowchart TD
     OwnerSucceeded -->|Yes| AlreadyDrained
     OwnerSucceeded -->|No| OwnerActive{Owner InProgress and covers scope?}
     OwnerActive -->|Yes| WaitFollower[Wait as follower]
-    OwnerActive -->|No| OwnerTerminal{Owner terminal non-success?}
-    OwnerTerminal -->|Yes| ClearFollower[Clear follower metadata and re-enter ownership resolution]
-    OwnerTerminal -->|No| Broken[Report broken drain state]
+    OwnerActive -->|No| OwnerFailed{Owner failed or cancelled?}
+    OwnerFailed -->|Yes| ClearFollower[Clear follower metadata and re-enter ownership resolution]
+    OwnerFailed -->|No| Broken[Report broken drain state]
     IsFollower -->|No| IsOwner{Current event is owner?}
     IsOwner -->|Yes| EvaluateDrain[Evaluate built-in drain actions]
     IsOwner -->|No| CoveredOwner{Another covered owner active?}
-    CoveredOwner -->|Yes| MarkFollower[Persist follower metadata and wait]
+    CoveredOwner -->|Yes| MarkFollower[Mark current event as follower and wait]
     CoveredOwner -->|No| Elect[Elect unclaimed candidate by CreatedAt and HealthEvent.Id]
     Elect --> CurrentElected{Current event elected?}
     CurrentElected -->|Yes| ClaimOwner[Claim owner and requeue]
     CurrentElected -->|No| WaitCandidate[Wait for elected candidate to claim ownership]
 ```
 
-Follower resolution must validate both the referenced owner status and scope. A follower waits only when `waitingForEventID` points to an `InProgress` owner whose derived scope covers the follower's scope. A succeeded owner makes the follower `AlreadyDrained`; a terminal non-success owner clears follower metadata and re-enters ownership resolution; a missing, invalid, or mismatched owner is reported as broken drain state.
+Follower resolution must validate both the referenced owner status and scope. A follower waits only when `waitingForEventID` points to an `InProgress` owner whose derived scope covers the follower's scope. A succeeded owner makes the follower `AlreadyDrained`; a failed or cancelled owner clears follower metadata and re-enters ownership resolution; a missing, invalid, or mismatched owner is reported as broken drain state.
 
 Follower metadata must be durable before a delayed overlap wait is scheduled. Marking an event as follower is idempotent when it is already a follower for the same `waitingForEventID`. A mismatched `waitingForEventID` is a conflict and must be re-evaluated through the rate-limited path.
 
@@ -147,22 +184,6 @@ Broken states are operational signals. They should be visible and bounded rather
 - Emit metrics/logs for cold-start recovery failures and broken overlap state.
 - Add a scope-level guard before any future multi-worker or multi-replica node-drainer deployment.
 
-## Acceptance Tests
-
-Implementation should include focused coverage for:
-
-- custom drain enabled: no built-in owner/follower metadata is written;
-- completed-priority behavior when both completed and active covered drains exist;
-- empty/`NotStarted` cold-start events are initialized before ownership decisions;
-- current owner continues to drain and does not wait on itself;
-- current follower waits, becomes `AlreadyDrained`, clears metadata, or reports broken state based on owner status;
-- follower scope validation rejects mismatched owners;
-- deterministic owner election includes the current event and prevents mutual waits;
-- owner claim loss causes re-fetch/re-evaluation without drain work;
-- follower marking is idempotent for the same `waitingForEventID`;
-- terminal status updates preserve ownership metadata unless deliberately cleared;
-- `waitingForEventID` uses canonical `HealthEvent.Id`;
-- overlap waits use delayed requeue, while error waits remain rate-limited.
 
 ## References
 
