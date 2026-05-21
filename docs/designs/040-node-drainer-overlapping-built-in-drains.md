@@ -130,7 +130,10 @@ resolveOwnership(currentEvent):
     return
 
   if currentEvent is owner:
-    evaluate built-in drain actions
+    if scopeSummary confirms currentEvent is the active owner for currentScope:
+      evaluate built-in drain actions
+    else:
+      report broken drain state and re-evaluate
     return
 
   if scopeSummary has active owner covering currentScope:
@@ -163,7 +166,9 @@ flowchart TD
     OwnerFailed -->|Yes| ClearFollower[Clear follower metadata and re-enter ownership resolution]
     OwnerFailed -->|No| Broken[Report broken drain state]
     IsFollower -->|No| IsOwner{Current event is owner?}
-    IsOwner -->|Yes| EvaluateDrain[Evaluate built-in drain actions]
+    IsOwner -->|Yes| OwnerValid{Still active owner for scope?}
+    OwnerValid -->|Yes| EvaluateDrain[Evaluate built-in drain actions]
+    OwnerValid -->|No| Broken
     IsOwner -->|No| CoveredOwner{Another covered owner active?}
     CoveredOwner -->|Yes| MarkFollower[Mark current event as follower and wait]
     CoveredOwner -->|No| Elect[Elect unclaimed candidate by CreatedAt and HealthEvent.Id]
@@ -176,6 +181,7 @@ The key rules are:
 
 - An owner is the only event allowed to perform built-in drain work for a covered scope.
 - A follower is never an eligible owner for another event; followers point only to a real owner.
+- A current owner must still be the active owner for its drain scope in the current summary/store view before it runs built-in drain actions.
 - Ownership must be claimed before namespace or pod work begins.
 - The owner claim is a targeted datastore update that matches only when the current event is still `InProgress` and has no `drainRole` or `waitingForEventID`.
 - If the owner claim update does not modify the document, node-drainer re-fetches and re-evaluates before doing any drain work.
