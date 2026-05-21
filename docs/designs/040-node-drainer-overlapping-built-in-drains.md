@@ -2,41 +2,32 @@
 
 ## Context
 
-Node-drainer processes quarantined health events and executes either a built-in drain flow or, when configured, a custom drain flow. This ADR is scoped only to the built-in flow.
+Node-drainer processes quarantined health events and executes either:
 
-Built-in drains already avoid redundant work after a previous drain has completed. For an `AlreadyQuarantined` node, `NodeDrainEvaluator.isNodeAlreadyDrained` inspects the node's `quarantineHealthEvent` annotation, looks up other health events from the store, and skips the current event when a previous completed drain covers the same scope:
+- the built-in drain flow, which evicts or waits for Kubernetes pods directly, or
+- the custom-drain flow, which delegates drain work to a configured CR.
 
-- A completed full drain covers later full and partial drains for the same node.
-- A completed partial drain covers later partial drains for the same impacted entity.
+This ADR is scoped only to built-in drains. Custom drain already has its own active-drain handling through drain CRs and is intentionally out of scope.
 
-The gap is in-progress overlap. If another event for the same node and same drain scope arrives while an earlier built-in drain is still `InProgress`, the evaluator does not treat that event as covered. The later event can therefore run the same namespace matching, pod listing, eviction, completion-check, timeout, node-event, and retry loop. The queue currently has a single worker, so overlapping events are not processed simultaneously in separate worker goroutines; however, retries can interleave them across queue turns. In practice this behaves like time-sliced parallelism for the same drain scope and creates redundant queue cycles and Kubernetes API calls.
+Built-in drains already avoid redundant work after a previous drain has completed. For an `AlreadyQuarantined` node, node-drainer checks the node's `quarantineHealthEvent` annotation, loads prior events from the store, and skips the current event when a previous completed drain covers the same scope.
 
-This is sub-optimal for bursts of health events that represent the same physical fault, especially partial drains for the same `GPU_UUID`. It can make the overall quarantine-to-drained lifecycle noisier and slower even though the first actionable event should still move the node to `draining` before the heavier pod work runs.
+The gap is active overlap. If another event for the same node and drain scope arrives while an earlier built-in drain is still `InProgress`, the later event does not currently treat the active drain as covering it. Because events are retried through the workqueue, overlapping events can interleave across queue turns and repeatedly run the same namespace matching, pod listing, eviction, completion-check, timeout, node-event, and retry loop.
 
-Solution surfaces considered:
-
-1. Upstream event volume reduction before node-drainer receives events.
-2. Node-drainer built-in drain coalescing using existing drain scope semantics.
-3. No node-drainer change, relying on Kubernetes eviction idempotency and existing retries.
+This is redundant work rather than a new remediation behavior. Kubernetes eviction is mostly idempotent, and node-drainer currently runs with one worker, but the repeated drain loop adds queue churn, Kubernetes API calls, and operational noise for bursts of events that represent the same physical fault.
 
 ## Decision
 
-Add built-in drain coalescing inside node-drainer. When an event is already draining the same or a broader drain scope, later overlapping built-in events should wait for that active drain instead of repeating the drain work. Once the active drain completes, follower events should use the existing completed-drain logic and be marked `AlreadyDrained` when the completed scope covers them.
+Add scope-aware coalescing for built-in drains.
 
-## Implementation
+For a built-in drain event, node-drainer should resolve ownership for the drain scope before doing namespace matching, pod listing, eviction, timeout, or completion-check work. One event becomes the drain owner for that scope. Later covered events become followers: they wait for the owner, and when the owner succeeds they become `AlreadyDrained`.
 
-### Drain Scope
+The design preserves the existing completed-drain skip semantics and extends them to active built-in drains. Completed covered drains take priority over active overlaps. Broken or ambiguous overlap state must be observable and bounded; it should not silently retry forever or let stale follower metadata drive drain work.
 
-Define a small internal drain scope model in `node-drainer/pkg/evaluator`:
+## Scope and Coverage
 
-```go
-type drainScope struct {
-    nodeName string
-    entity   *protos.Entity // nil means full-node drain
-}
-```
+Coalescing applies only to built-in drains. Custom drain remains CR-driven and must not use built-in owner/follower metadata.
 
-Scope coverage follows the same rules as completed-drain skipping:
+Drain scope follows the same coverage rules as completed-drain skipping:
 
 | Existing drain scope | Current drain scope | Relationship |
 |----------------------|---------------------|--------------|
@@ -46,189 +37,132 @@ Scope coverage follows the same rules as completed-drain skipping:
 | Partial entity `E`   | Partial entity `F`  | Does not cover |
 | Partial entity `E`   | Full node           | Does not cover |
 
-The last row is intentional. A partial drain in progress should not block a later full-node drain, because the full drain represents a broader remediation requirement and cannot be satisfied by the partial drain.
+A full-node drain covers all later built-in drains for the node. A partial drain covers only later partial drains for the same impacted entity. A partial drain must not block a later full-node drain.
 
-### Evaluator Result
+Completed coverage wins before active ownership is considered. If any covered prior event has `userpodsevictionstatus.status == Succeeded`, the current event is marked `AlreadyDrained`, even if the current event has stale follower metadata or another covered event is still `InProgress`.
 
-Extend the existing `AlreadyQuarantined` check so it can distinguish three outcomes:
+## Ownership Model
 
-```go
-type priorDrainDisposition int
+Node-drainer persists ownership state under `healtheventstatus.userpodsevictionstatus.metadata`.
 
-const (
-    priorDrainNone priorDrainDisposition = iota
-    priorDrainCompleted
-    priorDrainInProgress
-)
-```
+Required metadata:
 
-Wrap the existing completed-drain check with a helper that returns a richer disposition:
+- `drainRole`: `owner` or `follower`.
+- `waitingForEventID`: set on followers to the owner event they are waiting for.
 
-```go
-func (e *NodeDrainEvaluator) priorCoveredDrainDisposition(
-    ctx context.Context,
-    currentEventID string,
-    currentPartialDrainEntity *protos.Entity,
-    nodeName string,
-    healthEventStore datastore.HealthEventStore,
-) (priorDrainDisposition, error)
-```
+`waitingForEventID` stores the canonical health-event record ID: the same value stored in `HealthEvent.Id`, written into the `quarantineHealthEvent` annotation, and used by `getHealthEventFromId` for store lookup. It must not use the workqueue key or a datastore document ID.
 
-The helper should reuse the current annotation/store lookup behavior from `isNodeAlreadyDrained` rather than reimplementing a separate path:
+An owner is the only event allowed to perform built-in drain work for a covered scope. A follower is never an eligible owner for another event. This prevents chains such as `C -> B -> A`; followers point only to a real owner.
 
-1. Read the node's `quarantineHealthEvent` annotation.
-2. Ignore the current event ID.
-3. For each other event, load the full `HealthEventWithStatus` from the health-event store.
-4. Compute the previous event's drain scope using `shouldExecutePartialDrain`.
-5. If the previous scope covers the current scope:
-   - Return `priorDrainCompleted` when `userpodsevictionstatus.status == Succeeded`.
-   - Return `priorDrainInProgress` when `userpodsevictionstatus.status == InProgress`.
-   - Ignore terminal non-success states such as `Failed`, `Cancelled`, and `AlreadyDrained`.
+Ownership must be claimed before namespace or pod work begins. The owner claim is a targeted datastore update that matches only when the current event is still `InProgress` and has no `drainRole` or `waitingForEventID`. If the claim update does not modify the document, node-drainer must re-fetch and re-evaluate before doing any drain work.
 
-`handleAlreadyQuarantined` then maps the disposition to actions:
+This design assumes node-drainer processes events with a single worker and a single replica. The per-event conditional claim prevents stale writes to the current event, and deterministic local election ensures that one worker chooses one owner for a scope. A multi-worker or multi-replica node-drainer must add a scope-level compare/guard, such as a drain-scope lease document or an atomic update keyed by `(node, drainScope)`, before concurrent processing is enabled.
 
-```go
-switch disposition {
-case priorDrainCompleted:
-    return &DrainActionResult{
-        Action: ActionMarkAlreadyDrained,
-        Status: model.AlreadyDrained,
-    }
-case priorDrainInProgress:
-    return &DrainActionResult{
-        Action:    ActionWait,
-        WaitDelay: builtInDrainPollInterval,
-    }
-default:
-    return nil
-}
-```
+Status updates must preserve ownership metadata. The implementation should use granular datastore updates for `userpodsevictionstatus.status` and `userpodsevictionstatus.message` instead of replacing the whole `userpodsevictionstatus` object. This keeps `drainRole` and `waitingForEventID` intact without changing the protobuf status model. Terminal updates must not clear `drainRole` or `waitingForEventID`.
 
-`builtInDrainPollInterval` should be a small constant, for example `30 * time.Second`, matching the custom-drain poll interval. This keeps follower events in the existing rate-limited queue loop and avoids introducing a second scheduler.
+## Evaluation Order
 
-### Normal Operation Flow
+Built-in drain processing is split into ownership resolution and drain action evaluation. Only an event that has resolved as owner reaches the built-in drain action evaluator.
 
 ```mermaid
 flowchart TD
-    Event[Health event enqueued] --> SetInProgress[Set userpodsevictionstatus = InProgress]
-    SetInProgress --> Evaluate[Evaluate built-in drain]
-    Evaluate --> AlreadyQuarantined{Node AlreadyQuarantined?}
-    AlreadyQuarantined -->|No| ExecuteDrain[Execute built-in drain action]
-    AlreadyQuarantined -->|Yes| CheckPrior[Check prior annotated events]
-    CheckPrior --> CoveredCompleted{Covered prior drain Succeeded?}
-    CoveredCompleted -->|Yes| MarkAlready[Mark current event AlreadyDrained]
-    CoveredCompleted -->|No| CoveredActive{Covered prior drain InProgress?}
-    CoveredActive -->|Yes| WaitFollower[Follower waits via ActionWait]
-    WaitFollower --> RequeueFollower[Requeue follower]
-    RequeueFollower --> Evaluate
-    CoveredActive -->|No| ExecuteDrain
-    ExecuteDrain --> DrainDone{Pods drained?}
-    DrainDone -->|No| RequeueLeader[Requeue leader]
-    RequeueLeader --> Evaluate
-    DrainDone -->|Yes| MarkSucceeded[Mark leader Succeeded]
-    MarkSucceeded --> FollowerRetry[Follower retry observes completed prior drain]
-    FollowerRetry --> MarkAlready
+    Start[Load current event and covered prior events] --> Completed{Any covered prior drain succeeded?}
+    Completed -->|Yes| AlreadyDrained[Mark current event AlreadyDrained]
+    Completed -->|No| NeedsProgress{Current status empty or NotStarted?}
+    NeedsProgress -->|Yes| InitProgress[Set InProgress and requeue]
+    NeedsProgress -->|No| IsFollower{Current event is follower?}
+    IsFollower -->|Yes| ResolveOwner[Resolve waitingForEventID]
+    ResolveOwner --> OwnerSucceeded{Owner succeeded?}
+    OwnerSucceeded -->|Yes| AlreadyDrained
+    OwnerSucceeded -->|No| OwnerActive{Owner InProgress and covers scope?}
+    OwnerActive -->|Yes| WaitFollower[Wait as follower]
+    OwnerActive -->|No| OwnerTerminal{Owner terminal non-success?}
+    OwnerTerminal -->|Yes| ClearFollower[Clear follower metadata and re-enter ownership resolution]
+    OwnerTerminal -->|No| Broken[Report broken drain state]
+    IsFollower -->|No| IsOwner{Current event is owner?}
+    IsOwner -->|Yes| EvaluateDrain[Evaluate built-in drain actions]
+    IsOwner -->|No| CoveredOwner{Another covered owner active?}
+    CoveredOwner -->|Yes| MarkFollower[Persist follower metadata and wait]
+    CoveredOwner -->|No| Elect[Elect unclaimed candidate by CreatedAt and HealthEvent.Id]
+    Elect --> CurrentElected{Current event elected?}
+    CurrentElected -->|Yes| ClaimOwner[Claim owner and requeue]
+    CurrentElected -->|No| WaitCandidate[Wait for elected candidate to claim ownership]
 ```
 
-### Reuse Existing Completion Path
+Follower resolution must validate both the referenced owner status and scope. A follower waits only when `waitingForEventID` points to an `InProgress` owner whose derived scope covers the follower's scope. A succeeded owner makes the follower `AlreadyDrained`; a terminal non-success owner clears follower metadata and re-enters ownership resolution; a missing, invalid, or mismatched owner is reported as broken drain state.
 
-Follower events do not need a new terminal state. They remain `InProgress` while waiting. On the next retry after the leader event reaches `Succeeded`, the same annotation/store lookup returns `priorDrainCompleted`, and the follower is marked `AlreadyDrained`.
+Follower metadata must be durable before a delayed overlap wait is scheduled. Marking an event as follower is idempotent when it is already a follower for the same `waitingForEventID`. A mismatched `waitingForEventID` is a conflict and must be re-evaluated through the rate-limited path.
 
-This preserves the existing contract:
+Expected overlap waits must use delayed requeue behavior. The existing `ActionWait` path currently logs `WaitDelay` but requeues via the exponential rate limiter. Overlap waits need an explicit wait reason, such as `OverlapActiveDrain`, that the worker maps to `AddAfter`. Existing error waits, such as missing status, namespace lookup failures, and datastore/client errors, continue to use rate-limited retry.
 
-- `Succeeded` means this event performed the drain.
-- `AlreadyDrained` means another event already drained the required scope.
-- `InProgress` means the event is still waiting for either its own drain or a covered active drain.
+`ownershipNone` after preconditions is an invariant violation. It must be reported as broken drain state and must not fall through to drain action evaluation.
 
-### Active Drain Invariant
+## Recovery and Cold Start
 
-An `InProgress` built-in drain represents an active drain session owned by node-drainer. Once node-drainer sets `userpodsevictionstatus.status = InProgress`, the event remains in the workqueue retry loop until it reaches a terminal status. If node-drainer restarts, cold-start recovery re-enqueues existing `InProgress` events.
+Cold start re-enqueues events that still require node-drainer processing:
 
-Follower events rely on that invariant: a covered `InProgress` event is treated as the leader for the drain scope, and followers wait for it to complete. No drain-age timeout is applied, because `AllowCompletion` can keep a drain legitimately `InProgress` for hours or days.
+- `InProgress` events, including owners and followers.
+- `Quarantined` or `AlreadyQuarantined` events whose eviction status is empty or `NotStarted`.
 
-If an `InProgress` event is no longer being retried or recoverable through cold start, node-drainer should surface that as an operational error through logs and metrics. That condition is outside the normal coalescing path and should be investigated as a broken drain-state transition.
+Empty or `NotStarted` events first transition to `InProgress` through a conditional update, then re-enter ownership resolution. That update must match only non-terminal events whose current eviction status is still empty or `NotStarted`; if the update loses, node-drainer re-fetches and re-evaluates.
 
-### Cold Start Behavior
+Cold-start replay order must not affect correctness. If a follower is processed before its owner, it uses `waitingForEventID` to resolve the owner state. If the owner completed while the follower was not running, the follower becomes `AlreadyDrained`. If the owner failed or was cancelled, the follower clears follower metadata and re-enters ownership resolution.
 
-Cold-start recovery re-enqueues all events whose `userpodsevictionstatus.status` is `InProgress`, including both leader and follower events. The design must be independent of the order in which those events are replayed.
+Unclaimed missing-role `InProgress` events are handled as a migration/recovery case. Node-drainer elects one candidate deterministically by `(CreatedAt, HealthEvent.Id)`. Non-elected events wait for the candidate to claim ownership but do not persist follower metadata until the owner claim succeeds. This avoids follower chains.
 
-If a follower is processed before its leader after restart, it re-runs the same coalescing check, sees the covered leader event still `InProgress`, and returns `ActionWait`. If the leader completed before restart but the follower had not yet observed that completion, the follower sees the completed prior drain and is marked `AlreadyDrained`. If the leader is no longer recoverable through cold start, that is handled as the broken drain-state transition described above rather than as a normal follower takeover path.
+Waiting on an unclaimed elected candidate is bounded. If the same candidate remains unclaimed after a small fixed number of polls, or cold start cannot recover it, node-drainer reports broken drain state and re-evaluates so another candidate can claim ownership.
 
-```mermaid
-flowchart TD
-    Restart[Node-drainer starts] --> Query[Query events requiring processing]
-    Query --> Found[Find InProgress leader and follower events]
-    Found --> EnqueueAll[Re-enqueue all recovered events]
-    EnqueueAll --> NextEvent[Process next replayed event]
-    NextEvent --> IsFollower{Is this a follower event?}
-    IsFollower -->|No| ProcessLeader[Process leader drain]
-    ProcessLeader --> LeaderDone{Drain complete?}
-    LeaderDone -->|No| RequeueLeader[Requeue leader]
-    LeaderDone -->|Yes| MarkSucceeded[Mark leader Succeeded]
-    IsFollower -->|Yes| CheckLeader[Check annotated prior leader]
-    CheckLeader --> LeaderSucceeded{Leader already Succeeded?}
-    LeaderSucceeded -->|Yes| MarkAlready[Mark follower AlreadyDrained]
-    LeaderSucceeded -->|No| LeaderActive{Leader still InProgress?}
-    LeaderActive -->|Yes| WaitFollower[Follower waits via ActionWait]
-    WaitFollower --> RequeueFollower[Requeue follower]
-    LeaderActive -->|No| BrokenState[Surface broken drain-state transition]
-```
+## Observability
 
-### Metrics and Logs
+The implementation should add metrics and structured logs for:
 
-Add a counter for visibility:
+- overlapping built-in drain waits, labeled by node and low-cardinality scope (`full` or `partial`);
+- cold-start recovery failures for selected events that could not be re-enqueued;
+- broken drain-state conditions such as missing owners, invalid owners, follower/owner scope mismatch, unclaimed owner candidates, and impossible ownership results.
 
-```go
-var OverlappingDrainWaits = promauto.NewCounterVec(
-    prometheus.CounterOpts{
-        Name: "nvsentinel_node_drainer_overlapping_drain_waits_total",
-        Help: "Total number of built-in drain events that waited for an overlapping active drain.",
-    },
-    []string{"node", "scope"},
-)
-```
+Do not put raw entity values such as GPU UUIDs in metric labels. Include entity type/value and event IDs in structured logs instead.
 
-The `scope` label should be low-cardinality:
-
-- `full`
-- `partial`
-
-Do not include raw entity values such as GPU UUIDs in metric labels. Include entity type/value in structured logs instead.
-
-## Rationale
-
-- **Preserves existing semantics:** Completed-drain coverage already defines which scopes can satisfy later events. Reusing the same coverage rules for active drains keeps behavior predictable.
-- **Reduces redundant work:** Follower events do not repeat pod scans, eviction attempts, node-event updates, timeout checks, and queue retries for the same drain scope.
-- **Keeps recovery path simple:** Waiting is implemented with the existing `ActionWait` and workqueue retry mechanics. No new persistent lock or leader-election mechanism is required.
-- **Avoids under-draining:** A partial active drain does not block a later full drain, so broader remediation actions are not delayed by narrower ones.
+Broken states are operational signals. They should be visible and bounded rather than hidden behind endless delayed overlap waits.
 
 ## Consequences
 
 ### Positive
 
-- Faster convergence for bursts of overlapping events because one leader event performs the drain and followers wait.
-- Fewer duplicate Kubernetes eviction calls and pod-listing operations.
-- Less node-event/log/metric noise during repeated health-event bursts.
-- Clearer event status: redundant events become `AlreadyDrained` after the leader succeeds instead of each attempting to complete independently.
+- Reduces duplicate built-in drain evaluation, pod scans, eviction attempts, node events, and retry cycles for bursts of overlapping events.
+- Preserves existing completed-drain behavior and reuses the same coverage semantics.
+- Keeps partial-drain isolation: a partial drain for one entity does not block a different entity or a later full-node drain.
+- Makes active overlap state explicit and observable through owner/follower metadata.
 
 ### Negative
 
-- Follower events remain `InProgress` until the leader completes or stops being considered active.
-- A broken `InProgress` transition can delay followers until node-drainer surfaces and fixes the underlying operational error.
-- The evaluator becomes slightly more complex because it distinguishes completed, active, and irrelevant prior drains.
+- Adds ownership metadata that must be preserved by status updates.
+- Adds a pre-drain ownership-resolution phase before built-in drain evaluation.
+- Followers remain `InProgress` until the owner succeeds, fails, or becomes observably broken.
+- The initial design assumes the current single-worker/single-replica node-drainer deployment for scope-level uniqueness.
 
 ### Mitigations
 
-- Emit the overlapping-drain wait metric and structured logs so operators can see when coalescing is happening.
-- Emit logs and metrics when cold-start recovery cannot re-enqueue an `InProgress` event.
-- Keep the scope coverage rules identical to the completed-drain rules to reduce surprising behavior.
+- Keep the ownership logic inside the built-in path; custom drain remains CR-driven.
+- Preserve metadata with granular updates or model support before enabling coalescing.
+- Emit metrics/logs for cold-start recovery failures and broken overlap state.
+- Add a scope-level guard before any future multi-worker or multi-replica node-drainer deployment.
 
-## Notes
+## Acceptance Tests
 
-- This ADR intentionally excludes the custom drain path. Custom drain already detects active CRs for a node and waits instead of creating duplicate drain requests.
-- The behavior should apply only after the node is `AlreadyQuarantined`, matching the existing completed-drain lookup path.
-- `AlreadyDrained` remains a terminal status and should continue to be skipped by preprocessing/evaluation.
-- This design does not change how events enter the workqueue or how many workers node-drainer runs.
+Implementation should include focused coverage for:
+
+- custom drain enabled: no built-in owner/follower metadata is written;
+- completed-priority behavior when both completed and active covered drains exist;
+- empty/`NotStarted` cold-start events are initialized before ownership decisions;
+- current owner continues to drain and does not wait on itself;
+- current follower waits, becomes `AlreadyDrained`, clears metadata, or reports broken state based on owner status;
+- follower scope validation rejects mismatched owners;
+- deterministic owner election includes the current event and prevents mutual waits;
+- owner claim loss causes re-fetch/re-evaluation without drain work;
+- follower marking is idempotent for the same `waitingForEventID`;
+- terminal status updates preserve ownership metadata unless deliberately cleared;
+- `waitingForEventID` uses canonical `HealthEvent.Id`;
+- overlap waits use delayed requeue, while error waits remain rate-limited.
 
 ## References
 
