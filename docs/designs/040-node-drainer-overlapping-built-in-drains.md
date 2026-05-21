@@ -252,6 +252,24 @@ Broken states are operational signals. They should be visible and bounded rather
 - Emit metrics/logs for cold-start recovery failures and broken overlap state.
 - Add a scope-level guard before any future multi-worker or multi-replica node-drainer deployment.
 
+## Alternatives Considered
+
+### Persist a separate drain-scope lease
+
+Instead of storing `drainRole` and `waitingForEventID` on health events, node-drainer could persist one lease record per `(node, drainScope)` and have followers wait on the lease owner. The lease would live in the health-event datastore, likely in a dedicated collection/table keyed by `(nodeName, scopeType, scopeValue)`, and would store the owning `HealthEvent.Id`, lease status, and timestamps. This centralizes ownership by scope, but adds a new persistent object and lifecycle to manage. The chosen design keeps ownership on the health events that already drive drain processing.
+
+### Use Kubernetes Lease objects
+
+Node-drainer could also represent drain ownership with Kubernetes `Lease` objects keyed by node and drain scope. `Lease` is a valid general coordination primitive, but using it here would move drain ownership into the Kubernetes API while drain status remains in the health-event datastore. That adds another state plane, RBAC and object lifecycle concerns, and cleanup requirements for every drain scope. Keeping ownership in the health-event datastore avoids that split and keeps ownership visible with the events that fault-quarantine, node-drainer, and remediation already use.
+
+### Store ownership on node annotations
+
+Node-drainer could store active drain ownership directly on the Kubernetes `Node`, alongside the existing quarantine annotation. This keeps ownership close to the node being drained, but it makes a highly mutable coordination structure part of the Node object, increases annotation size and update contention, and still leaves health-event status as the place where remediation observes drain progress. The chosen design keeps owner/follower state on the health events whose statuses already represent drain progress.
+
+### Move built-in drains to CRs
+
+Another option is to move the existing in-tree built-in drain modes behind CRs, similar to custom drain. Each health event would create or follow a drain request object, and overlap handling would be expressed through CR ownership/status. This would make built-in and custom drain orchestration more uniform, but it has concrete costs: `Immediate`, `DeleteAfterTimeout`, and `AllowCompletion` would need CR status semantics that exactly preserve today's MongoDB/PostgreSQL health-event status transitions; drain progress would now be represented in both the CR status and the health-event status, creating two places that must stay synchronized; node-drainer would need to reconcile CR lifecycle, cleanup, retries, and cold-start recovery in addition to health-event recovery; existing metrics and labels would need to remain compatible; and every deployment would need the CRD/controller path even when no scheduler-specific custom drain is required. This ADR keeps the built-in execution model and only adds coalescing around it.
+
 ## References
 
 - [ADR-004: Workload Eviction Strategies](./004-workload-eviction-strategies.md) — built-in node-drainer behavior and namespace-based drain modes.
