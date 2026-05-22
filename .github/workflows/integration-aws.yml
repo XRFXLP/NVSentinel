@@ -30,7 +30,7 @@ permissions:
 jobs:
   integration-test-aws:
     if: github.repository == 'nvidia/nvsentinel'
-    runs-on: linux-amd64-cpu8
+    runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
       CSP: "aws"
