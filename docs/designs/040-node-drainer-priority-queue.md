@@ -27,16 +27,22 @@ The priority is node-level: events for nodes not yet marked `draining` are more 
 
 Node-drainer already receives one queue item per event. The priority model changes the order in which ready queue items are processed; it does not change the event lifecycle.
 
-The queue tracks a small in-memory set of nodes that node-drainer has successfully marked `draining`.
+The queue tracks two small in-memory sets:
+
+- nodes that node-drainer has successfully marked `draining`;
+- nodes that already have a high-priority representative queued.
 
 ```text
-if node is not in draining set:
+if node is not in draining set
+   and node does not already have a high-priority representative:
   priority = high
 else:
   priority = low
 ```
 
 The node is added to the in-memory draining set only after node-drainer successfully updates the `dgxc.nvidia.com/nvsentinel-state=draining` label. The set is cleared when node-drainer handles unquarantine/removal of the draining label.
+
+The high-priority representative set prevents a grouped flood from placing thousands of high-priority events for the same not-yet-draining node ahead of later nodes. The first queued event for a node gets the high-priority lane; additional events for that node are lower priority until the representative is processed or the node reaches `draining`.
 
 This keeps the high-priority lane focused on work that can still improve the `Quarantined -> draining` SLO. Once a node is already draining, later duplicate events, completion checks, and retries for that node are less urgent.
 
@@ -46,7 +52,9 @@ The drain evaluator remains the source of truth for what to do with an event. Pr
 
 ```text
 enqueue(event):
-  if event.node is not marked draining by node-drainer:
+  if event.node is not marked draining
+     and no high-priority representative exists for event.node:
+    record event.node as represented
     add to high-priority ready queue
   else:
     add to low-priority ready queue
@@ -57,6 +65,7 @@ process(event):
   if action marks node draining:
     update node label
     record node in in-memory draining set
+    clear high-priority representative for node
 
   if event must be retried:
     recompute priority from current node draining state
@@ -66,19 +75,21 @@ process(event):
 ```mermaid
 flowchart TD
     Event["Event queued"] --> IsDraining{"Node already draining?"}
-    IsDraining -->|No| HighPriority["High priority"]
     IsDraining -->|Yes| LowPriority["Low priority"]
+    IsDraining -->|No| HasRepresentative{"Node already represented?"}
+    HasRepresentative -->|No| HighPriority["High priority"]
+    HasRepresentative -->|Yes| LowPriority
     HighPriority --> Process["Process event"]
     LowPriority --> Process
     Process --> MarkDraining{"Marks node draining?"}
-    MarkDraining -->|Yes| Record["Record node in draining set"]
+    MarkDraining -->|Yes| Record["Record draining and clear representative"]
     MarkDraining -->|No| Retry{"Needs retry?"}
     Record --> Retry
     Retry -->|Yes| Requeue["Recompute priority and requeue"]
     Retry -->|No| Done["Done"]
 ```
 
-Priority is intentionally node-state based, not "new event vs retry." In grouped floods, every duplicate event is initially new; prioritizing all new events equally does not help. The useful distinction is whether the event can still help move a node into `draining`.
+Priority is intentionally node-state and representation based, not "new event vs retry." In grouped floods, every duplicate event is initially new; prioritizing all new events equally does not help. The useful distinction is whether the event can still help move a node into `draining`, and whether that node already has work waiting in the high-priority lane.
 
 ## Evaluated Options
 
