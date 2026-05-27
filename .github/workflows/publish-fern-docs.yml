@@ -151,6 +151,10 @@ jobs:
           echo "--- docs.yml versions after prune ---"
           yq '.products[0].versions[].display-name' fern/docs.yml
 
+      - name: Update install docs Helm version
+        if: steps.resolve.outputs.is_release == 'true'
+        run: python3 scripts/update-docs-helm-version.py "${{ steps.resolve.outputs.tag }}"
+
       - name: Checkout frozen version content
         run: |
           set -eo pipefail
@@ -223,3 +227,6 @@ jobs:
           add-paths: |
             fern/versions/v*.yml
             fern/docs.yml
+            README.md
+            docs/OVERVIEW.md
+            distros/kubernetes/README.md
