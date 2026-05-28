@@ -67,6 +67,8 @@ FROM nvcr.io/nvidia/pytorch:${PYTORCH_VERSION} AS runtime
 
 ARG NCCL_TESTS_VERSION
 
+RUN rm -f /usr/local/bin/uv /usr/local/bin/uvx
+
 # Build nccl-tests from source
 # Uses NCCL bundled with PyTorch image for version compatibility
 # NVCC_GENCODE targets modern data center GPUs:

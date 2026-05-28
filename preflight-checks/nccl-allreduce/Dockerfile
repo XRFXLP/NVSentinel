@@ -67,6 +67,8 @@ FROM nvcr.io/nvidia/pytorch:${PYTORCH_VERSION} AS runtime
 
 ARG VERSION
 
+RUN rm -f /usr/local/bin/uv /usr/local/bin/uvx
+
 # Remove the NGC image's bundled EFA/OFI-NCCL stack and stale RDMA libs.
 # On AWS, the host's /opt/amazon is mounted at runtime and provides the
 # EFA libs (libfabric, ofi-nccl plugin) that match the host's kernel
