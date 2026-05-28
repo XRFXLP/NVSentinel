@@ -73,7 +73,10 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 		return false
 	}
 
-	defer m.queue.Done(nodeEvent)
+	defer func() {
+		m.priorityState.releaseRepresentative(nodeEvent)
+		m.queue.Done(nodeEvent)
+	}()
 
 	if nodeEvent.Database == nil || nodeEvent.HealthEventStore == nil {
 		slog.ErrorContext(ctx, "NodeEvent missing database or health event store, dropping",
@@ -88,6 +91,7 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 	if fetchErr != nil {
 		slog.WarnContext(ctx, "Failed to fetch event from database (will retry)",
 			"node", nodeEvent.NodeName, "eventID", nodeEvent.EventID, "error", fetchErr)
+		metrics.QueueRequeues.WithLabelValues("fetch_event_error", nodeEvent.NodeName).Inc()
 		m.queue.AddRateLimited(nodeEvent)
 		metrics.QueueDepth.Set(float64(m.queue.Len()))
 
@@ -135,6 +139,7 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 			"node", nodeEvent.NodeName,
 			"attempt", m.queue.NumRequeues(nodeEvent)+1,
 			"error", err)
+		metrics.QueueRequeues.WithLabelValues("process_event_error", nodeEvent.NodeName).Inc()
 		m.queue.AddRateLimited(nodeEvent)
 	} else {
 		if session.DrainSessionSpan != nil {

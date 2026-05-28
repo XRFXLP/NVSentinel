@@ -343,6 +343,97 @@ func TestWorkqueueDeduplication_DifferentNodes(t *testing.T) {
 	queueImpl.queue.Done(item2)
 }
 
+func TestPriorityQueue_GroupedFloodPrioritizesUnrepresentedNodes(t *testing.T) {
+	mgr := NewEventQueueManager()
+	defer mgr.Shutdown()
+
+	ctx := context.Background()
+	mockDB := &mockDataStore{}
+	mockHealthEventStore := &MockHealthEventStore{}
+
+	node1Event1 := datastore.Event{
+		"_id":      "507f1f77bcf86cd799439011",
+		"nodeName": "node-1",
+	}
+	node1Event2 := datastore.Event{
+		"_id":      "507f1f77bcf86cd799439012",
+		"nodeName": "node-1",
+	}
+	node2Event1 := datastore.Event{
+		"_id":      "507f1f77bcf86cd799439013",
+		"nodeName": "node-2",
+	}
+
+	require.NoError(t, mgr.EnqueueEventGeneric(ctx, "node-1", node1Event1, mockDB, mockHealthEventStore, node1Event1["_id"]))
+	require.NoError(t, mgr.EnqueueEventGeneric(ctx, "node-1", node1Event2, mockDB, mockHealthEventStore, node1Event2["_id"]))
+	require.NoError(t, mgr.EnqueueEventGeneric(ctx, "node-2", node2Event1, mockDB, mockHealthEventStore, node2Event1["_id"]))
+
+	queueImpl := mgr.(*eventQueueManager)
+
+	item1, shutdown := queueImpl.queue.Get()
+	require.False(t, shutdown)
+	assert.Equal(t, "507f1f77bcf86cd799439011", item1.EventID)
+
+	item2, shutdown := queueImpl.queue.Get()
+	require.False(t, shutdown)
+	assert.Equal(t, "507f1f77bcf86cd799439013", item2.EventID, "unrepresented node gets the high-priority lane")
+
+	item3, shutdown := queueImpl.queue.Get()
+	require.False(t, shutdown)
+	assert.Equal(t, "507f1f77bcf86cd799439012", item3.EventID, "duplicate work for represented node remains low priority")
+
+	queueImpl.queue.Done(item1)
+	queueImpl.queue.Done(item2)
+	queueImpl.queue.Done(item3)
+}
+
+func TestPriorityQueue_DrainingNodesStayLowPriorityUntilCleared(t *testing.T) {
+	mgr := NewEventQueueManager()
+	defer mgr.Shutdown()
+
+	ctx := context.Background()
+	mockDB := &mockDataStore{}
+	mockHealthEventStore := &MockHealthEventStore{}
+
+	queueImpl := mgr.(*eventQueueManager)
+	queueImpl.MarkNodeDraining("node-1")
+
+	node1DrainingEvent := datastore.Event{
+		"_id":      "507f1f77bcf86cd799439021",
+		"nodeName": "node-1",
+	}
+	node2Event := datastore.Event{
+		"_id":      "507f1f77bcf86cd799439022",
+		"nodeName": "node-2",
+	}
+	node1AfterClearEvent := datastore.Event{
+		"_id":      "507f1f77bcf86cd799439023",
+		"nodeName": "node-1",
+	}
+
+	require.NoError(t, mgr.EnqueueEventGeneric(ctx, "node-1", node1DrainingEvent, mockDB, mockHealthEventStore, node1DrainingEvent["_id"]))
+	require.NoError(t, mgr.EnqueueEventGeneric(ctx, "node-2", node2Event, mockDB, mockHealthEventStore, node2Event["_id"]))
+
+	item1, shutdown := queueImpl.queue.Get()
+	require.False(t, shutdown)
+	assert.Equal(t, "507f1f77bcf86cd799439022", item1.EventID, "not-yet-draining node should run before draining duplicate work")
+
+	queueImpl.ClearNodeDraining("node-1")
+	require.NoError(t, mgr.EnqueueEventGeneric(ctx, "node-1", node1AfterClearEvent, mockDB, mockHealthEventStore, node1AfterClearEvent["_id"]))
+
+	item2, shutdown := queueImpl.queue.Get()
+	require.False(t, shutdown)
+	assert.Equal(t, "507f1f77bcf86cd799439023", item2.EventID, "cleared node can receive high priority again")
+
+	item3, shutdown := queueImpl.queue.Get()
+	require.False(t, shutdown)
+	assert.Equal(t, "507f1f77bcf86cd799439021", item3.EventID)
+
+	queueImpl.queue.Done(item1)
+	queueImpl.queue.Done(item2)
+	queueImpl.queue.Done(item3)
+}
+
 // Mock DataStore for testing
 type mockDataStore struct{}
 

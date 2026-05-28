@@ -29,11 +29,23 @@ import (
 )
 
 func NewEventQueueManager() EventQueueManager {
+	priorityState := newNodePriorityState()
+	baseQueue := workqueue.NewTypedWithConfig(workqueue.TypedQueueConfig[NodeEvent]{
+		Queue: newNodeEventPriorityQueue(priorityState),
+	})
+	delayingQueue := workqueue.NewTypedDelayingQueueWithConfig(workqueue.TypedDelayingQueueConfig[NodeEvent]{
+		Queue: baseQueue,
+	})
+
 	mgr := &eventQueueManager{
-		queue: workqueue.NewTypedRateLimitingQueue(
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.NewTypedItemExponentialFailureRateLimiter[NodeEvent](10*time.Second, 2*time.Minute),
+			workqueue.TypedRateLimitingQueueConfig[NodeEvent]{
+				DelayingQueue: delayingQueue,
+			},
 		),
-		shutdown: make(chan struct{}),
+		shutdown:      make(chan struct{}),
+		priorityState: priorityState,
 	}
 
 	return mgr
@@ -43,6 +55,14 @@ func NewEventQueueManager() EventQueueManager {
 
 func (m *eventQueueManager) SetDataStoreEventProcessor(processor DataStoreEventProcessor) {
 	m.dataStoreEventProcessor = processor
+}
+
+func (m *eventQueueManager) MarkNodeDraining(nodeName string) {
+	m.priorityState.markNodeDraining(nodeName)
+}
+
+func (m *eventQueueManager) ClearNodeDraining(nodeName string) {
+	m.priorityState.clearNodeDraining(nodeName)
 }
 
 // EnqueueEventGeneric enqueues an event using the new database-agnostic interface.

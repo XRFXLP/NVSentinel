@@ -56,6 +56,8 @@ type EventQueueManager interface {
 
 	Start(ctx context.Context)
 	Shutdown()
+	MarkNodeDraining(nodeName string)
+	ClearNodeDraining(nodeName string)
 
 	// New database-agnostic method
 	SetDataStoreEventProcessor(processor DataStoreEventProcessor)
@@ -68,4 +70,5 @@ type eventQueueManager struct {
 	dataStoreEventProcessor DataStoreEventProcessor // New database-agnostic processor
 	shutdown                chan struct{}
 	sessions                sync.Map // EventID -> *DrainSession
+	priorityState           *nodePriorityState
 }
