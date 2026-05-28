@@ -1,4 +1,4 @@
-# ADR-040: Node Drainer — Priority Queue
+# ADR-041: Node Drainer — Priority Queue
 
 ## Context
 
