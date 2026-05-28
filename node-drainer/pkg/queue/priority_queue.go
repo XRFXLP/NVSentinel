@@ -41,7 +41,7 @@ type nodePriorityState struct {
 
 	drainingNodes          map[string]struct{}
 	highPriorityNodes      map[string]struct{}
-	highPriorityQueueItems map[NodeEvent]struct{}
+	highPriorityQueueItems map[string]struct{}
 }
 
 // nodeEventPriorityQueue is the ready queue used under Kubernetes' rate
@@ -58,7 +58,7 @@ func newNodePriorityState() *nodePriorityState {
 	return &nodePriorityState{
 		drainingNodes:          make(map[string]struct{}),
 		highPriorityNodes:      make(map[string]struct{}),
-		highPriorityQueueItems: make(map[NodeEvent]struct{}),
+		highPriorityQueueItems: make(map[string]struct{}),
 	}
 }
 
@@ -117,7 +117,7 @@ func (s *nodePriorityState) classifyForEnqueue(item NodeEvent) (queuePriority, s
 	}
 
 	s.highPriorityNodes[item.NodeName] = struct{}{}
-	s.highPriorityQueueItems[item] = struct{}{}
+	s.highPriorityQueueItems[representativeKey(item)] = struct{}{}
 
 	return queuePriorityHigh, priorityReasonNodeNotYetDraining
 }
@@ -128,11 +128,12 @@ func (s *nodePriorityState) releaseRepresentative(item NodeEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.highPriorityQueueItems[item]; !ok {
+	key := representativeKey(item)
+	if _, ok := s.highPriorityQueueItems[key]; !ok {
 		return
 	}
 
-	delete(s.highPriorityQueueItems, item)
+	delete(s.highPriorityQueueItems, key)
 	delete(s.highPriorityNodes, item.NodeName)
 }
 
@@ -161,4 +162,8 @@ func popNodeEvent(items *[]NodeEvent) NodeEvent {
 	*items = (*items)[1:]
 
 	return item
+}
+
+func representativeKey(item NodeEvent) string {
+	return item.NodeName + ":" + item.EventID
 }

@@ -742,16 +742,16 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = string(status) // expect StatusSucceeded or StatusFailed
 
-	nodeDrainLabelValue := statemanager.DrainSucceededLabelValue
+	terminalDrainLabelValue := statemanager.DrainSucceededLabelValue
 	if status == model.StatusFailed {
-		nodeDrainLabelValue = statemanager.DrainFailedLabelValue
+		terminalDrainLabelValue = statemanager.DrainFailedLabelValue
 	}
 
 	nodeLabelModified, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
-		nodeName, nodeDrainLabelValue, false)
+		nodeName, terminalDrainLabelValue, false)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to update node label",
-			"label", nodeDrainLabelValue,
+			"label", terminalDrainLabelValue,
 			"node", nodeName,
 			"error", err)
 		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
@@ -762,7 +762,7 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 		)
 
 		if !nodeLabelModified {
-			return fmt.Errorf("failed to update node %s label to %s: %w", nodeName, nodeDrainLabelValue, err)
+			return fmt.Errorf("failed to update node %s label to %s: %w", nodeName, terminalDrainLabelValue, err)
 		}
 	} else {
 		r.queueManager.ClearNodeDraining(nodeName)
