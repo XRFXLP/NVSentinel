@@ -2,7 +2,7 @@ module github.com/nvidia/nvsentinel/demos/local-custom-remediation-demo/memory-p
 
 go 1.26.0
 
-toolchain go1.26.2
+toolchain go1.26.3
 
 require (
 	github.com/nvidia/nvsentinel/data-models v0.0.0

@@ -2,7 +2,7 @@ module github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor
 
 go 1.26.0
 
-toolchain go1.26.2
+toolchain go1.26.3
 
 require (
 	github.com/coreos/go-systemd/v22 v22.7.0
