@@ -69,6 +69,28 @@ func validate(cfg *Config) error {
 		if policy.HealthEvent.Message == "" {
 			return fmt.Errorf("policy %q: healthEvent.message is required", policy.Name)
 		}
+
+		if err := validateBehaviourOverrides(policy.Name, "quarantineOverrides",
+			policy.HealthEvent.QuarantineOverrides); err != nil {
+			return err
+		}
+
+		if err := validateBehaviourOverrides(policy.Name, "drainOverrides",
+			policy.HealthEvent.DrainOverrides); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateBehaviourOverrides(policyName, fieldName string, overrides *BehaviourOverridesSpec) error {
+	if overrides == nil {
+		return nil
+	}
+
+	if overrides.Force && overrides.Skip {
+		return fmt.Errorf("policy %q: healthEvent.%s cannot set both force and skip", policyName, fieldName)
 	}
 
 	return nil
