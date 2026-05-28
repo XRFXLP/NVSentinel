@@ -79,8 +79,17 @@ func MapActionStringToProto(s string) pb.RecommendedAction {
 	// XID_154_EVAL is considered equivalent to RESTART_APP.
 	case "RESTART_APP", "IGNORE", "XID_154_EVAL":
 		return pb.RecommendedAction_NONE
-	case "WORKFLOW_XID_48", "RESET_GPU", "RESET_FABRIC":
+	// RECOVER_FEATURE_RESET_GPU: power-smoothing feature recovery (XID 163);
+	// trigger guidance is "reload the driver or reset the GPU" — same proto
+	// target as the RESET_GPU bucket.
+	case "WORKFLOW_XID_48", "RESET_GPU", "RECOVER_FEATURE_RESET_GPU":
 		return pb.RecommendedAction_COMPONENT_RESET
+	// WORKFLOW_XID_168: WPR/ECC config issue (XID 168). Catalog guidance is
+	// "either ECC should be enabled (to enable row-remapping) or boot
+	// re-attempted with shifted WPR" — reboot the VM so init can re-attempt
+	// with a shifted Write-Protect-Region.
+	case "WORKFLOW_XID_168", "RESET_FABRIC":
+		return pb.RecommendedAction_RESTART_VM
 	default:
 		slog.Warn("Unknown action string, defaulting to CONTACT_SUPPORT", "action", s)
 		return pb.RecommendedAction_CONTACT_SUPPORT
