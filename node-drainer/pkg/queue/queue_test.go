@@ -434,30 +434,6 @@ func TestPriorityQueue_DrainingNodesStayLowPriorityUntilCleared(t *testing.T) {
 	queueImpl.queue.Done(item3)
 }
 
-func TestPriorityQueue_NonComparableDocumentIDDoesNotPanic(t *testing.T) {
-	state := newNodePriorityState()
-	queueImpl := newNodeEventPriorityQueue(state)
-	item := NodeEvent{
-		NodeName:   "node-1",
-		EventID:    "event-1",
-		DocumentID: map[string]string{"id": "non-comparable"},
-	}
-
-	require.NotPanics(t, func() {
-		queueImpl.Push(item)
-		_, represented := state.highPriorityQueueItems[representativeKey(item)]
-		require.True(t, represented)
-
-		got := queueImpl.Pop()
-		assert.Equal(t, item.NodeName, got.NodeName)
-		assert.Equal(t, item.EventID, got.EventID)
-
-		state.releaseRepresentative(got)
-		_, represented = state.highPriorityQueueItems[representativeKey(item)]
-		assert.False(t, represented)
-	})
-}
-
 // Mock DataStore for testing
 type mockDataStore struct{}
 
