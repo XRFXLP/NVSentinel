@@ -2,7 +2,7 @@ module github.com/nvidia/nvsentinel/api
 
 go 1.26.0
 
-toolchain go1.26.2
+toolchain go1.26.3
 
 require (
 	google.golang.org/grpc v1.81.1
