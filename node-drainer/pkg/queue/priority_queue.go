@@ -24,6 +24,7 @@ import (
 )
 
 type queuePriority string
+type nodePriorityStateKind int
 
 const (
 	queuePriorityHigh queuePriority = "high"
@@ -34,14 +35,23 @@ const (
 	priorityReasonNodeHighPriorityQueued = "node_high_priority_queued"
 )
 
+const (
+	nodePriorityStateNone nodePriorityStateKind = iota
+	nodePriorityStateDraining
+	nodePriorityStateRepresented
+)
+
 // nodePriorityState tracks the node-level state needed to classify new ready
 // queue items without changing the event lifecycle itself.
 type nodePriorityState struct {
 	mu sync.Mutex
 
-	drainingNodes          map[string]struct{}
-	highPriorityNodes      map[string]struct{}
-	highPriorityQueueItems map[string]struct{}
+	nodes map[string]nodePriorityStateEntry
+}
+
+type nodePriorityStateEntry struct {
+	kind              nodePriorityStateKind
+	representativeKey string // only meaningful when kind == nodePriorityStateRepresented
 }
 
 // nodeEventPriorityQueue is the ready queue used under Kubernetes' rate
@@ -56,9 +66,7 @@ var _ workqueue.Queue[NodeEvent] = (*nodeEventPriorityQueue)(nil)
 
 func newNodePriorityState() *nodePriorityState {
 	return &nodePriorityState{
-		drainingNodes:          make(map[string]struct{}),
-		highPriorityNodes:      make(map[string]struct{}),
-		highPriorityQueueItems: make(map[string]struct{}),
+		nodes: make(map[string]nodePriorityStateEntry),
 	}
 }
 
@@ -108,16 +116,19 @@ func (s *nodePriorityState) classifyForEnqueue(item NodeEvent) (queuePriority, s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.drainingNodes[item.NodeName]; ok {
+	entry := s.nodes[item.NodeName]
+	if entry.kind == nodePriorityStateDraining {
 		return queuePriorityLow, priorityReasonNodeAlreadyDraining
 	}
 
-	if _, ok := s.highPriorityNodes[item.NodeName]; ok {
+	if entry.kind == nodePriorityStateRepresented {
 		return queuePriorityLow, priorityReasonNodeHighPriorityQueued
 	}
 
-	s.highPriorityNodes[item.NodeName] = struct{}{}
-	s.highPriorityQueueItems[representativeKey(item)] = struct{}{}
+	s.nodes[item.NodeName] = nodePriorityStateEntry{
+		kind:              nodePriorityStateRepresented,
+		representativeKey: representativeKey(item),
+	}
 
 	return queuePriorityHigh, priorityReasonNodeNotYetDraining
 }
@@ -128,13 +139,12 @@ func (s *nodePriorityState) releaseRepresentative(item NodeEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := representativeKey(item)
-	if _, ok := s.highPriorityQueueItems[key]; !ok {
+	entry := s.nodes[item.NodeName]
+	if entry.kind != nodePriorityStateRepresented || entry.representativeKey != representativeKey(item) {
 		return
 	}
 
-	delete(s.highPriorityQueueItems, key)
-	delete(s.highPriorityNodes, item.NodeName)
+	delete(s.nodes, item.NodeName)
 }
 
 // markNodeDraining moves future work for this node to low priority until the
@@ -143,8 +153,7 @@ func (s *nodePriorityState) markNodeDraining(nodeName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.drainingNodes[nodeName] = struct{}{}
-	delete(s.highPriorityNodes, nodeName)
+	s.nodes[nodeName] = nodePriorityStateEntry{kind: nodePriorityStateDraining}
 }
 
 // clearNodeDraining lets the node receive high-priority work again after it
@@ -153,7 +162,9 @@ func (s *nodePriorityState) clearNodeDraining(nodeName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.drainingNodes, nodeName)
+	if s.nodes[nodeName].kind == nodePriorityStateDraining {
+		delete(s.nodes, nodeName)
+	}
 }
 
 func popNodeEvent(items *[]NodeEvent) NodeEvent {
