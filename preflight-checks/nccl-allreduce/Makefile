@@ -81,6 +81,7 @@ setup:
 docker-build: setup-buildx
 	@echo "Building Docker image for $(MODULE_NAME)..."
 	cd $(REPO_ROOT) && docker buildx build \
+		--platform $(PLATFORMS) \
 		-f $(MODULE_PATH)/Dockerfile \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(IMAGE_NAME):$(SAFE_REF_NAME) \
 		--build-arg PYTORCH_VERSION=$(PYTORCH_VERSION) \
@@ -91,6 +92,7 @@ docker-build: setup-buildx
 docker-publish: setup-buildx
 	@echo "Publishing Docker image for $(MODULE_NAME)..."
 	cd $(REPO_ROOT) && docker buildx build \
+		--platform $(PLATFORMS) \
 		-f $(MODULE_PATH)/Dockerfile \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(IMAGE_NAME):$(SAFE_REF_NAME) \
 		--build-arg PYTORCH_VERSION=$(PYTORCH_VERSION) \
