@@ -158,3 +158,20 @@ ruleSets:
             !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
     cordon:
       shouldCordon: true
+
+  - enabled: true
+    version: "1"
+    name: "Preflight check fatal error ruleset"
+    # Preflight checks (dcgm-diag, nccl-loopback, nccl-allreduce) emit HealthEvents
+    # under agent names prefixed with "preflight-". Non-hardware failures such as
+    # gang-coordination timeouts and NCCL config errors are reported with
+    # isFatal=false, so gating on isFatal avoids cordoning on those.
+    match:
+      all:
+        - kind: "HealthEvent"
+          expression: "event.agent.startsWith('preflight-') && event.isFatal == true"
+        - kind: "Node"
+          expression: |
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+    cordon:
+      shouldCordon: true
