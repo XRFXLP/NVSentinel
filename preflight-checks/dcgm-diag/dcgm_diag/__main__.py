@@ -19,6 +19,7 @@ from importlib.metadata import version, PackageNotFoundError
 
 from .config import Config
 from .diag import DCGMDiagnostic
+from .errors import resolve_recommended_action
 from .health import HealthReporter
 from .logger import setup_logging
 from .protos import health_event_pb2 as pb
@@ -106,13 +107,20 @@ def _run_diagnostic(cfg: Config, reporter: HealthReporter, diag: DCGMDiagnostic)
     )
 
     # Send one event per test result with specific test name
-    any_fatal = False
+    has_fatal_failure = False
     for r in results:
         if r.status not in ("pass", "warn", "fail"):
             continue
 
         is_pass = r.status == "pass"
-        is_fatal = r.status == "fail"
+        error_code = r.error_code if not is_pass else 0
+        recommended_action = resolve_recommended_action(is_pass, error_code)
+
+        # A failure is fatal only when it has an actionable remediation; failures with
+        # recommended action NONE (e.g. DCGM_FR_XID_ERROR) are reported but do not block.
+        is_fatal = r.status == "fail" and recommended_action != pb.RecommendedAction.NONE
+        has_fatal_failure = has_fatal_failure or is_fatal
+
         message = "Test passed" if is_pass else r.error_message
 
         log.log(
@@ -121,17 +129,14 @@ def _run_diagnostic(cfg: Config, reporter: HealthReporter, diag: DCGMDiagnostic)
             extra={"gpu": r.gpu_uuid, "test": r.test_name, "error_code": r.error_code, "detail": message},
         )
         try:
-            # send_event may downgrade fatality when the error is not actionable
-            # (recommended action NONE), so trust its return value for the exit code.
-            event_fatal = reporter.send_event(
+            reporter.send_event(
                 gpu_uuid=r.gpu_uuid,
                 is_healthy=is_pass,
                 is_fatal=is_fatal,
                 message=message,
-                error_code=r.error_code if not is_pass else 0,
+                error_code=error_code,
                 test_name=r.test_name,
             )
-            any_fatal = any_fatal or event_fatal
         except Exception as send_err:  # noqa: BLE001
             log.error(
                 "Failed to send health event",
@@ -143,10 +148,8 @@ def _run_diagnostic(cfg: Config, reporter: HealthReporter, diag: DCGMDiagnostic)
                     "is_fatal": is_fatal,
                 },
             )
-            # Could not confirm the event; conservatively block on a failed test.
-            any_fatal = any_fatal or is_fatal
 
-    if any_fatal:
+    if has_fatal_failure:
         log.error("DCGM diagnostic check failed")
         return 1
 

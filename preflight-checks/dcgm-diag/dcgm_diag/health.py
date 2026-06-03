@@ -18,7 +18,7 @@ from time import sleep
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 
-from .errors import get_error_name, get_recommended_action
+from .errors import get_error_name, resolve_recommended_action
 from .protos import health_event_pb2 as pb
 from .protos import health_event_pb2_grpc as pb_grpc
 
@@ -53,26 +53,14 @@ class HealthReporter:
         message: str,
         error_code: int = 0,
         test_name: str = "",
-    ) -> bool:
+    ) -> None:
         """Send a single health event for one GPU.
 
-        Returns the effective fatality of the emitted event. The requested ``is_fatal``
-        may be downgraded to ``False`` when the error has no actionable remediation
-        (recommended action ``NONE``), so callers can rely on the return value to decide
-        whether the overall check should be treated as a failure.
+        ``is_fatal`` is emitted as given; the caller is responsible for deciding
+        fatality. The recommended action shown in the event is resolved from the
+        result so it stays consistent with that decision.
         """
-        if is_healthy:
-            recommended_action = pb.RecommendedAction.NONE
-        elif error_code:
-            recommended_action = get_recommended_action(error_code)
-        else:
-            recommended_action = pb.RecommendedAction.CONTACT_SUPPORT
-
-        # A failure with no recommended remediation action is not actionable, so it must
-        # not be reported as fatal. DCGM diag surfaces XID errors via DCGM_FR_XID_ERROR,
-        # which maps to NONE; those events are informational and should not block the node.
-        if recommended_action == pb.RecommendedAction.NONE:
-            is_fatal = False
+        recommended_action = resolve_recommended_action(is_healthy, error_code)
 
         # checkName: "DcgmDiagnostic" or "DcgmDiagnosticMemory" if test_name specified
         check_name = (
@@ -100,8 +88,6 @@ class HealthReporter:
 
         if not self._send_with_retries(health_events):
             raise RuntimeError(f"Failed to send health event after {MAX_RETRIES} retries")
-
-        return is_fatal
 
     @staticmethod
     def _to_camel_case(text: str) -> str:
