@@ -97,3 +97,53 @@ class TestSendEvent:
     def test_raises_on_failure(self, mock_send: MagicMock, reporter: HealthReporter) -> None:
         with pytest.raises(RuntimeError, match="Failed to send health event"):
             reporter.send_event(gpu_uuid="GPU-0", is_healthy=False, is_fatal=True, message="Error")
+
+    @patch.object(HealthReporter, "_send_with_retries", return_value=True)
+    @patch("dcgm_diag.health.get_recommended_action", return_value=pb.RecommendedAction.NONE)
+    @patch("dcgm_diag.health.get_error_name", return_value="DCGM_FR_XID_ERROR")
+    def test_non_actionable_failure_is_not_fatal(
+        self,
+        mock_name: MagicMock,
+        mock_action: MagicMock,
+        mock_send: MagicMock,
+        reporter: HealthReporter,
+    ) -> None:
+        """A failure whose recommended action is NONE (e.g. XID errors) must not be fatal."""
+        effective_fatal = reporter.send_event(
+            gpu_uuid="GPU-0",
+            is_healthy=False,
+            is_fatal=True,
+            message="XID 13 detected",
+            error_code=1234,
+        )
+
+        assert effective_fatal is False
+        events = mock_send.call_args.args[0]
+        event = events.events[0]
+        assert event.isFatal is False
+        assert event.recommendedAction == pb.RecommendedAction.NONE
+
+    @patch.object(HealthReporter, "_send_with_retries", return_value=True)
+    @patch("dcgm_diag.health.get_recommended_action", return_value=pb.RecommendedAction.RESTART_VM)
+    @patch("dcgm_diag.health.get_error_name", return_value="DCGM_FR_NVLINK_DOWN")
+    def test_actionable_failure_stays_fatal(
+        self,
+        mock_name: MagicMock,
+        mock_action: MagicMock,
+        mock_send: MagicMock,
+        reporter: HealthReporter,
+    ) -> None:
+        """A failure with an actionable recommended action keeps its fatal flag."""
+        effective_fatal = reporter.send_event(
+            gpu_uuid="GPU-0",
+            is_healthy=False,
+            is_fatal=True,
+            message="NVLink down",
+            error_code=4321,
+        )
+
+        assert effective_fatal is True
+        events = mock_send.call_args.args[0]
+        event = events.events[0]
+        assert event.isFatal is True
+        assert event.recommendedAction == pb.RecommendedAction.RESTART_VM

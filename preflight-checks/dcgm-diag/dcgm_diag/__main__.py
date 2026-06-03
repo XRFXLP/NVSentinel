@@ -106,6 +106,7 @@ def _run_diagnostic(cfg: Config, reporter: HealthReporter, diag: DCGMDiagnostic)
     )
 
     # Send one event per test result with specific test name
+    any_fatal = False
     for r in results:
         if r.status not in ("pass", "warn", "fail"):
             continue
@@ -120,7 +121,9 @@ def _run_diagnostic(cfg: Config, reporter: HealthReporter, diag: DCGMDiagnostic)
             extra={"gpu": r.gpu_uuid, "test": r.test_name, "error_code": r.error_code, "detail": message},
         )
         try:
-            reporter.send_event(
+            # send_event may downgrade fatality when the error is not actionable
+            # (recommended action NONE), so trust its return value for the exit code.
+            event_fatal = reporter.send_event(
                 gpu_uuid=r.gpu_uuid,
                 is_healthy=is_pass,
                 is_fatal=is_fatal,
@@ -128,6 +131,7 @@ def _run_diagnostic(cfg: Config, reporter: HealthReporter, diag: DCGMDiagnostic)
                 error_code=r.error_code if not is_pass else 0,
                 test_name=r.test_name,
             )
+            any_fatal = any_fatal or event_fatal
         except Exception as send_err:  # noqa: BLE001
             log.error(
                 "Failed to send health event",
@@ -139,10 +143,15 @@ def _run_diagnostic(cfg: Config, reporter: HealthReporter, diag: DCGMDiagnostic)
                     "is_fatal": is_fatal,
                 },
             )
+            # Could not confirm the event; conservatively block on a failed test.
+            any_fatal = any_fatal or is_fatal
 
-    if failures:
+    if any_fatal:
         log.error("DCGM diagnostic check failed")
         return 1
+
+    if failures:
+        log.warning("DCGM diagnostic reported non-fatal failures (no actionable remediation)")
 
     log.info("DCGM diagnostic check passed")
     return 0
