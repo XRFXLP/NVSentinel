@@ -101,8 +101,10 @@ func (p *SidecarParser) WaitUntilReady(ctx context.Context, maxRetries int, retr
 	return fmt.Errorf("XID analyzer sidecar at %s not ready after %d attempts", host, maxRetries)
 }
 
-// Parse sends the message to sidecar service for XID parsing
-func (p *SidecarParser) Parse(message string) (*Response, error) {
+// resolveDriverVersion returns the driver version to send to the sidecar,
+// emitting a warning and metric when it is empty (which forces the sidecar to
+// fall back to the wrong NVL5 decode table for R575+ drivers).
+func (p *SidecarParser) resolveDriverVersion() string {
 	driverVersion := p.driverVersionFn()
 	if driverVersion == "" {
 		slog.Warn("Sending XID decode request with empty driver version; "+
@@ -111,7 +113,12 @@ func (p *SidecarParser) Parse(message string) (*Response, error) {
 		metrics.XidEmptyDriverVersion.WithLabelValues(p.nodeName).Inc()
 	}
 
-	reqBody := Request{XIDMessage: message, DriverVersion: driverVersion}
+	return driverVersion
+}
+
+// Parse sends the message to sidecar service for XID parsing
+func (p *SidecarParser) Parse(message string) (*Response, error) {
+	reqBody := Request{XIDMessage: message, DriverVersion: p.resolveDriverVersion()}
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
