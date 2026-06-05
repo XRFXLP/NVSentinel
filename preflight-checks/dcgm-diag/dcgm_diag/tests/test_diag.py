@@ -321,7 +321,10 @@ class TestDCGMDiagnosticRun:
             diag._run_diagnostic(level=1)
 
         assert exc_info.value.status_name == "DCGM_ST_TIMEOUT"
-        assert str(exc_info.value) == "DCGM diagnostic returned DCGM_ST_TIMEOUT after 4 attempts; diagnostic did not complete"
+        assert (
+            str(exc_info.value)
+            == "DCGM diagnostic returned DCGM_ST_TIMEOUT after 4 attempts; diagnostic did not complete"
+        )
         assert "\n" not in str(exc_info.value)
         assert mock_group.action.RunDiagnostic.call_count == 4
         mock_stop_diagnostic.assert_not_called()
