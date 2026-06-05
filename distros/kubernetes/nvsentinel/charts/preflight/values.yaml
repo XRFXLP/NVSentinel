@@ -128,8 +128,8 @@ initContainers:
       #   4 = XLong  (~1-2 hr) - extended stress
       - name: DCGM_DIAG_LEVEL
         value: "2"
-      # If DCGM returns a DCGM_ST_* status while starting/running diagnostics,
-      # wait and retry before reporting the preflight infrastructure failure.
+      # If DCGM still returns a DCGM_ST_* status after retries, emit a non-fatal
+      # unhealthy event with RecommendedAction=NONE and exit 0 so the workload proceeds.
       - name: DCGM_DIAG_STATUS_RETRY_TIMEOUT_SECONDS
         value: "300"
       - name: DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS

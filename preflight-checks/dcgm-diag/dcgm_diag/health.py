@@ -62,6 +62,8 @@ class HealthReporter:
         fatality. The recommended action shown in the event is resolved from the
         result so it stays consistent with that decision.
         """
+        # DCGM_ST_* execution/status failures do not carry a DCGM_FR_* diagnostic
+        # code, so callers may pass the non-actionable recommendation explicitly.
         if recommended_action is None:
             recommended_action = resolve_recommended_action(is_healthy, error_code)
 

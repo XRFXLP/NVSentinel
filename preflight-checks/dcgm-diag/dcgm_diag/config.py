@@ -64,9 +64,7 @@ class Config:
             raise ValueError(f"DCGM_DIAG_LEVEL must be 1-4, got {diag_level}")
 
         if status_retry_timeout_seconds < 0:
-            raise ValueError(
-                f"DCGM_DIAG_STATUS_RETRY_TIMEOUT_SECONDS must be >= 0, got {status_retry_timeout_seconds}"
-            )
+            raise ValueError(f"DCGM_DIAG_STATUS_RETRY_TIMEOUT_SECONDS must be >= 0, got {status_retry_timeout_seconds}")
 
         if status_retry_interval_seconds <= 0:
             raise ValueError(
