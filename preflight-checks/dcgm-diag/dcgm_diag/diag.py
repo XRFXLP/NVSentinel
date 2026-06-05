@@ -60,6 +60,18 @@ class DCGMDiagnostic:
         status_retry_max_attempts: int = DEFAULT_STATUS_RETRY_MAX_ATTEMPTS,
         status_retry_interval_seconds: float = DEFAULT_STATUS_RETRY_INTERVAL_SECONDS,
     ) -> None:
+        if not isinstance(status_retry_max_attempts, int) or status_retry_max_attempts < 1:
+            raise ValueError(
+                "status_retry_max_attempts must be an integer >= 1 "
+                f"(default {DEFAULT_STATUS_RETRY_MAX_ATTEMPTS}), got {status_retry_max_attempts!r}"
+            )
+
+        if not isinstance(status_retry_interval_seconds, (int, float)) or status_retry_interval_seconds <= 0:
+            raise ValueError(
+                "status_retry_interval_seconds must be a positive number "
+                f"(default {DEFAULT_STATUS_RETRY_INTERVAL_SECONDS}), got {status_retry_interval_seconds!r}"
+            )
+
         self._hostengine_addr = hostengine_addr
         self._status_retry_max_attempts = status_retry_max_attempts
         self._status_retry_interval_seconds = status_retry_interval_seconds
@@ -143,8 +155,8 @@ class DCGMDiagnostic:
 
                     raise DiagnosticStatusError(
                         final_status_name,
-                        f"DCGM diagnostic failed with {final_status_name} after "
-                        f"{self._status_retry_max_attempts} attempts: {final_err}",
+                        f"DCGM diagnostic returned {final_status_name} after "
+                        f"{self._status_retry_max_attempts} attempts; diagnostic did not complete",
                     ) from final_err
 
                 log.warning(

@@ -35,7 +35,10 @@ def test_dcgm_status_error_reports_nonfatal_and_does_not_block() -> None:
     )
     reporter = MagicMock()
     diag = MagicMock()
-    diag.run.side_effect = DiagnosticStatusError("DCGM_ST_IN_USE", "DCGM diagnostic failed with DCGM_ST_IN_USE")
+    diag.run.side_effect = DiagnosticStatusError(
+        "DCGM_ST_IN_USE",
+        "DCGM diagnostic returned DCGM_ST_IN_USE after 4 attempts; diagnostic did not complete",
+    )
 
     exit_code = _run_diagnostic(cfg, reporter, diag)
 
@@ -44,7 +47,7 @@ def test_dcgm_status_error_reports_nonfatal_and_does_not_block() -> None:
         gpu_uuid="",
         is_healthy=False,
         is_fatal=False,
-        message="DCGM diagnostic failed with DCGM_ST_IN_USE",
+        message="DCGM diagnostic returned DCGM_ST_IN_USE after 4 attempts; diagnostic did not complete",
         error_code_name="DCGM_ST_IN_USE",
         recommended_action=pb.RecommendedAction.NONE,
     )
