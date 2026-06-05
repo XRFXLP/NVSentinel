@@ -14,7 +14,11 @@
 
 import pytest
 
-from dcgm_diag.config import Config
+from dcgm_diag.config import (
+    DEFAULT_STATUS_RETRY_INTERVAL_SECONDS,
+    DEFAULT_STATUS_RETRY_TIMEOUT_SECONDS,
+    Config,
+)
 from dcgm_diag.protos import health_event_pb2 as pb
 
 
@@ -26,16 +30,22 @@ class TestConfigFromEnv:
         assert cfg.node_name == "test-node"
         assert cfg.diag_level == 2
         assert cfg.processing_strategy == pb.ProcessingStrategy.Value("EXECUTE_REMEDIATION")
+        assert cfg.status_retry_timeout_seconds == DEFAULT_STATUS_RETRY_TIMEOUT_SECONDS
+        assert cfg.status_retry_interval_seconds == DEFAULT_STATUS_RETRY_INTERVAL_SECONDS
 
     def test_all_options(self, valid_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DCGM_DIAG_LEVEL", "3")
         monkeypatch.setenv("DCGM_HOSTENGINE_ADDR", "localhost:5555")
         monkeypatch.setenv("PROCESSING_STRATEGY", "STORE_ONLY")
+        monkeypatch.setenv("DCGM_DIAG_STATUS_RETRY_TIMEOUT_SECONDS", "120")
+        monkeypatch.setenv("DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS", "5")
 
         cfg = Config.from_env()
         assert cfg.diag_level == 3
         assert cfg.hostengine_addr == "localhost:5555"
         assert cfg.processing_strategy == pb.ProcessingStrategy.Value("STORE_ONLY")
+        assert cfg.status_retry_timeout_seconds == 120
+        assert cfg.status_retry_interval_seconds == 5
 
     def test_missing_hostengine_addr(self, clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PLATFORM_CONNECTOR_SOCKET", "/sock")
@@ -70,4 +80,14 @@ class TestConfigFromEnv:
     def test_invalid_processing_strategy(self, valid_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PROCESSING_STRATEGY", "INVALID")
         with pytest.raises(ValueError, match="Invalid PROCESSING_STRATEGY"):
+            Config.from_env()
+
+    def test_invalid_status_retry_timeout(self, valid_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DCGM_DIAG_STATUS_RETRY_TIMEOUT_SECONDS", "-1")
+        with pytest.raises(ValueError, match="DCGM_DIAG_STATUS_RETRY_TIMEOUT_SECONDS must be >= 0"):
+            Config.from_env()
+
+    def test_invalid_status_retry_interval(self, valid_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS", "0")
+        with pytest.raises(ValueError, match="DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS must be > 0"):
             Config.from_env()

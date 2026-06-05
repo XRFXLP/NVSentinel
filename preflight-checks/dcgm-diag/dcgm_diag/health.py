@@ -52,7 +52,9 @@ class HealthReporter:
         is_fatal: bool,
         message: str,
         error_code: int = 0,
+        error_code_name: str = "",
         test_name: str = "",
+        recommended_action: int | None = None,
     ) -> None:
         """Send a single health event for one GPU.
 
@@ -60,15 +62,16 @@ class HealthReporter:
         fatality. The recommended action shown in the event is resolved from the
         result so it stays consistent with that decision.
         """
-        recommended_action = resolve_recommended_action(is_healthy, error_code)
+        if recommended_action is None:
+            recommended_action = resolve_recommended_action(is_healthy, error_code)
 
         # checkName: "DcgmDiagnostic" or "DcgmDiagnosticMemory" if test_name specified
         check_name = (
             f"{self.CHECK_NAME_PREFIX}{self._to_camel_case(test_name)}" if test_name else self.CHECK_NAME_PREFIX
         )
 
-        # errorCode: use mnemonic like "DCGM_FR_CUDA_API" instead of numeric code
-        error_name = get_error_name(error_code) if error_code else ""
+        # errorCode: use mnemonic like "DCGM_FR_CUDA_API" or status like "DCGM_ST_IN_USE".
+        error_name = error_code_name or (get_error_name(error_code) if error_code else "")
 
         event = self._build_event(gpu_uuid, is_healthy, is_fatal, message, recommended_action, check_name, error_name)
         health_events = pb.HealthEvents(version=1, events=[event])

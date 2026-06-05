@@ -14,11 +14,12 @@
 
 import logging
 import os
+import signal
 import sys
 from importlib.metadata import version, PackageNotFoundError
 
 from .config import Config
-from .diag import DCGMDiagnostic
+from .diag import DCGMDiagnostic, DiagnosticStatusError
 from .errors import resolve_recommended_action
 from .health import HealthReporter
 from .logger import setup_logging
@@ -48,6 +49,8 @@ def main() -> None:
         extra={
             "diag_level": cfg.diag_level,
             "processing_strategy": pb.ProcessingStrategy.Name(cfg.processing_strategy),
+            "status_retry_timeout_seconds": cfg.status_retry_timeout_seconds,
+            "status_retry_interval_seconds": cfg.status_retry_interval_seconds,
         },
     )
 
@@ -57,7 +60,12 @@ def main() -> None:
         processing_strategy=cfg.processing_strategy,
     )
 
-    diag = DCGMDiagnostic(hostengine_addr=cfg.hostengine_addr)
+    diag = DCGMDiagnostic(
+        hostengine_addr=cfg.hostengine_addr,
+        status_retry_timeout_seconds=cfg.status_retry_timeout_seconds,
+        status_retry_interval_seconds=cfg.status_retry_interval_seconds,
+    )
+    _install_shutdown_handlers(diag)
     store_only = cfg.processing_strategy == pb.ProcessingStrategy.STORE_ONLY
 
     exit_code = _run_diagnostic(cfg, reporter, diag)
@@ -68,11 +76,49 @@ def main() -> None:
     sys.exit(exit_code)
 
 
+def _install_shutdown_handlers(diag: DCGMDiagnostic) -> None:
+    log = logging.getLogger(__name__)
+
+    def handle_shutdown(signum, _frame) -> None:
+        signal_name = signal.Signals(signum).name
+        log.warning("Received shutdown signal; stopping DCGM diagnostic", extra={"signal": signal_name})
+        diag.stop_diagnostic()
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
+
+
 def _run_diagnostic(cfg: Config, reporter: HealthReporter, diag: DCGMDiagnostic) -> int:
     log = logging.getLogger(__name__)
 
     try:
         results = diag.run(cfg.diag_level)
+    except DiagnosticStatusError as e:
+        log.warning(
+            "DCGM diagnostic could not complete due to a DCGM status error",
+            extra={"dcgm_status": e.status_name, "error": str(e)},
+        )
+        try:
+            reporter.send_event(
+                gpu_uuid="",
+                is_healthy=False,
+                is_fatal=False,
+                message=str(e),
+                error_code_name=e.status_name,
+                recommended_action=pb.RecommendedAction.NONE,
+            )
+        except Exception as send_err:  # noqa: BLE001
+            log.error(
+                "Failed to send health event",
+                extra={
+                    "error": str(send_err),
+                    "gpu_uuid": "",
+                    "is_healthy": False,
+                    "is_fatal": False,
+                },
+            )
+        return 0
     except Exception as e:
         log.error("DCGM diagnostic failed", extra={"error": str(e)})
         # is_fatal=True: sets node condition for visibility, even though this may be

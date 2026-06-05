@@ -17,6 +17,9 @@ from dataclasses import dataclass
 
 from .protos import health_event_pb2 as pb
 
+DEFAULT_STATUS_RETRY_TIMEOUT_SECONDS = 300.0
+DEFAULT_STATUS_RETRY_INTERVAL_SECONDS = 10.0
+
 
 @dataclass
 class Config:
@@ -25,6 +28,8 @@ class Config:
     connector_socket: str
     node_name: str
     processing_strategy: pb.ProcessingStrategy
+    status_retry_timeout_seconds: float
+    status_retry_interval_seconds: float
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -33,6 +38,18 @@ class Config:
         connector_socket = os.getenv("PLATFORM_CONNECTOR_SOCKET", "")
         node_name = os.getenv("NODE_NAME", "")
         strategy_str = os.getenv("PROCESSING_STRATEGY", "EXECUTE_REMEDIATION")
+        status_retry_timeout_seconds = float(
+            os.getenv(
+                "DCGM_DIAG_STATUS_RETRY_TIMEOUT_SECONDS",
+                str(DEFAULT_STATUS_RETRY_TIMEOUT_SECONDS),
+            )
+        )
+        status_retry_interval_seconds = float(
+            os.getenv(
+                "DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS",
+                str(DEFAULT_STATUS_RETRY_INTERVAL_SECONDS),
+            )
+        )
 
         if not hostengine_addr:
             raise ValueError("DCGM_HOSTENGINE_ADDR is required")
@@ -46,6 +63,16 @@ class Config:
         if diag_level < 1 or diag_level > 4:
             raise ValueError(f"DCGM_DIAG_LEVEL must be 1-4, got {diag_level}")
 
+        if status_retry_timeout_seconds < 0:
+            raise ValueError(
+                f"DCGM_DIAG_STATUS_RETRY_TIMEOUT_SECONDS must be >= 0, got {status_retry_timeout_seconds}"
+            )
+
+        if status_retry_interval_seconds <= 0:
+            raise ValueError(
+                f"DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS must be > 0, got {status_retry_interval_seconds}"
+            )
+
         try:
             processing_strategy = pb.ProcessingStrategy.Value(strategy_str)
         except ValueError:
@@ -57,4 +84,6 @@ class Config:
             connector_socket=connector_socket,
             node_name=node_name,
             processing_strategy=processing_strategy,
+            status_retry_timeout_seconds=status_retry_timeout_seconds,
+            status_retry_interval_seconds=status_retry_interval_seconds,
         )

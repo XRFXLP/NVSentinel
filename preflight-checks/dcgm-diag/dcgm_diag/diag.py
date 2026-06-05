@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import logging
+import re
 from dataclasses import dataclass
+from time import sleep
 
 import dcgm_agent
 import dcgm_structs
@@ -22,6 +24,10 @@ import pydcgm
 from .gpu import GPUDiscovery
 
 log = logging.getLogger(__name__)
+
+DEFAULT_STATUS_RETRY_TIMEOUT_SECONDS = 300.0
+DEFAULT_STATUS_RETRY_INTERVAL_SECONDS = 10.0
+DCGM_STATUS_PATTERN = re.compile(r"DCGM_ST_[A-Z0-9_]+")
 
 
 @dataclass
@@ -34,6 +40,14 @@ class DiagResult:
     error_message: str
 
 
+class DiagnosticStatusError(RuntimeError):
+    """Raised when a DCGM_ST_* status prevents diagnostics from completing."""
+
+    def __init__(self, status_name: str, message: str) -> None:
+        super().__init__(message)
+        self.status_name = status_name
+
+
 class DCGMDiagnostic:
     DIAG_LEVELS = {
         1: dcgm_structs.DCGM_DIAG_LVL_SHORT,
@@ -42,8 +56,15 @@ class DCGMDiagnostic:
         4: dcgm_structs.DCGM_DIAG_LVL_XLONG,
     }
 
-    def __init__(self, hostengine_addr: str) -> None:
+    def __init__(
+        self,
+        hostengine_addr: str,
+        status_retry_timeout_seconds: float = DEFAULT_STATUS_RETRY_TIMEOUT_SECONDS,
+        status_retry_interval_seconds: float = DEFAULT_STATUS_RETRY_INTERVAL_SECONDS,
+    ) -> None:
         self._hostengine_addr = hostengine_addr
+        self._status_retry_timeout_seconds = status_retry_timeout_seconds
+        self._status_retry_interval_seconds = status_retry_interval_seconds
         self._handle: pydcgm.DcgmHandle | None = None
         self._gpu_discovery = GPUDiscovery()
 
@@ -79,20 +100,89 @@ class DCGMDiagnostic:
 
         log.info(f"Running DCGM diagnostic level={level} gpus={gpu_indices}")
 
-        # Stop any zombie diagnostic left by a previous crashed container on this
-        # node.  Without this, RunDiagnostic fails with "already running".
-        try:
-            dcgm_agent.dcgmStopDiagnostic(self._handle.handle)
-        except Exception:  # noqa: BLE001
-            log.debug("Failed to stop previous diagnostic", exc_info=True)
-
         group = self._create_gpu_group(gpu_indices)
         try:
             diag_level = self.DIAG_LEVELS.get(level, dcgm_structs.DCGM_DIAG_LVL_SHORT)
-            response = group.action.RunDiagnostic(diag_level)
+            response = self._run_dcgm_diagnostic_with_retries(group, diag_level)
             return self._parse_response(response, gpu_indices)
         finally:
             group.Delete()
+
+    def _run_dcgm_diagnostic_with_retries(
+        self, group: pydcgm.DcgmGroup, diag_level: int
+    ) -> dcgm_structs.c_dcgmDiagResponse_v12:
+        waited_seconds = 0.0
+        attempt = 1
+
+        while True:
+            try:
+                return self._run_dcgm_diagnostic_once(group, diag_level)
+            except Exception as err:
+                status_name = get_dcgm_status_name(err)
+                if not status_name:
+                    raise
+
+                remaining_seconds = self._status_retry_timeout_seconds - waited_seconds
+                if remaining_seconds <= 0:
+                    final_err = err
+                    final_status_name = status_name
+
+                    if is_diag_already_running_status(status_name):
+                        log.warning(
+                            "DCGM diagnostic stayed already-running; stopping stale diagnostic and retrying once",
+                            extra={
+                                "attempt": attempt,
+                                "waited_seconds": waited_seconds,
+                                "retry_timeout_seconds": self._status_retry_timeout_seconds,
+                                "dcgm_status": status_name,
+                                "error": str(err),
+                            },
+                        )
+                        self.stop_diagnostic()
+                        try:
+                            return self._run_dcgm_diagnostic_once(group, diag_level)
+                        except Exception as retry_err:
+                            retry_status_name = get_dcgm_status_name(retry_err)
+                            if not retry_status_name:
+                                raise
+                            final_err = retry_err
+                            final_status_name = retry_status_name
+
+                    raise DiagnosticStatusError(
+                        final_status_name,
+                        f"DCGM diagnostic failed with {final_status_name} after waiting "
+                        f"{waited_seconds:.1f}s: {final_err}",
+                    ) from final_err
+
+                sleep_seconds = min(self._status_retry_interval_seconds, remaining_seconds)
+                log.warning(
+                    "DCGM diagnostic returned a DCGM status error; waiting to retry",
+                    extra={
+                        "attempt": attempt,
+                        "waited_seconds": waited_seconds,
+                        "retry_delay_seconds": sleep_seconds,
+                        "retry_timeout_seconds": self._status_retry_timeout_seconds,
+                        "dcgm_status": status_name,
+                        "error": str(err),
+                    },
+                )
+                sleep(sleep_seconds)
+                waited_seconds += sleep_seconds
+                attempt += 1
+
+    def _run_dcgm_diagnostic_once(
+        self, group: pydcgm.DcgmGroup, diag_level: int
+    ) -> dcgm_structs.c_dcgmDiagResponse_v12:
+        return group.action.RunDiagnostic(diag_level)
+
+    def stop_diagnostic(self) -> None:
+        if not self._handle:
+            return
+
+        try:
+            dcgm_agent.dcgmStopDiagnostic(self._handle.handle)
+        except Exception:  # noqa: BLE001
+            log.debug("Failed to stop DCGM diagnostic", exc_info=True)
 
     def _create_gpu_group(self, gpu_indices: list[int]) -> pydcgm.DcgmGroup:
         group = pydcgm.DcgmGroup(
@@ -169,3 +259,29 @@ class DCGMDiagnostic:
             dcgm_structs.DCGM_DIAG_RESULT_NOT_RUN: "not_run",
         }
         return status_map.get(status, "unknown")
+
+
+def get_dcgm_status_name(err: Exception) -> str:
+    value = getattr(err, "value", None)
+    if isinstance(value, int) and value < 0:
+        for name in dir(dcgm_structs):
+            constant_value = getattr(dcgm_structs, name)
+            if name.startswith("DCGM_ST_") and constant_value == value:
+                return name
+
+    message = str(err)
+    match = DCGM_STATUS_PATTERN.search(message.upper())
+    if match:
+        return match.group(0)
+
+    message_lower = message.lower()
+    if "affected resource is in use" in message_lower or "resource is in use" in message_lower:
+        return "DCGM_ST_IN_USE"
+    if "diag instance is already running" in message_lower or "new diag until the current one finishes" in message_lower:
+        return "DCGM_ST_DIAG_ALREADY_RUNNING"
+
+    return ""
+
+
+def is_diag_already_running_status(status_name: str) -> bool:
+    return status_name == "DCGM_ST_DIAG_ALREADY_RUNNING"

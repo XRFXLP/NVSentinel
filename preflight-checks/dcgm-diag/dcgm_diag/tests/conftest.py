@@ -45,6 +45,11 @@ class MockDCGMStructs:
     DCGM_GROUP_EMPTY = 0
     DCGM_OPERATION_MODE_AUTO = 0
 
+    # Return status constants
+    DCGM_ST_TIMEOUT = -11
+    DCGM_ST_IN_USE = -34
+    DCGM_ST_DIAG_ALREADY_RUNNING = -39
+
     class c_dcgmDiagResponse_v12:
         """Mock diagnostic response structure.
 

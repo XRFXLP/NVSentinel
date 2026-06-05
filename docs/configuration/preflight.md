@@ -89,6 +89,8 @@ Runs DCGM diagnostics against every GPU allocated to the pod via the remote host
 |---------|---------|-------------|
 | `DCGM_DIAG_LEVEL` | `2` | Diagnostic depth: 1 = short (approx 30 s, software deployment checks), 2 = medium (approx 2 min, adds PCIe and basic GPU stress), 3 = long (approx 15 min, adds Diagnostic plugin stress), 4 = xlong (1-2 hr, extended stress) |
 | `DCGM_HOSTENGINE_ADDR` | `nvidia-dcgm.gpu-operator.svc:5555` | DCGM hostengine gRPC endpoint |
+| `DCGM_DIAG_STATUS_RETRY_TIMEOUT_SECONDS` | `300` | Maximum time to wait when DCGM returns a `DCGM_ST_*` status while starting/running diagnostics |
+| `DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS` | `10` | Delay between `DCGM_ST_*` retry attempts |
 
 Example values override:
 
@@ -103,10 +105,19 @@ initContainers:
         value: "nvidia-dcgm.gpu-operator.svc:5555"
       - name: DCGM_DIAG_LEVEL
         value: "2"
+      - name: DCGM_DIAG_STATUS_RETRY_TIMEOUT_SECONDS
+        value: "300"
+      - name: DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS
+        value: "10"
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run
 ```
+
+If a `DCGM_ST_*` status still prevents the diagnostic from completing after
+retries, `preflight-dcgm-diag` emits a non-fatal unhealthy HealthEvent with
+`RecommendedAction=NONE` and exits successfully so the workload is not blocked by
+a preflight infrastructure failure.
 
 ### preflight-nccl-loopback
 

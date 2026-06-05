@@ -122,3 +122,20 @@ class TestSendEvent:
         assert event.isFatal is False
         assert event.recommendedAction == pb.RecommendedAction.NONE
         assert list(event.errorCode) == ["DCGM_FR_XID_ERROR"]
+
+    @patch.object(HealthReporter, "_send_with_retries", return_value=True)
+    def test_emits_dcgm_status_error_code_name(self, mock_send: MagicMock, reporter: HealthReporter) -> None:
+        reporter.send_event(
+            gpu_uuid="",
+            is_healthy=False,
+            is_fatal=False,
+            message="DCGM_ST_IN_USE",
+            error_code_name="DCGM_ST_IN_USE",
+            recommended_action=pb.RecommendedAction.NONE,
+        )
+
+        events = mock_send.call_args.args[0]
+        event = events.events[0]
+        assert event.isFatal is False
+        assert event.recommendedAction == pb.RecommendedAction.NONE
+        assert list(event.errorCode) == ["DCGM_ST_IN_USE"]

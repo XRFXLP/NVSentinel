@@ -128,6 +128,12 @@ initContainers:
       #   4 = XLong  (~1-2 hr) - extended stress
       - name: DCGM_DIAG_LEVEL
         value: "2"
+      # If DCGM returns a DCGM_ST_* status while starting/running diagnostics,
+      # wait and retry before reporting the preflight infrastructure failure.
+      - name: DCGM_DIAG_STATUS_RETRY_TIMEOUT_SECONDS
+        value: "300"
+      - name: DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS
+        value: "10"
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run
