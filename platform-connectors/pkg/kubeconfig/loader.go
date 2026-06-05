@@ -12,29 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package overrides provides a transformer that applies CEL-based property
-// overrides to health events based on configurable rules.
-package overrides
+// Package kubeconfig resolves Kubernetes client configuration for platform-connectors.
+package kubeconfig
 
 import (
 	"fmt"
 
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
-func init() {
-	pipeline.Register("OverrideTransformer", newFromConfig)
-}
-
-func newFromConfig(cfg *pipeline.Config, _ pipeline.Options) (pipeline.Transformer, error) {
-	if cfg.ConfigPath == "" {
-		return nil, fmt.Errorf("config path required for OverrideTransformer")
-	}
-
-	overrideCfg, err := LoadConfig(cfg.ConfigPath)
+// Load returns a Kubernetes REST config from an explicit kubeconfig path when provided,
+// or lets client-go resolve the implicit configuration when the path is empty.
+func Load(path string) (*rest.Config, error) {
+	config, err := clientcmd.BuildConfigFromFlags("", path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load overrides configuration: %w", err)
+		if path == "" {
+			return nil, fmt.Errorf("error creating in-cluster config: %w", err)
+		}
+
+		return nil, fmt.Errorf("error loading kubeconfig %q: %w", path, err)
 	}
 
-	return NewProcessor(overrideCfg)
+	return config, nil
 }
