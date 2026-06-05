@@ -49,7 +49,7 @@ def main() -> None:
         extra={
             "diag_level": cfg.diag_level,
             "processing_strategy": pb.ProcessingStrategy.Name(cfg.processing_strategy),
-            "status_retry_timeout_seconds": cfg.status_retry_timeout_seconds,
+            "status_retry_max_attempts": cfg.status_retry_max_attempts,
             "status_retry_interval_seconds": cfg.status_retry_interval_seconds,
         },
     )
@@ -62,7 +62,7 @@ def main() -> None:
 
     diag = DCGMDiagnostic(
         hostengine_addr=cfg.hostengine_addr,
-        status_retry_timeout_seconds=cfg.status_retry_timeout_seconds,
+        status_retry_max_attempts=cfg.status_retry_max_attempts,
         status_retry_interval_seconds=cfg.status_retry_interval_seconds,
     )
     _install_shutdown_handlers(diag)

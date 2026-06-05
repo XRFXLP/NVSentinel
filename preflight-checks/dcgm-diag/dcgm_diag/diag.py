@@ -24,7 +24,7 @@ from .gpu import GPUDiscovery
 
 log = logging.getLogger(__name__)
 
-DEFAULT_STATUS_RETRY_TIMEOUT_SECONDS = 300.0
+DEFAULT_STATUS_RETRY_MAX_ATTEMPTS = 30
 DEFAULT_STATUS_RETRY_INTERVAL_SECONDS = 10.0
 
 
@@ -57,11 +57,11 @@ class DCGMDiagnostic:
     def __init__(
         self,
         hostengine_addr: str,
-        status_retry_timeout_seconds: float = DEFAULT_STATUS_RETRY_TIMEOUT_SECONDS,
+        status_retry_max_attempts: int = DEFAULT_STATUS_RETRY_MAX_ATTEMPTS,
         status_retry_interval_seconds: float = DEFAULT_STATUS_RETRY_INTERVAL_SECONDS,
     ) -> None:
         self._hostengine_addr = hostengine_addr
-        self._status_retry_timeout_seconds = status_retry_timeout_seconds
+        self._status_retry_max_attempts = status_retry_max_attempts
         self._status_retry_interval_seconds = status_retry_interval_seconds
         self._handle: pydcgm.DcgmHandle | None = None
         self._gpu_discovery = GPUDiscovery()
@@ -109,10 +109,7 @@ class DCGMDiagnostic:
     def _run_dcgm_diagnostic_with_retries(
         self, group: pydcgm.DcgmGroup, diag_level: int
     ) -> dcgm_structs.c_dcgmDiagResponse_v12:
-        waited_seconds = 0.0
-        attempt = 1
-
-        while True:
+        for attempt in range(1, self._status_retry_max_attempts + 1):
             try:
                 return self._run_dcgm_diagnostic_once(group, diag_level)
             except Exception as err:
@@ -120,8 +117,7 @@ class DCGMDiagnostic:
                 if not status_name:
                     raise
 
-                remaining_seconds = self._status_retry_timeout_seconds - waited_seconds
-                if remaining_seconds <= 0:
+                if attempt >= self._status_retry_max_attempts:
                     final_err = err
                     final_status_name = status_name
 
@@ -130,8 +126,7 @@ class DCGMDiagnostic:
                             "DCGM diagnostic stayed already-running; stopping stale diagnostic and retrying once",
                             extra={
                                 "attempt": attempt,
-                                "waited_seconds": waited_seconds,
-                                "retry_timeout_seconds": self._status_retry_timeout_seconds,
+                                "max_attempts": self._status_retry_max_attempts,
                                 "dcgm_status": status_name,
                                 "error": str(err),
                             },
@@ -148,25 +143,23 @@ class DCGMDiagnostic:
 
                     raise DiagnosticStatusError(
                         final_status_name,
-                        f"DCGM diagnostic failed with {final_status_name} after waiting "
-                        f"{waited_seconds:.1f}s: {final_err}",
+                        f"DCGM diagnostic failed with {final_status_name} after "
+                        f"{self._status_retry_max_attempts} attempts: {final_err}",
                     ) from final_err
 
-                sleep_seconds = min(self._status_retry_interval_seconds, remaining_seconds)
                 log.warning(
                     "DCGM diagnostic returned a DCGM status error; waiting to retry",
                     extra={
                         "attempt": attempt,
-                        "waited_seconds": waited_seconds,
-                        "retry_delay_seconds": sleep_seconds,
-                        "retry_timeout_seconds": self._status_retry_timeout_seconds,
+                        "max_attempts": self._status_retry_max_attempts,
+                        "retry_delay_seconds": self._status_retry_interval_seconds,
                         "dcgm_status": status_name,
                         "error": str(err),
                     },
                 )
-                sleep(sleep_seconds)
-                waited_seconds += sleep_seconds
-                attempt += 1
+                sleep(self._status_retry_interval_seconds)
+
+        raise AssertionError("unreachable")
 
     def _run_dcgm_diagnostic_once(
         self, group: pydcgm.DcgmGroup, diag_level: int

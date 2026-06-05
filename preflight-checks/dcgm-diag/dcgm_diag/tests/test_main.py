@@ -30,7 +30,7 @@ def test_dcgm_status_error_reports_nonfatal_and_does_not_block() -> None:
         connector_socket="/var/run/nvsentinel.sock",
         node_name="test-node",
         processing_strategy=pb.ProcessingStrategy.EXECUTE_REMEDIATION,
-        status_retry_timeout_seconds=6,
+        status_retry_max_attempts=4,
         status_retry_interval_seconds=2,
     )
     reporter = MagicMock()

@@ -262,7 +262,7 @@ class TestDCGMDiagnosticRun:
 
         diag = DCGMDiagnostic(
             hostengine_addr="localhost:5555",
-            status_retry_timeout_seconds=10,
+            status_retry_max_attempts=2,
             status_retry_interval_seconds=2,
         )
         diag._handle = MagicMock()
@@ -296,7 +296,7 @@ class TestDCGMDiagnosticRun:
 
         diag = DCGMDiagnostic(
             hostengine_addr="localhost:5555",
-            status_retry_timeout_seconds=6,
+            status_retry_max_attempts=4,
             status_retry_interval_seconds=2,
         )
         diag._handle = MagicMock()
@@ -334,7 +334,7 @@ class TestDCGMDiagnosticRun:
 
         diag = DCGMDiagnostic(
             hostengine_addr="localhost:5555",
-            status_retry_timeout_seconds=0,
+            status_retry_max_attempts=1,
             status_retry_interval_seconds=2,
         )
         diag._handle = MagicMock()
