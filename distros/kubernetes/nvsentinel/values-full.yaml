@@ -1541,6 +1541,24 @@ preflight:
 
   imagePullSecrets: []
 
+  imageCache:
+    # Enables a DaemonSet that pre-pulls all configured preflight check images
+    # onto matching nodes. The configured check images are rendered as init
+    # containers; the pause container keeps the pod alive after pulls complete.
+    enabled: false
+    pauseImage:
+      repository: registry.k8s.io/pause
+      tag: "3.10"
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
+    podAnnotations: {}
+
   # Service account for the preflight webhook (needs ClusterRole for
   # pods, configmaps, and scheduler CRDs when gang coordination is enabled)
   serviceAccount:
@@ -1630,7 +1648,9 @@ preflight:
     #   DCGM_DIAG_LEVEL       - diagnostic depth 1-4 (default 2)
     #   DCGM_HOSTENGINE_ADDR  - hostengine gRPC endpoint (default nvidia-dcgm.gpu-operator.svc:5555)
     - name: preflight-dcgm-diag
-      image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:latest
+      image:
+        repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
+        tag: ""
       volumeMounts:
         - name: nvsentinel-socket
           mountPath: /var/run
@@ -1645,7 +1665,9 @@ preflight:
     #   TEST_SIZE_MB       - message size in MB (default 256)
     #   SKIP_BANDWIDTH_CHECK - "true" to pass if benchmark completes (default false)
     - name: preflight-nccl-loopback
-      image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:latest
+      image:
+        repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback
+        tag: ""
       env:
         - name: BW_THRESHOLD_GBPS
           value: "150"
@@ -1667,7 +1689,9 @@ preflight:
     #   NCCL_DEBUG           - NCCL log verbosity (e.g. INFO, WARN)
     #   NCCL_DEBUG_SUBSYS    - NCCL subsystems to log (e.g. INIT,NET)
     - name: preflight-nccl-allreduce
-      image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:latest
+      image:
+        repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce
+        tag: ""
       securityContext:
         capabilities:
           add: ["IPC_LOCK"]  # Required for RDMA memory registration

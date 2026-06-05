@@ -56,6 +56,52 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Image cache DaemonSet name.
+*/}}
+{{- define "preflight.imageCacheName" -}}
+{{- printf "%s-image-cache" (include "preflight.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Image cache selector labels. Keep these distinct from the webhook Deployment selector.
+*/}}
+{{- define "preflight.imageCacheSelectorLabels" -}}
+app.kubernetes.io/name: {{ printf "%s-image-cache" (include "preflight.name" .) | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: image-cache
+{{- end }}
+
+{{/*
+Image cache common labels.
+*/}}
+{{- define "preflight.imageCacheLabels" -}}
+helm.sh/chart: {{ include "preflight.chart" . }}
+{{ include "preflight.imageCacheSelectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/part-of: {{ include "preflight.name" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Resolve a configured preflight init container image, honoring global.image.tag.
+*/}}
+{{- define "preflight.initContainerImage" -}}
+{{- $root := .root -}}
+{{- $container := .container -}}
+{{- $image := $container.image -}}
+{{- if kindIs "string" $image -}}
+{{- $image -}}
+{{- else -}}
+{{- $global := $root.Values.global | default dict -}}
+{{- $globalImage := $global.image | default dict -}}
+{{- $tag := $image.tag | default $globalImage.tag | default $root.Chart.AppVersion -}}
+{{- printf "%s:%s" $image.repository $tag -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Create the name of the service account to use
 */}}
 {{- define "preflight.serviceAccountName" -}}

@@ -79,13 +79,10 @@ data:
     {{- end }}
     initContainers:
       {{- $extraEnv := .Values.ncclAllreduceExtraEnv | default list }}
-      {{- $globalTag := ((.Values.global).image).tag | default "" }}
-      {{- $appVersion := .Chart.AppVersion }}
       {{- $result := list }}
       {{- range .Values.initContainers }}
       {{- $container := deepCopy . }}
-      {{- $tag := $container.image.tag | default $globalTag | default $appVersion }}
-      {{- $_ := set $container "image" (printf "%s:%s" $container.image.repository $tag) }}
+      {{- $_ := set $container "image" (include "preflight.initContainerImage" (dict "root" $ "container" $container)) }}
       {{- if and (eq .name "preflight-nccl-allreduce") $extraEnv }}
       {{- $_ := set $container "env" (concat (.env | default list) $extraEnv) }}
       {{- end }}

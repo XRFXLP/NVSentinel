@@ -21,6 +21,24 @@ image:
 
 imagePullSecrets: []
 
+imageCache:
+  # Enables a DaemonSet that pre-pulls all configured preflight check images
+  # onto matching nodes. The configured check images are rendered as init
+  # containers; the pause container keeps the pod alive after pulls complete.
+  enabled: false
+  pauseImage:
+    repository: registry.k8s.io/pause
+    tag: "3.10"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+  podAnnotations: {}
+
 serviceAccount:
   create: true
   annotations: {}

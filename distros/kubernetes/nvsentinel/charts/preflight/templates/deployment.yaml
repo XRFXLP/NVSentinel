@@ -26,6 +26,9 @@ spec:
       {{- include "preflight.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        # Force pod restart when configmap changes
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         {{- include "preflight.selectorLabels" . | nindent 8 }}
     spec:
