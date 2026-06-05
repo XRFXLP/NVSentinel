@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from .protos import health_event_pb2 as pb
 
-DEFAULT_STATUS_RETRY_MAX_ATTEMPTS = 30
+DEFAULT_STATUS_RETRY_MAX_ATTEMPTS = 10
 DEFAULT_STATUS_RETRY_INTERVAL_SECONDS = 10.0
 
 

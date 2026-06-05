@@ -131,7 +131,7 @@ initContainers:
       # If DCGM still returns a DCGM_ST_* status after retries, emit a non-fatal
       # unhealthy event with RecommendedAction=NONE and exit 0 so the workload proceeds.
       - name: DCGM_DIAG_STATUS_RETRY_MAX_ATTEMPTS
-        value: "30"
+        value: "10"
       - name: DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS
         value: "10"
     volumeMounts:
