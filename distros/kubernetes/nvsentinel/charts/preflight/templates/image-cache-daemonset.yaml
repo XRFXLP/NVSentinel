@@ -54,7 +54,7 @@ spec:
           command:
             - /bin/sh
             - -c
-            - "while true; do sleep 3600; done"
+            - "trap 'exit 0' TERM INT; sleep infinity & wait $!"
           resources:
             {{- toYaml $.Values.imageCache.resources | nindent 12 }}
         {{- end }}
