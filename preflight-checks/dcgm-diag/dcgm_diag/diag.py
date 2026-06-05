@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import logging
-import re
 from dataclasses import dataclass
 from time import sleep
 
@@ -27,7 +26,6 @@ log = logging.getLogger(__name__)
 
 DEFAULT_STATUS_RETRY_TIMEOUT_SECONDS = 300.0
 DEFAULT_STATUS_RETRY_INTERVAL_SECONDS = 10.0
-DCGM_STATUS_PATTERN = re.compile(r"DCGM_ST_[A-Z0-9_]+")
 
 
 @dataclass
@@ -268,17 +266,6 @@ def get_dcgm_status_name(err: Exception) -> str:
             constant_value = getattr(dcgm_structs, name)
             if name.startswith("DCGM_ST_") and constant_value == value:
                 return name
-
-    message = str(err)
-    match = DCGM_STATUS_PATTERN.search(message.upper())
-    if match:
-        return match.group(0)
-
-    message_lower = message.lower()
-    if "affected resource is in use" in message_lower or "resource is in use" in message_lower:
-        return "DCGM_ST_IN_USE"
-    if "diag instance is already running" in message_lower or "new diag until the current one finishes" in message_lower:
-        return "DCGM_ST_DIAG_ALREADY_RUNNING"
 
     return ""
 

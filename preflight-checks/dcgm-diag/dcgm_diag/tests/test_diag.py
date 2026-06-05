@@ -352,8 +352,13 @@ class TestDCGMStatusDetection:
 
         assert get_dcgm_status_name(err) == "DCGM_ST_IN_USE"
 
-    def test_detects_dcgm_status_from_message_fallback(self) -> None:
-        assert get_dcgm_status_name(Exception("DCGM_ST_DIAG_ALREADY_RUNNING")) == "DCGM_ST_DIAG_ALREADY_RUNNING"
-
-    def test_ignores_unrelated_errors(self) -> None:
-        assert get_dcgm_status_name(Exception("DCGM hostengine connection failed")) == ""
+    @pytest.mark.parametrize(
+        "err",
+        [
+            Exception("DCGM_ST_DIAG_ALREADY_RUNNING"),
+            Exception("The requested operation could not be completed because the affected resource is in use"),
+            Exception("DCGM hostengine connection failed"),
+        ],
+    )
+    def test_ignores_untyped_errors(self, err: Exception) -> None:
+        assert get_dcgm_status_name(err) == ""
