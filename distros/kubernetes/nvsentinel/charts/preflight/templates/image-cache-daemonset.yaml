@@ -25,7 +25,7 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 10%
+      maxUnavailable: 100%
   selector:
     matchLabels:
       {{- include "preflight.imageCacheSelectorLabels" . | nindent 6 }}
@@ -44,9 +44,8 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.initContainers }}
-      initContainers:
-        {{- range . }}
+      containers:
+        {{- range .Values.initContainers }}
         - name: {{ .name }}
           image: {{ include "preflight.initContainerImage" (dict "root" $ "container" .) | quote }}
           {{- with .imagePullPolicy }}
@@ -55,15 +54,10 @@ spec:
           command:
             - /bin/sh
             - -c
-            - "true"
-        {{- end }}
-      {{- end }}
-      containers:
-        - name: pause
-          image: "{{ .Values.imageCache.pauseImage.repository }}:{{ .Values.imageCache.pauseImage.tag }}"
-          imagePullPolicy: {{ .Values.imageCache.pauseImage.pullPolicy }}
+            - "while true; do sleep 3600; done"
           resources:
-            {{- toYaml .Values.imageCache.resources | nindent 12 }}
+            {{- toYaml $.Values.imageCache.resources | nindent 12 }}
+        {{- end }}
       {{- with ($global.nodeSelector | default .Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
