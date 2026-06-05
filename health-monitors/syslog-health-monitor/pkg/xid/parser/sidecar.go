@@ -32,22 +32,32 @@ import (
 
 // SidecarParser implements Parser interface using external sidecar service
 type SidecarParser struct {
-	url           string
-	client        *retryablehttp.Client
-	nodeName      string
-	driverVersion string
+	url             string
+	client          *retryablehttp.Client
+	nodeName        string
+	driverVersionFn func() string
 }
 
-// NewSidecarParser creates a new sidecar parser
-func NewSidecarParser(endpoint, nodeName, driverVersion string) *SidecarParser {
+// NewSidecarParser creates a new sidecar parser.
+//
+// driverVersionFn is invoked on every Parse call so the driver version is
+// resolved live rather than snapshotted at construction. This matters because
+// the sidecar selects its NVL5 (R575+) decode table based on the driver version;
+// snapshotting an empty value at startup (before metadata-collector has written
+// the file) would permanently send an empty driver_version to the sidecar.
+func NewSidecarParser(endpoint, nodeName string, driverVersionFn func() string) *SidecarParser {
 	c := retryablehttp.NewClient()
 	c.Logger = slog.With("http", "retryablehttp-client")
 
+	if driverVersionFn == nil {
+		driverVersionFn = func() string { return "" }
+	}
+
 	return &SidecarParser{
-		url:           fmt.Sprintf("%s/decode-xid", endpoint),
-		client:        c,
-		nodeName:      nodeName,
-		driverVersion: driverVersion,
+		url:             fmt.Sprintf("%s/decode-xid", endpoint),
+		client:          c,
+		nodeName:        nodeName,
+		driverVersionFn: driverVersionFn,
 	}
 }
 
@@ -93,7 +103,15 @@ func (p *SidecarParser) WaitUntilReady(ctx context.Context, maxRetries int, retr
 
 // Parse sends the message to sidecar service for XID parsing
 func (p *SidecarParser) Parse(message string) (*Response, error) {
-	reqBody := Request{XIDMessage: message, DriverVersion: p.driverVersion}
+	driverVersion := p.driverVersionFn()
+	if driverVersion == "" {
+		slog.Warn("Sending XID decode request with empty driver version; "+
+			"sidecar NVL5 decode may fall back to the wrong table",
+			"node", p.nodeName)
+		metrics.XidEmptyDriverVersion.WithLabelValues(p.nodeName).Inc()
+	}
+
+	reqBody := Request{XIDMessage: message, DriverVersion: driverVersion}
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
