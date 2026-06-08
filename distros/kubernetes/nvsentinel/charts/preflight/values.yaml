@@ -128,7 +128,7 @@ injectedImagePullSecrets: []
 initContainers:
   # defaultEnabled: true  # (default when omitted)
   - name: preflight-dcgm-diag
-    inheritUserEnv: false
+    inheritUserEnv: true
     inheritUserVolumeMounts: true
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
@@ -159,7 +159,7 @@ initContainers:
 
   # NCCL loopback test - validates intra-node GPU-to-GPU communication (NVLink/PCIe)
   - name: preflight-nccl-loopback
-    inheritUserEnv: false
+    inheritUserEnv: true
     inheritUserVolumeMounts: true
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback
