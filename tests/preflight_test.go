@@ -89,19 +89,19 @@ func TestPreflightEndToEnd(t *testing.T) {
 					"pod %s missing %s in %v",
 					podName, helpers.PreflightInheritDisabledName, initNames)
 
-				enabled := requireInitContainer(t, pod, helpers.PreflightInheritEnabledName)
-				disabled := requireInitContainer(t, pod, helpers.PreflightInheritDisabledName)
+				enabled := helpers.RequireInitContainer(t, pod, helpers.PreflightInheritEnabledName)
+				disabled := helpers.RequireInitContainer(t, pod, helpers.PreflightInheritDisabledName)
 
 				require.Equal(t, helpers.PreflightInheritedEnvValue,
-					findEnvValue(enabled.Env, helpers.PreflightInheritedEnvName),
+					helpers.FindEnvValue(enabled.Env, helpers.PreflightInheritedEnvName),
 					"pod %s: opted-in init container should inherit workload env", podName)
-				require.True(t, hasVolumeMount(enabled.VolumeMounts, helpers.PreflightInheritedVolumeName),
+				require.True(t, helpers.HasVolumeMount(enabled.VolumeMounts, helpers.PreflightInheritedVolumeName),
 					"pod %s: opted-in init container should inherit workload volume mount", podName)
 
 				require.Empty(t,
-					findEnvValue(disabled.Env, helpers.PreflightInheritedEnvName),
+					helpers.FindEnvValue(disabled.Env, helpers.PreflightInheritedEnvName),
 					"pod %s: opted-out init container should not inherit workload env", podName)
-				require.False(t, hasVolumeMount(disabled.VolumeMounts, helpers.PreflightInheritedVolumeName),
+				require.False(t, helpers.HasVolumeMount(disabled.VolumeMounts, helpers.PreflightInheritedVolumeName),
 					"pod %s: opted-out init container should not inherit workload volume mount", podName)
 
 				t.Logf("Pod %s init containers: %v", podName, initNames)
@@ -159,37 +159,4 @@ func TestPreflightEndToEnd(t *testing.T) {
 	})
 
 	testEnv.Test(t, feature.Feature())
-}
-
-func requireInitContainer(t *testing.T, pod v1.Pod, name string) v1.Container {
-	t.Helper()
-
-	for _, container := range pod.Spec.InitContainers {
-		if container.Name == name {
-			return container
-		}
-	}
-
-	require.Failf(t, "missing init container", "pod %s missing init container %s", pod.Name, name)
-	return v1.Container{}
-}
-
-func findEnvValue(envVars []v1.EnvVar, name string) string {
-	for _, env := range envVars {
-		if env.Name == name {
-			return env.Value
-		}
-	}
-
-	return ""
-}
-
-func hasVolumeMount(mounts []v1.VolumeMount, name string) bool {
-	for _, mount := range mounts {
-		if mount.Name == name {
-			return true
-		}
-	}
-
-	return false
 }

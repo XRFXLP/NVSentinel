@@ -330,6 +330,45 @@ func PreflightInitContainerTerminated(pod *v1.Pod) bool {
 	return false
 }
 
+// RequireInitContainer returns the named init container from a pod, failing the
+// test if it is not present.
+func RequireInitContainer(t *testing.T, pod v1.Pod, name string) v1.Container {
+	t.Helper()
+
+	for _, container := range pod.Spec.InitContainers {
+		if container.Name == name {
+			return container
+		}
+	}
+
+	require.Failf(t, "missing init container", "pod %s missing init container %s", pod.Name, name)
+
+	return v1.Container{}
+}
+
+// FindEnvValue returns the value for an env var name, or an empty string when
+// the env var is absent.
+func FindEnvValue(envVars []v1.EnvVar, name string) string {
+	for _, env := range envVars {
+		if env.Name == name {
+			return env.Value
+		}
+	}
+
+	return ""
+}
+
+// HasVolumeMount reports whether a volume mount with the given name exists.
+func HasVolumeMount(mounts []v1.VolumeMount, name string) bool {
+	for _, mount := range mounts {
+		if mount.Name == name {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ListGangConfigMaps lists ConfigMaps with the preflight gang label
 // in the given namespaces.
 func ListGangConfigMaps(
