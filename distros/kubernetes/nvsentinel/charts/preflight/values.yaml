@@ -129,7 +129,7 @@ initContainers:
   # defaultEnabled: true  # (default when omitted)
   - name: preflight-dcgm-diag
     inheritUserEnv: false
-    inheritUserVolumeMounts: false
+    inheritUserVolumeMounts: true
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
       tag: ""
@@ -160,7 +160,7 @@ initContainers:
   # NCCL loopback test - validates intra-node GPU-to-GPU communication (NVLink/PCIe)
   - name: preflight-nccl-loopback
     inheritUserEnv: false
-    inheritUserVolumeMounts: false
+    inheritUserVolumeMounts: true
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback
       tag: ""
@@ -187,8 +187,8 @@ initContainers:
     # Keep the default all-reduce environment curated by the preflight chart.
     # Set these to true only when a deployment intentionally wants to inherit
     # matching workload NCCL/fabric env or mounts via the patterns below.
-    inheritUserEnv: false
-    inheritUserVolumeMounts: false
+    inheritUserEnv: true
+    inheritUserVolumeMounts: true
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce
       tag: ""
