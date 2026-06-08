@@ -248,6 +248,7 @@ func ApplyPreflightInheritanceTestConfig(
 		}
 
 		cm.Data[PreflightConfigKey] = string(updated)
+
 		return client.Resources().Update(ctx, cm)
 	})
 	require.NoError(t, err, "apply preflight inheritance test config")
