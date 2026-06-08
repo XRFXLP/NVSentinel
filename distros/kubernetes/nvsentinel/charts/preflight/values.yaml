@@ -128,7 +128,11 @@ injectedImagePullSecrets: []
 initContainers:
   # defaultEnabled: true  # (default when omitted)
   - name: preflight-dcgm-diag
+    # Boolean: true copies workload env vars matching ncclEnvPatterns.
+    # Chart-defined env wins on name conflicts; set false for a clean env.
     inheritUserEnv: true
+    # Boolean: true copies workload mounts matching volumeMountPatterns.
+    # Set false to avoid mounting workload-provided paths into this check.
     inheritUserVolumeMounts: true
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
@@ -159,7 +163,11 @@ initContainers:
 
   # NCCL loopback test - validates intra-node GPU-to-GPU communication (NVLink/PCIe)
   - name: preflight-nccl-loopback
+    # Boolean: true copies workload env vars matching ncclEnvPatterns.
+    # Chart-defined env wins on name conflicts; set false to isolate loopback.
     inheritUserEnv: true
+    # Boolean: true copies workload mounts matching volumeMountPatterns.
+    # Set false to avoid workload-provided paths affecting local GPU checks.
     inheritUserVolumeMounts: true
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback
@@ -184,10 +192,11 @@ initContainers:
   # NCCL all-reduce test - validates multi-node GPU communication
   # Requires gangCoordination.enabled=true and gang-aware scheduler (Volcano, Kueue, etc.)
   - name: preflight-nccl-allreduce
-    # Keep the default all-reduce environment curated by the preflight chart.
-    # Set these to true only when a deployment intentionally wants to inherit
-    # matching workload NCCL/fabric env or mounts via the patterns below.
+    # Boolean: true intentionally inherits workload NCCL/fabric env matched by
+    # ncclEnvPatterns; chart-defined env wins. Set false to use only chart env.
     inheritUserEnv: true
+    # Boolean: true intentionally inherits workload fabric mounts matched by
+    # volumeMountPatterns. Set false to use only chart-defined mounts.
     inheritUserVolumeMounts: true
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce
@@ -214,7 +223,7 @@ initContainers:
 # The webhook can copy NCCL env vars and volume mounts from the user's main
 # container to preflight init containers using ncclEnvPatterns and
 # volumeMountPatterns. This is controlled per check with inheritUserEnv and
-# inheritUserVolumeMounts; the built-in checks default to curated environments.
+# inheritUserVolumeMounts; set either boolean false on a check to opt out.
 #
 # For standalone testing (busybox main container), use ncclAllreduceExtraEnv
 # and gangCoordination.extraHostPathMounts to provide fabric config explicitly.
