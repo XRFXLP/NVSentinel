@@ -510,6 +510,29 @@ func CreateGPUPodInGang(
 ) string {
 	t.Helper()
 
+	var podName string
+
+	require.Eventually(t, func() bool {
+		pod := newPreflightGangPod(namespace, nodeName, podGroupName)
+
+		err := client.Resources().Create(ctx, pod)
+		if err != nil {
+			t.Logf("Retrying GPU pod create for gang %s after error: %v", podGroupName, err)
+
+			return false
+		}
+
+		podName = pod.Name
+
+		return podName != ""
+	}, EventuallyWaitTimeout, WaitInterval, "create GPU pod in gang %s", podGroupName)
+
+	require.NotEmpty(t, podName)
+
+	return podName
+}
+
+func newPreflightGangPod(namespace, nodeName, podGroupName string) *v1.Pod {
 	pod := NewGPUPodSpec(namespace, 1)
 	if pod.Annotations == nil {
 		pod.Annotations = make(map[string]string)
@@ -535,11 +558,7 @@ func CreateGPUPodInGang(
 		pod.Spec.NodeName = nodeName
 	}
 
-	err := client.Resources().Create(ctx, pod)
-	require.NoError(t, err, "create GPU pod in gang %s", podGroupName)
-	require.NotEmpty(t, pod.Name)
-
-	return pod.Name
+	return pod
 }
 
 // ExpectedKAIGangID returns the gang ID the preflight webhook generates
