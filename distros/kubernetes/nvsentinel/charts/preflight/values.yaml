@@ -128,6 +128,8 @@ injectedImagePullSecrets: []
 initContainers:
   # defaultEnabled: true  # (default when omitted)
   - name: preflight-dcgm-diag
+    inheritUserEnv: false
+    inheritUserVolumeMounts: false
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
       tag: ""
@@ -157,6 +159,8 @@ initContainers:
 
   # NCCL loopback test - validates intra-node GPU-to-GPU communication (NVLink/PCIe)
   - name: preflight-nccl-loopback
+    inheritUserEnv: false
+    inheritUserVolumeMounts: false
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback
       tag: ""
@@ -180,6 +184,11 @@ initContainers:
   # NCCL all-reduce test - validates multi-node GPU communication
   # Requires gangCoordination.enabled=true and gang-aware scheduler (Volcano, Kueue, etc.)
   - name: preflight-nccl-allreduce
+    # Keep the default all-reduce environment curated by the preflight chart.
+    # Set these to true only when a deployment intentionally wants to inherit
+    # matching workload NCCL/fabric env or mounts via the patterns below.
+    inheritUserEnv: false
+    inheritUserVolumeMounts: false
     image:
       repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce
       tag: ""
@@ -202,9 +211,10 @@ initContainers:
 
 # Fabric-specific NCCL configuration.
 #
-# In production, the webhook automatically copies NCCL env vars and volume
-# mounts from the user's main container to preflight init containers using
-# ncclEnvPatterns and volumeMountPatterns. No manual fabric config needed.
+# The webhook can copy NCCL env vars and volume mounts from the user's main
+# container to preflight init containers using ncclEnvPatterns and
+# volumeMountPatterns. This is controlled per check with inheritUserEnv and
+# inheritUserVolumeMounts; the built-in checks default to curated environments.
 #
 # For standalone testing (busybox main container), use ncclAllreduceExtraEnv
 # and gangCoordination.extraHostPathMounts to provide fabric config explicitly.
@@ -257,9 +267,9 @@ volumeMountPatterns:
   - "nccl-*"
   - "dev-shm"
 
-# Additional env vars appended to the preflight-nccl-allreduce init container
-# AFTER user-container env vars are copied. Use for standalone testing or
-# to override specific values.
+# Additional env vars appended to the preflight-nccl-allreduce init container.
+# These are preflight-defined env vars, so they take precedence over inherited
+# user env vars with the same name when inheritUserEnv is enabled.
 ncclAllreduceExtraEnv: []
 
 gpuResourceNames:

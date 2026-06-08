@@ -19,23 +19,32 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
+	"sigs.k8s.io/yaml"
 )
 
 const (
-	PreflightNamespaceLabel    = "nvsentinel.nvidia.com/preflight"
-	PreflightNamespaceLabelVal = "enabled"
-	PreflightDCGMDiagName      = "preflight-dcgm-diag"
-	PreflightConfigMapName     = "preflight"
-	PreflightConfigKey         = "config.yaml"
+	PreflightNamespaceLabel      = "nvsentinel.nvidia.com/preflight"
+	PreflightNamespaceLabelVal   = "enabled"
+	PreflightDCGMDiagName        = "preflight-dcgm-diag"
+	PreflightInheritEnabledName  = "preflight-inherit-enabled"
+	PreflightInheritDisabledName = "preflight-inherit-disabled"
+	PreflightConfigMapName       = "preflight"
+	PreflightConfigKey           = "config.yaml"
+	PreflightInheritedEnvName    = "NCCL_PREFLIGHT_INHERITED"
+	PreflightInheritedEnvValue   = "from-user-container"
+	PreflightInheritedVolumeName = "nccl-preflight-inherited"
+	PreflightInheritedMountPath  = "/workload-nccl-config"
 
 	GangConfigMapLabelManagedBy = "nvsentinel.nvidia.com/managed-by"
 	GangConfigMapManagedByVal   = "preflight"
@@ -50,10 +59,12 @@ const (
 
 // PreflightTestContext holds state for preflight E2E tests.
 type PreflightTestContext struct {
-	TestNamespace string
-	NodeNames     []string
-	PodNames      []string
-	PodGroupName  string
+	TestNamespace            string
+	NodeNames                []string
+	PodNames                 []string
+	PodGroupName             string
+	PreflightDeploymentName  string
+	PreflightConfigMapBackup []byte
 }
 
 // SetupPreflightTest sets up the full preflight E2E scenario:
@@ -92,9 +103,10 @@ func SetupPreflightTest(
 	t.Logf("Using worker nodes: %v", nodeNames)
 
 	testCtx := &PreflightTestContext{
-		TestNamespace: testNamespace,
-		NodeNames:     nodeNames,
-		PodGroupName:  podGroupName,
+		TestNamespace:           testNamespace,
+		NodeNames:               nodeNames,
+		PodGroupName:            podGroupName,
+		PreflightDeploymentName: preflightDeployName,
 	}
 
 	t.Cleanup(func() {
@@ -127,6 +139,13 @@ func SetupPreflightTest(
 		"preflight config ConfigMap %s should exist", PreflightConfigMapName)
 	require.Contains(t, cm.Data, PreflightConfigKey)
 
+	testCtx.PreflightConfigMapBackup, err = BackupConfigMap(
+		ctx, client, PreflightConfigMapName, NVSentinelNamespace,
+	)
+	require.NoError(t, err, "backup preflight config ConfigMap")
+
+	ApplyPreflightInheritanceTestConfig(ctx, t, client, preflightDeployName)
+
 	CreateKAIPodGroup(ctx, t, client, testNamespace, podGroupName, nodeCount)
 	t.Logf("Created PodGroup %s/%s with minMember=%d",
 		testNamespace, podGroupName, nodeCount)
@@ -156,6 +175,22 @@ func TeardownPreflightTest(
 		return ctx
 	}
 
+	if len(testCtx.PreflightConfigMapBackup) > 0 {
+		if err := createConfigMapFromBytes(
+			ctx,
+			client,
+			testCtx.PreflightConfigMapBackup,
+			PreflightConfigMapName,
+			NVSentinelNamespace,
+		); err != nil {
+			t.Logf("Warning: failed to restore preflight ConfigMap: %v", err)
+		} else if testCtx.PreflightDeploymentName != "" {
+			restartPreflightDeployment(ctx, t, client, testCtx.PreflightDeploymentName)
+		}
+
+		testCtx.PreflightConfigMapBackup = nil
+	}
+
 	for _, podName := range testCtx.PodNames {
 		_ = DeletePod(ctx, t, client, testCtx.TestNamespace, podName, false)
 	}
@@ -171,6 +206,91 @@ func TeardownPreflightTest(
 	}
 
 	return ctx
+}
+
+// ApplyPreflightInheritanceTestConfig replaces the live preflight config with
+// two lightweight checks: one opts into workload env/mount inheritance and one
+// opts out. The original ConfigMap is restored by TeardownPreflightTest.
+func ApplyPreflightInheritanceTestConfig(
+	ctx context.Context, t *testing.T, client klient.Client, deploymentName string,
+) {
+	t.Helper()
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		cm := &v1.ConfigMap{}
+		if getErr := client.Resources().Get(
+			ctx, PreflightConfigMapName, NVSentinelNamespace, cm,
+		); getErr != nil {
+			return getErr
+		}
+
+		rawConfig := cm.Data[PreflightConfigKey]
+		if rawConfig == "" {
+			return fmt.Errorf("ConfigMap %s/%s missing %s",
+				NVSentinelNamespace, PreflightConfigMapName, PreflightConfigKey)
+		}
+
+		var config map[string]any
+		if unmarshalErr := yaml.Unmarshal([]byte(rawConfig), &config); unmarshalErr != nil {
+			return fmt.Errorf("unmarshal preflight config: %w", unmarshalErr)
+		}
+
+		config["ncclEnvPatterns"] = []string{"NCCL_*"}
+		config["volumeMountPatterns"] = []string{PreflightInheritedVolumeName}
+		config["initContainers"] = []map[string]any{
+			preflightInheritanceTestInitContainer(PreflightInheritEnabledName, true),
+			preflightInheritanceTestInitContainer(PreflightInheritDisabledName, false),
+		}
+
+		updated, marshalErr := yaml.Marshal(config)
+		if marshalErr != nil {
+			return fmt.Errorf("marshal preflight config: %w", marshalErr)
+		}
+
+		cm.Data[PreflightConfigKey] = string(updated)
+		return client.Resources().Update(ctx, cm)
+	})
+	require.NoError(t, err, "apply preflight inheritance test config")
+
+	restartPreflightDeployment(ctx, t, client, deploymentName)
+}
+
+func preflightInheritanceTestInitContainer(name string, inherit bool) map[string]any {
+	return map[string]any{
+		"name":                    name,
+		"image":                   "busybox:latest",
+		"command":                 []string{"/bin/sh", "-c"},
+		"args":                    []string{"true"},
+		"inheritUserEnv":          inherit,
+		"inheritUserVolumeMounts": inherit,
+	}
+}
+
+func restartPreflightDeployment(
+	ctx context.Context, t *testing.T, client klient.Client, deploymentName string,
+) {
+	t.Helper()
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		deployment := &appsv1.Deployment{}
+		if getErr := client.Resources().Get(
+			ctx, deploymentName, NVSentinelNamespace, deployment,
+		); getErr != nil {
+			return getErr
+		}
+
+		if deployment.Spec.Template.Annotations == nil {
+			deployment.Spec.Template.Annotations = make(map[string]string)
+		}
+
+		deployment.Spec.Template.Annotations["nvsentinel.nvidia.com/preflight-e2e-config-revision"] =
+			fmt.Sprintf("%d", time.Now().UnixNano())
+
+		return client.Resources().Update(ctx, deployment)
+	})
+	require.NoError(t, err, "restart preflight deployment")
+
+	WaitForDeploymentRollout(ctx, t, client, deploymentName, NVSentinelNamespace)
 }
 
 // WaitForPodInitContainerStatuses waits until at least one preflight init
@@ -356,6 +476,20 @@ func CreateGPUPodInGang(
 	}
 
 	pod.Annotations[KAIPodGroupAnnotation] = podGroupName
+	pod.Spec.Volumes = append(pod.Spec.Volumes, v1.Volume{
+		Name: PreflightInheritedVolumeName,
+		VolumeSource: v1.VolumeSource{
+			EmptyDir: &v1.EmptyDirVolumeSource{},
+		},
+	})
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, v1.EnvVar{
+		Name:  PreflightInheritedEnvName,
+		Value: PreflightInheritedEnvValue,
+	})
+	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, v1.VolumeMount{
+		Name:      PreflightInheritedVolumeName,
+		MountPath: PreflightInheritedMountPath,
+	})
 
 	if nodeName != "" {
 		pod.Spec.NodeName = nodeName

@@ -69,7 +69,7 @@ See [ADR-034](../designs/034-preflight-check-selection.md) for design details.
 
 ## Init containers (check configuration)
 
-The `initContainers` list in the preflight chart defines which checks the webhook injects. Each entry is a standard `corev1.Container` — you control images, env vars, resource limits, security contexts, and volume mounts.
+The `initContainers` list in the preflight chart defines which checks the webhook injects. Each entry is a standard `corev1.Container` plus preflight-specific controls such as `defaultEnabled`, `inheritUserEnv`, and `inheritUserVolumeMounts` — you control images, env vars, resource limits, security contexts, and volume mounts.
 
 The webhook automatically injects these env vars into every init container (you do not need to set them):
 
@@ -80,6 +80,8 @@ The webhook automatically injects these env vars into every init container (you 
 | `PROCESSING_STRATEGY` | Chart `processingStrategy` | `EXECUTE_REMEDIATION` or `STORE_ONLY` — controls downstream action |
 
 For gang-aware containers the webhook also injects `GANG_ID`, `GANG_CONFIG_DIR`, `GANG_TIMEOUT_SECONDS`, and `POD_NAME`.
+
+By default, the built-in checks use curated environments and do not inherit matching env vars or volume mounts from workload containers. To intentionally mirror workload NCCL/fabric configuration for a specific check, set `inheritUserEnv: true` and/or `inheritUserVolumeMounts: true` on that `initContainers` entry.
 
 ### preflight-dcgm-diag
 
@@ -175,14 +177,22 @@ initContainers:
 
 ### Fabric-specific NCCL configuration
 
-In production the webhook automatically copies NCCL env vars and volume mounts from the pod's main containers into preflight init containers using glob patterns:
+When a check opts in with `inheritUserEnv` or `inheritUserVolumeMounts`, the webhook copies matching NCCL env vars and volume mounts from the pod's main containers using glob patterns:
 
 ```yaml
 ncclEnvPatterns:    ["NCCL_*", "FI_*", "LD_LIBRARY_PATH", "UCX_*", "TORCH_NCCL_*", "CUDA_DEVICE_ORDER"]
 volumeMountPatterns: ["host-opt-amazon*", "nvtcpxo-*", "nccl-*", "dev-shm"]
 ```
 
-This means if your training container already has the correct `NCCL_TOPO_FILE`, `FI_PROVIDER`, or `LD_LIBRARY_PATH`, the preflight init containers inherit them with no manual configuration.
+This means if your training container already has the correct `NCCL_TOPO_FILE`, `FI_PROVIDER`, or `LD_LIBRARY_PATH`, an opted-in preflight init container can inherit them with no manual configuration.
+Inheritance is per init container. The built-in checks set `inheritUserEnv: false` and `inheritUserVolumeMounts: false` by default to avoid workload-specific NCCL tuning poisoning preflight checks. Enable the flags only for checks that should intentionally mirror the workload environment:
+
+```yaml
+initContainers:
+  - name: preflight-nccl-allreduce
+    inheritUserEnv: true
+    inheritUserVolumeMounts: true
+```
 
 For standalone testing (e.g. busybox main container), use `ncclAllreduceExtraEnv` and `gangCoordination.extraHostPathMounts` to provide fabric config explicitly.
 

@@ -46,17 +46,31 @@ const (
 	PlacementPrepend InitContainerPlacement = "prepend"
 )
 
-// InitContainerSpec wraps corev1.Container with a DefaultEnabled field
-// that controls whether the check runs when no per-pod annotation overrides
-// the check selection. Defaults to true when omitted (nil).
+// InitContainerSpec wraps corev1.Container with preflight-specific fields.
 type InitContainerSpec struct {
-	corev1.Container `yaml:",inline"`
-	DefaultEnabled   *bool `yaml:"defaultEnabled,omitempty"`
+	corev1.Container        `yaml:",inline"`
+	DefaultEnabled          *bool `yaml:"defaultEnabled,omitempty"`
+	InheritUserEnv          *bool `yaml:"inheritUserEnv,omitempty"`
+	InheritUserVolumeMounts *bool `yaml:"inheritUserVolumeMounts,omitempty"`
 }
 
 // IsDefaultEnabled returns true when DefaultEnabled is nil or explicitly true.
 func (s *InitContainerSpec) IsDefaultEnabled() bool {
 	return s.DefaultEnabled == nil || *s.DefaultEnabled
+}
+
+// InheritsUserEnv returns true when matching env vars from user containers
+// should be copied into this init container. Omitted values preserve the
+// historical behavior of inheriting matching env vars.
+func (s *InitContainerSpec) InheritsUserEnv() bool {
+	return s.InheritUserEnv == nil || *s.InheritUserEnv
+}
+
+// InheritsUserVolumeMounts returns true when matching volume mounts from user
+// containers should be copied into this init container. Omitted values preserve
+// the historical behavior of inheriting matching volume mounts.
+func (s *InitContainerSpec) InheritsUserVolumeMounts() bool {
+	return s.InheritUserVolumeMounts == nil || *s.InheritUserVolumeMounts
 }
 
 type FileConfig struct {

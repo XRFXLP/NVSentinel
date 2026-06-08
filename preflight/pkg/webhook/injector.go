@@ -365,12 +365,19 @@ func (i *Injector) buildInitContainers(
 		i.injectCommonEnv(container)
 		i.injectGangEnv(container, gangCtx)
 
-		// Copy matching env vars from user containers (lower precedence
-		// than the init container's own env vars — only adds new names).
-		i.mergeEnvVars(container, userEnvVars)
+		// Copy matching env vars from user containers only when this check opts
+		// in. Inherited env remains lower precedence than the init container's
+		// own env vars; mergeEnvVars only adds missing names.
+		if tmpl.InheritsUserEnv() {
+			i.mergeEnvVars(container, userEnvVars)
+		}
 
-		// Copy matching volume mounts from user containers.
-		i.mergeVolumeMounts(container, userVolumeMounts)
+		// Copy matching volume mounts from user containers only when this check
+		// opts in. This avoids workload fabric mounts affecting checks that
+		// should run with a curated or local-only environment.
+		if tmpl.InheritsUserVolumeMounts() {
+			i.mergeVolumeMounts(container, userVolumeMounts)
+		}
 
 		if gangCtx != nil {
 			i.injectGangMounts(container, mirrorClaims, pod.Spec.ResourceClaims)

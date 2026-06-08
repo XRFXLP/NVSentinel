@@ -649,6 +649,24 @@ func TestBuildInitContainers(t *testing.T) {
 		assert.Equal(t, "INFO", findEnv(containers[0].Env, "NCCL_DEBUG"))
 	})
 
+	t.Run("user NCCL env not inherited when disabled", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
+		cfg.InitContainers[0].InheritUserEnv = boolPtr(false)
+		injector := NewInjector(cfg, nil)
+
+		pod := gpuPod()
+		pod.Spec.Containers[0].Env = []corev1.EnvVar{
+			{Name: "NCCL_DEBUG", Value: "INFO"},
+		}
+
+		containers := injector.buildInitContainers(pod, corev1.ResourceList{
+			"nvidia.com/gpu": resource.MustParse("8"),
+		}, nil, cfg.InitContainers)
+		require.Len(t, containers, 1)
+		assert.False(t, hasEnvVar(containers[0], "NCCL_DEBUG"))
+	})
+
 	t.Run("user env lower precedence than template", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
@@ -688,6 +706,24 @@ func TestBuildInitContainers(t *testing.T) {
 		}, nil, cfg.InitContainers)
 		require.Len(t, containers, 1)
 		assert.True(t, hasVolumeMount(containers[0], "nvtcpxo-libraries"))
+	})
+
+	t.Run("user volume mounts not inherited when disabled", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.VolumeMountPatterns = []string{"nvtcpxo-*"}
+		cfg.InitContainers[0].InheritUserVolumeMounts = boolPtr(false)
+		injector := NewInjector(cfg, nil)
+
+		pod := gpuPod()
+		pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
+			{Name: "nvtcpxo-libraries", MountPath: "/usr/local/nvidia"},
+		}
+
+		containers := injector.buildInitContainers(pod, corev1.ResourceList{
+			"nvidia.com/gpu": resource.MustParse("8"),
+		}, nil, cfg.InitContainers)
+		require.Len(t, containers, 1)
+		assert.False(t, hasVolumeMount(containers[0], "nvtcpxo-libraries"))
 	})
 
 	t.Run("DRA claims mirrored when enabled", func(t *testing.T) {
@@ -1204,8 +1240,8 @@ func testConfig() *config.Config {
 			GPUResourceNames:       []string{"nvidia.com/gpu"},
 			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
 			InitContainerPlacement: config.PlacementAppend,
-			ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
-			ProcessingStrategy: "EXECUTE_REMEDIATION",
+			ConnectorSocket:        "/var/run/nvsentinel/nvsentinel.sock",
+			ProcessingStrategy:     "EXECUTE_REMEDIATION",
 		},
 	}
 }

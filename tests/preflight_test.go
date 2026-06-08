@@ -60,7 +60,7 @@ func TestPreflightEndToEnd(t *testing.T) {
 		return newCtx
 	})
 
-	feature.Assess("webhook injected preflight-dcgm-diag on both pods",
+	feature.Assess("webhook injected per-container inheritance config on both pods",
 		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			client, err := c.NewClient()
 			require.NoError(t, err)
@@ -81,9 +81,28 @@ func TestPreflightEndToEnd(t *testing.T) {
 				require.NotEmpty(t, initNames,
 					"pod %s should have init containers", podName)
 				require.Contains(t, initNames,
-					helpers.PreflightDCGMDiagName,
+					helpers.PreflightInheritEnabledName,
 					"pod %s missing %s in %v",
-					podName, helpers.PreflightDCGMDiagName, initNames)
+					podName, helpers.PreflightInheritEnabledName, initNames)
+				require.Contains(t, initNames,
+					helpers.PreflightInheritDisabledName,
+					"pod %s missing %s in %v",
+					podName, helpers.PreflightInheritDisabledName, initNames)
+
+				enabled := requireInitContainer(t, pod, helpers.PreflightInheritEnabledName)
+				disabled := requireInitContainer(t, pod, helpers.PreflightInheritDisabledName)
+
+				require.Equal(t, helpers.PreflightInheritedEnvValue,
+					findEnvValue(enabled.Env, helpers.PreflightInheritedEnvName),
+					"pod %s: opted-in init container should inherit workload env", podName)
+				require.True(t, hasVolumeMount(enabled.VolumeMounts, helpers.PreflightInheritedVolumeName),
+					"pod %s: opted-in init container should inherit workload volume mount", podName)
+
+				require.Empty(t,
+					findEnvValue(disabled.Env, helpers.PreflightInheritedEnvName),
+					"pod %s: opted-out init container should not inherit workload env", podName)
+				require.False(t, hasVolumeMount(disabled.VolumeMounts, helpers.PreflightInheritedVolumeName),
+					"pod %s: opted-out init container should not inherit workload volume mount", podName)
 
 				t.Logf("Pod %s init containers: %v", podName, initNames)
 			}
@@ -140,4 +159,37 @@ func TestPreflightEndToEnd(t *testing.T) {
 	})
 
 	testEnv.Test(t, feature.Feature())
+}
+
+func requireInitContainer(t *testing.T, pod v1.Pod, name string) v1.Container {
+	t.Helper()
+
+	for _, container := range pod.Spec.InitContainers {
+		if container.Name == name {
+			return container
+		}
+	}
+
+	require.Failf(t, "missing init container", "pod %s missing init container %s", pod.Name, name)
+	return v1.Container{}
+}
+
+func findEnvValue(envVars []v1.EnvVar, name string) string {
+	for _, env := range envVars {
+		if env.Name == name {
+			return env.Value
+		}
+	}
+
+	return ""
+}
+
+func hasVolumeMount(mounts []v1.VolumeMount, name string) bool {
+	for _, mount := range mounts {
+		if mount.Name == name {
+			return true
+		}
+	}
+
+	return false
 }

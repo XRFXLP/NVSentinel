@@ -1643,6 +1643,8 @@ preflight:
     #   DCGM_DIAG_LEVEL       - diagnostic depth 1-4 (default 2)
     #   DCGM_HOSTENGINE_ADDR  - hostengine gRPC endpoint (default nvidia-dcgm.gpu-operator.svc:5555)
     - name: preflight-dcgm-diag
+      inheritUserEnv: false
+      inheritUserVolumeMounts: false
       image:
         repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
         tag: ""
@@ -1660,6 +1662,8 @@ preflight:
     #   TEST_SIZE_MB       - message size in MB (default 256)
     #   SKIP_BANDWIDTH_CHECK - "true" to pass if benchmark completes (default false)
     - name: preflight-nccl-loopback
+      inheritUserEnv: false
+      inheritUserVolumeMounts: false
       image:
         repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback
         tag: ""
@@ -1684,6 +1688,11 @@ preflight:
     #   NCCL_DEBUG           - NCCL log verbosity (e.g. INFO, WARN)
     #   NCCL_DEBUG_SUBSYS    - NCCL subsystems to log (e.g. INIT,NET)
     - name: preflight-nccl-allreduce
+      # Keep the default all-reduce environment curated by the preflight chart.
+      # Set these to true only when a deployment intentionally wants to inherit
+      # matching workload NCCL/fabric env or mounts via the patterns below.
+      inheritUserEnv: false
+      inheritUserVolumeMounts: false
       image:
         repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce
         tag: ""
@@ -1706,9 +1715,10 @@ preflight:
   ##############################################################################
   # NCCL FABRIC CONFIGURATION
   #
-  # In production the webhook automatically copies NCCL env vars and volume
-  # mounts from the pod's main container using glob patterns below.
-  # For standalone testing, use ncclAllreduceExtraEnv and
+  # The webhook can copy NCCL env vars and volume mounts from the pod's main
+  # container using glob patterns below. This is controlled per check with
+  # inheritUserEnv and inheritUserVolumeMounts; the built-in checks default to
+  # curated environments. For standalone testing, use ncclAllreduceExtraEnv and
   # gangCoordination.extraHostPathMounts instead.
   ##############################################################################
 
@@ -1731,8 +1741,9 @@ preflight:
     - "nccl-*"
     - "dev-shm"
 
-  # Extra env vars appended to preflight-nccl-allreduce AFTER user-container
-  # env vars are copied. Use for standalone testing or overrides.
+  # Extra env vars appended to preflight-nccl-allreduce. These are
+  # preflight-defined env vars, so they take precedence over inherited user env
+  # vars with the same name when inheritUserEnv is enabled.
   ncclAllreduceExtraEnv: []
 
   ##############################################################################

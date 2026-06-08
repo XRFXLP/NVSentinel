@@ -581,8 +581,8 @@ NCCL tests require access to RDMA/InfiniBand devices for efficient GPU-to-GPU co
 **Webhook behavior for NCCL checks:**
 If `nccl-loopback` or `nccl-allreduce` is enabled, webhook:
 1. Copies all network device resources (extended resources using max count, or DRA claim references)
-2. Scans all container env vars, copies those matching `ncclEnvPatterns` (glob patterns from Helm config)
-3. Copies volume mounts referenced by `NCCL_TOPO_FILE` (if present)
+2. For checks with `inheritUserEnv: true`, scans workload env vars and copies names matching `ncclEnvPatterns` (glob patterns from Helm config)
+3. For checks with `inheritUserVolumeMounts: true`, copies workload volume mounts matching `volumeMountPatterns`
 
 **NCCL topology file handling:**
 The init container image includes common topology files for major cloud platforms:
@@ -596,7 +596,7 @@ The init container image includes common topology files for major cloud platform
 ```
 
 **Topology selection priority:**
-1. **User-provided**: Webhook checks if any container has `NCCL_TOPO_FILE` env var with a corresponding volume mount at that path → copy that volume mount to init container
+1. **User-provided**: For checks that opt into user inheritance, webhook can copy matching `NCCL_TOPO_FILE` env and volume mounts from the workload container
 2. **Auto-detect**: If no `NCCL_TOPO_FILE` + volume mount found, init container reads node label `node.kubernetes.io/instance-type`, maps to built-in topology file via Helm config
 3. **Fallback**: If instance type unknown or not in mapping, don't set `NCCL_TOPO_FILE` (NCCL auto-detects topology)
 

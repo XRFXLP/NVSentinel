@@ -215,6 +215,28 @@ initContainers:
 		assert.False(t, cfg.InitContainers[1].IsDefaultEnabled(), "explicit false should be false")
 	})
 
+	t.Run("inheritance flags parsed from YAML", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+  - name: preflight-nccl-loopback
+    image: nccl:latest
+    inheritUserEnv: false
+    inheritUserVolumeMounts: false
+`)
+		cfg, err := Load(path)
+		require.NoError(t, err)
+		require.Len(t, cfg.InitContainers, 2)
+
+		assert.True(t, cfg.InitContainers[0].InheritsUserEnv(), "nil InheritUserEnv should preserve inheritance")
+		assert.True(t, cfg.InitContainers[0].InheritsUserVolumeMounts(),
+			"nil InheritUserVolumeMounts should preserve inheritance")
+		assert.False(t, cfg.InitContainers[1].InheritsUserEnv(), "explicit false should disable env inheritance")
+		assert.False(t, cfg.InitContainers[1].InheritsUserVolumeMounts(),
+			"explicit false should disable volume mount inheritance")
+	})
+
 	t.Run("extra hostPath readOnly explicit false", func(t *testing.T) {
 		path := writeYAML(t, `
 initContainers:
