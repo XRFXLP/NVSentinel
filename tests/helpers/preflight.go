@@ -294,8 +294,8 @@ func restartPreflightDeployment(
 	WaitForDeploymentRollout(ctx, t, client, deploymentName, NVSentinelNamespace)
 }
 
-// WaitForPodInitContainerStatuses waits until at least one preflight init
-// container has terminated (Completed or Error).
+// WaitForPodInitContainerStatuses waits until all preflight init containers
+// have terminated (Completed or Error).
 func WaitForPodInitContainerStatuses(
 	ctx context.Context, t *testing.T, client klient.Client,
 	namespace, podName string,
@@ -310,24 +310,44 @@ func WaitForPodInitContainerStatuses(
 			return false
 		}
 
-		return PreflightInitContainerTerminated(&pod)
+		return PreflightInitContainersTerminated(&pod)
 	}, EventuallyWaitTimeout, WaitInterval,
-		"pod %s: at least one preflight-* init container should terminate",
+		"pod %s: all preflight-* init containers should terminate",
 		podName)
 
 	return &pod
 }
 
-// PreflightInitContainerTerminated returns true if at least one preflight
+// PreflightInitContainersTerminated returns true once every injected preflight
 // init container has reached Terminated state.
-func PreflightInitContainerTerminated(pod *v1.Pod) bool {
-	for _, st := range pod.Status.InitContainerStatuses {
-		if strings.HasPrefix(st.Name, "preflight-") && st.State.Terminated != nil {
-			return true
+func PreflightInitContainersTerminated(pod *v1.Pod) bool {
+	expected := make(map[string]struct{})
+
+	for _, initContainer := range pod.Spec.InitContainers {
+		if strings.HasPrefix(initContainer.Name, "preflight-") {
+			expected[initContainer.Name] = struct{}{}
 		}
 	}
 
-	return false
+	if len(expected) == 0 {
+		return false
+	}
+
+	terminated := 0
+
+	for _, st := range pod.Status.InitContainerStatuses {
+		if _, ok := expected[st.Name]; !ok {
+			continue
+		}
+
+		if st.State.Terminated == nil {
+			return false
+		}
+
+		terminated++
+	}
+
+	return terminated == len(expected)
 }
 
 // RequireInitContainer returns the named init container from a pod, failing the
