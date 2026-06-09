@@ -207,6 +207,8 @@ platformConnector:
 
   tolerations: []
 
+  affinity: {}
+
   logLevel: info
 
   mongodbStore:

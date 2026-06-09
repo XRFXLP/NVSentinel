@@ -200,6 +200,10 @@ spec:
         {{- if .Values.global.auditLogging.enabled }}
         {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}
         {{- end }}
+      {{- with .Values.platformConnector.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with (.Values.global.tolerations | default .Values.platformConnector.tolerations) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
