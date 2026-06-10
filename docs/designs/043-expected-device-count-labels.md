@@ -1,4 +1,4 @@
-# ADR-043: Labeler - Expected Device Inventory Labels
+# ADR-043: Labeler - Expected Device Count Labels
 
 ## Context
 
@@ -23,8 +23,10 @@ The labels are derived from the best available source for the deployment mode:
 
 `labeler` is configured with inventory classes. Each class declares:
 
+- whether the class is enabled;
 - the NVSentinel-owned labels to write;
 - the grouping labels that define the hardware class;
+- optional expected-count overrides;
 - a CEL expression that returns the current count for the node.
 
 The CEL environment is intentionally small and read-only. `labeler` builds the input context and the expression only counts from that context:
@@ -34,8 +36,8 @@ The CEL environment is intentionally small and read-only. `labeler` builds the i
 
 Inventory class expressions can use either legacy node labels or DRA inventory:
 
-- device-plugin deployments can read labels such as `nvidia.com/gpu.count` and `nvidia.com/gpu.product` from `node`;
-- DRA deployments can count matching `ResourceSlice.spec.devices[]` entries from `resourceSlices`;
+- for device-plugin deployments, the expression can read GPU Feature Discovery labels such as `node.metadata.labels['nvidia.com/gpu.count']`;
+- for DRA deployments, the expression can count matching `ResourceSlice.spec.devices[]` entries from `resourceSlices`;
 - DRA device semantics are driver-specific, so the expression is responsible for matching the right driver and device attributes for that inventory class.
 
 The expression must return an integer. If it errors or returns a non-integer, `labeler` skips the current-count update for that class and records the evaluation failure. The first implementation will support standard CEL list macros such as `filter`, `map`, and `size`, and will register a `sum(list<int>) -> int` helper so DRA counts can be expressed across multiple `ResourceSlice` objects.
@@ -48,6 +50,7 @@ labeler:
     enabled: true
     classes:
       - name: gpu
+        enabled: true
         labels:
           current: nvsentinel.dgxc.nvidia.com/gpu.count.current
           expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
@@ -56,9 +59,14 @@ labeler:
           - karpenter.sh/nodepool
           - nvidia.com/gpu.product
           - nvidia.com/gpu.sharing-strategy
+        expectedCountOverrides:
+          - matchLabels:
+              nvidia.com/gpu.product: NVIDIA-GB200
+            count: 8
         currentExpression: |
           int(node.metadata.labels['nvidia.com/gpu.count'])
       - name: nic.roce
+        enabled: true
         labels:
           current: nvsentinel.dgxc.nvidia.com/nic.roce.count.current
           expected: nvsentinel.dgxc.nvidia.com/nic.roce.count.expected
@@ -93,8 +101,9 @@ nvsentinel.dgxc.nvidia.com/nic.roce.count.expected
 ```
 
 - `current` is the count visible in the selected inventory source.
-- `expected` is the stable baseline for the node's hardware class.
-- `expected` may rise automatically when a higher count is observed in the same class, but it must not fall automatically when `current` drops.
+- `expected` is either an operator-provided override for the matching hardware class or the learned baseline for that class.
+- Learned `expected` may rise automatically when a higher count is observed in the same class, but it must not fall automatically when `current` drops.
+- Disabled classes are not compiled, evaluated, or written to node labels. This allows expensive or environment-specific CEL expressions to be contained without disabling the entire expected-inventory feature.
 
 `labeler` only writes inventory labels when the computed values are valid non-negative integers. Kubernetes Object Monitor policies can therefore compare the label values directly after checking that the labels exist.
 
@@ -102,7 +111,7 @@ The CEL environment will not provide arbitrary Kubernetes lookup/list functions.
 
 ## Expected Count And Grouping
 
-Expected counts are learned per inventory class and hardware-class partition. For each inventory class, the configured `groupingLabels` form the partition key. Nodes with the same values for that key are compared with each other, and nodes with different values are evaluated independently:
+Expected counts can be provided by operator overrides or learned per inventory class and hardware-class partition. Operator overrides take precedence. If no override matches a node, the configured `groupingLabels` form the partition key. Nodes with the same values for that key are compared with each other, and nodes with different values are evaluated independently:
 
 ```text
 partition = (inventory class, grouping label values)
