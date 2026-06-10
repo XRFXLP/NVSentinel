@@ -91,13 +91,14 @@ The CEL environment will not provide arbitrary Kubernetes lookup/list functions.
 
 ## Expected Count And Grouping
 
-Expected counts are learned per inventory class and hardware class:
+Expected counts are learned per inventory class and hardware-class partition. For each inventory class, the configured `groupingLabels` form the partition key. Nodes with the same values for that key are compared with each other, and nodes with different values are evaluated independently:
 
 ```text
-expected = max(current count for nodes in the same inventory class and hardware class)
+partition = (inventory class, grouping label values)
+expected = max(current count for nodes in the same partition)
 ```
 
-The grouping key must prevent unrelated hardware from influencing each other's expected counts. For GPU inventory this can include labels such as `nvidia.com/gpu.product`, `nvidia.com/gpu.sharing-strategy`, instance type, and nodepool. For RoCE inventory this can include the DRA driver, device type, instance type, and nodepool.
+This supports heterogeneous clusters by preventing unrelated hardware from influencing each other's expected counts. For GPU inventory, grouping labels can include values such as `nvidia.com/gpu.product`, `nvidia.com/gpu.sharing-strategy`, instance type, and nodepool. For RoCE inventory, grouping labels can include instance type and nodepool, while the inventory class expression itself selects the DRA driver and device type.
 
 For example, AWS RoCE DRA advertises RoCE interfaces as devices:
 
