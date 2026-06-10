@@ -67,9 +67,18 @@ labeler:
           - karpenter.sh/nodepool
         currentExpression: |
           sum(resourceSlices
-            .filter(rs, rs.spec.driver == 'dra.networking.k8s.aws')
+            .filter(rs,
+              has(rs.spec.driver) &&
+              rs.spec.driver == 'dra.networking.k8s.aws' &&
+              has(rs.spec.devices)
+            )
             .map(rs, rs.spec.devices
-              .filter(d, d.attributes['dra.vpc.amazonaws.com/deviceType'].string == 'roce')
+              .filter(d,
+                has(d.attributes) &&
+                'dra.vpc.amazonaws.com/deviceType' in d.attributes &&
+                has(d.attributes['dra.vpc.amazonaws.com/deviceType'].string) &&
+                d.attributes['dra.vpc.amazonaws.com/deviceType'].string == 'roce'
+              )
               .size()
             ))
 ```
@@ -207,6 +216,8 @@ sum(list<int>) -> int
 ```
 
 `sum` returns the total of the integer values in the list and returns `0` for an empty list. It exists so expressions can count devices across multiple `ResourceSlice` objects without adding broader Kubernetes query helpers.
+
+Tests for this evaluator should cover multiple `ResourceSlice` objects for one node, slices without `spec.devices`, devices without the selected attribute, and selected attributes without a `string` value.
 
 ### RBAC
 
