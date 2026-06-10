@@ -136,9 +136,9 @@ Cold start behavior should be conservative. If no expected label exists and only
 
 ## Consumer Policies
 
-Kubernetes Object Monitor consumes the normalized labels with Node policies. A two-policy flow prevents repeated restarts and escalates to VM replacement only if the inventory mismatch survives a node Ready transition.
+Kubernetes Object Monitor consumes the normalized labels with Node policies. The replace policy uses the existing fault-quarantine `quarantineHealthEvent` annotation as evidence that the restart event was already processed, instead of depending on node conditions written by the platform connector.
 
-The first policy detects the missing inventory and asks fault-remediation to restart the node. The platform connector creates a Node condition with type `LessThanTotalGPUsRestart` for that policy. The second policy reuses that condition's `lastTransitionTime` and compares it with the kubelet-managed `Ready` condition. If the node became Ready after the first policy matched, the inventory is still missing, and the node has been Ready for at least one hour, the action escalates to VM replacement.
+The first policy detects the missing inventory and asks fault-remediation to restart the node. The second policy escalates to VM replacement when the inventory is still missing, the restart event is present in `quarantineHealthEvent`, and the node has been Ready for at least one hour.
 
 ```yaml
 kubernetes-object-monitor:
@@ -174,15 +174,13 @@ kubernetes-object-monitor:
           'nvsentinel.dgxc.nvidia.com/gpu.count.expected' in resource.metadata.labels &&
           int(resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.current']) <
           int(resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.expected']) &&
-          resource.status.conditions.exists(inv,
-            inv.type == 'LessThanTotalGPUsRestart' &&
-            inv.status == 'True' &&
-            resource.status.conditions.exists(ready,
-              ready.type == 'Ready' &&
-              ready.status == 'True' &&
-              timestamp(ready.lastTransitionTime) > timestamp(inv.lastTransitionTime) &&
-              (now - timestamp(ready.lastTransitionTime)) > duration('1h')
-            )
+          has(resource.metadata.annotations) &&
+          'quarantineHealthEvent' in resource.metadata.annotations &&
+          resource.metadata.annotations['quarantineHealthEvent'].contains('"checkName":"LessThanTotalGPUsRestart"') &&
+          resource.status.conditions.exists(ready,
+            ready.type == 'Ready' &&
+            ready.status == 'True' &&
+            (now - timestamp(ready.lastTransitionTime)) > duration('1h')
           )
       healthEvent:
         componentClass: Node
