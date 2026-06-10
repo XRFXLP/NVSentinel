@@ -87,6 +87,8 @@ nvsentinel.dgxc.nvidia.com/nic.roce.count.expected
 - `expected` is the stable baseline for the node's hardware class.
 - `expected` may rise automatically when a higher count is observed in the same class, but it must not fall automatically when `current` drops.
 
+`labeler` only writes inventory labels when the computed values are valid non-negative integers. Kubernetes Object Monitor policies can therefore compare the label values directly after checking that the labels exist.
+
 The CEL environment will not provide arbitrary Kubernetes lookup/list functions. `labeler` controls the available inventory context so expressions remain deterministic, cheap to evaluate, and easy to reason about.
 
 ## Expected Count And Grouping
@@ -125,20 +127,64 @@ Cold start behavior should be conservative. If no expected label exists and only
 
 ## Consumer Policies
 
-Kubernetes Object Monitor can consume the normalized labels with a simple Node policy.
+Kubernetes Object Monitor consumes the normalized labels with Node policies. A two-policy flow prevents repeated restarts and escalates to VM replacement only if the inventory mismatch survives a node Ready transition.
 
-GPU example:
+The first policy detects the missing inventory and asks fault-remediation to restart the node. The platform connector creates a Node condition with type `LessThanTotalGPUsRestart` for that policy. The second policy reuses that condition's `lastTransitionTime` and compares it with the kubelet-managed `Ready` condition. If the node became Ready after the first policy matched, the inventory is still missing, and the node has been Ready for at least one hour, the action escalates to VM replacement.
 
-```cel
-'nvsentinel.dgxc.nvidia.com/gpu.count.current' in resource.metadata.labels &&
-'nvsentinel.dgxc.nvidia.com/gpu.count.expected' in resource.metadata.labels &&
-resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.current'].matches('^[0-9]+$') &&
-resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.expected'].matches('^[0-9]+$') &&
-int(resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.current']) <
-int(resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.expected'])
+```yaml
+kubernetes-object-monitor:
+  policies:
+    - name: LessThanTotalGPUsRestart
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          'nvsentinel.dgxc.nvidia.com/gpu.count.current' in resource.metadata.labels &&
+          'nvsentinel.dgxc.nvidia.com/gpu.count.expected' in resource.metadata.labels &&
+          int(resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.current']) <
+          int(resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.expected'])
+      healthEvent:
+        componentClass: Node
+        isFatal: true
+        message: "GPU inventory is below expected count"
+        recommendedAction: RESTART_VM
+        errorCode:
+          - LESS_THAN_TOTAL_GPUS_RESTART
+    - name: LessThanTotalGPUsReplace
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          'nvsentinel.dgxc.nvidia.com/gpu.count.current' in resource.metadata.labels &&
+          'nvsentinel.dgxc.nvidia.com/gpu.count.expected' in resource.metadata.labels &&
+          int(resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.current']) <
+          int(resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.expected']) &&
+          resource.status.conditions.exists(inv,
+            inv.type == 'LessThanTotalGPUsRestart' &&
+            inv.status == 'True' &&
+            resource.status.conditions.exists(ready,
+              ready.type == 'Ready' &&
+              ready.status == 'True' &&
+              timestamp(ready.lastTransitionTime) > timestamp(inv.lastTransitionTime) &&
+              (now - timestamp(ready.lastTransitionTime)) > duration('1h')
+            )
+          )
+      healthEvent:
+        componentClass: Node
+        isFatal: true
+        message: "GPU inventory is still below expected count after node restart"
+        recommendedAction: REPLACE_VM
+        errorCode:
+          - LESS_THAN_TOTAL_GPUS_REPLACE
 ```
 
-The `matches` guards prevent malformed labels from producing CEL conversion errors. A malformed current or expected label should be treated as a labeler bug and surfaced through labeler metrics/logs, not as a device-missing health event.
+The same pattern applies to other inventory classes by changing the label keys, policy names, messages, and error codes.
 
 ```mermaid
 flowchart TD
