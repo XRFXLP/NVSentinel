@@ -30,6 +30,16 @@ platformConnector:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+### Scheduling
+
+Controls where platform-connectors pods can be scheduled.
+
+```yaml
+platformConnector:
+  tolerations: []
+  affinity: {}
+```
+
 ## Transformer Pipeline
 
 Configures the event transformation pipeline that processes health events before storage and Kubernetes propagation.
