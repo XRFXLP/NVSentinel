@@ -4,24 +4,24 @@
 
 NVSentinel needs a way to detect missing GPUs and NICs even when the kernel or driver does not emit a useful XID, SXID, or fallen-off-bus syslog line. A common failure mode is that a node reports fewer devices than its platform is expected to have; if no error log is produced, Kubernetes Object Monitor needs a normalized Kubernetes signal to consume.
 
-Today the expected inventory is implicit. Operators may know that a class of nodes should have eight GPUs or eight RoCE interfaces, but NVSentinel does not persist that expectation in a normalized form that Kubernetes Object Monitor policies can consume.
+Today the expected device count is implicit. Operators may know that a class of nodes should have eight GPUs or eight RoCE interfaces, but NVSentinel does not persist that expectation in a normalized form that Kubernetes Object Monitor policies can consume.
 
-This ADR defines that normalized inventory contract.
+This ADR defines that normalized device-count contract.
 
 ## Decision
 
-Extend `labeler` to normalize device inventory into NVSentinel-owned node labels that express both current and expected device counts. Kubernetes Object Monitor can then compare these labels and emit health events when the current count is lower than the expected count.
+Extend `labeler` to normalize device counts into NVSentinel-owned node labels that express both current and expected device counts. Kubernetes Object Monitor can then compare these labels and emit health events when the current count is lower than the expected count.
 
 The labels are derived from the best available source for the deployment mode:
 
 - device-plugin/GFD labels for legacy GPU deployments;
-- DRA `ResourceSlice` device inventory for GPU and NIC DRA deployments.
+- DRA `ResourceSlice` device counts for GPU and NIC DRA deployments.
 
 `labeler` owns the derived labels. Kubernetes Object Monitor consumes them.
 
-## Inventory Class Contract
+## Device Count Class Contract
 
-`labeler` is configured with inventory classes. Each class declares:
+`labeler` is configured with device count classes. Each class declares:
 
 - whether the class is enabled;
 - the NVSentinel-owned labels to write;
@@ -34,11 +34,11 @@ The CEL environment is intentionally small and read-only. `labeler` builds the i
 - `node`: the Kubernetes `Node` object being reconciled;
 - `resourceSlices`: all raw `ResourceSlice` objects associated with that node.
 
-Inventory class expressions can use either legacy node labels or DRA inventory:
+Device count expressions can use either legacy node labels or DRA `ResourceSlice` data:
 
 - for device-plugin deployments, the expression can read GPU Feature Discovery labels such as `node.metadata.labels['nvidia.com/gpu.count']`;
 - for DRA deployments, the expression can count matching `ResourceSlice.spec.devices[]` entries from `resourceSlices`;
-- DRA device semantics are driver-specific, so the expression is responsible for matching the right driver and device attributes for that inventory class.
+- DRA device semantics are driver-specific, so the expression is responsible for matching the right driver and device attributes for that class.
 
 The expression must return an integer. If it errors or returns a non-integer, `labeler` skips the current-count update for that class and records the evaluation failure. The first implementation will support standard CEL list macros such as `filter`, `map`, and `size`, and will register a `sum(list<int>) -> int` helper so DRA counts can be expressed across multiple `ResourceSlice` objects.
 
@@ -46,7 +46,7 @@ Example shape:
 
 ```yaml
 labeler:
-  expectedInventory:
+  expectedDeviceCounts:
     enabled: true
     classes:
       - name: gpu
@@ -100,25 +100,25 @@ nvsentinel.dgxc.nvidia.com/nic.roce.count.current
 nvsentinel.dgxc.nvidia.com/nic.roce.count.expected
 ```
 
-- `current` is the count visible in the selected inventory source.
+- `current` is the count visible in the selected count source.
 - `expected` is either an operator-provided override for the matching hardware class or the learned baseline for that class.
 - Learned `expected` may rise automatically when a higher count is observed in the same class, but it must not fall automatically when `current` drops.
-- Disabled classes are not compiled, evaluated, or written to node labels. This allows expensive or environment-specific CEL expressions to be contained without disabling the entire expected-inventory feature.
+- Disabled classes are not compiled, evaluated, or written to node labels. This allows expensive or environment-specific CEL expressions to be contained without disabling the entire expected-count feature.
 
-`labeler` only writes inventory labels when the computed values are valid non-negative integers. Kubernetes Object Monitor policies can therefore compare the label values directly after checking that the labels exist.
+`labeler` only writes device count labels when the computed values are valid non-negative integers. Kubernetes Object Monitor policies can therefore compare the label values directly after checking that the labels exist.
 
-The CEL environment will not provide arbitrary Kubernetes lookup/list functions. `labeler` controls the available inventory context so expressions remain deterministic, cheap to evaluate, and easy to reason about.
+The CEL environment will not provide arbitrary Kubernetes lookup/list functions. `labeler` controls the available device count context so expressions remain deterministic, cheap to evaluate, and easy to reason about.
 
 ## Expected Count And Grouping
 
-Expected counts can be provided by operator overrides or learned per inventory class and hardware-class partition. Operator overrides take precedence. If no override matches a node, the configured `groupingLabels` form the partition key. Nodes with the same values for that key are compared with each other, and nodes with different values are evaluated independently:
+Expected counts can be provided by operator overrides or learned per device count class and hardware-class partition. Operator overrides take precedence. If no override matches a node, the configured `groupingLabels` form the partition key. Nodes with the same values for that key are compared with each other, and nodes with different values are evaluated independently:
 
 ```text
-partition = (inventory class, grouping label values)
+partition = (device count class, grouping label values)
 expected = max(current count for nodes in the same partition)
 ```
 
-This supports heterogeneous clusters by preventing unrelated hardware from influencing each other's expected counts. For GPU inventory, grouping labels can include values such as `nvidia.com/gpu.product`, `nvidia.com/gpu.sharing-strategy`, instance type, and nodepool. For RoCE inventory, grouping labels can include instance type and nodepool, while the inventory class expression itself selects the DRA driver and device type.
+This supports heterogeneous clusters by preventing unrelated hardware from influencing each other's expected counts. For GPU counts, grouping labels can include values such as `nvidia.com/gpu.product`, `nvidia.com/gpu.sharing-strategy`, instance type, and nodepool. For RoCE counts, grouping labels can include instance type and nodepool, while the class expression itself selects the DRA driver and device type.
 
 For example, AWS RoCE DRA advertises RoCE interfaces as devices:
 
@@ -139,15 +139,13 @@ spec:
 
 - an admin removing the expected-count label from a node or hardware class;
 - an explicit labeler command or configuration flag to relearn a class;
-- a future configuration object that declares expected inventory per class.
+- a future configuration object that declares expected counts per class.
 
-Cold start behavior should be conservative. If no expected label exists and only one node exists in a class, `labeler` may initialize expected from current, but that provides no protection against a device that was already missing before NVSentinel started. The ADR accepts this limitation for auto-learned baselines and leaves admin-provided expected inventory as a future hardening path.
+Cold start behavior should be conservative. If no expected label exists and only one node exists in a class, `labeler` may initialize expected from current, but that provides no protection against a device that was already missing before NVSentinel started. The ADR accepts this limitation for auto-learned baselines and leaves admin-provided expected counts as a future hardening path.
 
-## Consumer Policies
+## Consumer Policy
 
-Kubernetes Object Monitor consumes the normalized labels with Node policies. The replace policy uses the existing fault-quarantine `quarantineHealthEvent` annotation as evidence that the restart event was already processed, instead of depending on node conditions written by the platform connector.
-
-The first policy detects the missing inventory and asks fault-remediation to restart the node. The second policy escalates to VM replacement when the inventory is still missing, the restart event is present in `quarantineHealthEvent`, and the node has been Ready for at least one hour.
+Kubernetes Object Monitor consumes the normalized labels with a Node policy. The policy detects when the current count is lower than the expected count and asks fault-remediation to restart the VM.
 
 ```yaml
 kubernetes-object-monitor:
@@ -167,40 +165,13 @@ kubernetes-object-monitor:
       healthEvent:
         componentClass: Node
         isFatal: true
-        message: "GPU inventory is below expected count"
+        message: "GPU count is below expected count"
         recommendedAction: RESTART_VM
         errorCode:
           - LESS_THAN_TOTAL_GPUS_RESTART
-    - name: LessThanTotalGPUsReplace
-      enabled: true
-      resource:
-        group: ""
-        version: v1
-        kind: Node
-      predicate:
-        expression: |
-          'nvsentinel.dgxc.nvidia.com/gpu.count.current' in resource.metadata.labels &&
-          'nvsentinel.dgxc.nvidia.com/gpu.count.expected' in resource.metadata.labels &&
-          int(resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.current']) <
-          int(resource.metadata.labels['nvsentinel.dgxc.nvidia.com/gpu.count.expected']) &&
-          has(resource.metadata.annotations) &&
-          'quarantineHealthEvent' in resource.metadata.annotations &&
-          resource.metadata.annotations['quarantineHealthEvent'].contains('"checkName":"LessThanTotalGPUsRestart"') &&
-          resource.status.conditions.exists(ready,
-            ready.type == 'Ready' &&
-            ready.status == 'True' &&
-            (now - timestamp(ready.lastTransitionTime)) > duration('1h')
-          )
-      healthEvent:
-        componentClass: Node
-        isFatal: true
-        message: "GPU inventory is still below expected count after node restart"
-        recommendedAction: REPLACE_VM
-        errorCode:
-          - LESS_THAN_TOTAL_GPUS_REPLACE
 ```
 
-The same pattern applies to other inventory classes by changing the label keys, policy names, messages, and error codes.
+The same pattern applies to other device count classes by changing the label keys, policy names, messages, and error codes.
 
 ```mermaid
 flowchart TD
@@ -216,7 +187,7 @@ flowchart TD
 
 ### CEL Evaluation
 
-`labeler` compiles each inventory class `currentExpression` at startup. The environment includes the `node` and `resourceSlices` variables described above, plus one non-standard helper:
+`labeler` compiles each device count class `currentExpression` at startup. The environment includes the `node` and `resourceSlices` variables described above, plus one non-standard helper:
 
 ```text
 sum(list<int>) -> int
@@ -247,15 +218,15 @@ Node patch/update permissions remain necessary for writing labels.
 
 Add metrics and structured logs for:
 
-- current inventory count by node and device kind;
-- expected inventory count by hardware class and device kind;
+- current device count by node and device kind;
+- expected device count by hardware class and device kind;
 - label update success and failure counts;
 - skipped updates due to missing labels, malformed source data, or CEL evaluation errors.
 
 ## Rationale
 
 - `labeler` is already the component that watches node metadata and writes derived node labels.
-- Normalizing inventory into labels keeps Kubernetes Object Monitor simple. It can evaluate one Node object instead of listing and aggregating all `ResourceSlice` objects for a node.
+- Normalizing device counts into labels keeps Kubernetes Object Monitor simple. It can evaluate one Node object instead of listing and aggregating all `ResourceSlice` objects for a node.
 - Current and expected counts make the failure condition explicit and easy to audit from the Node object.
 
 ## Consequences
@@ -264,7 +235,7 @@ Add metrics and structured logs for:
 
 - Enables missing-device detection without requiring XID, SXID, or syslog evidence.
 - Supports both legacy device-plugin and DRA deployments through one label contract.
-- Lets Kubernetes Object Monitor express missing-inventory detection as a small CEL policy.
+- Lets Kubernetes Object Monitor express missing-device-count detection as a small CEL policy.
 
 ### Negative
 
@@ -274,8 +245,8 @@ Add metrics and structured logs for:
 
 ### Mitigations
 
-- Do not set current count to `0` when the inventory source is missing.
-- Add metrics and logs for skipped inventory.
+- Do not set current count to `0` when the count source is missing.
+- Add metrics and logs for skipped device count updates.
 - Document admin relearn procedures before enabling fatal remediation from these labels by default.
 
 ## Alternatives Considered
