@@ -4,7 +4,7 @@
 
 NVSentinel needs a way to detect missing GPUs and NICs even when the kernel or driver does not emit a useful XID, SXID, or fallen-off-bus syslog line. A common failure mode is that a node reports fewer devices than its platform is expected to have; if no error log is produced, Kubernetes Object Monitor needs a normalized Kubernetes signal to consume.
 
-Today the expected device count is implicit. Operators may know that a class of nodes should have eight GPUs or eight RoCE interfaces, but NVSentinel does not persist that expectation in a normalized form that Kubernetes Object Monitor policies can consume.
+Today the expected device count is implicit. Operators may know that a class of nodes should have eight GPUs or eight NICs, but NVSentinel does not persist that expectation in a normalized form that Kubernetes Object Monitor policies can consume.
 
 This ADR defines that normalized device-count contract.
 
@@ -65,11 +65,11 @@ labeler:
             count: 8
         currentExpression: |
           int(node.metadata.labels['nvidia.com/gpu.count'])
-      - name: nic.roce
+      - name: nic
         enabled: true
         labels:
-          current: nvsentinel.dgxc.nvidia.com/nic.roce.count.current
-          expected: nvsentinel.dgxc.nvidia.com/nic.roce.count.expected
+          current: nvsentinel.dgxc.nvidia.com/nic.count.current
+          expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
         groupingLabels:
           - node.kubernetes.io/instance-type
           - karpenter.sh/nodepool
@@ -96,8 +96,8 @@ Initial labels are current/expected pairs:
 ```text
 nvsentinel.dgxc.nvidia.com/gpu.count.current
 nvsentinel.dgxc.nvidia.com/gpu.count.expected
-nvsentinel.dgxc.nvidia.com/nic.roce.count.current
-nvsentinel.dgxc.nvidia.com/nic.roce.count.expected
+nvsentinel.dgxc.nvidia.com/nic.count.current
+nvsentinel.dgxc.nvidia.com/nic.count.expected
 ```
 
 - `current` is the count visible in the selected count source.
@@ -118,7 +118,7 @@ partition = (device count class, grouping label values)
 expected = max(current count for nodes in the same partition)
 ```
 
-This supports heterogeneous clusters by preventing unrelated hardware from influencing each other's expected counts. For GPU counts, grouping labels can include values such as `nvidia.com/gpu.product`, `nvidia.com/gpu.sharing-strategy`, instance type, and nodepool. For RoCE counts, grouping labels can include instance type and nodepool, while the class expression itself selects the DRA driver and device type.
+This supports heterogeneous clusters by preventing unrelated hardware from influencing each other's expected counts. For GPU counts, grouping labels can include values such as `nvidia.com/gpu.product`, `nvidia.com/gpu.sharing-strategy`, instance type, and nodepool. For NIC counts, grouping labels can include instance type and nodepool, while the class expression itself selects the DRA driver and device type.
 
 For example, AWS RoCE DRA advertises RoCE interfaces as devices:
 
@@ -265,7 +265,7 @@ Add metrics and structured logs for:
 
 ## Notes
 
-- The first implementation should treat `nic.roce.count.*` as RoCE interface count, not physical NIC card count.
+- The first implementation should treat `nic.count.*` as the count selected by the configured NIC class expression.
 - Fatal remediation should be enabled carefully. Operators may want STORE_ONLY behavior until expected-count learning has been validated in their fleet.
 
 ## References
