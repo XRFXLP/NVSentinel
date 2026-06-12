@@ -269,6 +269,9 @@ platformConnector:
   # Used when global.tolerations is not specified
   tolerations: []
 
+  # Affinity rules for platform-connector pods
+  affinity: {}
+
   # Kubernetes connector configuration
   # Handles updating Kubernetes node status and conditions
   k8sConnector:

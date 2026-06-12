@@ -19,6 +19,7 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -46,6 +47,177 @@ const (
 	keyGpuHealthMonitorPodName      contextKey = "gpuHealthMonitorPodName"
 	keyGpuHealthMonitorOriginalArgs contextKey = "originalArgs"
 )
+
+// violatingSlowdownTLimitC is an artificially high HW-slowdown threshold (°C).
+// gpu-health-monitor flags GpuThermalMarginWatch when the live T.Limit margin
+// (DCGM field 153) is below the threshold. A real idle GPU reports a margin no
+// larger than the headroom to its max operating temperature (tens of °C), so a
+// threshold of 200 is above any physically possible reading and guarantees the
+// comparison fails on every poll — making the violation deterministic instead of
+// racing live telemetry.
+const violatingSlowdownTLimitC = 200
+
+// realSlowdownTLimitC is the per-SKU HW-slowdown offset (°C) used as the healthy
+// baseline. It is a small negative number (e.g. H100 reports -2), so the live
+// T.Limit margin (DCGM field 153) stays well above it and the watch is healthy
+// until the threshold is overridden in a violation scenario.
+const realSlowdownTLimitC = -2
+
+// TestGPUHealthMonitorThermalMarginViolationLifecycle drives the
+// GpuThermalMarginWatch FAIL -> clear lifecycle by overriding the per-GPU HW
+// slowdown threshold (slowdown_tlimit_c) published in gpu_metadata.json, rather
+// than injecting the live margin (DCGM field 153).
+//
+// Why override the threshold instead of the margin: field 153 is live telemetry
+// that DCGM re-samples from the driver at the field-watch interval, so an
+// injected margin is transient and races the real reading. The threshold, by
+// contrast, is read from gpu_metadata.json once at startup (MetadataReader does
+// not hot-reload) and never changes while the process runs. Setting it above any
+// possible live margin makes every poll fail deterministically; restoring the
+// real (negative) value makes every poll pass. Each change takes effect by
+// restarting the pod so it reloads the file.
+func TestGPUHealthMonitorThermalMarginViolationLifecycle(t *testing.T) {
+	feature := features.New("GPU Health Monitor - Thermal Margin Violation Lifecycle").
+		WithLabel("suite", "gpu-health-monitor").
+		WithLabel("component", "thermal-margin")
+
+	var testNodeName string
+	var podName string
+	var gpuID int
+	var originalMetadataJSON []byte
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		gpuHealthMonitorPod, err := helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "gpu-health-monitor")
+		require.NoError(t, err, "failed to find GPU health monitor pod on worker node")
+		require.NotNil(t, gpuHealthMonitorPod, "GPU health monitor pod should exist on worker node")
+
+		testNodeName = gpuHealthMonitorPod.Spec.NodeName
+		podName = gpuHealthMonitorPod.Name
+		t.Logf("Using GPU health monitor pod: %s on node: %s", podName, testNodeName)
+
+		// DCGM field 153 (the live T.Limit margin) is served by the fixture: the
+		// kind daemonset mounts tilt/dcgm-fake/gpu-spec.yaml (with a
+		// MarginTemperature entry) via the nvidia-dcgm-gpu-spec ConfigMap, and a
+		// real GPU node serves it natively. If it is ever absent, Assess1 below
+		// fails (no violation is ever observed) rather than silently skipping.
+		//
+		// metadata-collector does not run on GPU-less CI nodes, so seed
+		// gpu_metadata.json ourselves with a healthy baseline (negative slowdown
+		// offset). Capture it so the assess phases can flip the threshold and
+		// teardown can restore it.
+		gpuID = 0
+		baseline := helpers.GpuThermalMarginMetadata(testNodeName, gpuID, realSlowdownTLimitC)
+		originalMetadataJSON, err = json.Marshal(baseline)
+		require.NoError(t, err, "failed to marshal baseline metadata")
+
+		t.Logf("Seeding baseline metadata with slowdown_tlimit_c=%dC for GPU %d and restarting", realSlowdownTLimitC, gpuID)
+		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, baseline)
+		podName = helpers.RestartDaemonSetPodOnNode(ctx, t, client, helpers.NVSentinelNamespace,
+			GPUHealthMonitorDaemonSetName, "gpu-health-monitor", testNodeName, podName)
+
+		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
+		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
+		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
+
+		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keyPodName, podName)
+		return ctx
+	})
+
+	feature.Assess("override threshold above live margin and verify fatal GpuThermalMarginWatch", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		// Re-parse the captured metadata and raise the chosen GPU's threshold above
+		// any possible live margin, leaving every other field (UUIDs, PCI, other
+		// GPUs) untouched so only this GPU's watch flips to a violation.
+		var violating helpers.GPUMetadata
+		require.NoError(t, json.Unmarshal(originalMetadataJSON, &violating), "failed to parse captured metadata")
+
+		high := violatingSlowdownTLimitC
+		overridden := false
+		for i := range violating.GPUs {
+			if violating.GPUs[i].GPUID == gpuID {
+				violating.GPUs[i].SlowdownTLimitC = &high
+				overridden = true
+				break
+			}
+		}
+		require.True(t, overridden, "chosen GPU %d should be present in captured metadata", gpuID)
+
+		t.Logf("Injecting metadata with slowdown_tlimit_c=%dC for GPU %d and restarting", high, gpuID)
+		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, &violating)
+		podName = helpers.RestartDaemonSetPodOnNode(ctx, t, client, helpers.NVSentinelNamespace,
+			GPUHealthMonitorDaemonSetName, "gpu-health-monitor", testNodeName, podName)
+
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testNodeName,
+			"GpuThermalMarginWatch", "ErrorCode:GPU_TEMP_HW_SLOWDOWN_VIOLATION",
+			"GpuThermalMarginWatchIsNotHealthy", v1.ConditionTrue)
+
+		return ctx
+	})
+
+	feature.Assess("restore real threshold and verify GpuThermalMarginWatch clears", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		// Restore the original metadata verbatim (real negative threshold) so the
+		// live margin is once again above it, and restart so the fresh pod reports
+		// the watch healthy.
+		var original helpers.GPUMetadata
+		require.NoError(t, json.Unmarshal(originalMetadataJSON, &original), "failed to parse captured metadata")
+
+		t.Logf("Restoring original metadata for GPU %d and restarting", gpuID)
+		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, &original)
+		podName = helpers.RestartDaemonSetPodOnNode(ctx, t, client, helpers.NVSentinelNamespace,
+			GPUHealthMonitorDaemonSetName, "gpu-health-monitor", testNodeName, podName)
+
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testNodeName,
+			"GpuThermalMarginWatch", "", "GpuThermalMarginWatchIsHealthy", v1.ConditionFalse)
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("Warning: failed to create client for teardown: %v", err)
+			return ctx
+		}
+
+		if testNodeName == "" {
+			t.Log("Skipping teardown: nodeName not set (setup likely failed or skipped early)")
+			return ctx
+		}
+
+		// Restore the captured original metadata verbatim. metadata-collector only
+		// writes gpu_metadata.json once at startup, so deleting it would leave the
+		// node with no metadata file until the collector pod restarts and break the
+		// next run's Setup. Re-injecting the original (rather than deleting) also
+		// repairs the file if Assess2 failed mid-way and left the violating value.
+		if len(originalMetadataJSON) > 0 {
+			var original helpers.GPUMetadata
+			if err := json.Unmarshal(originalMetadataJSON, &original); err != nil {
+				t.Logf("Warning: failed to parse captured metadata for restore: %v", err)
+			} else {
+				t.Logf("Restoring original metadata on node %s", testNodeName)
+				helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, &original)
+			}
+		}
+
+		t.Logf("Removing ManagedByNVSentinel label from node %s", testNodeName)
+		if err := helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, testNodeName); err != nil {
+			t.Logf("Warning: failed to remove ManagedByNVSentinel label: %v", err)
+		}
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
 
 // TestGPUHealthMonitorMultipleErrors verifies GPU health monitor handles multiple concurrent errors
 func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
