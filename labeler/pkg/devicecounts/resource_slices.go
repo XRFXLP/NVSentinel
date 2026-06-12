@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package labeler
+package devicecounts
 
 import (
 	"fmt"
@@ -24,8 +24,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-func (l *Labeler) resourceSlicesForNode(node *corev1.Node) []*resourcev1.ResourceSlice {
-	if l.resourceSliceInformer == nil {
+func ResourceSlicesForNode(store cache.Store, node *corev1.Node) []*resourcev1.ResourceSlice {
+	if store == nil {
 		return nil
 	}
 
@@ -33,7 +33,7 @@ func (l *Labeler) resourceSlicesForNode(node *corev1.Node) []*resourcev1.Resourc
 	// identify their node through spec.nodeName.
 	resourceSlices := []*resourcev1.ResourceSlice{}
 
-	for _, obj := range l.resourceSliceInformer.GetStore().List() {
+	for _, obj := range store.List() {
 		resourceSlice, ok := obj.(*resourcev1.ResourceSlice)
 		if !ok {
 			continue
@@ -61,20 +61,24 @@ func resourceSliceNodeName(resourceSlice *resourcev1.ResourceSlice) (string, boo
 	return *resourceSlice.Spec.NodeName, true
 }
 
-func (l *Labeler) handleResourceSliceEvent(resourceSlices ...*resourcev1.ResourceSlice) {
-	if !l.allInformersSynced() {
+func handleResourceSliceEvent(
+	allInformersSynced func() bool,
+	updateNodeLabels func(string) error,
+	resourceSlices ...*resourcev1.ResourceSlice,
+) {
+	if !allInformersSynced() {
 		return
 	}
 
-	for nodeName := range l.nodeNamesForResourceSlices(resourceSlices...) {
-		if err := l.updateNodeLabels(nodeName); err != nil {
+	for nodeName := range nodeNamesForResourceSlices(resourceSlices...) {
+		if err := updateNodeLabels(nodeName); err != nil {
 			slog.Error("Failed to reconcile node labels after ResourceSlice event",
 				"node", nodeName, "error", err)
 		}
 	}
 }
 
-func (l *Labeler) nodeNamesForResourceSlices(resourceSlices ...*resourcev1.ResourceSlice) map[string]struct{} {
+func nodeNamesForResourceSlices(resourceSlices ...*resourcev1.ResourceSlice) map[string]struct{} {
 	nodeNames := map[string]struct{}{}
 
 	for _, resourceSlice := range resourceSlices {
@@ -106,7 +110,10 @@ func resourceSliceFromEventObject(obj any) (*resourcev1.ResourceSlice, bool) {
 	return resourceSlice, ok
 }
 
-func newResourceSliceEventHandlers(l *Labeler) cache.ResourceEventHandlerFuncs {
+func NewResourceSliceEventHandlers(
+	allInformersSynced func() bool,
+	updateNodeLabels func(string) error,
+) cache.ResourceEventHandlerFuncs {
 	return cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			resourceSlice, ok := resourceSliceFromEventObject(obj)
@@ -117,7 +124,7 @@ func newResourceSliceEventHandlers(l *Labeler) cache.ResourceEventHandlerFuncs {
 				return
 			}
 
-			l.handleResourceSliceEvent(resourceSlice)
+			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, resourceSlice)
 		},
 		UpdateFunc: func(oldObj, newObj any) {
 			oldResourceSlice, oldOk := resourceSliceFromEventObject(oldObj)
@@ -136,7 +143,7 @@ func newResourceSliceEventHandlers(l *Labeler) cache.ResourceEventHandlerFuncs {
 			}
 
 			// Reconcile nodes matched by both old and new specs in case node selection changed.
-			l.handleResourceSliceEvent(oldResourceSlice, newResourceSlice)
+			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, oldResourceSlice, newResourceSlice)
 		},
 		DeleteFunc: func(obj any) {
 			resourceSlice, ok := resourceSliceFromEventObject(obj)
@@ -147,7 +154,7 @@ func newResourceSliceEventHandlers(l *Labeler) cache.ResourceEventHandlerFuncs {
 				return
 			}
 
-			l.handleResourceSliceEvent(resourceSlice)
+			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, resourceSlice)
 		},
 	}
 }

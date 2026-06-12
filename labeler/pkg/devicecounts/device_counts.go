@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package labeler
+package devicecounts
 
 import (
 	"context"
@@ -34,54 +34,54 @@ import (
 	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
 )
 
-type ExpectedDeviceCountsConfig struct {
-	Enabled bool                     `json:"enabled" yaml:"enabled"`
-	Classes []DeviceCountClassConfig `json:"classes" yaml:"classes"`
+type Config struct {
+	Enabled bool          `json:"enabled" yaml:"enabled"`
+	Classes []ClassConfig `json:"classes" yaml:"classes"`
 }
 
-type DeviceCountClassConfig struct {
-	Name                   string                        `json:"name" yaml:"name"`
-	Enabled                bool                          `json:"enabled" yaml:"enabled"`
-	Labels                 DeviceCountLabels             `json:"labels" yaml:"labels"`
-	GroupingLabels         []string                      `json:"groupingLabels" yaml:"groupingLabels"`
-	ExpectedCountOverrides []ExpectedDeviceCountOverride `json:"expectedCountOverrides" yaml:"expectedCountOverrides"`
-	CurrentExpression      string                        `json:"currentExpression" yaml:"currentExpression"`
+type ClassConfig struct {
+	Name                   string                  `json:"name" yaml:"name"`
+	Enabled                bool                    `json:"enabled" yaml:"enabled"`
+	Labels                 Labels                  `json:"labels" yaml:"labels"`
+	GroupingLabels         []string                `json:"groupingLabels" yaml:"groupingLabels"`
+	ExpectedCountOverrides []ExpectedCountOverride `json:"expectedCountOverrides" yaml:"expectedCountOverrides"`
+	CurrentExpression      string                  `json:"currentExpression" yaml:"currentExpression"`
 }
 
-type DeviceCountLabels struct {
+type Labels struct {
 	Current  string `json:"current" yaml:"current"`
 	Expected string `json:"expected" yaml:"expected"`
 }
 
-type ExpectedDeviceCountOverride struct {
+type ExpectedCountOverride struct {
 	MatchLabels map[string]string `json:"matchLabels" yaml:"matchLabels"`
 	Count       int               `json:"count" yaml:"count"`
 }
 
-type deviceCountManager struct {
-	classes          []compiledDeviceCountClass
+type Manager struct {
+	classes          []compiledClass
 	managedLabelKeys map[string]struct{}
 }
 
-type compiledDeviceCountClass struct {
-	DeviceCountClassConfig
+type compiledClass struct {
+	ClassConfig
 	program cel.Program
 }
 
-func ParseExpectedDeviceCountsConfig(raw string) (ExpectedDeviceCountsConfig, error) {
+func ParseConfig(raw string) (Config, error) {
 	if strings.TrimSpace(raw) == "" {
-		return ExpectedDeviceCountsConfig{}, nil
+		return Config{}, nil
 	}
 
-	var config ExpectedDeviceCountsConfig
+	var config Config
 	if err := yaml.Unmarshal([]byte(raw), &config); err != nil {
-		return ExpectedDeviceCountsConfig{}, fmt.Errorf("parse expected device counts config: %w", err)
+		return Config{}, fmt.Errorf("parse expected device counts config: %w", err)
 	}
 
 	return config, nil
 }
 
-func newDeviceCountManager(config ExpectedDeviceCountsConfig) (*deviceCountManager, error) {
+func NewManager(config Config) (*Manager, error) {
 	if !config.Enabled {
 		return nil, nil
 	}
@@ -91,7 +91,7 @@ func newDeviceCountManager(config ExpectedDeviceCountsConfig) (*deviceCountManag
 		return nil, fmt.Errorf("create device-count CEL environment: %w", err)
 	}
 
-	manager := &deviceCountManager{
+	manager := &Manager{
 		managedLabelKeys: map[string]struct{}{},
 	}
 
@@ -134,43 +134,43 @@ func newDeviceCountCELEnv() (*cel.Env, error) {
 func compileDeviceCountClass(
 	env *cel.Env,
 	index int,
-	classConfig DeviceCountClassConfig,
-) (compiledDeviceCountClass, bool, error) {
+	classConfig ClassConfig,
+) (compiledClass, bool, error) {
 	if !classConfig.Enabled {
-		return compiledDeviceCountClass{}, false, nil
+		return compiledClass{}, false, nil
 	}
 
 	if err := validateDeviceCountClassConfig(index, classConfig); err != nil {
-		return compiledDeviceCountClass{}, false, err
+		return compiledClass{}, false, err
 	}
 
 	ast, issues := env.Compile(classConfig.CurrentExpression)
 	if issues != nil && issues.Err() != nil {
-		return compiledDeviceCountClass{}, false, fmt.Errorf(
+		return compiledClass{}, false, fmt.Errorf(
 			"expectedDeviceCounts.classes[%d] (%s): compile currentExpression: %w",
 			index, classConfig.Name, issues.Err())
 	}
 
 	if ast.OutputType() != cel.IntType && ast.OutputType() != cel.DynType {
-		return compiledDeviceCountClass{}, false, fmt.Errorf(
+		return compiledClass{}, false, fmt.Errorf(
 			"expectedDeviceCounts.classes[%d] (%s): currentExpression must return int, got %s",
 			index, classConfig.Name, ast.OutputType())
 	}
 
 	program, err := env.Program(ast)
 	if err != nil {
-		return compiledDeviceCountClass{}, false, fmt.Errorf(
+		return compiledClass{}, false, fmt.Errorf(
 			"expectedDeviceCounts.classes[%d] (%s): create CEL program: %w",
 			index, classConfig.Name, err)
 	}
 
-	return compiledDeviceCountClass{
-		DeviceCountClassConfig: classConfig,
-		program:                program,
+	return compiledClass{
+		ClassConfig: classConfig,
+		program:     program,
 	}, true, nil
 }
 
-func validateDeviceCountClassConfig(index int, classConfig DeviceCountClassConfig) error {
+func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {
 	if classConfig.Name == "" {
 		return fmt.Errorf("expectedDeviceCounts.classes[%d]: name is required", index)
 	}
@@ -198,7 +198,7 @@ func validateDeviceCountClassConfig(index int, classConfig DeviceCountClassConfi
 	return nil
 }
 
-func (m *deviceCountManager) addClass(compiledClass compiledDeviceCountClass) {
+func (m *Manager) addClass(compiledClass compiledClass) {
 	m.classes = append(m.classes, compiledClass)
 
 	// Node label updates caused by these derived labels should not trigger
@@ -238,13 +238,21 @@ func sumIntList(args ...ref.Val) ref.Val {
 	return types.Int(total)
 }
 
-func (m *deviceCountManager) enabled() bool {
+func (m *Manager) Enabled() bool {
 	return m != nil && len(m.classes) > 0
 }
 
-func (m *deviceCountManager) evaluateCurrent(
+func (m *Manager) ClassCount() int {
+	if m == nil {
+		return 0
+	}
+
+	return len(m.classes)
+}
+
+func (m *Manager) evaluateCurrent(
 	ctx context.Context,
-	class compiledDeviceCountClass,
+	class compiledClass,
 	node *corev1.Node,
 	resourceSlices []*resourcev1.ResourceSlice,
 ) (int, error) {
@@ -333,15 +341,20 @@ func normalizeNumericNodeLabels(nodeMap map[string]any) {
 	}
 }
 
-func (l *Labeler) reconcileDeviceCountLabelsInPlace(ctx context.Context, node *corev1.Node) bool {
-	if !l.deviceCounts.enabled() {
+func (m *Manager) ReconcileNodeLabelsInPlace(
+	ctx context.Context,
+	node *corev1.Node,
+	peerNodes []*corev1.Node,
+	resourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
+) bool {
+	if !m.Enabled() {
 		return false
 	}
 
 	needsUpdate := false
-	resourceSlices := l.resourceSlicesForNode(node)
+	resourceSlices := resourceSlicesForNode(node)
 
-	for _, class := range l.deviceCounts.classes {
+	for _, class := range m.classes {
 		// Do not turn a missing DRA source into current=0. A ResourceSlice-based
 		// expression should wait until at least one associated slice exists.
 		if class.referencesResourceSlices() && len(resourceSlices) == 0 {
@@ -352,7 +365,7 @@ func (l *Labeler) reconcileDeviceCountLabelsInPlace(ctx context.Context, node *c
 			continue
 		}
 
-		current, err := l.deviceCounts.evaluateCurrent(ctx, class, node, resourceSlices)
+		current, err := m.evaluateCurrent(ctx, class, node, resourceSlices)
 		if err != nil {
 			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
 			slog.Warn("Skipping device count label update after current count evaluation failed",
@@ -361,7 +374,7 @@ func (l *Labeler) reconcileDeviceCountLabelsInPlace(ctx context.Context, node *c
 			continue
 		}
 
-		expected := l.expectedDeviceCount(ctx, class, node, current)
+		expected := m.expectedDeviceCount(ctx, class, node, current, peerNodes, resourceSlicesForNode)
 		currentValue := strconv.Itoa(current)
 		expectedValue := strconv.Itoa(expected)
 		partitionKey := class.partitionKey(node)
@@ -383,11 +396,13 @@ func (l *Labeler) reconcileDeviceCountLabelsInPlace(ctx context.Context, node *c
 	return needsUpdate
 }
 
-func (l *Labeler) expectedDeviceCount(
+func (m *Manager) expectedDeviceCount(
 	ctx context.Context,
-	class compiledDeviceCountClass,
+	class compiledClass,
 	node *corev1.Node,
 	current int,
+	peerNodes []*corev1.Node,
+	resourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
 ) int {
 	if override, ok := class.expectedOverride(node); ok {
 		return override
@@ -398,8 +413,8 @@ func (l *Labeler) expectedDeviceCount(
 	expected := maxCountLabel(current, node.Labels[class.Labels.Expected])
 
 	partitionKey := class.partitionKey(node)
-	for _, peer := range l.peerNodesForPartition(class, partitionKey) {
-		expected = l.learnExpectedFromPeer(ctx, class, node, peer, expected)
+	for _, peer := range peerNodesForPartition(class, partitionKey, peerNodes) {
+		expected = m.learnExpectedFromPeer(ctx, class, node, peer, expected, resourceSlicesForNode)
 	}
 
 	return expected
@@ -414,15 +429,15 @@ func maxCountLabel(current int, raw string) int {
 	return current
 }
 
-func (l *Labeler) peerNodesForPartition(
-	class compiledDeviceCountClass,
+func peerNodesForPartition(
+	class compiledClass,
 	partitionKey string,
+	peerNodes []*corev1.Node,
 ) []*corev1.Node {
 	nodes := []*corev1.Node{}
 
-	for _, obj := range l.nodeInformer.GetStore().List() {
-		peer, ok := obj.(*corev1.Node)
-		if !ok || class.partitionKey(peer) != partitionKey {
+	for _, peer := range peerNodes {
+		if class.partitionKey(peer) != partitionKey {
 			continue
 		}
 
@@ -432,16 +447,17 @@ func (l *Labeler) peerNodesForPartition(
 	return nodes
 }
 
-func (l *Labeler) learnExpectedFromPeer(
+func (m *Manager) learnExpectedFromPeer(
 	ctx context.Context,
-	class compiledDeviceCountClass,
+	class compiledClass,
 	node *corev1.Node,
 	peer *corev1.Node,
 	expected int,
+	resourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
 ) int {
 	expected = maxCountLabel(expected, peer.Labels[class.Labels.Expected])
 
-	peerCurrent, ok := l.currentDeviceCountForPeer(ctx, class, node, peer)
+	peerCurrent, ok := m.currentDeviceCountForPeer(ctx, class, node, peer, resourceSlicesForNode)
 	if ok && peerCurrent > expected {
 		return peerCurrent
 	}
@@ -449,13 +465,14 @@ func (l *Labeler) learnExpectedFromPeer(
 	return expected
 }
 
-func (l *Labeler) currentDeviceCountForPeer(
+func (m *Manager) currentDeviceCountForPeer(
 	ctx context.Context,
-	class compiledDeviceCountClass,
+	class compiledClass,
 	node *corev1.Node,
 	peer *corev1.Node,
+	resourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
 ) (int, bool) {
-	peerResourceSlices := l.resourceSlicesForNode(peer)
+	peerResourceSlices := resourceSlicesForNode(peer)
 
 	// A peer with no DRA source should not lower or initialize the baseline
 	// for ResourceSlice-backed classes.
@@ -464,7 +481,7 @@ func (l *Labeler) currentDeviceCountForPeer(
 		return 0, false
 	}
 
-	peerCurrent, err := l.deviceCounts.evaluateCurrent(ctx, class, peer, peerResourceSlices)
+	peerCurrent, err := m.evaluateCurrent(ctx, class, peer, peerResourceSlices)
 	if err != nil {
 		metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
 		slog.Warn("Skipping peer device count during expected count learning",
@@ -489,7 +506,7 @@ func parseCountLabel(raw string) (int, bool) {
 	return value, true
 }
 
-func (class compiledDeviceCountClass) expectedOverride(node *corev1.Node) (int, bool) {
+func (class compiledClass) expectedOverride(node *corev1.Node) (int, bool) {
 	for _, override := range class.ExpectedCountOverrides {
 		if matchLabels(node.Labels, override.MatchLabels) {
 			return override.Count, true
@@ -499,7 +516,7 @@ func (class compiledDeviceCountClass) expectedOverride(node *corev1.Node) (int, 
 	return 0, false
 }
 
-func (class compiledDeviceCountClass) referencesResourceSlices() bool {
+func (class compiledClass) referencesResourceSlices() bool {
 	// This cheap check is only used to distinguish "missing DRA source" from a
 	// legitimate zero count. Expressions that do not reference ResourceSlices can
 	// still evaluate from node labels alone.
@@ -516,7 +533,7 @@ func matchLabels(actual, expected map[string]string) bool {
 	return true
 }
 
-func (class compiledDeviceCountClass) partitionKey(node *corev1.Node) string {
+func (class compiledClass) partitionKey(node *corev1.Node) string {
 	if len(class.GroupingLabels) == 0 {
 		return "default"
 	}
@@ -531,15 +548,15 @@ func (class compiledDeviceCountClass) partitionKey(node *corev1.Node) string {
 	return strings.Join(parts, "|")
 }
 
-func (l *Labeler) nodeLabelsAffectDeviceCounts(oldLabels, newLabels map[string]string) bool {
-	if !l.deviceCounts.enabled() {
+func (m *Manager) NodeLabelsAffectDeviceCounts(oldLabels, newLabels map[string]string) bool {
+	if !m.Enabled() {
 		return false
 	}
 
 	oldInputLabels := maps.Clone(oldLabels)
 	newInputLabels := maps.Clone(newLabels)
 
-	for key := range l.deviceCounts.managedLabelKeys {
+	for key := range m.managedLabelKeys {
 		// Ignore labels owned by this feature to avoid self-triggered updates.
 		delete(oldInputLabels, key)
 		delete(newInputLabels, key)

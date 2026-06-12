@@ -29,6 +29,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
 	"github.com/nvidia/nvsentinel/labeler/pkg/initializer"
 	"github.com/nvidia/nvsentinel/labeler/pkg/labeler"
 )
@@ -84,7 +85,7 @@ func run() error {
 		return err
 	}
 
-	expectedDeviceCounts, err := labeler.ParseExpectedDeviceCountsConfig(expectedDeviceCountsRaw)
+	expectedDeviceCounts, err := devicecounts.ParseConfig(expectedDeviceCountsRaw)
 	if err != nil {
 		return err
 	}

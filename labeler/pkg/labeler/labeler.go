@@ -22,6 +22,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
@@ -32,6 +33,7 @@ import (
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
+	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
 	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
 )
 
@@ -66,7 +68,7 @@ type Labeler struct {
 	ctx                   context.Context
 	kataLabels            []string
 	assumeDriverInstalled bool
-	deviceCounts          *deviceCountManager
+	deviceCounts          *devicecounts.Manager
 }
 
 func (l *Labeler) allInformersSynced() bool {
@@ -90,13 +92,13 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		gkeInstallerApp,
 		kataLabelOverride,
 		assumeDriverInstalled,
-		ExpectedDeviceCountsConfig{},
+		devicecounts.Config{},
 	)
 }
 
 func NewLabelerWithDeviceCounts(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string, assumeDriverInstalled bool,
-	expectedDeviceCounts ExpectedDeviceCountsConfig) (*Labeler, error) {
+	expectedDeviceCounts devicecounts.Config) (*Labeler, error) {
 	podInformer, err := createPodInformer(clientset, resyncPeriod, dcgmApp, driverApp)
 	if err != nil {
 		return nil, fmt.Errorf("create pod informer: %w", err)
@@ -109,7 +111,7 @@ func NewLabelerWithDeviceCounts(clientset kubernetes.Interface, resyncPeriod tim
 
 	nodeInformer := createNodeInformer(clientset, resyncPeriod)
 
-	deviceCounts, err := newDeviceCountManager(expectedDeviceCounts)
+	deviceCounts, err := devicecounts.NewManager(expectedDeviceCounts)
 	if err != nil {
 		return nil, fmt.Errorf("create expected device count manager: %w", err)
 	}
@@ -121,7 +123,7 @@ func NewLabelerWithDeviceCounts(clientset kubernetes.Interface, resyncPeriod tim
 	}
 
 	var resourceSliceInformer cache.SharedIndexInformer
-	if deviceCounts.enabled() {
+	if deviceCounts.Enabled() {
 		resourceSliceInformer = createResourceSliceInformer(clientset, resyncPeriod)
 		informersSynced = append(informersSynced, resourceSliceInformer.HasSynced)
 	}
@@ -155,8 +157,8 @@ func NewLabelerWithDeviceCounts(clientset kubernetes.Interface, resyncPeriod tim
 		slog.Info("Labeler configured to assume drivers are pre-installed on all GPU nodes")
 	}
 
-	if deviceCounts.enabled() {
-		slog.Info("Labeler configured to reconcile expected device count labels", "classes", len(deviceCounts.classes))
+	if deviceCounts.Enabled() {
+		slog.Info("Labeler configured to reconcile expected device count labels", "classes", deviceCounts.ClassCount())
 	}
 
 	slog.Info("Labeler created, watching DCGM and driver pods, and nodes for kata detection")
@@ -358,7 +360,9 @@ func (l *Labeler) registerResourceSliceEventHandlers() error {
 		return nil
 	}
 
-	_, err := l.resourceSliceInformer.AddEventHandler(newResourceSliceEventHandlers(l))
+	_, err := l.resourceSliceInformer.AddEventHandler(
+		devicecounts.NewResourceSliceEventHandlers(l.allInformersSynced, l.updateNodeLabels),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to add ResourceSlice event handler: %w", err)
 	}
@@ -481,7 +485,7 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 		}
 	}
 
-	return l.nodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels)
+	return l.deviceCounts.NodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels)
 }
 
 const gpuPresentLabel = "nvidia.com/gpu.present"
@@ -801,12 +805,40 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 		}
 	}
 
-	if l.reconcileDeviceCountLabelsInPlace(l.ctx, node) {
+	if l.deviceCounts.ReconcileNodeLabelsInPlace(
+		l.ctx,
+		node,
+		l.deviceCountPeerNodes(),
+		l.resourceSlicesForNode,
+	) {
 		needsUpdate = true
 		deviceCountLabelsChanged = true
 	}
 
 	return needsUpdate, deviceCountLabelsChanged
+}
+
+func (l *Labeler) deviceCountPeerNodes() []*v1.Node {
+	nodes := []*v1.Node{}
+
+	for _, obj := range l.nodeInformer.GetStore().List() {
+		node, ok := obj.(*v1.Node)
+		if !ok {
+			continue
+		}
+
+		nodes = append(nodes, node)
+	}
+
+	return nodes
+}
+
+func (l *Labeler) resourceSlicesForNode(node *v1.Node) []*resourcev1.ResourceSlice {
+	if l.resourceSliceInformer == nil {
+		return nil
+	}
+
+	return devicecounts.ResourceSlicesForNode(l.resourceSliceInformer.GetStore(), node)
 }
 
 // handlePodDeleteEvent processes pod delete events by recalculating node labels
