@@ -34,11 +34,13 @@ import (
 	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
 )
 
+// Config controls expected device-count label reconciliation.
 type Config struct {
 	Enabled bool          `json:"enabled" yaml:"enabled"`
 	Classes []ClassConfig `json:"classes" yaml:"classes"`
 }
 
+// ClassConfig describes one device-count class, such as GPU or NIC counts.
 type ClassConfig struct {
 	Name                   string                  `json:"name" yaml:"name"`
 	Enabled                bool                    `json:"enabled" yaml:"enabled"`
@@ -48,16 +50,19 @@ type ClassConfig struct {
 	CurrentExpression      string                  `json:"currentExpression" yaml:"currentExpression"`
 }
 
+// Labels contains the current and expected node labels managed for a class.
 type Labels struct {
 	Current  string `json:"current" yaml:"current"`
 	Expected string `json:"expected" yaml:"expected"`
 }
 
+// ExpectedCountOverride pins an expected count when a node's labels match.
 type ExpectedCountOverride struct {
 	MatchLabels map[string]string `json:"matchLabels" yaml:"matchLabels"`
 	Count       int               `json:"count" yaml:"count"`
 }
 
+// Manager evaluates device-count classes and applies their derived node labels.
 type Manager struct {
 	classes          []compiledClass
 	managedLabelKeys map[string]struct{}
@@ -68,6 +73,7 @@ type compiledClass struct {
 	program cel.Program
 }
 
+// ParseConfig parses expected device-count YAML or JSON configuration.
 func ParseConfig(raw string) (Config, error) {
 	if strings.TrimSpace(raw) == "" {
 		return Config{}, nil
@@ -81,6 +87,7 @@ func ParseConfig(raw string) (Config, error) {
 	return config, nil
 }
 
+// NewManager compiles enabled device-count classes and returns a ready manager.
 func NewManager(config Config) (*Manager, error) {
 	if !config.Enabled {
 		return nil, nil
@@ -113,6 +120,94 @@ func NewManager(config Config) (*Manager, error) {
 	}
 
 	return manager, nil
+}
+
+// Enabled reports whether the manager has any compiled device-count classes.
+func (m *Manager) Enabled() bool {
+	return m != nil && len(m.classes) > 0
+}
+
+// ClassCount returns the number of compiled device-count classes.
+func (m *Manager) ClassCount() int {
+	if m == nil {
+		return 0
+	}
+
+	return len(m.classes)
+}
+
+// ReconcileNodeLabelsInPlace evaluates all enabled device-count classes for a node.
+func (m *Manager) ReconcileNodeLabelsInPlace(
+	ctx context.Context,
+	node *corev1.Node,
+	peerNodes []*corev1.Node,
+	resourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
+) bool {
+	if !m.Enabled() {
+		return false
+	}
+
+	needsUpdate := false
+	resourceSlices := resourceSlicesForNode(node)
+
+	for _, class := range m.classes {
+		// Do not turn a missing DRA source into current=0. A ResourceSlice-based
+		// expression should wait until at least one associated slice exists.
+		if class.referencesResourceSlices() && len(resourceSlices) == 0 {
+			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
+			slog.Warn("Skipping device count label update because no ResourceSlices are associated with the node",
+				"node", node.Name, "class", class.Name)
+
+			continue
+		}
+
+		current, err := m.evaluateCurrent(ctx, class, node, resourceSlices)
+		if err != nil {
+			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
+			slog.Warn("Skipping device count label update after current count evaluation failed",
+				"node", node.Name, "class", class.Name, "error", err)
+
+			continue
+		}
+
+		expected := m.expectedDeviceCount(ctx, class, node, current, peerNodes, resourceSlicesForNode)
+		currentValue := strconv.Itoa(current)
+		expectedValue := strconv.Itoa(expected)
+		partitionKey := class.partitionKey(node)
+
+		metrics.CurrentDeviceCount.WithLabelValues(node.Name, class.Name).Set(float64(current))
+		metrics.ExpectedDeviceCount.WithLabelValues(class.Name, partitionKey).Set(float64(expected))
+
+		if node.Labels[class.Labels.Current] != currentValue {
+			node.Labels[class.Labels.Current] = currentValue
+			needsUpdate = true
+		}
+
+		if node.Labels[class.Labels.Expected] != expectedValue {
+			node.Labels[class.Labels.Expected] = expectedValue
+			needsUpdate = true
+		}
+	}
+
+	return needsUpdate
+}
+
+// NodeLabelsAffectDeviceCounts reports whether a node label change affects device-count inputs.
+func (m *Manager) NodeLabelsAffectDeviceCounts(oldLabels, newLabels map[string]string) bool {
+	if !m.Enabled() {
+		return false
+	}
+
+	oldInputLabels := maps.Clone(oldLabels)
+	newInputLabels := maps.Clone(newLabels)
+
+	for key := range m.managedLabelKeys {
+		// Ignore labels owned by this feature to avoid self-triggered updates.
+		delete(oldInputLabels, key)
+		delete(newInputLabels, key)
+	}
+
+	return !maps.Equal(oldInputLabels, newInputLabels)
 }
 
 func newDeviceCountCELEnv() (*cel.Env, error) {
@@ -238,18 +333,6 @@ func sumIntList(args ...ref.Val) ref.Val {
 	return types.Int(total)
 }
 
-func (m *Manager) Enabled() bool {
-	return m != nil && len(m.classes) > 0
-}
-
-func (m *Manager) ClassCount() int {
-	if m == nil {
-		return 0
-	}
-
-	return len(m.classes)
-}
-
 func (m *Manager) evaluateCurrent(
 	ctx context.Context,
 	class compiledClass,
@@ -339,61 +422,6 @@ func normalizeNumericNodeLabels(nodeMap map[string]any) {
 			nodeLabels[key] = parsed
 		}
 	}
-}
-
-func (m *Manager) ReconcileNodeLabelsInPlace(
-	ctx context.Context,
-	node *corev1.Node,
-	peerNodes []*corev1.Node,
-	resourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
-) bool {
-	if !m.Enabled() {
-		return false
-	}
-
-	needsUpdate := false
-	resourceSlices := resourceSlicesForNode(node)
-
-	for _, class := range m.classes {
-		// Do not turn a missing DRA source into current=0. A ResourceSlice-based
-		// expression should wait until at least one associated slice exists.
-		if class.referencesResourceSlices() && len(resourceSlices) == 0 {
-			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonMissingSource).Inc()
-			slog.Warn("Skipping device count label update because no ResourceSlices are associated with the node",
-				"node", node.Name, "class", class.Name)
-
-			continue
-		}
-
-		current, err := m.evaluateCurrent(ctx, class, node, resourceSlices)
-		if err != nil {
-			metrics.DeviceCountSkippedUpdates.WithLabelValues(class.Name, metrics.SkipReasonEvaluationError).Inc()
-			slog.Warn("Skipping device count label update after current count evaluation failed",
-				"node", node.Name, "class", class.Name, "error", err)
-
-			continue
-		}
-
-		expected := m.expectedDeviceCount(ctx, class, node, current, peerNodes, resourceSlicesForNode)
-		currentValue := strconv.Itoa(current)
-		expectedValue := strconv.Itoa(expected)
-		partitionKey := class.partitionKey(node)
-
-		metrics.CurrentDeviceCount.WithLabelValues(node.Name, class.Name).Set(float64(current))
-		metrics.ExpectedDeviceCount.WithLabelValues(class.Name, partitionKey).Set(float64(expected))
-
-		if node.Labels[class.Labels.Current] != currentValue {
-			node.Labels[class.Labels.Current] = currentValue
-			needsUpdate = true
-		}
-
-		if node.Labels[class.Labels.Expected] != expectedValue {
-			node.Labels[class.Labels.Expected] = expectedValue
-			needsUpdate = true
-		}
-	}
-
-	return needsUpdate
 }
 
 func (m *Manager) expectedDeviceCount(
@@ -546,21 +574,4 @@ func (class compiledClass) partitionKey(node *corev1.Node) string {
 	}
 
 	return strings.Join(parts, "|")
-}
-
-func (m *Manager) NodeLabelsAffectDeviceCounts(oldLabels, newLabels map[string]string) bool {
-	if !m.Enabled() {
-		return false
-	}
-
-	oldInputLabels := maps.Clone(oldLabels)
-	newInputLabels := maps.Clone(newLabels)
-
-	for key := range m.managedLabelKeys {
-		// Ignore labels owned by this feature to avoid self-triggered updates.
-		delete(oldInputLabels, key)
-		delete(newInputLabels, key)
-	}
-
-	return !maps.Equal(oldInputLabels, newInputLabels)
 }

@@ -972,9 +972,7 @@ labeler:
           expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
         groupingLabels:
           - node.kubernetes.io/instance-type
-          - karpenter.sh/nodepool
           - nvidia.com/gpu.product
-          - nvidia.com/gpu.sharing-strategy
         expectedCountOverrides: []
         currentExpression: |
           int(node.metadata.labels['nvidia.com/gpu.count'])
@@ -985,7 +983,6 @@ labeler:
           expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
         groupingLabels:
           - node.kubernetes.io/instance-type
-          - karpenter.sh/nodepool
         expectedCountOverrides: []
         currentExpression: |
           sum(resourceSlices

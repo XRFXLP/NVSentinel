@@ -24,6 +24,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
+// ResourceSlicesForNode returns node-local ResourceSlices whose spec.nodeName matches the node.
 func ResourceSlicesForNode(store cache.Store, node *corev1.Node) []*resourcev1.ResourceSlice {
 	if store == nil {
 		return nil
@@ -45,6 +46,56 @@ func ResourceSlicesForNode(store cache.Store, node *corev1.Node) []*resourcev1.R
 	}
 
 	return resourceSlices
+}
+
+// NewResourceSliceEventHandlers returns informer handlers that reconcile nodes affected by ResourceSlice changes.
+func NewResourceSliceEventHandlers(
+	allInformersSynced func() bool,
+	updateNodeLabels func(string) error,
+) cache.ResourceEventHandlerFuncs {
+	return cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			resourceSlice, ok := resourceSliceFromEventObject(obj)
+			if !ok {
+				slog.Warn("Skipping ResourceSlice add event with unexpected object type",
+					"type", fmt.Sprintf("%T", obj))
+
+				return
+			}
+
+			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, resourceSlice)
+		},
+		UpdateFunc: func(oldObj, newObj any) {
+			oldResourceSlice, oldOk := resourceSliceFromEventObject(oldObj)
+			newResourceSlice, newOk := resourceSliceFromEventObject(newObj)
+
+			if !oldOk || !newOk {
+				slog.Warn("Skipping ResourceSlice update event with unexpected object type",
+					"oldType", fmt.Sprintf("%T", oldObj), "newType", fmt.Sprintf("%T", newObj))
+
+				return
+			}
+
+			// Device-count expressions only read ResourceSlice spec; ignore metadata-only churn.
+			if reflect.DeepEqual(oldResourceSlice.Spec, newResourceSlice.Spec) {
+				return
+			}
+
+			// Reconcile nodes matched by both old and new specs in case node selection changed.
+			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, oldResourceSlice, newResourceSlice)
+		},
+		DeleteFunc: func(obj any) {
+			resourceSlice, ok := resourceSliceFromEventObject(obj)
+			if !ok {
+				slog.Warn("Skipping ResourceSlice delete event with unexpected object type",
+					"type", fmt.Sprintf("%T", obj))
+
+				return
+			}
+
+			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, resourceSlice)
+		},
+	}
 }
 
 func resourceSliceBelongsToNode(resourceSlice *resourcev1.ResourceSlice, nodeName string) bool {
@@ -108,53 +159,4 @@ func resourceSliceFromEventObject(obj any) (*resourcev1.ResourceSlice, bool) {
 	resourceSlice, ok = tombstone.Obj.(*resourcev1.ResourceSlice)
 
 	return resourceSlice, ok
-}
-
-func NewResourceSliceEventHandlers(
-	allInformersSynced func() bool,
-	updateNodeLabels func(string) error,
-) cache.ResourceEventHandlerFuncs {
-	return cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj any) {
-			resourceSlice, ok := resourceSliceFromEventObject(obj)
-			if !ok {
-				slog.Warn("Skipping ResourceSlice add event with unexpected object type",
-					"type", fmt.Sprintf("%T", obj))
-
-				return
-			}
-
-			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, resourceSlice)
-		},
-		UpdateFunc: func(oldObj, newObj any) {
-			oldResourceSlice, oldOk := resourceSliceFromEventObject(oldObj)
-			newResourceSlice, newOk := resourceSliceFromEventObject(newObj)
-
-			if !oldOk || !newOk {
-				slog.Warn("Skipping ResourceSlice update event with unexpected object type",
-					"oldType", fmt.Sprintf("%T", oldObj), "newType", fmt.Sprintf("%T", newObj))
-
-				return
-			}
-
-			// Device-count expressions only read ResourceSlice spec; ignore metadata-only churn.
-			if reflect.DeepEqual(oldResourceSlice.Spec, newResourceSlice.Spec) {
-				return
-			}
-
-			// Reconcile nodes matched by both old and new specs in case node selection changed.
-			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, oldResourceSlice, newResourceSlice)
-		},
-		DeleteFunc: func(obj any) {
-			resourceSlice, ok := resourceSliceFromEventObject(obj)
-			if !ok {
-				slog.Warn("Skipping ResourceSlice delete event with unexpected object type",
-					"type", fmt.Sprintf("%T", obj))
-
-				return
-			}
-
-			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, resourceSlice)
-		},
-	}
 }
