@@ -154,6 +154,7 @@ func NewLabelerWithDeviceCounts(clientset kubernetes.Interface, resyncPeriod tim
 	if assumeDriverInstalled {
 		slog.Info("Labeler configured to assume drivers are pre-installed on all GPU nodes")
 	}
+
 	if deviceCounts.enabled() {
 		slog.Info("Labeler configured to reconcile expected device count labels", "classes", len(deviceCounts.classes))
 	}
@@ -372,6 +373,7 @@ func (l *Labeler) Run(ctx context.Context) error {
 	go l.podInformer.Run(ctx.Done())
 	go l.gkeInstallerInformer.Run(ctx.Done())
 	go l.nodeInformer.Run(ctx.Done())
+
 	if l.resourceSliceInformer != nil {
 		go l.resourceSliceInformer.Run(ctx.Done())
 	}
@@ -479,11 +481,7 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 		}
 	}
 
-	if l.nodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels) {
-		return true
-	}
-
-	return false
+	return l.nodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels)
 }
 
 const gpuPresentLabel = "nvidia.com/gpu.present"
@@ -690,49 +688,75 @@ func (l *Labeler) updateNodeLabels(nodeName string) error {
 	deviceCountLabelsChanged := false
 
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		driverLabel, err := l.getDriverLabelForNode(nodeName)
-		if err != nil {
-			return fmt.Errorf("failed to check driver pods for node %s: %w", nodeName, err)
-		}
-
-		dcgmVersion, err := l.getDCGMVersionForNode(nodeName)
-		if err != nil {
-			return fmt.Errorf("failed to check DCGM pods for node %s: %w", nodeName, err)
-		}
-
-		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
+		attempt, err := l.updateNodeLabelsAttempt(nodeName)
 		if err != nil {
 			return err
 		}
 
-		if node.Labels == nil {
-			node.Labels = make(map[string]string)
-		}
+		deviceCountLabelsChanged = deviceCountLabelsChanged || attempt.deviceCountLabelsChanged
 
-		needsUpdate, currentAttemptDeviceCountLabelsChanged := l.reconcileNodeLabelsInPlace(node, driverLabel, dcgmVersion)
-		if !needsUpdate {
-			slog.Debug("Node labels are correct", "node", nodeName)
-			return nil
-		}
-
-		deviceCountLabelsChanged = deviceCountLabelsChanged || currentAttemptDeviceCountLabelsChanged
-
-		_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
-		if err == nil && currentAttemptDeviceCountLabelsChanged {
-			metrics.DeviceCountLabelUpdates.WithLabelValues(metrics.StatusSuccess).Inc()
-		}
-
-		return err
+		return nil
 	})
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
+
 		if deviceCountLabelsChanged {
 			metrics.DeviceCountLabelUpdates.WithLabelValues(metrics.StatusFailed).Inc()
 		}
+
 		return fmt.Errorf("failed to update labels for node %s: %w", nodeName, err)
 	}
 
 	return nil
+}
+
+type nodeLabelUpdateAttempt struct {
+	deviceCountLabelsChanged bool
+}
+
+func (l *Labeler) updateNodeLabelsAttempt(nodeName string) (nodeLabelUpdateAttempt, error) {
+	driverLabel, dcgmVersion, err := l.desiredNodeLabels(nodeName)
+	if err != nil {
+		return nodeLabelUpdateAttempt{}, err
+	}
+
+	node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return nodeLabelUpdateAttempt{}, err
+	}
+
+	if node.Labels == nil {
+		node.Labels = make(map[string]string)
+	}
+
+	needsUpdate, deviceCountLabelsChanged := l.reconcileNodeLabelsInPlace(node, driverLabel, dcgmVersion)
+	if !needsUpdate {
+		slog.Debug("Node labels are correct", "node", nodeName)
+		return nodeLabelUpdateAttempt{}, nil
+	}
+
+	_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
+	if err == nil && deviceCountLabelsChanged {
+		metrics.DeviceCountLabelUpdates.WithLabelValues(metrics.StatusSuccess).Inc()
+	}
+
+	return nodeLabelUpdateAttempt{
+		deviceCountLabelsChanged: deviceCountLabelsChanged,
+	}, err
+}
+
+func (l *Labeler) desiredNodeLabels(nodeName string) (string, string, error) {
+	driverLabel, err := l.getDriverLabelForNode(nodeName)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to check driver pods for node %s: %w", nodeName, err)
+	}
+
+	dcgmVersion, err := l.getDCGMVersionForNode(nodeName)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to check DCGM pods for node %s: %w", nodeName, err)
+	}
+
+	return driverLabel, dcgmVersion, nil
 }
 
 func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVersion string) (bool, bool) {

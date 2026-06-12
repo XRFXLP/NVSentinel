@@ -76,7 +76,10 @@ func run() error {
 		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
-	expectedDeviceCountsRaw, err := loadExpectedDeviceCountsConfig(*expectedDeviceCountsConfig, *expectedDeviceCountsConfigFile)
+	expectedDeviceCountsRaw, err := loadExpectedDeviceCountsConfig(
+		*expectedDeviceCountsConfig,
+		*expectedDeviceCountsConfigFile,
+	)
 	if err != nil {
 		return err
 	}
@@ -143,7 +146,8 @@ func parseFlags() (
 	expectedDeviceCountsConfig = flag.String("expected-device-counts-config", "",
 		"YAML or JSON expected-device-count configuration. Empty disables expected device count labels.")
 	expectedDeviceCountsConfigFile = flag.String("expected-device-counts-config-file", "",
-		"Path to a YAML or JSON expected-device-count configuration file. Takes precedence over --expected-device-counts-config.")
+		"Path to a YAML or JSON expected-device-count configuration file. "+
+			"Takes precedence over --expected-device-counts-config.")
 	assumeDriverInstalled = flag.Bool("assume-driver-installed", false,
 		"Assume GPU drivers are pre-installed on GPU nodes (nvidia.com/gpu.present=true). "+
 			"Sets driver.installed=true unconditionally for those nodes, skipping driver pod detection. "+

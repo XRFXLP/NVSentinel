@@ -35,11 +35,13 @@ func (l *Labeler) resourceSlicesForNode(node *corev1.Node) []*resourcev1.Resourc
 	// ResourceSlices are cluster-scoped and may target nodes directly, through a
 	// selector, all nodes, or per-device node selection, so filter in-process.
 	resourceSlices := []*resourcev1.ResourceSlice{}
+
 	for _, obj := range l.resourceSliceInformer.GetStore().List() {
 		resourceSlice, ok := obj.(*resourcev1.ResourceSlice)
 		if !ok {
 			continue
 		}
+
 		if resourceSliceAppliesToNode(resourceSlice, node) {
 			resourceSlices = append(resourceSlices, resourceSlice)
 		}
@@ -56,12 +58,15 @@ func resourceSliceAppliesToNode(resourceSlice *resourcev1.ResourceSlice, node *c
 	if spec.NodeName != nil {
 		return *spec.NodeName == node.Name
 	}
+
 	if spec.AllNodes != nil {
 		return *spec.AllNodes
 	}
+
 	if spec.NodeSelector != nil {
 		return nodeSelectorMatches(spec.NodeSelector, node)
 	}
+
 	if spec.PerDeviceNodeSelection != nil && *spec.PerDeviceNodeSelection {
 		return slices.ContainsFunc(spec.Devices, func(device resourcev1.Device) bool {
 			return deviceAppliesToNode(device, node)
@@ -75,9 +80,11 @@ func deviceAppliesToNode(device resourcev1.Device, node *corev1.Node) bool {
 	if device.NodeName != nil {
 		return *device.NodeName == node.Name
 	}
+
 	if device.AllNodes != nil {
 		return *device.AllNodes
 	}
+
 	if device.NodeSelector != nil {
 		return nodeSelectorMatches(device.NodeSelector, node)
 	}
@@ -157,6 +164,8 @@ func nodeFieldRequirementMatches(requirement corev1.NodeSelectorRequirement, nod
 		return exists
 	case corev1.NodeSelectorOpDoesNotExist:
 		return !exists
+	case corev1.NodeSelectorOpGt, corev1.NodeSelectorOpLt:
+		return false
 	default:
 		return false
 	}
@@ -216,6 +225,7 @@ func resourceSliceFromEventObject(obj any) (*resourcev1.ResourceSlice, bool) {
 	}
 
 	resourceSlice, ok = tombstone.Obj.(*resourcev1.ResourceSlice)
+
 	return resourceSlice, ok
 }
 
@@ -224,7 +234,9 @@ func newResourceSliceEventHandlers(l *Labeler) cache.ResourceEventHandlerFuncs {
 		AddFunc: func(obj any) {
 			resourceSlice, ok := resourceSliceFromEventObject(obj)
 			if !ok {
-				slog.Warn("Skipping ResourceSlice add event with unexpected object type", "type", fmt.Sprintf("%T", obj))
+				slog.Warn("Skipping ResourceSlice add event with unexpected object type",
+					"type", fmt.Sprintf("%T", obj))
+
 				return
 			}
 
@@ -233,9 +245,11 @@ func newResourceSliceEventHandlers(l *Labeler) cache.ResourceEventHandlerFuncs {
 		UpdateFunc: func(oldObj, newObj any) {
 			oldResourceSlice, oldOk := resourceSliceFromEventObject(oldObj)
 			newResourceSlice, newOk := resourceSliceFromEventObject(newObj)
+
 			if !oldOk || !newOk {
 				slog.Warn("Skipping ResourceSlice update event with unexpected object type",
 					"oldType", fmt.Sprintf("%T", oldObj), "newType", fmt.Sprintf("%T", newObj))
+
 				return
 			}
 
@@ -250,7 +264,9 @@ func newResourceSliceEventHandlers(l *Labeler) cache.ResourceEventHandlerFuncs {
 		DeleteFunc: func(obj any) {
 			resourceSlice, ok := resourceSliceFromEventObject(obj)
 			if !ok {
-				slog.Warn("Skipping ResourceSlice delete event with unexpected object type", "type", fmt.Sprintf("%T", obj))
+				slog.Warn("Skipping ResourceSlice delete event with unexpected object type",
+					"type", fmt.Sprintf("%T", obj))
+
 				return
 			}
 
