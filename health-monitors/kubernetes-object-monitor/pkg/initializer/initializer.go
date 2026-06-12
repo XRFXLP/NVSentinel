@@ -133,7 +133,11 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 }
 
 func createManager(params Params, policies []config.Policy) (ctrl.Manager, error) {
-	restConfig := ctrl.GetConfigOrDie()
+	restConfig, err := ctrl.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("getting kubeconfig: %w", err)
+	}
+
 	cacheOptions, err := buildCacheOptions(restConfig, policies, params.ResyncPeriod)
 	if err != nil {
 		return nil, err
@@ -155,7 +159,11 @@ func createManager(params Params, policies []config.Policy) (ctrl.Manager, error
 	return mgr, nil
 }
 
-func buildCacheOptions(restConfig *rest.Config, policies []config.Policy, resyncPeriod time.Duration) (cache.Options, error) {
+func buildCacheOptions(
+	restConfig *rest.Config,
+	policies []config.Policy,
+	resyncPeriod time.Duration,
+) (cache.Options, error) {
 	httpClient, err := rest.HTTPClientFor(restConfig)
 	if err != nil {
 		return cache.Options{}, fmt.Errorf("failed to create Kubernetes HTTP client: %w", err)
