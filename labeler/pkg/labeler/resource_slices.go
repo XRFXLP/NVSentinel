@@ -66,12 +66,6 @@ func (l *Labeler) handleResourceSliceEvent(resourceSlices ...*resourcev1.Resourc
 		return
 	}
 
-	if len(resourceSlices) == 0 {
-		// Kept as a defensive fallback for callers that cannot identify a slice.
-		l.reconcileAllNodes()
-		return
-	}
-
 	for nodeName := range l.nodeNamesForResourceSlices(resourceSlices...) {
 		if err := l.updateNodeLabels(nodeName); err != nil {
 			slog.Error("Failed to reconcile node labels after ResourceSlice event",
