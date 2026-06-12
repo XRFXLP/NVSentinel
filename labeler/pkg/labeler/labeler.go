@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
+	resourceinformers "k8s.io/client-go/informers/resource/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
@@ -60,10 +61,12 @@ type Labeler struct {
 	podInformer           cache.SharedIndexInformer
 	nodeInformer          cache.SharedIndexInformer
 	gkeInstallerInformer  cache.SharedIndexInformer
+	resourceSliceInformer cache.SharedIndexInformer
 	informersSynced       []cache.InformerSynced
 	ctx                   context.Context
 	kataLabels            []string
 	assumeDriverInstalled bool
+	deviceCounts          *deviceCountManager
 }
 
 func (l *Labeler) allInformersSynced() bool {
@@ -79,6 +82,21 @@ func (l *Labeler) allInformersSynced() bool {
 // NewLabeler creates a new Labeler instance
 func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string, assumeDriverInstalled bool) (*Labeler, error) {
+	return NewLabelerWithDeviceCounts(
+		clientset,
+		resyncPeriod,
+		dcgmApp,
+		driverApp,
+		gkeInstallerApp,
+		kataLabelOverride,
+		assumeDriverInstalled,
+		ExpectedDeviceCountsConfig{},
+	)
+}
+
+func NewLabelerWithDeviceCounts(clientset kubernetes.Interface, resyncPeriod time.Duration,
+	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string, assumeDriverInstalled bool,
+	expectedDeviceCounts ExpectedDeviceCountsConfig) (*Labeler, error) {
 	podInformer, err := createPodInformer(clientset, resyncPeriod, dcgmApp, driverApp)
 	if err != nil {
 		return nil, fmt.Errorf("create pod informer: %w", err)
@@ -91,19 +109,34 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 
 	nodeInformer := createNodeInformer(clientset, resyncPeriod)
 
+	deviceCounts, err := newDeviceCountManager(expectedDeviceCounts)
+	if err != nil {
+		return nil, fmt.Errorf("create expected device count manager: %w", err)
+	}
+
+	informersSynced := []cache.InformerSynced{
+		podInformer.HasSynced,
+		nodeInformer.HasSynced,
+		gkeInstallerInformer.HasSynced,
+	}
+
+	var resourceSliceInformer cache.SharedIndexInformer
+	if deviceCounts.enabled() {
+		resourceSliceInformer = createResourceSliceInformer(clientset, resyncPeriod)
+		informersSynced = append(informersSynced, resourceSliceInformer.HasSynced)
+	}
+
 	l := &Labeler{
-		clientset:            clientset,
-		podInformer:          podInformer,
-		nodeInformer:         nodeInformer,
-		gkeInstallerInformer: gkeInstallerInformer,
-		informersSynced: []cache.InformerSynced{
-			podInformer.HasSynced,
-			nodeInformer.HasSynced,
-			gkeInstallerInformer.HasSynced,
-		},
+		clientset:             clientset,
+		podInformer:           podInformer,
+		nodeInformer:          nodeInformer,
+		gkeInstallerInformer:  gkeInstallerInformer,
+		resourceSliceInformer: resourceSliceInformer,
+		informersSynced:       informersSynced,
 		ctx:                   context.Background(),
 		kataLabels:            buildKataLabels(kataLabelOverride),
 		assumeDriverInstalled: assumeDriverInstalled,
+		deviceCounts:          deviceCounts,
 	}
 
 	if err := l.registerPodEventHandlers(); err != nil {
@@ -114,8 +147,15 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("register node event handlers: %w", err)
 	}
 
+	if err := l.registerResourceSliceEventHandlers(); err != nil {
+		return nil, fmt.Errorf("register ResourceSlice event handlers: %w", err)
+	}
+
 	if assumeDriverInstalled {
 		slog.Info("Labeler configured to assume drivers are pre-installed on all GPU nodes")
+	}
+	if deviceCounts.enabled() {
+		slog.Info("Labeler configured to reconcile expected device count labels", "classes", len(deviceCounts.classes))
 	}
 
 	slog.Info("Labeler created, watching DCGM and driver pods, and nodes for kata detection")
@@ -199,6 +239,10 @@ func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
 func createNodeInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
 	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
 	return factory.Core().V1().Nodes().Informer()
+}
+
+func createResourceSliceInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
+	return resourceinformers.NewResourceSliceInformer(clientset, resyncPeriod, cache.Indexers{})
 }
 
 func (l *Labeler) getEventHandlers() cache.ResourceEventHandlerFuncs {
@@ -308,6 +352,19 @@ func (l *Labeler) registerNodeEventHandlers() error {
 	return nil
 }
 
+func (l *Labeler) registerResourceSliceEventHandlers() error {
+	if l.resourceSliceInformer == nil {
+		return nil
+	}
+
+	_, err := l.resourceSliceInformer.AddEventHandler(newResourceSliceEventHandlers(l))
+	if err != nil {
+		return fmt.Errorf("failed to add ResourceSlice event handler: %w", err)
+	}
+
+	return nil
+}
+
 // Run starts the labeler and waits for cache sync
 func (l *Labeler) Run(ctx context.Context) error {
 	l.ctx = ctx
@@ -315,6 +372,9 @@ func (l *Labeler) Run(ctx context.Context) error {
 	go l.podInformer.Run(ctx.Done())
 	go l.gkeInstallerInformer.Run(ctx.Done())
 	go l.nodeInformer.Run(ctx.Done())
+	if l.resourceSliceInformer != nil {
+		go l.resourceSliceInformer.Run(ctx.Done())
+	}
 
 	slog.Info("Waiting for Labeler caches to sync...")
 
@@ -417,6 +477,10 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 		if oldNode.Labels[key] != newNode.Labels[key] {
 			return true
 		}
+	}
+
+	if l.nodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels) {
+		return true
 	}
 
 	return false
@@ -623,6 +687,8 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 }
 
 func (l *Labeler) updateNodeLabels(nodeName string) error {
+	deviceCountLabelsChanged := false
+
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		driverLabel, err := l.getDriverLabelForNode(nodeName)
 		if err != nil {
@@ -643,26 +709,35 @@ func (l *Labeler) updateNodeLabels(nodeName string) error {
 			node.Labels = make(map[string]string)
 		}
 
-		needsUpdate := l.reconcileNodeLabelsInPlace(node, driverLabel, dcgmVersion)
+		needsUpdate, currentAttemptDeviceCountLabelsChanged := l.reconcileNodeLabelsInPlace(node, driverLabel, dcgmVersion)
 		if !needsUpdate {
 			slog.Debug("Node labels are correct", "node", nodeName)
 			return nil
 		}
 
+		deviceCountLabelsChanged = deviceCountLabelsChanged || currentAttemptDeviceCountLabelsChanged
+
 		_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
+		if err == nil && currentAttemptDeviceCountLabelsChanged {
+			metrics.DeviceCountLabelUpdates.WithLabelValues(metrics.StatusSuccess).Inc()
+		}
 
 		return err
 	})
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
+		if deviceCountLabelsChanged {
+			metrics.DeviceCountLabelUpdates.WithLabelValues(metrics.StatusFailed).Inc()
+		}
 		return fmt.Errorf("failed to update labels for node %s: %w", nodeName, err)
 	}
 
 	return nil
 }
 
-func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVersion string) bool {
+func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVersion string) (bool, bool) {
 	needsUpdate := false
+	deviceCountLabelsChanged := false
 
 	expectedKataLabel := l.getKataLabelForNode(node)
 	if node.Labels[KataEnabledLabel] != expectedKataLabel {
@@ -675,7 +750,7 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 	// During startup, node events may fire before pod informer has indexed all pods,
 	// which would incorrectly identify valid labels as stale.
 	if !l.allInformersSynced() {
-		return needsUpdate
+		return needsUpdate, deviceCountLabelsChanged
 	}
 
 	if node.Labels[DriverInstalledLabel] != driverLabel {
@@ -702,7 +777,12 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 		}
 	}
 
-	return needsUpdate
+	if l.reconcileDeviceCountLabelsInPlace(l.ctx, node) {
+		needsUpdate = true
+		deviceCountLabelsChanged = true
+	}
+
+	return needsUpdate, deviceCountLabelsChanged
 }
 
 // handlePodDeleteEvent processes pod delete events by recalculating node labels

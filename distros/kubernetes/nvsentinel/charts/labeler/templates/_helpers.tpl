@@ -38,3 +38,17 @@ Selector labels
 app.kubernetes.io/name: {{ include "labeler.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+ConfigMap name.
+*/}}
+{{- define "labeler.configMapName" -}}
+{{ include "labeler.fullname" . }}
+{{- end }}
+
+{{/*
+Expected device-count configuration content.
+*/}}
+{{- define "labeler.expectedDeviceCountsConfig" -}}
+{{- toYaml .Values.expectedDeviceCounts }}
+{{- end }}

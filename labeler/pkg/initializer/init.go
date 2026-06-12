@@ -34,6 +34,7 @@ type InitializationParams struct {
 	GKEInstallerAppLabel  string
 	KataLabel             string
 	AssumeDriverInstalled bool
+	ExpectedDeviceCounts  labeler.ExpectedDeviceCountsConfig
 }
 
 type Components struct {
@@ -50,7 +51,7 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 
 	slog.Info("Successfully initialized kubernetes client")
 
-	labelerInstance, err := labeler.NewLabeler(
+	labelerInstance, err := labeler.NewLabelerWithDeviceCounts(
 		clientSet,
 		30*time.Second,
 		params.DCGMAppLabel,
@@ -58,6 +59,7 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 		params.GKEInstallerAppLabel,
 		params.KataLabel,
 		params.AssumeDriverInstalled,
+		params.ExpectedDeviceCounts,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error creating labeler instance: %w", err)
