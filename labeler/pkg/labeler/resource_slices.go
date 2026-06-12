@@ -18,12 +18,9 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
-	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -32,8 +29,8 @@ func (l *Labeler) resourceSlicesForNode(node *corev1.Node) []*resourcev1.Resourc
 		return nil
 	}
 
-	// ResourceSlices are cluster-scoped and may target nodes directly, through a
-	// selector, all nodes, or per-device node selection, so filter in-process.
+	// The DRA ResourceSlices consumed by device-count classes are node-local and
+	// identify their node through spec.nodeName.
 	resourceSlices := []*resourcev1.ResourceSlice{}
 
 	for _, obj := range l.resourceSliceInformer.GetStore().List() {
@@ -42,7 +39,7 @@ func (l *Labeler) resourceSlicesForNode(node *corev1.Node) []*resourcev1.Resourc
 			continue
 		}
 
-		if resourceSliceAppliesToNode(resourceSlice, node) {
+		if resourceSliceBelongsToNode(resourceSlice, node.Name) {
 			resourceSlices = append(resourceSlices, resourceSlice)
 		}
 	}
@@ -50,125 +47,18 @@ func (l *Labeler) resourceSlicesForNode(node *corev1.Node) []*resourcev1.Resourc
 	return resourceSlices
 }
 
-func resourceSliceAppliesToNode(resourceSlice *resourcev1.ResourceSlice, node *corev1.Node) bool {
-	spec := resourceSlice.Spec
+func resourceSliceBelongsToNode(resourceSlice *resourcev1.ResourceSlice, nodeName string) bool {
+	resourceSliceNodeName, ok := resourceSliceNodeName(resourceSlice)
 
-	// ResourceSlice has mutually exclusive node selection modes. Mirror those
-	// modes here so expressions only see slices relevant to the reconciled node.
-	if spec.NodeName != nil {
-		return *spec.NodeName == node.Name
-	}
-
-	if spec.AllNodes != nil {
-		return *spec.AllNodes
-	}
-
-	if spec.NodeSelector != nil {
-		return nodeSelectorMatches(spec.NodeSelector, node)
-	}
-
-	if spec.PerDeviceNodeSelection != nil && *spec.PerDeviceNodeSelection {
-		return slices.ContainsFunc(spec.Devices, func(device resourcev1.Device) bool {
-			return deviceAppliesToNode(device, node)
-		})
-	}
-
-	return false
+	return ok && resourceSliceNodeName == nodeName
 }
 
-func deviceAppliesToNode(device resourcev1.Device, node *corev1.Node) bool {
-	if device.NodeName != nil {
-		return *device.NodeName == node.Name
-	}
-
-	if device.AllNodes != nil {
-		return *device.AllNodes
-	}
-
-	if device.NodeSelector != nil {
-		return nodeSelectorMatches(device.NodeSelector, node)
-	}
-
-	return false
-}
-
-func nodeSelectorMatches(nodeSelector *corev1.NodeSelector, node *corev1.Node) bool {
-	for _, term := range nodeSelector.NodeSelectorTerms {
-		if nodeSelectorTermMatches(term, node) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func nodeSelectorTermMatches(term corev1.NodeSelectorTerm, node *corev1.Node) bool {
-	for _, requirement := range term.MatchExpressions {
-		operator, ok := nodeSelectorOperator(requirement.Operator)
-		if !ok {
-			return false
-		}
-
-		selectorRequirement, err := labels.NewRequirement(
-			requirement.Key,
-			operator,
-			requirement.Values,
-		)
-		if err != nil || !selectorRequirement.Matches(labels.Set(node.Labels)) {
-			return false
-		}
-	}
-
-	for _, requirement := range term.MatchFields {
-		if !nodeFieldRequirementMatches(requirement, node) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func nodeSelectorOperator(operator corev1.NodeSelectorOperator) (selection.Operator, bool) {
-	switch operator {
-	case corev1.NodeSelectorOpIn:
-		return selection.In, true
-	case corev1.NodeSelectorOpNotIn:
-		return selection.NotIn, true
-	case corev1.NodeSelectorOpExists:
-		return selection.Exists, true
-	case corev1.NodeSelectorOpDoesNotExist:
-		return selection.DoesNotExist, true
-	case corev1.NodeSelectorOpGt:
-		return selection.GreaterThan, true
-	case corev1.NodeSelectorOpLt:
-		return selection.LessThan, true
-	default:
+func resourceSliceNodeName(resourceSlice *resourcev1.ResourceSlice) (string, bool) {
+	if resourceSlice == nil || resourceSlice.Spec.NodeName == nil || *resourceSlice.Spec.NodeName == "" {
 		return "", false
 	}
-}
 
-func nodeFieldRequirementMatches(requirement corev1.NodeSelectorRequirement, node *corev1.Node) bool {
-	// Kubernetes supports a small set of node fields in selectors. The only one
-	// needed here is metadata.name; unsupported fields simply do not match.
-	fields := map[string]string{
-		"metadata.name": node.Name,
-	}
-
-	value, exists := fields[requirement.Key]
-	switch requirement.Operator {
-	case corev1.NodeSelectorOpIn:
-		return exists && slices.Contains(requirement.Values, value)
-	case corev1.NodeSelectorOpNotIn:
-		return !exists || !slices.Contains(requirement.Values, value)
-	case corev1.NodeSelectorOpExists:
-		return exists
-	case corev1.NodeSelectorOpDoesNotExist:
-		return !exists
-	case corev1.NodeSelectorOpGt, corev1.NodeSelectorOpLt:
-		return false
-	default:
-		return false
-	}
+	return *resourceSlice.Spec.NodeName, true
 }
 
 func (l *Labeler) handleResourceSliceEvent(resourceSlices ...*resourcev1.ResourceSlice) {
@@ -193,20 +83,13 @@ func (l *Labeler) handleResourceSliceEvent(resourceSlices ...*resourcev1.Resourc
 func (l *Labeler) nodeNamesForResourceSlices(resourceSlices ...*resourcev1.ResourceSlice) map[string]struct{} {
 	nodeNames := map[string]struct{}{}
 
-	// Selector-based ResourceSlices require comparing against cached nodes; for
-	// updates, callers pass old and new slices to include nodes that lost a slice.
-	for _, obj := range l.nodeInformer.GetStore().List() {
-		node, ok := obj.(*corev1.Node)
+	for _, resourceSlice := range resourceSlices {
+		nodeName, ok := resourceSliceNodeName(resourceSlice)
 		if !ok {
 			continue
 		}
 
-		for _, resourceSlice := range resourceSlices {
-			if resourceSlice != nil && resourceSliceAppliesToNode(resourceSlice, node) {
-				nodeNames[node.Name] = struct{}{}
-				break
-			}
-		}
+		nodeNames[nodeName] = struct{}{}
 	}
 
 	return nodeNames
