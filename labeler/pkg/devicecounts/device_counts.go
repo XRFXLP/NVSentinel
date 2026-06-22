@@ -29,37 +29,37 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/yaml"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
 )
 
 // Config controls expected device-count label reconciliation.
 type Config struct {
-	Enabled bool          `json:"enabled" yaml:"enabled"`
-	Classes []ClassConfig `json:"classes" yaml:"classes"`
+	Enabled bool          `toml:"enabled"`
+	Classes []ClassConfig `toml:"classes"`
 }
 
 // ClassConfig describes one device-count class, such as GPU or NIC counts.
 type ClassConfig struct {
-	Name                   string                  `json:"name" yaml:"name"`
-	Enabled                bool                    `json:"enabled" yaml:"enabled"`
-	Labels                 Labels                  `json:"labels" yaml:"labels"`
-	GroupingLabels         []string                `json:"groupingLabels" yaml:"groupingLabels"`
-	ExpectedCountOverrides []ExpectedCountOverride `json:"expectedCountOverrides" yaml:"expectedCountOverrides"`
-	CurrentExpression      string                  `json:"currentExpression" yaml:"currentExpression"`
+	Name                   string                  `toml:"name"`
+	Enabled                bool                    `toml:"enabled"`
+	Labels                 Labels                  `toml:"labels"`
+	GroupingLabels         []string                `toml:"groupingLabels"`
+	ExpectedCountOverrides []ExpectedCountOverride `toml:"expectedCountOverrides"`
+	CurrentExpression      string                  `toml:"currentExpression"`
 }
 
 // Labels contains the current and expected node labels managed for a class.
 type Labels struct {
-	Current  string `json:"current" yaml:"current"`
-	Expected string `json:"expected" yaml:"expected"`
+	Current  string `toml:"current"`
+	Expected string `toml:"expected"`
 }
 
 // ExpectedCountOverride pins an expected count when a node's labels match.
 type ExpectedCountOverride struct {
-	MatchLabels map[string]string `json:"matchLabels" yaml:"matchLabels"`
-	Count       int               `json:"count" yaml:"count"`
+	MatchLabels map[string]string `toml:"matchLabels"`
+	Count       int               `toml:"count"`
 }
 
 // Manager evaluates device-count classes and applies their derived node labels.
@@ -73,14 +73,11 @@ type compiledClass struct {
 	program cel.Program
 }
 
-// ParseConfig parses expected device-count YAML or JSON configuration.
-func ParseConfig(raw string) (Config, error) {
-	if strings.TrimSpace(raw) == "" {
-		return Config{}, nil
-	}
-
+// LoadConfig loads expected device-count TOML configuration from a file.
+func LoadConfig(path string) (Config, error) {
 	var config Config
-	if err := yaml.Unmarshal([]byte(raw), &config); err != nil {
+
+	if err := configmanager.LoadTOMLConfig(path, &config); err != nil {
 		return Config{}, fmt.Errorf("parse expected device counts config: %w", err)
 	}
 

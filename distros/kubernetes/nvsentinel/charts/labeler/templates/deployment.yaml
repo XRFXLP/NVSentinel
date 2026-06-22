@@ -71,7 +71,7 @@ spec:
             {{- end }}
             {{- if .Values.expectedDeviceCounts.enabled }}
             - "--expected-device-counts-config-file"
-            - "/etc/nvsentinel/labeler/expected-device-counts.yaml"
+            - "/etc/nvsentinel/labeler/expected-device-counts.toml"
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -98,8 +98,8 @@ spec:
           volumeMounts:
             {{- if .Values.expectedDeviceCounts.enabled }}
             - name: expected-device-counts-config
-              mountPath: /etc/nvsentinel/labeler/expected-device-counts.yaml
-              subPath: expected-device-counts.yaml
+              mountPath: /etc/nvsentinel/labeler/expected-device-counts.toml
+              subPath: expected-device-counts.toml
               readOnly: true
             {{- end }}
             {{- if .Values.global.auditLogging.enabled }}

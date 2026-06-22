@@ -66,8 +66,8 @@ func main() {
 
 func run() error {
 	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
-		gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfig,
-		expectedDeviceCountsConfigFile, assumeDriverInstalled := parseFlags()
+		gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile,
+		assumeDriverInstalled := parseFlags()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -77,15 +77,7 @@ func run() error {
 		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
-	expectedDeviceCountsRaw, err := loadExpectedDeviceCountsConfig(
-		*expectedDeviceCountsConfig,
-		*expectedDeviceCountsConfigFile,
-	)
-	if err != nil {
-		return err
-	}
-
-	expectedDeviceCounts, err := devicecounts.ParseConfig(expectedDeviceCountsRaw)
+	expectedDeviceCounts, err := loadExpectedDeviceCountsConfig(*expectedDeviceCountsConfigFile)
 	if err != nil {
 		return err
 	}
@@ -132,8 +124,7 @@ func run() error {
 
 func parseFlags() (
 	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
-	gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfig,
-	expectedDeviceCountsConfigFile *string, assumeDriverInstalled *bool,
+	gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile *string, assumeDriverInstalled *bool,
 ) {
 	kubeconfig = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	metricsPort = flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
@@ -144,11 +135,8 @@ func parseFlags() (
 	kataLabel = flag.String("kata-label", "",
 		fmt.Sprintf("Custom node label to check for Kata Containers support. If empty, uses default '%s'",
 			labeler.KataRuntimeDefaultLabel))
-	expectedDeviceCountsConfig = flag.String("expected-device-counts-config", "",
-		"YAML or JSON expected-device-count configuration. Empty disables expected device count labels.")
 	expectedDeviceCountsConfigFile = flag.String("expected-device-counts-config-file", "",
-		"Path to a YAML or JSON expected-device-count configuration file. "+
-			"Takes precedence over --expected-device-counts-config.")
+		"Path to a TOML expected-device-count configuration file. Empty disables expected device count labels.")
 	assumeDriverInstalled = flag.Bool("assume-driver-installed", false,
 		"Assume GPU drivers are pre-installed on GPU nodes (nvidia.com/gpu.present=true). "+
 			"Sets driver.installed=true unconditionally for those nodes, skipping driver pod detection. "+
@@ -159,15 +147,10 @@ func parseFlags() (
 	return
 }
 
-func loadExpectedDeviceCountsConfig(inlineConfig, configFile string) (string, error) {
+func loadExpectedDeviceCountsConfig(configFile string) (devicecounts.Config, error) {
 	if configFile == "" {
-		return inlineConfig, nil
+		return devicecounts.Config{}, nil
 	}
 
-	contents, err := os.ReadFile(configFile)
-	if err != nil {
-		return "", fmt.Errorf("read expected device counts config file %q: %w", configFile, err)
-	}
-
-	return string(contents), nil
+	return devicecounts.LoadConfig(configFile)
 }

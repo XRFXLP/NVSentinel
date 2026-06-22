@@ -87,7 +87,7 @@ Any other value or missing label results in `kata.enabled=false`.
 
 Expected device-count labeling is disabled by default. When enabled, the labeler evaluates enabled classes and writes current/expected count labels only when the configured CEL expression returns a valid non-negative integer.
 
-The Helm chart renders this block into a ConfigMap and mounts it into the labeler pod. Because expressions are compiled at startup, Helm also annotates the pod template with a checksum so changes to the ConfigMap roll the Deployment.
+The Helm chart renders this values block into a TOML ConfigMap entry and mounts it into the labeler pod. Because expressions are compiled at startup, Helm also annotates the pod template with a checksum so changes to the ConfigMap roll the Deployment.
 
 ```yaml
 labeler:

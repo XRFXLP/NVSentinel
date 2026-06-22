@@ -50,5 +50,33 @@ ConfigMap name.
 Expected device-count configuration content.
 */}}
 {{- define "labeler.expectedDeviceCountsConfig" -}}
-{{- toYaml .Values.expectedDeviceCounts }}
+enabled = {{ .Values.expectedDeviceCounts.enabled }}
+{{- range .Values.expectedDeviceCounts.classes }}
+
+[[classes]]
+name = {{ .name | quote }}
+enabled = {{ .enabled }}
+{{- with .groupingLabels }}
+groupingLabels = [{{- range $i, $label := . }}{{ if $i }}, {{ end }}{{ $label | quote }}{{- end }}]
+{{- end }}
+currentExpression = '''
+{{ .currentExpression | trimSuffix "\n" }}
+'''
+
+[classes.labels]
+current = {{ .labels.current | quote }}
+expected = {{ .labels.expected | quote }}
+{{- range .expectedCountOverrides }}
+
+[[classes.expectedCountOverrides]]
+count = {{ .count }}
+{{- with .matchLabels }}
+
+[classes.expectedCountOverrides.matchLabels]
+{{- range $key, $value := . }}
+{{ $key | quote }} = {{ $value | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}

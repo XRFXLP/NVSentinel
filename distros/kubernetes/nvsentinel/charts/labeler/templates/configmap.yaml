@@ -20,6 +20,6 @@ metadata:
   labels:
     {{- include "labeler.labels" . | nindent 4 }}
 data:
-  expected-device-counts.yaml: |
+  expected-device-counts.toml: |
 {{ include "labeler.expectedDeviceCountsConfig" . | indent 4 }}
 {{- end }}

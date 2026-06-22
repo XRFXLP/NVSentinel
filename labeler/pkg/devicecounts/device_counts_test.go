@@ -16,6 +16,8 @@ package devicecounts
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,6 +32,42 @@ const (
 	testNICCountCurrentLabel  = "nvsentinel.dgxc.nvidia.com/nic.count.current"
 	testNICCountExpectedLabel = "nvsentinel.dgxc.nvidia.com/nic.count.expected"
 )
+
+func TestParseConfigTOML(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "expected-device-counts.toml")
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+enabled = true
+
+[[classes]]
+name = "gpu"
+enabled = true
+groupingLabels = ["node.kubernetes.io/instance-type", "nvidia.com/gpu.product"]
+currentExpression = '''
+int(node.metadata.labels['nvidia.com/gpu.count'])
+'''
+
+[classes.labels]
+current = "nvsentinel.dgxc.nvidia.com/gpu.count.current"
+expected = "nvsentinel.dgxc.nvidia.com/gpu.count.expected"
+
+[[classes.expectedCountOverrides]]
+count = 8
+
+[classes.expectedCountOverrides.matchLabels]
+"nvidia.com/gpu.product" = "NVIDIA-GB200"
+`), 0600))
+
+	config, err := LoadConfig(configPath)
+	require.NoError(t, err)
+	require.True(t, config.Enabled)
+	require.Len(t, config.Classes, 1)
+	require.Equal(t, "gpu", config.Classes[0].Name)
+	require.Equal(t, []string{"node.kubernetes.io/instance-type", "nvidia.com/gpu.product"},
+		config.Classes[0].GroupingLabels)
+	require.Equal(t, testGPUCountCurrentLabel, config.Classes[0].Labels.Current)
+	require.Equal(t, "NVIDIA-GB200",
+		config.Classes[0].ExpectedCountOverrides[0].MatchLabels["nvidia.com/gpu.product"])
+}
 
 func TestExpectedDeviceCountsLearnFromPeerNodeLabels(t *testing.T) {
 	config := Config{
