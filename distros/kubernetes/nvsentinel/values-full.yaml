@@ -975,7 +975,17 @@ labeler:
         expectedCountOverrides: []
         currentExpression: |
           int(node.metadata.labels['nvidia.com/gpu.count'])
-      # Example NVIDIA Network Operator / Mellanox NIC class using node allocatable.
+      - name: nic
+        enabled: true
+        labels:
+          current: nvsentinel.dgxc.nvidia.com/nic.count.current
+          expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
+        groupingLabels:
+          - node.kubernetes.io/instance-type
+        expectedCountOverrides: []
+        currentExpression: |
+          int(node.status.allocatable['nvidia.com/mlnxnics'])
+      # Example AWS RoCE DRA NIC class. Uncomment and adapt per environment.
       # - name: nic
       #   enabled: false
       #   labels:
@@ -985,7 +995,21 @@ labeler:
       #     - node.kubernetes.io/instance-type
       #   expectedCountOverrides: []
       #   currentExpression: |
-      #     int(node.status.allocatable['nvidia.com/mlnxnics'])
+      #     sum(resourceSlices
+      #       .filter(rs,
+      #         has(rs.spec.driver) &&
+      #         rs.spec.driver == 'dra.networking.k8s.aws' &&
+      #         has(rs.spec.devices)
+      #       )
+      #       .map(rs, rs.spec.devices
+      #         .filter(d,
+      #           has(d.attributes) &&
+      #           'dra.vpc.amazonaws.com/deviceType' in d.attributes &&
+      #           has(d.attributes['dra.vpc.amazonaws.com/deviceType'].string) &&
+      #           d.attributes['dra.vpc.amazonaws.com/deviceType'].string == 'roce'
+      #         )
+      #         .size()
+      #       ))
 
   # Pod resource limits and requests
   resources:
