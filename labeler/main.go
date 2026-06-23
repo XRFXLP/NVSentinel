@@ -152,5 +152,10 @@ func loadExpectedDeviceCountsConfig(configFile string) (devicecounts.Config, err
 		return devicecounts.Config{}, nil
 	}
 
-	return devicecounts.LoadConfig(configFile)
+	config, err := devicecounts.LoadConfig(configFile)
+	if err != nil {
+		return devicecounts.Config{}, fmt.Errorf("load expected device counts config %q: %w", configFile, err)
+	}
+
+	return config, nil
 }

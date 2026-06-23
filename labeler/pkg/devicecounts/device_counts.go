@@ -144,6 +144,10 @@ func (m *Manager) ReconcileNodeLabelsInPlace(
 		return false
 	}
 
+	if node.Labels == nil {
+		node.Labels = make(map[string]string)
+	}
+
 	needsUpdate := false
 	resourceSlices := resourceSlicesForNode(node)
 
