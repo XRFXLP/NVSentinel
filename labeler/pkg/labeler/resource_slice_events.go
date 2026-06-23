@@ -17,7 +17,9 @@ package labeler
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
+	"slices"
 
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/client-go/tools/cache"
@@ -94,12 +96,7 @@ func nodeNamesForResourceSlices(resourceSlices ...*resourcev1.ResourceSlice) []s
 		nodeNameSet[nodeName] = struct{}{}
 	}
 
-	nodeNames := make([]string, 0, len(nodeNameSet))
-	for nodeName := range nodeNameSet {
-		nodeNames = append(nodeNames, nodeName)
-	}
-
-	return nodeNames
+	return slices.Collect(maps.Keys(nodeNameSet))
 }
 
 func resourceSliceFromEventObject(obj any) (*resourcev1.ResourceSlice, bool) {

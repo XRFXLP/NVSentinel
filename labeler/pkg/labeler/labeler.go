@@ -688,7 +688,7 @@ func (l *Labeler) updateNodeLabels(nodeName string) error {
 func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
 	driverLabel, dcgmVersion, err := l.desiredNodeLabels(nodeName)
 	if err != nil {
-		return fmt.Errorf("calculate desired node labels for %s: %w", nodeName, err)
+		return fmt.Errorf("failed to calculate desired node labels for %s: %w", nodeName, err)
 	}
 
 	node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
