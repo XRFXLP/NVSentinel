@@ -79,7 +79,7 @@ func run() error {
 
 	expectedDeviceCounts, err := loadExpectedDeviceCountsConfig(*expectedDeviceCountsConfigFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("load expected device counts config: %w", err)
 	}
 
 	srv := server.NewServer(

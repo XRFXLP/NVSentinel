@@ -83,20 +83,6 @@ func (l *Labeler) allInformersSynced() bool {
 
 // NewLabeler creates a new Labeler instance
 func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
-	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string, assumeDriverInstalled bool) (*Labeler, error) {
-	return NewLabelerWithDeviceCounts(
-		clientset,
-		resyncPeriod,
-		dcgmApp,
-		driverApp,
-		gkeInstallerApp,
-		kataLabelOverride,
-		assumeDriverInstalled,
-		devicecounts.Config{},
-	)
-}
-
-func NewLabelerWithDeviceCounts(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string, assumeDriverInstalled bool,
 	expectedDeviceCounts devicecounts.Config) (*Labeler, error) {
 	podInformer, err := createPodInformer(clientset, resyncPeriod, dcgmApp, driverApp)
@@ -360,9 +346,7 @@ func (l *Labeler) registerResourceSliceEventHandlers() error {
 		return nil
 	}
 
-	_, err := l.resourceSliceInformer.AddEventHandler(
-		devicecounts.NewResourceSliceEventHandlers(l.allInformersSynced, l.updateNodeLabels),
-	)
+	_, err := l.resourceSliceInformer.AddEventHandler(l.newResourceSliceEventHandlers())
 	if err != nil {
 		return fmt.Errorf("failed to add ResourceSlice event handler: %w", err)
 	}
@@ -689,24 +673,16 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 }
 
 func (l *Labeler) updateNodeLabels(nodeName string) error {
-	deviceCountLabelsChanged := false
-
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		attempt, err := l.updateNodeLabelsAttempt(nodeName)
+		err := l.updateNodeLabelsAttempt(nodeName)
 		if err != nil {
-			return err
+			return fmt.Errorf("update node labels attempt for %s: %w", nodeName, err)
 		}
-
-		deviceCountLabelsChanged = deviceCountLabelsChanged || attempt.deviceCountLabelsChanged
 
 		return nil
 	})
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
-
-		if deviceCountLabelsChanged {
-			metrics.DeviceCountLabelUpdates.WithLabelValues(metrics.StatusFailed).Inc()
-		}
 
 		return fmt.Errorf("failed to update labels for node %s: %w", nodeName, err)
 	}
@@ -714,39 +690,33 @@ func (l *Labeler) updateNodeLabels(nodeName string) error {
 	return nil
 }
 
-type nodeLabelUpdateAttempt struct {
-	deviceCountLabelsChanged bool
-}
-
-func (l *Labeler) updateNodeLabelsAttempt(nodeName string) (nodeLabelUpdateAttempt, error) {
+func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
 	driverLabel, dcgmVersion, err := l.desiredNodeLabels(nodeName)
 	if err != nil {
-		return nodeLabelUpdateAttempt{}, err
+		return fmt.Errorf("calculate desired node labels for %s: %w", nodeName, err)
 	}
 
 	node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
-		return nodeLabelUpdateAttempt{}, err
+		return fmt.Errorf("get node %s: %w", nodeName, err)
 	}
 
 	if node.Labels == nil {
 		node.Labels = make(map[string]string)
 	}
 
-	needsUpdate, deviceCountLabelsChanged := l.reconcileNodeLabelsInPlace(node, driverLabel, dcgmVersion)
+	needsUpdate := l.reconcileNodeLabelsInPlace(node, driverLabel, dcgmVersion)
 	if !needsUpdate {
 		slog.Debug("Node labels are correct", "node", nodeName)
-		return nodeLabelUpdateAttempt{}, nil
+		return nil
 	}
 
 	_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
-	if err == nil && deviceCountLabelsChanged {
-		metrics.DeviceCountLabelUpdates.WithLabelValues(metrics.StatusSuccess).Inc()
+	if err != nil {
+		return fmt.Errorf("update node %s: %w", nodeName, err)
 	}
 
-	return nodeLabelUpdateAttempt{
-		deviceCountLabelsChanged: deviceCountLabelsChanged,
-	}, err
+	return nil
 }
 
 func (l *Labeler) desiredNodeLabels(nodeName string) (string, string, error) {
@@ -763,9 +733,8 @@ func (l *Labeler) desiredNodeLabels(nodeName string) (string, string, error) {
 	return driverLabel, dcgmVersion, nil
 }
 
-func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVersion string) (bool, bool) {
+func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVersion string) bool {
 	needsUpdate := false
-	deviceCountLabelsChanged := false
 
 	expectedKataLabel := l.getKataLabelForNode(node)
 	if node.Labels[KataEnabledLabel] != expectedKataLabel {
@@ -778,7 +747,7 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 	// During startup, node events may fire before pod informer has indexed all pods,
 	// which would incorrectly identify valid labels as stale.
 	if !l.allInformersSynced() {
-		return needsUpdate, deviceCountLabelsChanged
+		return needsUpdate
 	}
 
 	if node.Labels[DriverInstalledLabel] != driverLabel {
@@ -808,17 +777,16 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 	if l.deviceCounts.ReconcileNodeLabelsInPlace(
 		l.ctx,
 		node,
-		l.deviceCountPeerNodes(),
+		l.deviceCountCachedNodes(),
 		l.resourceSlicesForNode,
 	) {
 		needsUpdate = true
-		deviceCountLabelsChanged = true
 	}
 
-	return needsUpdate, deviceCountLabelsChanged
+	return needsUpdate
 }
 
-func (l *Labeler) deviceCountPeerNodes() []*v1.Node {
+func (l *Labeler) deviceCountCachedNodes() []*v1.Node {
 	nodes := []*v1.Node{}
 
 	for _, obj := range l.nodeInformer.GetStore().List() {

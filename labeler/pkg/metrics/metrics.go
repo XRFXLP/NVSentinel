@@ -73,15 +73,6 @@ var (
 		[]string{"class", "partition"},
 	)
 
-	// DeviceCountLabelUpdates tracks device-count label update outcomes.
-	DeviceCountLabelUpdates = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "labeler_device_count_label_updates_total",
-			Help: "Total number of device-count label update attempts.",
-		},
-		[]string{"status"},
-	)
-
 	// DeviceCountSkippedUpdates tracks skipped device-count label updates.
 	DeviceCountSkippedUpdates = promauto.NewCounterVec(
 		prometheus.CounterOpts{

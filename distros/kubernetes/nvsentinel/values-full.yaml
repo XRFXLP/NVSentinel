@@ -960,13 +960,12 @@ labeler:
   assumeDriverInstalled: false
 
   # Expected device count labels
-  # Disabled by default. Enable classes to write current/expected device-count labels
-  # from node labels or DRA ResourceSlice data.
+  # Writes current/expected device-count labels from node labels or DRA ResourceSlice data.
   expectedDeviceCounts:
-    enabled: false
+    enabled: true
     classes:
       - name: gpu
-        enabled: false
+        enabled: true
         labels:
           current: nvsentinel.dgxc.nvidia.com/gpu.count.current
           expected: nvsentinel.dgxc.nvidia.com/gpu.count.expected
@@ -976,30 +975,31 @@ labeler:
         expectedCountOverrides: []
         currentExpression: |
           int(node.metadata.labels['nvidia.com/gpu.count'])
-      - name: nic
-        enabled: false
-        labels:
-          current: nvsentinel.dgxc.nvidia.com/nic.count.current
-          expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
-        groupingLabels:
-          - node.kubernetes.io/instance-type
-        expectedCountOverrides: []
-        currentExpression: |
-          sum(resourceSlices
-            .filter(rs,
-              has(rs.spec.driver) &&
-              rs.spec.driver == 'dra.networking.k8s.aws' &&
-              has(rs.spec.devices)
-            )
-            .map(rs, rs.spec.devices
-              .filter(d,
-                has(d.attributes) &&
-                'dra.vpc.amazonaws.com/deviceType' in d.attributes &&
-                has(d.attributes['dra.vpc.amazonaws.com/deviceType'].string) &&
-                d.attributes['dra.vpc.amazonaws.com/deviceType'].string == 'roce'
-              )
-              .size()
-            ))
+      # Example AWS RoCE DRA NIC class. Uncomment and adapt per environment.
+      # - name: nic
+      #   enabled: false
+      #   labels:
+      #     current: nvsentinel.dgxc.nvidia.com/nic.count.current
+      #     expected: nvsentinel.dgxc.nvidia.com/nic.count.expected
+      #   groupingLabels:
+      #     - node.kubernetes.io/instance-type
+      #   expectedCountOverrides: []
+      #   currentExpression: |
+      #     sum(resourceSlices
+      #       .filter(rs,
+      #         has(rs.spec.driver) &&
+      #         rs.spec.driver == 'dra.networking.k8s.aws' &&
+      #         has(rs.spec.devices)
+      #       )
+      #       .map(rs, rs.spec.devices
+      #         .filter(d,
+      #           has(d.attributes) &&
+      #           'dra.vpc.amazonaws.com/deviceType' in d.attributes &&
+      #           has(d.attributes['dra.vpc.amazonaws.com/deviceType'].string) &&
+      #           d.attributes['dra.vpc.amazonaws.com/deviceType'].string == 'roce'
+      #         )
+      #         .size()
+      #       ))
 
   # Pod resource limits and requests
   resources:

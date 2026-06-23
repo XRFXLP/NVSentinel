@@ -60,7 +60,7 @@ enabled = {{ .enabled }}
 groupingLabels = [{{- range $i, $label := . }}{{ if $i }}, {{ end }}{{ $label | quote }}{{- end }}]
 {{- end }}
 currentExpression = '''
-{{ .currentExpression | trimSuffix "\n" }}
+{{ trimSuffix "\n" (default "" .currentExpression) }}
 '''
 
 [classes.labels]

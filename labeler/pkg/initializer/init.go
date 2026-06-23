@@ -52,7 +52,7 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 
 	slog.Info("Successfully initialized kubernetes client")
 
-	labelerInstance, err := labeler.NewLabelerWithDeviceCounts(
+	labelerInstance, err := labeler.NewLabeler(
 		clientSet,
 		30*time.Second,
 		params.DCGMAppLabel,

@@ -632,7 +632,7 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				require.NoError(t, err, "failed to update pod status")
 			}
 
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false)
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false, devicecounts.Config{})
 			require.NoError(t, err)
 			go func() {
 				require.NoError(t, labeler.Run(ctx), "failed to run labeler")
@@ -760,6 +760,7 @@ func TestKataLabelOverride(t *testing.T) {
 				"nvidia-driver-installer",
 				tt.override,
 				false,
+				devicecounts.Config{},
 			)
 
 			if err != nil {
@@ -779,23 +780,23 @@ func TestNewLabeler_InvalidLabelSelectors_ReturnsError(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 
 	t.Run("invalid pod label selector", func(t *testing.T) {
-		_, err := NewLabeler(clientset, time.Minute, "invalid(value", "driver", "gke", "", false)
+		_, err := NewLabeler(clientset, time.Minute, "invalid(value", "driver", "gke", "", false, devicecounts.Config{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create pod informer")
 	})
 
 	t.Run("invalid GKE installer label selector", func(t *testing.T) {
-		_, err := NewLabeler(clientset, time.Minute, "dcgm", "driver", "invalid(value", "", false)
+		_, err := NewLabeler(clientset, time.Minute, "dcgm", "driver", "invalid(value", "", false, devicecounts.Config{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create GKE installer informer")
 	})
 }
 
-func TestNewLabelerWithDeviceCounts_ResourceSliceInformerEnabled(t *testing.T) {
+func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 
 	t.Run("disabled config does not create ResourceSlice informer", func(t *testing.T) {
-		labeler, err := NewLabelerWithDeviceCounts(
+		labeler, err := NewLabeler(
 			clientset,
 			time.Minute,
 			"nvidia-dcgm",
@@ -811,7 +812,7 @@ func TestNewLabelerWithDeviceCounts_ResourceSliceInformerEnabled(t *testing.T) {
 	})
 
 	t.Run("enabled config creates ResourceSlice informer", func(t *testing.T) {
-		labeler, err := NewLabelerWithDeviceCounts(
+		labeler, err := NewLabeler(
 			clientset,
 			time.Minute,
 			"nvidia-dcgm",
@@ -828,7 +829,7 @@ func TestNewLabelerWithDeviceCounts_ResourceSliceInformerEnabled(t *testing.T) {
 }
 
 func TestLabelerNodeRequiresReconciliation_DeviceCountLabels(t *testing.T) {
-	labeler, err := NewLabelerWithDeviceCounts(
+	labeler, err := NewLabeler(
 		fake.NewSimpleClientset(),
 		time.Minute,
 		"nvidia-dcgm",
@@ -868,7 +869,7 @@ func TestLabelerNodeRequiresReconciliation_DeviceCountLabels(t *testing.T) {
 }
 
 func TestLabelerResourceSlicesForNodeFiltersByNodeName(t *testing.T) {
-	labeler, err := NewLabelerWithDeviceCounts(
+	labeler, err := NewLabeler(
 		fake.NewSimpleClientset(),
 		time.Minute,
 		"nvidia-dcgm",
@@ -945,6 +946,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		"nvidia-driver-installer",
 		"first.io/kata",
 		false,
+		devicecounts.Config{},
 	)
 	if err != nil {
 		t.Fatalf("NewLabeler(first) error = %v", err)
@@ -959,6 +961,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		"nvidia-driver-installer",
 		"second.io/kata",
 		false,
+		devicecounts.Config{},
 	)
 	if err != nil {
 		t.Fatalf("NewLabeler(second) error = %v", err)
@@ -973,6 +976,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		"nvidia-driver-installer",
 		"",
 		false,
+		devicecounts.Config{},
 	)
 	if err != nil {
 		t.Fatalf("NewLabeler(empty) error = %v", err)
@@ -1098,7 +1102,7 @@ func TestKataLabelDetection(t *testing.T) {
 			require.NoError(t, err, "failed to create node")
 
 			// Create labeler with kata override if specified
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", tt.kataOverride, false)
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", tt.kataOverride, false, devicecounts.Config{})
 			require.NoError(t, err, "failed to create labeler")
 
 			// Start labeler
@@ -1264,7 +1268,7 @@ func TestStaleLabelsRemoval(t *testing.T) {
 				require.NoError(t, err, "failed to update pod status")
 			}
 
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false)
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false, devicecounts.Config{})
 			require.NoError(t, err, "failed to create labeler")
 
 			labelerCtx, labelerCancel := context.WithCancel(ctx)
@@ -1427,7 +1431,7 @@ func TestAssumeDriverInstalled(t *testing.T) {
 			_, err = cli.CoreV1().Nodes().Create(ctx, tt.existingNode, metav1.CreateOptions{})
 			require.NoError(t, err, "failed to create node")
 
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", tt.assumeDriverInstalled)
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", tt.assumeDriverInstalled, devicecounts.Config{})
 			require.NoError(t, err, "failed to create labeler")
 
 			labelerCtx, labelerCancel := context.WithCancel(ctx)
@@ -1491,7 +1495,7 @@ func TestMemoryUnderNodeUpdatePressure(t *testing.T) {
 
 	createNodes(t, ctx, cli, nodeCount)
 
-	labeler, err := NewLabeler(cli, 30*time.Second, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false)
+	labeler, err := NewLabeler(cli, 30*time.Second, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false, devicecounts.Config{})
 	require.NoError(t, err)
 
 	labelerCtx, labelerCancel := context.WithCancel(ctx)

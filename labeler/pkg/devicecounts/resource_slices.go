@@ -15,10 +15,6 @@
 package devicecounts
 
 import (
-	"fmt"
-	"log/slog"
-	"reflect"
-
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/client-go/tools/cache"
@@ -48,56 +44,6 @@ func ResourceSlicesForNode(store cache.Store, node *corev1.Node) []*resourcev1.R
 	return resourceSlices
 }
 
-// NewResourceSliceEventHandlers returns informer handlers that reconcile nodes affected by ResourceSlice changes.
-func NewResourceSliceEventHandlers(
-	allInformersSynced func() bool,
-	updateNodeLabels func(string) error,
-) cache.ResourceEventHandlerFuncs {
-	return cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj any) {
-			resourceSlice, ok := resourceSliceFromEventObject(obj)
-			if !ok {
-				slog.Warn("Skipping ResourceSlice add event with unexpected object type",
-					"type", fmt.Sprintf("%T", obj))
-
-				return
-			}
-
-			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, resourceSlice)
-		},
-		UpdateFunc: func(oldObj, newObj any) {
-			oldResourceSlice, oldOk := resourceSliceFromEventObject(oldObj)
-			newResourceSlice, newOk := resourceSliceFromEventObject(newObj)
-
-			if !oldOk || !newOk {
-				slog.Warn("Skipping ResourceSlice update event with unexpected object type",
-					"oldType", fmt.Sprintf("%T", oldObj), "newType", fmt.Sprintf("%T", newObj))
-
-				return
-			}
-
-			// Device-count expressions only read ResourceSlice spec; ignore metadata-only churn.
-			if reflect.DeepEqual(oldResourceSlice.Spec, newResourceSlice.Spec) {
-				return
-			}
-
-			// Reconcile nodes matched by both old and new specs in case node selection changed.
-			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, oldResourceSlice, newResourceSlice)
-		},
-		DeleteFunc: func(obj any) {
-			resourceSlice, ok := resourceSliceFromEventObject(obj)
-			if !ok {
-				slog.Warn("Skipping ResourceSlice delete event with unexpected object type",
-					"type", fmt.Sprintf("%T", obj))
-
-				return
-			}
-
-			handleResourceSliceEvent(allInformersSynced, updateNodeLabels, resourceSlice)
-		},
-	}
-}
-
 func resourceSliceBelongsToNode(resourceSlice *resourcev1.ResourceSlice, nodeName string) bool {
 	resourceSliceNodeName, ok := resourceSliceNodeName(resourceSlice)
 
@@ -110,53 +56,4 @@ func resourceSliceNodeName(resourceSlice *resourcev1.ResourceSlice) (string, boo
 	}
 
 	return *resourceSlice.Spec.NodeName, true
-}
-
-func handleResourceSliceEvent(
-	allInformersSynced func() bool,
-	updateNodeLabels func(string) error,
-	resourceSlices ...*resourcev1.ResourceSlice,
-) {
-	if !allInformersSynced() {
-		return
-	}
-
-	for nodeName := range nodeNamesForResourceSlices(resourceSlices...) {
-		if err := updateNodeLabels(nodeName); err != nil {
-			slog.Error("Failed to reconcile node labels after ResourceSlice event",
-				"node", nodeName, "error", err)
-		}
-	}
-}
-
-func nodeNamesForResourceSlices(resourceSlices ...*resourcev1.ResourceSlice) map[string]struct{} {
-	nodeNames := map[string]struct{}{}
-
-	for _, resourceSlice := range resourceSlices {
-		nodeName, ok := resourceSliceNodeName(resourceSlice)
-		if !ok {
-			continue
-		}
-
-		nodeNames[nodeName] = struct{}{}
-	}
-
-	return nodeNames
-}
-
-func resourceSliceFromEventObject(obj any) (*resourcev1.ResourceSlice, bool) {
-	resourceSlice, ok := obj.(*resourcev1.ResourceSlice)
-	if ok {
-		return resourceSlice, true
-	}
-
-	// Delete events can arrive as tombstones when the informer misses the final object state.
-	tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-	if !ok {
-		return nil, false
-	}
-
-	resourceSlice, ok = tombstone.Obj.(*resourcev1.ResourceSlice)
-
-	return resourceSlice, ok
 }

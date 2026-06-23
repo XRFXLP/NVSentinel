@@ -102,7 +102,7 @@ func NewManager(config Config) (*Manager, error) {
 	for i, classConfig := range config.Classes {
 		compiledClass, ok, err := compileDeviceCountClass(env, i, classConfig)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("compile device-count class at index %d: %w", i, err)
 		}
 
 		if !ok {
@@ -126,10 +126,6 @@ func (m *Manager) Enabled() bool {
 
 // ClassCount returns the number of compiled device-count classes.
 func (m *Manager) ClassCount() int {
-	if m == nil {
-		return 0
-	}
-
 	return len(m.classes)
 }
 
@@ -237,7 +233,7 @@ func compileDeviceCountClass(
 	}
 
 	if err := validateDeviceCountClassConfig(index, classConfig); err != nil {
-		return compiledClass{}, false, err
+		return compiledClass{}, false, fmt.Errorf("validate device-count class: %w", err)
 	}
 
 	ast, issues := env.Compile(classConfig.CurrentExpression)
