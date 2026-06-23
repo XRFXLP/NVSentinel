@@ -674,12 +674,7 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 
 func (l *Labeler) updateNodeLabels(nodeName string) error {
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		err := l.updateNodeLabelsAttempt(nodeName)
-		if err != nil {
-			return fmt.Errorf("update node labels attempt for %s: %w", nodeName, err)
-		}
-
-		return nil
+		return l.updateNodeLabelsAttempt(nodeName)
 	})
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
