@@ -104,5 +104,6 @@ Each module has additional configuration options documented in its dedicated gui
 - [Fault Quarantine](./fault-quarantine.md)
 - [Node Drainer](./node-drainer.md)
 - [Fault Remediation](./fault-remediation.md)
+- [Janitor Provider](./janitor-provider.md)
 - [Preflight](./preflight.md)
 - [Event Exporter](./event-exporter.md)
