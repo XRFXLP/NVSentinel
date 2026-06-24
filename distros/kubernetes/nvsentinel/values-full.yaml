@@ -1171,7 +1171,29 @@ janitor:
     # - gcp: Google Cloud Platform GKE clusters
     # - azure: Microsoft Azure AKS clusters
     # - oci: Oracle Cloud Infrastructure OKE clusters
+    # - generic: Bare-metal / on-premises clusters using privileged reboot Jobs
     provider: "kind"
+    
+    # Generic provider configuration (only needed when provider=generic)
+    generic:
+      # Container image used for the reboot Job
+      rebootImage: "public.ecr.aws/docker/library/busybox:1.37.0"
+      
+      # Use Linux Magic SysRq for an immediate kernel reboot instead of
+      # running chroot /host reboot. Only enable this when target nodes support
+      # Linux Magic SysRq and their kernel/config permissions allow an immediate
+      # reboot through /proc/sysrq-trigger.
+      useSysrqReboot: false
+      
+      # Namespace for reboot Jobs
+      # Leave empty to use the janitor-provider release namespace
+      rebootJobNamespace: ""
+      
+      # TTL in seconds for completed reboot Jobs
+      rebootJobTTLSeconds: 3600
+      
+      # Comma-separated image pull secret names for the reboot Job
+      imagePullSecrets: ""
     
     # AWS-specific configuration (only needed when provider=aws)
     aws:
