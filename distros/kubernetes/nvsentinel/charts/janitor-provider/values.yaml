@@ -114,7 +114,9 @@ csp:
     # Container image used for the reboot Job
     rebootImage: "public.ecr.aws/docker/library/busybox:1.37.0"
     # Use the Linux Magic SysRq trigger for an immediate kernel reboot instead of
-    # running chroot /host reboot.
+    # running chroot /host reboot. Only enable this when target nodes support
+    # Linux Magic SysRq and their kernel/config permissions allow an immediate
+    # reboot through /proc/sysrq-trigger.
     useSysrqReboot: false
     # Namespace for reboot Jobs (defaults to the janitor-provider's namespace)
     rebootJobNamespace: ""

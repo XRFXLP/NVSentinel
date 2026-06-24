@@ -116,18 +116,20 @@ func TestSendRebootSignal_CreatesSysrqJob(t *testing.T) {
 	container := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, []string{"sh", "-c", "echo b > /host-proc/sysrq-trigger"}, container.Command)
 
-	assert.Contains(t, container.VolumeMounts, corev1.VolumeMount{
+	require.Len(t, container.VolumeMounts, 1)
+	assert.Equal(t, corev1.VolumeMount{
 		Name:      "host-proc",
 		MountPath: hostProcMountPath,
-	})
-	assert.Contains(t, job.Spec.Template.Spec.Volumes, corev1.Volume{
+	}, container.VolumeMounts[0])
+	require.Len(t, job.Spec.Template.Spec.Volumes, 1)
+	assert.Equal(t, corev1.Volume{
 		Name: "host-proc",
 		VolumeSource: corev1.VolumeSource{
 			HostPath: &corev1.HostPathVolumeSource{
 				Path: "/proc",
 			},
 		},
-	})
+	}, job.Spec.Template.Spec.Volumes[0])
 }
 
 func TestBuildRebootJob_UsesCommandRebootByDefault(t *testing.T) {

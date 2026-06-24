@@ -156,35 +156,42 @@ func (c *Client) buildRebootJob(nodeName string) *batchv1.Job {
 	image := c.config.RebootImage
 	ttl := c.config.RebootJobTTL
 	command := c.config.rebootCommand()
-	volumeMounts := []corev1.VolumeMount{
-		{
-			Name:      "host-root",
-			MountPath: hostMountPath,
-		},
-	}
-	volumes := []corev1.Volume{
-		{
-			Name: "host-root",
-			VolumeSource: corev1.VolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{
-					Path: "/",
-				},
-			},
-		},
-	}
+	var volumeMounts []corev1.VolumeMount
+	var volumes []corev1.Volume
 	if c.config.UseSysrqReboot {
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "host-proc",
-			MountPath: hostProcMountPath,
-		})
-		volumes = append(volumes, corev1.Volume{
-			Name: "host-proc",
-			VolumeSource: corev1.VolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{
-					Path: "/proc",
+		volumeMounts = []corev1.VolumeMount{
+			{
+				Name:      "host-proc",
+				MountPath: hostProcMountPath,
+			},
+		}
+		volumes = []corev1.Volume{
+			{
+				Name: "host-proc",
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: "/proc",
+					},
 				},
 			},
-		})
+		}
+	} else {
+		volumeMounts = []corev1.VolumeMount{
+			{
+				Name:      "host-root",
+				MountPath: hostMountPath,
+			},
+		}
+		volumes = []corev1.Volume{
+			{
+				Name: "host-root",
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: "/",
+					},
+				},
+			},
+		}
 	}
 
 	return &batchv1.Job{

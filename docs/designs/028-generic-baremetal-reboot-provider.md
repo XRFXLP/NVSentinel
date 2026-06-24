@@ -33,7 +33,7 @@ flowchart TD
 
 ## Decision
 
-Add a **generic provider** (`CSP=generic`) that reboots nodes via a privileged Kubernetes Job. By default the Job runs `chroot /host /sbin/reboot`; deployments can opt into a Linux Magic SysRq reboot for environments where the normal reboot path wedges the node. This follows the Job-based pattern from GPU Reset ([ADR-019](019-janitor-gpu-reset.md)). It is a named provider in the factory switch, just like `aws`, `gcp`, or `kind`.
+Add a **generic provider** (`CSP=generic`) that reboots nodes via a privileged Kubernetes Job. By default the Job runs `chroot /host reboot`; deployments can opt into a Linux Magic SysRq reboot for environments where the normal reboot path wedges the node. This follows the Job-based pattern from GPU Reset ([ADR-019](019-janitor-gpu-reset.md)). It is a named provider in the factory switch, just like `aws`, `gcp`, or `kind`.
 
 ## Implementation
 
@@ -69,7 +69,7 @@ sequenceDiagram
     GP-->>JC: requestID = pre-reboot bootID
 
     K8s->>Job: Schedule pod on target node
-    Job->>Node: chroot /host /sbin/reboot or echo b > /proc/sysrq-trigger
+    Job->>Node: chroot /host reboot or echo b > /proc/sysrq-trigger
     Note over Node: Node reboots, pod is killed
 
     Note over Node: Node boots back up, new bootID assigned
@@ -116,7 +116,7 @@ spec:
       containers:
         - name: reboot
           image: busybox:1.37
-          command: ["chroot", "/host", "/sbin/reboot"]
+          command: ["chroot", "/host", "reboot"]
           securityContext:
             privileged: true
           volumeMounts:
@@ -138,7 +138,7 @@ spec:
 | `ttlSecondsAfterFinished` | `3600` | Auto-cleanup after 1h |
 | `tolerations` | `[{operator: Exists}]` | Target node is likely cordoned/tainted |
 | `restartPolicy` | `Never` | Do not restart after reboot |
-| Image | `busybox:1.37` | Only needs `chroot` and host `/sbin/reboot` |
+| Image | `busybox:1.37` | Only needs `chroot` and the host `reboot` command |
 
 #### IsNodeReady
 
