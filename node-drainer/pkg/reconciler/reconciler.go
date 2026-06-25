@@ -755,7 +755,7 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 		slog.ErrorContext(ctx, "HealthEventStatus is missing UserPodsEvictionStatus",
 			"node", nodeName)
 
-		return errors.New("missing UserPodsEvictionStatus")
+		return fmt.Errorf("missing UserPodsEvictionStatus for node %s", nodeName)
 	}
 
 	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
@@ -790,7 +790,7 @@ func (r *Reconciler) executeCancelStatus(ctx context.Context,
 			attribute.String("node_drainer.error.message", err.Error()),
 		)
 
-		return err
+		return fmt.Errorf("failed to update cancelled status for node %s: %w", nodeName, err)
 	}
 
 	metrics.CancelledEvent.WithLabelValues(nodeName, healthEvent.HealthEvent.CheckName).Inc()
