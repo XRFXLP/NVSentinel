@@ -497,6 +497,7 @@ func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
 				"targetLabel", targetLabel,
 				"nodeModified", nodeModified,
 				"error", err)
+
 			if !nodeModified {
 				tracing.RecordError(span, err)
 				span.SetAttributes(
@@ -538,55 +539,109 @@ func (r *FaultRemediationReconciler) recomputePartialRecoveryNodeLabel(
 		return "", false, nil
 	}
 
+	state := partialRecoveryLabelState{}
 	coveredGroups := remediationGroups(remediationState)
-	sawRemediationSuccess := false
-	sawDrainSucceeded := false
-	sawDrainFailed := false
 
 	for _, activeEvent := range activeEvents {
-		status, err := findHealthEventStatusByID(ctx, healthEventStore, nodeName, activeEvent.Id)
+		terminalLabel, terminal, err := r.updatePartialRecoveryLabelStateForEvent(
+			ctx, nodeName, activeEvent, coveredGroups, healthEventStore, &state)
 		if err != nil {
 			return "", false, err
 		}
 
-		groupConfig, groupErr := common.GetGroupConfigForEvent(
-			r.Config.RemediationClient.GetConfig().RemediationActions, activeEvent)
-		if groupErr != nil || unsupportedRemediationAction(activeEvent, groupConfig) {
-			return statemanager.RemediationFailedLabelValue, true, nil
-		}
-
-		if status != nil {
-			if status.FaultRemediated != nil {
-				if !*status.FaultRemediated {
-					return statemanager.RemediationFailedLabelValue, true, nil
-				}
-
-				sawRemediationSuccess = true
-			}
-
-			switch status.UserPodsEvictionStatus.Status {
-			case datastore.StatusFailed:
-				sawDrainFailed = true
-			case datastore.StatusSucceeded, datastore.AlreadyDrained:
-				sawDrainSucceeded = true
-			}
-		}
-
-		if groupConfig != nil && groupConfigMatchesAny(groupConfig, coveredGroups) {
-			sawRemediationSuccess = true
+		if terminal {
+			return terminalLabel, true, nil
 		}
 	}
 
+	return state.label(), true, nil
+}
+
+type partialRecoveryLabelState struct {
+	sawRemediationSuccess bool
+	sawDrainSucceeded     bool
+	sawDrainFailed        bool
+}
+
+func (s partialRecoveryLabelState) label() statemanager.NVSentinelStateLabelValue {
 	switch {
-	case sawRemediationSuccess:
-		return statemanager.RemediationSucceededLabelValue, true, nil
-	case sawDrainFailed:
-		return statemanager.DrainFailedLabelValue, true, nil
-	case sawDrainSucceeded:
-		return statemanager.DrainSucceededLabelValue, true, nil
+	case s.sawRemediationSuccess:
+		return statemanager.RemediationSucceededLabelValue
+	case s.sawDrainFailed:
+		return statemanager.DrainFailedLabelValue
+	case s.sawDrainSucceeded:
+		return statemanager.DrainSucceededLabelValue
 	default:
-		return statemanager.QuarantinedLabelValue, true, nil
+		return statemanager.QuarantinedLabelValue
 	}
+}
+
+func (r *FaultRemediationReconciler) updatePartialRecoveryLabelStateForEvent(
+	ctx context.Context,
+	nodeName string,
+	activeEvent *protos.HealthEvent,
+	coveredGroups map[string]struct{},
+	healthEventStore datastore.HealthEventStore,
+	state *partialRecoveryLabelState,
+) (statemanager.NVSentinelStateLabelValue, bool, error) {
+	status, err := findHealthEventStatusByID(ctx, healthEventStore, nodeName, activeEvent.Id)
+	if err != nil {
+		return "", false, err
+	}
+
+	groupConfig, supported := r.partialRecoveryGroupConfig(activeEvent)
+	if !supported {
+		return statemanager.RemediationFailedLabelValue, true, nil
+	}
+
+	if status != nil {
+		terminalLabel, terminal := updatePartialRecoveryStateFromStatus(status, state)
+		if terminal {
+			return terminalLabel, true, nil
+		}
+	}
+
+	if groupConfig != nil && groupConfigMatchesAny(groupConfig, coveredGroups) {
+		state.sawRemediationSuccess = true
+	}
+
+	return "", false, nil
+}
+
+func (r *FaultRemediationReconciler) partialRecoveryGroupConfig(
+	healthEvent *protos.HealthEvent,
+) (*common.EquivalenceGroupConfig, bool) {
+	groupConfig, lookupErr := common.GetGroupConfigForEvent(
+		r.Config.RemediationClient.GetConfig().RemediationActions, healthEvent)
+	if lookupErr != nil || unsupportedRemediationAction(healthEvent, groupConfig) {
+		return nil, false
+	}
+
+	return groupConfig, true
+}
+
+func updatePartialRecoveryStateFromStatus(
+	status *datastore.HealthEventStatus,
+	state *partialRecoveryLabelState,
+) (statemanager.NVSentinelStateLabelValue, bool) {
+	if status.FaultRemediated != nil {
+		if !*status.FaultRemediated {
+			return statemanager.RemediationFailedLabelValue, true
+		}
+
+		state.sawRemediationSuccess = true
+	}
+
+	switch status.UserPodsEvictionStatus.Status {
+	case datastore.StatusFailed:
+		state.sawDrainFailed = true
+	case datastore.StatusSucceeded, datastore.AlreadyDrained:
+		state.sawDrainSucceeded = true
+	case datastore.StatusNotStarted, datastore.StatusInProgress,
+		datastore.UnQuarantined, datastore.Quarantined, datastore.AlreadyQuarantined:
+	}
+
+	return "", false
 }
 
 func activeQuarantineEvents(annotations map[string]string) ([]*protos.HealthEvent, error) {
@@ -628,6 +683,7 @@ func activeQuarantineEvents(annotations map[string]string) ([]*protos.HealthEven
 		}
 
 		seen[dedupeKey] = struct{}{}
+
 		activeEvents = append(activeEvents, event)
 	}
 
@@ -678,6 +734,7 @@ func findHealthEventStatusByID(
 	}
 
 	q := query.New().Build(query.Eq("_id", eventID))
+
 	events, err := healthEventStore.FindHealthEventsByQuery(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query active health event %s for node %s: %w", eventID, nodeName, err)
