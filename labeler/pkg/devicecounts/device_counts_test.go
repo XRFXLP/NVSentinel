@@ -148,6 +148,46 @@ func TestExpectedDeviceCountsOverridePrecedence(t *testing.T) {
 	require.Equal(t, "8", node.Labels[testGPUCountExpectedLabel])
 }
 
+func TestManagerRequiresResourceSlices(t *testing.T) {
+	t.Run("node-only expression does not require ResourceSlices", func(t *testing.T) {
+		manager := newTestManager(t, Config{
+			Enabled: true,
+			Classes: []ClassConfig{
+				{
+					Name:    "gpu",
+					Enabled: true,
+					Labels: Labels{
+						Current:  testGPUCountCurrentLabel,
+						Expected: testGPUCountExpectedLabel,
+					},
+					CurrentExpression: "int(node.metadata.labels['nvidia.com/gpu.count'])",
+				},
+			},
+		})
+
+		require.False(t, manager.RequiresResourceSlices())
+	})
+
+	t.Run("ResourceSlice expression requires ResourceSlices", func(t *testing.T) {
+		manager := newTestManager(t, Config{
+			Enabled: true,
+			Classes: []ClassConfig{
+				{
+					Name:    "nic",
+					Enabled: true,
+					Labels: Labels{
+						Current:  testNICCountCurrentLabel,
+						Expected: testNICCountExpectedLabel,
+					},
+					CurrentExpression: "resourceSlices.size()",
+				},
+			},
+		})
+
+		require.True(t, manager.RequiresResourceSlices())
+	})
+}
+
 func newTestManager(t *testing.T, config Config) *Manager {
 	t.Helper()
 

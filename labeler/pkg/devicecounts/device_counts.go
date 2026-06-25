@@ -124,6 +124,21 @@ func (m *Manager) Enabled() bool {
 	return m != nil && len(m.classes) > 0
 }
 
+// RequiresResourceSlices reports whether any enabled class reads ResourceSlices.
+func (m *Manager) RequiresResourceSlices() bool {
+	if !m.Enabled() {
+		return false
+	}
+
+	for _, class := range m.classes {
+		if class.referencesResourceSlices() {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ClassCount returns the number of compiled device-count classes.
 func (m *Manager) ClassCount() int {
 	return len(m.classes)
