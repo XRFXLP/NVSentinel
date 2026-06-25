@@ -549,7 +549,8 @@ skip draining for the current event 70bd4fc9ffa9f5eca91c340c and update its stat
 	    }
 */
 func (e *NodeDrainEvaluator) isNodeAlreadyDrained(ctx context.Context, currentEventId string,
-	currentPartialDrainEntity *protos.Entity, nodeName string, healthEventStore datastore.HealthEventStore) (bool, bool, error) {
+	currentPartialDrainEntity *protos.Entity, nodeName string,
+	healthEventStore datastore.HealthEventStore) (bool, bool, error) {
 	node, err := e.informers.GetNode(nodeName)
 	if err != nil {
 		return false, false, fmt.Errorf("failed to get node %s: %w", nodeName, err)
