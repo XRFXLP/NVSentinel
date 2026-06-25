@@ -19,6 +19,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 func TestNodeDrainerEvictionModes(t *testing.T) {
@@ -189,6 +191,126 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 
 		helpers.DeleteNamespace(ctx, t, client, "allowcompletion-test")
 		helpers.DeleteNamespace(ctx, t, client, "delete-timeout-test")
+
+		return helpers.TeardownNodeDrainer(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestNodeDrainerCancelsColdStartStaleAlreadyQuarantinedEvent(t *testing.T) {
+	feature := features.New("TestNodeDrainerCancelsColdStartStaleAlreadyQuarantinedEvent").
+		WithLabel("suite", "node-drainer")
+
+	var testCtx *helpers.NodeDrainerTestContext
+	var syslogMessage string
+	var dcgmMessage string
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupNodeDrainerTest(ctx, t, c, "data/nd-all-modes.yaml", "stale-alreadyq-test")
+		require.NoError(t, helpers.ScaleDeployment(newCtx, t, client, "fault-remediation",
+			helpers.NVSentinelNamespace, 0))
+		helpers.WaitForDeploymentRollout(newCtx, t, client, "fault-remediation", helpers.NVSentinelNamespace)
+
+		testID := time.Now().UnixNano()
+		syslogMessage = fmt.Sprintf("stale AlreadyQuarantined syslog trigger %d", testID)
+		dcgmMessage = fmt.Sprintf("stale AlreadyQuarantined dcgm trigger %d", testID)
+
+		return newCtx
+	})
+
+	feature.Assess("missed AlreadyQuarantined event is cancelled after node unquarantine",
+		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			client, err := c.NewClient()
+			require.NoError(t, err)
+
+			nodeName := testCtx.NodeName
+
+			syslogFailure := helpers.NewHealthEvent(nodeName).
+				WithAgent("syslog-health-monitor").
+				WithCheckName("SysLogsXIDError").
+				WithErrorCode("79").
+				WithMessage(syslogMessage).
+				WithRecommendedAction(int(protos.RecommendedAction_RESTART_BM))
+			helpers.SendHealthEvent(ctx, t, syslogFailure)
+
+			helpers.WaitForNodeLabel(ctx, t, client, nodeName, statemanager.NVSentinelStateLabelKey,
+				helpers.DrainSucceededLabelValue)
+
+			require.NoError(t, helpers.ScaleDeployment(ctx, t, client, "node-drainer", helpers.NVSentinelNamespace, 0))
+			helpers.WaitForDeploymentRollout(ctx, t, client, "node-drainer", helpers.NVSentinelNamespace)
+
+			dcgmFailure := helpers.NewHealthEvent(nodeName).
+				WithAgent("gpu-health-monitor").
+				WithCheckName("GpuDcgmConnectivityFailure").
+				WithFatal(true).
+				WithHealthy(false).
+				WithMessage(dcgmMessage).
+				WithRecommendedAction(int(protos.RecommendedAction_CONTACT_SUPPORT)).
+				WithEntitiesImpacted(nil)
+			helpers.SendHealthEvent(ctx, t, dcgmFailure)
+
+			helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+				ExpectCordoned: true,
+				AnnotationChecks: []helpers.AnnotationCheck{
+					{Key: helpers.QuarantineHealthEventAnnotationKey, Pattern: dcgmMessage, ShouldExist: true},
+				},
+			})
+
+			helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(nodeName).
+				WithAgent("syslog-health-monitor").
+				WithCheckName("SysLogsXIDError").
+				WithFatal(false).
+				WithHealthy(true).
+				WithMessage("No Health Failures").
+				WithRecommendedAction(int(protos.RecommendedAction_NONE)))
+
+			helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(nodeName).
+				WithAgent("gpu-health-monitor").
+				WithCheckName("GpuDcgmConnectivityFailure").
+				WithFatal(false).
+				WithHealthy(true).
+				WithMessage("DCGM connectivity reported no errors").
+				WithRecommendedAction(int(protos.RecommendedAction_NONE)).
+				WithEntitiesImpacted(nil))
+
+			helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
+				ExpectCordoned: false,
+				AnnotationChecks: []helpers.AnnotationCheck{
+					{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+				},
+			})
+
+			require.NoError(t, helpers.RemoveNodeLabel(ctx, client, nodeName, statemanager.NVSentinelStateLabelKey))
+
+			require.NoError(t, helpers.ScaleDeployment(ctx, t, client, "node-drainer", helpers.NVSentinelNamespace, 1))
+			helpers.WaitForDeploymentRollout(ctx, t, client, "node-drainer", helpers.NVSentinelNamespace)
+
+			require.Never(t, func() bool {
+				node, err := helpers.GetNodeByName(ctx, client, nodeName)
+				if err != nil {
+					return false
+				}
+
+				return node.Labels[statemanager.NVSentinelStateLabelKey] == helpers.DrainingLabelValue ||
+					node.Labels[statemanager.NVSentinelStateLabelKey] == helpers.DrainSucceededLabelValue
+			}, helpers.NeverWaitTimeout, helpers.WaitInterval, "stale event should not restart node draining")
+
+			return ctx
+		})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		_ = helpers.ScaleDeployment(ctx, t, client, "node-drainer", helpers.NVSentinelNamespace, 1)
+		helpers.WaitForDeploymentRollout(ctx, t, client, "node-drainer", helpers.NVSentinelNamespace)
+		_ = helpers.ScaleDeployment(ctx, t, client, "fault-remediation", helpers.NVSentinelNamespace, 1)
+		helpers.WaitForDeploymentRollout(ctx, t, client, "fault-remediation", helpers.NVSentinelNamespace)
 
 		return helpers.TeardownNodeDrainer(ctx, t, c)
 	})
