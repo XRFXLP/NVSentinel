@@ -690,14 +690,18 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 	stayQuarantined := r.handleQuarantinedNode(ctx, event, ruleSetEvals)
 
 	// Partial recovery: healthy event that doesn't fully unquarantine the node should
-	// not be propagated to ND/FR
+	// be recorded with the existing AlreadyQuarantined state so downstream
+	// components can recompute node-level remediation state without inventing a
+	// separate node quarantine state.
 	if event.IsHealthy && stayQuarantined {
 		span.SetAttributes(
-			attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusSkipped),
+			attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusPartialRecovery),
 			attribute.String("fault_quarantine.skip.reason", "Node is partially recovered"),
 		)
 
-		return nil
+		status := model.AlreadyQuarantined
+
+		return &status
 	}
 
 	var status model.Status

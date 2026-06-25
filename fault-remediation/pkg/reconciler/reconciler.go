@@ -16,6 +16,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -40,6 +41,8 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	fqcommon "github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
+	fqannotation "github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
@@ -442,6 +445,256 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 	return ctrl.Result{}, nil
 }
 
+func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
+	ctx context.Context,
+	nodeName string,
+	watcherInstance datastore.ChangeStreamWatcher,
+	eventWithToken datastore.EventWithToken,
+	healthEventStore datastore.HealthEventStore,
+) (ctrl.Result, error) {
+	ctx, span := tracing.StartSpan(ctx, "fault_remediation.partial_recovery_event")
+	defer span.End()
+
+	remediationState, node, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			slog.WarnContext(ctx, "Node no longer exists, marking partial recovery event as terminal", "node", nodeName)
+
+			return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, true)
+		}
+
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "get_remediation_state_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+
+		return ctrl.Result{}, fmt.Errorf("failed to get remediation state for partial recovery: %w", err)
+	}
+
+	var annotations map[string]string
+	if node != nil {
+		annotations = node.GetAnnotations()
+	}
+
+	targetLabel, shouldUpdate, err := r.recomputePartialRecoveryNodeLabel(
+		ctx, nodeName, annotations, remediationState, healthEventStore)
+	if err != nil {
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "partial_recovery_recompute_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+
+		return ctrl.Result{}, err
+	}
+
+	if shouldUpdate {
+		nodeModified, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, targetLabel, false)
+		if err != nil {
+			slog.WarnContext(ctx, "Partial recovery label recompute reported an error",
+				"node", nodeName,
+				"targetLabel", targetLabel,
+				"nodeModified", nodeModified,
+				"error", err)
+			if !nodeModified {
+				tracing.RecordError(span, err)
+				span.SetAttributes(
+					attribute.String("fault_remediation.error.type", "partial_recovery_label_update_error"),
+					attribute.String("fault_remediation.error.message", err.Error()),
+				)
+
+				return ctrl.Result{}, fmt.Errorf("failed to update partial recovery label: %w", err)
+			}
+		}
+	}
+
+	if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, true); err != nil {
+		tracing.RecordError(span, err)
+
+		return ctrl.Result{}, fmt.Errorf("failed to write completion marker for partial recovery event: %w", err)
+	}
+
+	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *FaultRemediationReconciler) recomputePartialRecoveryNodeLabel(
+	ctx context.Context,
+	nodeName string,
+	annotations map[string]string,
+	remediationState *annotation.RemediationStateAnnotation,
+	healthEventStore datastore.HealthEventStore,
+) (statemanager.NVSentinelStateLabelValue, bool, error) {
+	activeEvents, err := activeQuarantineEvents(annotations)
+	if err != nil {
+		return "", false, err
+	}
+
+	if len(activeEvents) == 0 {
+		return "", false, nil
+	}
+
+	coveredGroups := remediationGroups(remediationState)
+	sawRemediationSuccess := false
+	sawDrainSucceeded := false
+	sawDrainFailed := false
+
+	for _, activeEvent := range activeEvents {
+		status, err := findHealthEventStatusByID(ctx, healthEventStore, nodeName, activeEvent.Id)
+		if err != nil {
+			return "", false, err
+		}
+
+		groupConfig, groupErr := common.GetGroupConfigForEvent(
+			r.Config.RemediationClient.GetConfig().RemediationActions, activeEvent)
+		if groupErr != nil || unsupportedRemediationAction(activeEvent, groupConfig) {
+			return statemanager.RemediationFailedLabelValue, true, nil
+		}
+
+		if status != nil {
+			if status.FaultRemediated != nil {
+				if !*status.FaultRemediated {
+					return statemanager.RemediationFailedLabelValue, true, nil
+				}
+
+				sawRemediationSuccess = true
+			}
+
+			switch status.UserPodsEvictionStatus.Status {
+			case datastore.StatusFailed:
+				sawDrainFailed = true
+			case datastore.StatusSucceeded, datastore.AlreadyDrained:
+				sawDrainSucceeded = true
+			}
+		}
+
+		if groupConfig != nil && groupConfigMatchesAny(groupConfig, coveredGroups) {
+			sawRemediationSuccess = true
+		}
+	}
+
+	switch {
+	case sawRemediationSuccess:
+		return statemanager.RemediationSucceededLabelValue, true, nil
+	case sawDrainFailed:
+		return statemanager.DrainFailedLabelValue, true, nil
+	case sawDrainSucceeded:
+		return statemanager.DrainSucceededLabelValue, true, nil
+	default:
+		return statemanager.QuarantinedLabelValue, true, nil
+	}
+}
+
+func activeQuarantineEvents(annotations map[string]string) ([]*protos.HealthEvent, error) {
+	if annotations == nil {
+		return nil, nil
+	}
+
+	annotationValue := annotations[fqcommon.QuarantineHealthEventAnnotationKey]
+	if annotationValue == "" {
+		return nil, nil
+	}
+
+	healthEventsMap := fqannotation.NewHealthEventsAnnotationMap()
+	if err := json.Unmarshal([]byte(annotationValue), healthEventsMap); err != nil {
+		var singleEvent protos.HealthEvent
+		if err2 := json.Unmarshal([]byte(annotationValue), &singleEvent); err2 != nil {
+			return nil, fmt.Errorf("failed to parse quarantine annotation: %w", err)
+		}
+
+		return []*protos.HealthEvent{&singleEvent}, nil
+	}
+
+	seen := make(map[string]struct{}, len(healthEventsMap.Events))
+	activeEvents := make([]*protos.HealthEvent, 0, len(healthEventsMap.Events))
+
+	for key, event := range healthEventsMap.Events {
+		if event == nil {
+			continue
+		}
+
+		dedupeKey := event.Id
+		if dedupeKey == "" {
+			dedupeKey = fmt.Sprintf("%s/%s/%s/%s/%s/%d",
+				key.Agent, key.ComponentClass, key.CheckName, key.EntityType, key.EntityValue, key.Version)
+		}
+
+		if _, ok := seen[dedupeKey]; ok {
+			continue
+		}
+
+		seen[dedupeKey] = struct{}{}
+		activeEvents = append(activeEvents, event)
+	}
+
+	return activeEvents, nil
+}
+
+func remediationGroups(remediationState *annotation.RemediationStateAnnotation) map[string]struct{} {
+	if remediationState == nil {
+		return nil
+	}
+
+	groups := make(map[string]struct{}, len(remediationState.EquivalenceGroups))
+	for groupName := range remediationState.EquivalenceGroups {
+		groups[groupName] = struct{}{}
+	}
+
+	return groups
+}
+
+func unsupportedRemediationAction(
+	healthEvent *protos.HealthEvent,
+	groupConfig *common.EquivalenceGroupConfig,
+) bool {
+	return healthEvent.RecommendedAction != protos.RecommendedAction_NONE && groupConfig == nil
+}
+
+func isPartialRecoveryRemediationEvent(healthEventWithStatus model.HealthEventWithStatus) bool {
+	if healthEventWithStatus.HealthEvent == nil || healthEventWithStatus.HealthEventStatus == nil {
+		return false
+	}
+
+	healthEvent := healthEventWithStatus.HealthEvent
+	status := healthEventWithStatus.HealthEventStatus.NodeQuarantined
+
+	return healthEvent.IsHealthy &&
+		healthEvent.RecommendedAction == protos.RecommendedAction_NONE &&
+		(status == string(model.Quarantined) || status == string(model.AlreadyQuarantined))
+}
+
+func findHealthEventStatusByID(
+	ctx context.Context,
+	healthEventStore datastore.HealthEventStore,
+	nodeName string,
+	eventID string,
+) (*datastore.HealthEventStatus, error) {
+	if healthEventStore == nil || eventID == "" {
+		return nil, nil
+	}
+
+	q := query.New().Build(query.Eq("_id", eventID))
+	events, err := healthEventStore.FindHealthEventsByQuery(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query active health event %s for node %s: %w", eventID, nodeName, err)
+	}
+
+	if len(events) == 0 {
+		return nil, nil
+	}
+
+	if len(events) > 1 {
+		return nil, fmt.Errorf("unexpected number of events for node %s and event ID %s: %d",
+			nodeName, eventID, len(events))
+	}
+
+	return &events[0].HealthEventStatus, nil
+}
+
 // handleRemediationEvent processes remediation for quarantined nodes
 func (r *FaultRemediationReconciler) handleRemediationEvent(
 	ctx context.Context,
@@ -455,6 +708,10 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 
 	healthEvent := healthEventWithStatus.HealthEvent
 	nodeName := healthEvent.NodeName
+
+	if isPartialRecoveryRemediationEvent(healthEventWithStatus.HealthEventWithStatus) {
+		return r.handlePartialRecoveryEvent(ctx, nodeName, watcherInstance, eventWithToken, healthEventStore)
+	}
 
 	groupConfig, err := common.GetGroupConfigForEvent(r.Config.RemediationClient.GetConfig().RemediationActions,
 		healthEvent)
