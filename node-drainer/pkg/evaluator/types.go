@@ -62,6 +62,7 @@ const (
 	ActionCheckCompletion
 	ActionMarkAlreadyDrained
 	ActionUpdateStatus
+	ActionCancel
 )
 
 type DrainActionResult struct {
@@ -69,7 +70,7 @@ type DrainActionResult struct {
 	Namespaces         []string
 	Timeout            time.Duration
 	WaitDelay          time.Duration // For ActionWait
-	Status             model.Status  // For ActionUpdateStatus
+	Status             model.Status  // For ActionUpdateStatus and ActionCancel
 	PartialDrainEntity *protos.Entity
 }
 
@@ -91,6 +92,8 @@ func (a DrainAction) String() string {
 		return "MarkAlreadyDrained"
 	case ActionUpdateStatus:
 		return "UpdateStatus"
+	case ActionCancel:
+		return "Cancel"
 	default:
 		return "Unknown"
 	}

@@ -479,6 +479,10 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 		r.clearEventStatus(eventID, nodeName)
 		return r.executeUpdateStatus(ctx, healthEvent, event, database, action.Status)
 
+	case evaluator.ActionCancel:
+		r.clearEventStatus(eventID, nodeName)
+		return r.executeCancelStatus(ctx, healthEvent, event, database, action.Status)
+
 	default:
 		return fmt.Errorf("unknown action: %s", action.Action.String())
 	}
@@ -723,6 +727,39 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 
 	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
 		nodeName, metrics.DrainStatusSkipped)
+}
+
+func (r *Reconciler) executeCancelStatus(ctx context.Context,
+	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, status model.Status) error {
+	ctx, span := tracing.StartSpan(ctx, "node_drainer.execute_cancel_status")
+	defer span.End()
+
+	nodeName := healthEvent.HealthEvent.NodeName
+
+	if healthEvent.HealthEventStatus.UserPodsEvictionStatus == nil {
+		slog.ErrorContext(ctx, "HealthEventStatus is missing UserPodsEvictionStatus",
+			"node", nodeName)
+
+		return errors.New("missing UserPodsEvictionStatus")
+	}
+
+	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
+	podsEvictionStatus.Status = string(status)
+
+	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
+		nodeName, metrics.DrainStatusCancelled); err != nil {
+		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("node_drainer.error.type", "update_cancel_status_error"),
+			attribute.String("node_drainer.error.message", err.Error()),
+		)
+
+		return err
+	}
+
+	metrics.CancelledEvent.WithLabelValues(nodeName, healthEvent.HealthEvent.CheckName).Inc()
+
+	return nil
 }
 
 func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.HealthEventWithStatus,
