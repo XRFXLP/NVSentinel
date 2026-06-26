@@ -27,6 +27,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -472,41 +473,16 @@ func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
 		return ctrl.Result{}, fmt.Errorf("failed to get remediation state for partial recovery: %w", err)
 	}
 
-	var annotations map[string]string
-	if node != nil {
-		annotations = node.GetAnnotations()
-	}
+	// A partial recovery only needs label reconciliation when the node currently carries
+	// the terminal remediation-failed label, which fault-remediation owns. For every other
+	// state the label is either correct or still being driven by an in-progress remediation,
+	// so we skip the recompute and just finalize the event. This keeps fault-quarantine
+	// domain-agnostic (it forwards all partial recoveries) while bounding downstream work.
+	if currentNodeStateLabel(node) == string(statemanager.RemediationFailedLabelValue) {
+		if err := r.reconcilePartialRecoveryLabel(ctx, nodeName, node, remediationState, healthEventStore); err != nil {
+			tracing.RecordError(span, err)
 
-	targetLabel, shouldUpdate, err := r.recomputePartialRecoveryNodeLabel(
-		ctx, nodeName, annotations, remediationState, healthEventStore)
-	if err != nil {
-		tracing.RecordError(span, err)
-		span.SetAttributes(
-			attribute.String("fault_remediation.error.type", "partial_recovery_recompute_error"),
-			attribute.String("fault_remediation.error.message", err.Error()),
-		)
-
-		return ctrl.Result{}, err
-	}
-
-	if shouldUpdate {
-		nodeModified, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, targetLabel, false)
-		if err != nil {
-			slog.WarnContext(ctx, "Partial recovery label recompute reported an error",
-				"node", nodeName,
-				"targetLabel", targetLabel,
-				"nodeModified", nodeModified,
-				"error", err)
-
-			if !nodeModified {
-				tracing.RecordError(span, err)
-				span.SetAttributes(
-					attribute.String("fault_remediation.error.type", "partial_recovery_label_update_error"),
-					attribute.String("fault_remediation.error.message", err.Error()),
-				)
-
-				return ctrl.Result{}, fmt.Errorf("failed to update partial recovery label: %w", err)
-			}
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -521,6 +497,68 @@ func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// currentNodeStateLabel returns the nvsentinel-state label value on the node, or "" if absent.
+func currentNodeStateLabel(node *corev1.Node) string {
+	if node == nil {
+		return ""
+	}
+
+	return node.Labels[statemanager.NVSentinelStateLabelKey]
+}
+
+// reconcilePartialRecoveryLabel recomputes the node state label from the remaining active
+// quarantine events and applies it. It is only invoked when the node currently carries the
+// stale remediation-failed label.
+func (r *FaultRemediationReconciler) reconcilePartialRecoveryLabel(
+	ctx context.Context,
+	nodeName string,
+	node *corev1.Node,
+	remediationState *annotation.RemediationStateAnnotation,
+	healthEventStore datastore.HealthEventStore,
+) error {
+	span := tracing.SpanFromContext(ctx)
+
+	var annotations map[string]string
+	if node != nil {
+		annotations = node.GetAnnotations()
+	}
+
+	targetLabel, shouldUpdate, err := r.recomputePartialRecoveryNodeLabel(
+		ctx, nodeName, annotations, remediationState, healthEventStore)
+	if err != nil {
+		span.SetAttributes(
+			attribute.String("fault_remediation.error.type", "partial_recovery_recompute_error"),
+			attribute.String("fault_remediation.error.message", err.Error()),
+		)
+
+		return err
+	}
+
+	if !shouldUpdate {
+		return nil
+	}
+
+	nodeModified, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, targetLabel, false)
+	if err != nil {
+		slog.WarnContext(ctx, "Partial recovery label recompute reported an error",
+			"node", nodeName,
+			"targetLabel", targetLabel,
+			"nodeModified", nodeModified,
+			"error", err)
+
+		if !nodeModified {
+			span.SetAttributes(
+				attribute.String("fault_remediation.error.type", "partial_recovery_label_update_error"),
+				attribute.String("fault_remediation.error.message", err.Error()),
+			)
+
+			return fmt.Errorf("failed to update partial recovery label: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (r *FaultRemediationReconciler) recomputePartialRecoveryNodeLabel(
