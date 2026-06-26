@@ -716,10 +716,8 @@ func (r *Reconciler) resolveAlreadyQuarantinedStatus(
 ) *model.Status {
 	span := tracing.SpanFromContext(ctx)
 
-	// Partial recovery: a healthy event cleared a tracked failure but the node stays
-	// quarantined by other active failures. FQ stays domain-agnostic and forwards this
-	// as AlreadyQuarantined so the owners of downstream state (e.g. fault-remediation)
-	// can reconcile node-level labels. FQ does not interpret remediation action support.
+	// Partial recovery: a healthy event cleared a tracked failure but other failures keep
+	// the node quarantined. Tag it for observability; it still propagates as AlreadyQuarantined.
 	if event.IsHealthy && stayQuarantined {
 		span.SetAttributes(
 			attribute.String("fault_quarantine.event.processing_status", EventProcessingStatusPartialRecovery),

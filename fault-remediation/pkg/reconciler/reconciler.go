@@ -473,12 +473,10 @@ func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
 		return ctrl.Result{}, fmt.Errorf("failed to get remediation state for partial recovery: %w", err)
 	}
 
-	// A partial recovery only needs label reconciliation when the node currently carries
-	// the terminal remediation-failed label, which fault-remediation owns. For every other
-	// state the label is either correct or still being driven by an in-progress remediation,
-	// so we skip the recompute and just finalize the event. This keeps fault-quarantine
-	// domain-agnostic (it forwards all partial recoveries) while bounding downstream work.
-	if currentNodeStateLabel(node) == string(statemanager.RemediationFailedLabelValue) {
+	// Only terminal remediation labels can be left stale by a partial recovery, so recompute
+	// those from the remaining active failures. Non-terminal (remediating) and pre-remediation
+	// states are owned by the in-progress flow, so we just finalize the event.
+	if isTerminalRemediationLabel(currentNodeStateLabel(node)) {
 		if err := r.reconcilePartialRecoveryLabel(ctx, nodeName, node, remediationState, healthEventStore); err != nil {
 			tracing.RecordError(span, err)
 
@@ -506,6 +504,13 @@ func currentNodeStateLabel(node *corev1.Node) string {
 	}
 
 	return node.Labels[statemanager.NVSentinelStateLabelKey]
+}
+
+// isTerminalRemediationLabel reports whether the label is one fault-remediation writes as a
+// terminal outcome. Either can be invalidated by a partial recovery and must be recomputed.
+func isTerminalRemediationLabel(label string) bool {
+	return label == string(statemanager.RemediationFailedLabelValue) ||
+		label == string(statemanager.RemediationSucceededLabelValue)
 }
 
 // reconcilePartialRecoveryLabel recomputes the node state label from the remaining active
