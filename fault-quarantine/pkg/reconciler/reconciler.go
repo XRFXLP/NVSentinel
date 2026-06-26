@@ -470,8 +470,17 @@ func (r *Reconciler) ProcessEvent(
 		*isNodeQuarantined == model.UnQuarantined ||
 		*isNodeQuarantined == model.AlreadyQuarantined {
 		metrics.TotalEventsSuccessfullyProcessed.Inc()
+
+		processingStatus := string(*isNodeQuarantined)
+		// A healthy event that leaves the node quarantined is a partial recovery. It is
+		// propagated as AlreadyQuarantined, so surface the more specific status on the span
+		// instead of the generic wire value.
+		if *isNodeQuarantined == model.AlreadyQuarantined && event.HealthEvent.IsHealthy {
+			processingStatus = EventProcessingStatusPartialRecovery
+		}
+
 		span.SetAttributes(
-			attribute.String("fault_quarantine.event.processing_status", string(*isNodeQuarantined)),
+			attribute.String("fault_quarantine.event.processing_status", processingStatus),
 		)
 	}
 
