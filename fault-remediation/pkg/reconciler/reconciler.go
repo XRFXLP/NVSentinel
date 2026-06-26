@@ -582,73 +582,66 @@ func (r *FaultRemediationReconciler) recomputePartialRecoveryNodeLabel(
 		return "", false, nil
 	}
 
-	state := partialRecoveryLabelState{}
 	coveredGroups := remediationGroups(remediationState)
+	sawRemediationSuccess := false
 
 	for _, activeEvent := range activeEvents {
-		terminalLabel, terminal, err := r.updatePartialRecoveryLabelStateForEvent(
-			ctx, nodeName, activeEvent, coveredGroups, healthEventStore, &state)
+		failed, err := r.activeEventForcesRemediationFailed(
+			ctx, nodeName, activeEvent, coveredGroups, healthEventStore, &sawRemediationSuccess)
 		if err != nil {
 			return "", false, err
 		}
 
-		if terminal {
-			return terminalLabel, true, nil
+		if failed {
+			return statemanager.RemediationFailedLabelValue, true, nil
 		}
 	}
 
-	return state.label(), true, nil
-}
-
-type partialRecoveryLabelState struct {
-	sawRemediationSuccess bool
-	sawDrainSucceeded     bool
-	sawDrainFailed        bool
-}
-
-func (s partialRecoveryLabelState) label() statemanager.NVSentinelStateLabelValue {
-	switch {
-	case s.sawRemediationSuccess:
-		return statemanager.RemediationSucceededLabelValue
-	case s.sawDrainFailed:
-		return statemanager.DrainFailedLabelValue
-	case s.sawDrainSucceeded:
-		return statemanager.DrainSucceededLabelValue
-	default:
-		return statemanager.QuarantinedLabelValue
+	if sawRemediationSuccess {
+		return statemanager.RemediationSucceededLabelValue, true, nil
 	}
+
+	// A remaining failure is supported but not yet remediated. fault-remediation does not own
+	// the pre-remediation labels (quarantined/draining/drain-*), and its normal remediation flow
+	// will set the correct remediation label, so leave the current label untouched.
+	return "", false, nil
 }
 
-func (r *FaultRemediationReconciler) updatePartialRecoveryLabelStateForEvent(
+// activeEventForcesRemediationFailed reports whether a still-active quarantine event requires the
+// terminal remediation-failed label: either its action is unsupported, or its remediation was
+// recorded as failed. Otherwise it records, via sawRemediationSuccess, whether the event was
+// already remediated. It deliberately ignores drain/quarantine state, which other components own.
+func (r *FaultRemediationReconciler) activeEventForcesRemediationFailed(
 	ctx context.Context,
 	nodeName string,
 	activeEvent *protos.HealthEvent,
 	coveredGroups map[string]struct{},
 	healthEventStore datastore.HealthEventStore,
-	state *partialRecoveryLabelState,
-) (statemanager.NVSentinelStateLabelValue, bool, error) {
+	sawRemediationSuccess *bool,
+) (bool, error) {
 	status, err := findHealthEventStatusByID(ctx, healthEventStore, nodeName, activeEvent.Id)
 	if err != nil {
-		return "", false, err
+		return false, err
 	}
 
 	groupConfig, supported := r.partialRecoveryGroupConfig(activeEvent)
 	if !supported {
-		return statemanager.RemediationFailedLabelValue, true, nil
+		return true, nil
 	}
 
-	if status != nil {
-		terminalLabel, terminal := updatePartialRecoveryStateFromStatus(status, state)
-		if terminal {
-			return terminalLabel, true, nil
+	if status != nil && status.FaultRemediated != nil {
+		if !*status.FaultRemediated {
+			return true, nil
 		}
+
+		*sawRemediationSuccess = true
 	}
 
 	if groupConfig != nil && groupConfigMatchesAny(groupConfig, coveredGroups) {
-		state.sawRemediationSuccess = true
+		*sawRemediationSuccess = true
 	}
 
-	return "", false, nil
+	return false, nil
 }
 
 func (r *FaultRemediationReconciler) partialRecoveryGroupConfig(
@@ -661,30 +654,6 @@ func (r *FaultRemediationReconciler) partialRecoveryGroupConfig(
 	}
 
 	return groupConfig, true
-}
-
-func updatePartialRecoveryStateFromStatus(
-	status *datastore.HealthEventStatus,
-	state *partialRecoveryLabelState,
-) (statemanager.NVSentinelStateLabelValue, bool) {
-	if status.FaultRemediated != nil {
-		if !*status.FaultRemediated {
-			return statemanager.RemediationFailedLabelValue, true
-		}
-
-		state.sawRemediationSuccess = true
-	}
-
-	switch status.UserPodsEvictionStatus.Status {
-	case datastore.StatusFailed:
-		state.sawDrainFailed = true
-	case datastore.StatusSucceeded, datastore.AlreadyDrained:
-		state.sawDrainSucceeded = true
-	case datastore.StatusNotStarted, datastore.StatusInProgress,
-		datastore.UnQuarantined, datastore.Quarantined, datastore.AlreadyQuarantined:
-	}
-
-	return "", false
 }
 
 func activeQuarantineEvents(annotations map[string]string) ([]*protos.HealthEvent, error) {
@@ -746,6 +715,10 @@ func remediationGroups(remediationState *annotation.RemediationStateAnnotation) 
 	return groups
 }
 
+// unsupportedRemediationAction reports whether an active event needs remediation but has no
+// configured action. A nil groupConfig alone is ambiguous: GetGroupConfigForEvent also returns
+// nil for RecommendedAction_NONE, which means "no remediation needed" rather than "unsupported".
+// The NONE guard keeps those events from being misclassified as failures.
 func unsupportedRemediationAction(
 	healthEvent *protos.HealthEvent,
 	groupConfig *common.EquivalenceGroupConfig,

@@ -1457,6 +1457,76 @@ func TestPartialRecoveryKeepsRemediationFailedWhenUnsupportedEventRemains(t *tes
 	assert.Equal(t, 1, markProcessedCount)
 }
 
+func TestPartialRecoveryLeavesLabelWhenSupportedFailurePending(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "test-node"
+	recoveryEventID := "event-c"
+	labelUpdateCalled := false
+	completionUpdated := false
+
+	// A supported failure is still active but not yet remediated (FaultRemediated nil). The node
+	// is currently remediation-failed. fault-remediation must not invent a drain/quarantine label;
+	// it leaves the current label for its own remediation flow to reconcile.
+	activeEvent := testAnnotationHealthEvent("event-a", nodeName, protos.RecommendedAction_RESTART_BM, "GPU-a")
+	mockAnnotationManager := &MockNodeAnnotationManager{
+		nodeAnnotations: quarantineAnnotationForTest(t, activeEvent),
+		nodeLabels: map[string]string{
+			statemanager.NVSentinelStateLabelKey: string(statemanager.RemediationFailedLabelValue),
+		},
+	}
+
+	cfg := ReconcilerConfig{
+		RemediationClient: &MockK8sClient{annotationManagerOverride: mockAnnotationManager},
+		StateManager: &statemanager.MockStateManager{
+			UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
+				statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
+				labelUpdateCalled = true
+
+				return true, nil
+			},
+		},
+	}
+
+	mockStore := &MockHealthEventStore{
+		FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+			// Drained but remediation still pending (FaultRemediated nil).
+			return []datastore.HealthEventWithStatus{
+				{
+					HealthEventStatus: datastore.HealthEventStatus{
+						UserPodsEvictionStatus: datastore.OperationStatus{
+							Status: datastore.StatusSucceeded,
+						},
+					},
+				},
+			}, nil
+		},
+		UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+			assert.Equal(t, recoveryEventID, id)
+			assert.NotNil(t, status.FaultRemediated)
+			assert.True(t, *status.FaultRemediated)
+			completionUpdated = true
+
+			return nil
+		},
+	}
+
+	r := NewFaultRemediationReconciler(nil, nil, mockStore, cfg, false)
+	mockWatcher := &MockChangeStreamWatcher{}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(recoveryEventID, nodeName, protos.RecommendedAction_NONE),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	result, err := r.handlePartialRecoveryEvent(ctx, nodeName, mockWatcher, eventWithToken, mockStore)
+
+	assert.NoError(t, err)
+	assert.True(t, result.IsZero())
+	assert.False(t, labelUpdateCalled, "must not write a non-remediation label for a pending supported failure")
+	assert.True(t, completionUpdated, "recovery event should still be finalized")
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 1, markProcessedCount)
+}
+
 func TestPartialRecoveryDowngradesStaleRemediationSucceeded(t *testing.T) {
 	ctx := context.Background()
 	nodeName := "test-node"
