@@ -776,6 +776,17 @@ func TestPartialRecoveryClearsStaleRemediationFailed(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
+		// This test creates two entity-level failures (GPU0 + GPU1). Explicitly recover both
+		// so the node uncordons regardless of which assess step failed; the default
+		// TeardownFaultRemediation healthy event only targets GPU0 and would otherwise leak a
+		// still-quarantined node out of the uncordoned test pool.
+		if testCtx != nil && testCtx.NodeName != "" {
+			t.Log("Recovering both GPU failures to return the node to a clean state")
+			helpers.RecoverEntityFailure(ctx, t, testCtx.NodeName, "GPU", "0", "79")
+			helpers.RecoverEntityFailure(ctx, t, testCtx.NodeName, "GPU", "1", "80")
+			helpers.WaitForNodesCordonState(ctx, t, client, []string{testCtx.NodeName}, false)
+		}
+
 		t.Log("Cleaning up: RebootNode CRs")
 		if err := helpers.DeleteAllCRs(ctx, t, client, helpers.RebootNodeGVK); err != nil {
 			t.Logf("Warning: failed to delete RebootNode CRs: %v", err)
