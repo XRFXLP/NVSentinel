@@ -346,6 +346,68 @@ func (he *HealthEventsAnnotationMap) GetAllCheckNames() []string {
 	return checkNames
 }
 
+// MergeAnnotationValues merges an incoming quarantineHealthEvent annotation value into an
+// existing one and returns the merged JSON string.
+//
+// Both values may be in the new map format (a JSON slice of events) or the legacy
+// single-event format; empty strings are treated as "no events". Events are de-duplicated
+// using entity/errorCode-level keys (see AddOrUpdateEvent), so concurrent first-time
+// quarantine events for the same node are preserved instead of one overwriting the other.
+func MergeAnnotationValues(existing, incoming string) (string, error) {
+	merged := NewHealthEventsAnnotationMap()
+
+	if err := mergeAnnotationValueInto(merged, existing); err != nil {
+		return "", fmt.Errorf("failed to parse existing annotation: %w", err)
+	}
+
+	if err := mergeAnnotationValueInto(merged, incoming); err != nil {
+		return "", fmt.Errorf("failed to parse incoming annotation: %w", err)
+	}
+
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal merged annotation: %w", err)
+	}
+
+	return string(out), nil
+}
+
+// mergeAnnotationValueInto unmarshals a single annotation value (new map format or legacy
+// single-event format) and adds every event it contains into the target map.
+func mergeAnnotationValueInto(target *HealthEventsAnnotationMap, value string) error {
+	if value == "" {
+		return nil
+	}
+
+	parsed := NewHealthEventsAnnotationMap()
+	if err := json.Unmarshal([]byte(value), parsed); err != nil {
+		// Fall back to the legacy single-event format.
+		var singleEvent protos.HealthEvent
+		if err2 := json.Unmarshal([]byte(value), &singleEvent); err2 != nil {
+			return fmt.Errorf("failed to parse annotation (tried both formats): %w", err)
+		}
+
+		target.AddOrUpdateEvent(&singleEvent)
+
+		return nil
+	}
+
+	// Deduplicate event pointers (multiple entity keys may reference the same event object).
+	seen := make(map[*protos.HealthEvent]bool)
+
+	for _, event := range parsed.Events {
+		if seen[event] {
+			continue
+		}
+
+		seen[event] = true
+
+		target.AddOrUpdateEvent(event)
+	}
+
+	return nil
+}
+
 // MarshalJSON converts the map to a JSON-serializable format (slice of events)
 // Deduplicates events since multiple entity keys may point to the same event object
 func (he *HealthEventsAnnotationMap) MarshalJSON() ([]byte, error) {

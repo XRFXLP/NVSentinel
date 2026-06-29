@@ -34,6 +34,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 )
 
 var customBackoff = wait.Backoff{
@@ -379,6 +380,28 @@ func (c *FaultQuarantineClient) applyAnnotations(
 	slog.InfoContext(ctx, "Setting annotations on node", "node", nodename, "annotations", annotations)
 
 	for annotationKey, annotationValue := range annotations {
+		// The quarantine health-event annotation must be merged with whatever is already on the
+		// live node rather than overwritten. Two first-time fatal events for the same node can be
+		// processed nearly simultaneously; the routing decision is based on the (eventually
+		// consistent) informer cache, so the second event may not yet see the first one's
+		// annotation and would otherwise clobber it here. Merging against the live object (this
+		// runs inside UpdateNode's retry-on-conflict loop) preserves both events.
+		if annotationKey == common.QuarantineHealthEventAnnotationKey {
+			merged, err := healthEventsAnnotation.MergeAnnotationValues(node.Annotations[annotationKey], annotationValue)
+			if err != nil {
+				slog.WarnContext(ctx, "Failed to merge quarantine health event annotation; overwriting",
+					"node", nodename, "error", err)
+
+				node.Annotations[annotationKey] = annotationValue
+
+				continue
+			}
+
+			node.Annotations[annotationKey] = merged
+
+			continue
+		}
+
 		node.Annotations[annotationKey] = annotationValue
 	}
 }

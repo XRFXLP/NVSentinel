@@ -902,3 +902,149 @@ func TestGetEvent_AsymmetricErrorCodeMatching(t *testing.T) {
 		t.Errorf("matched event ErrorCode = %v, want [98]", got.ErrorCode)
 	}
 }
+
+// nodeLevelEvent builds a fatal node-level health event scoped to a single error code.
+// It models the case where concurrent failures on the same node/check/entity differ only
+// by their error code.
+func nodeLevelEvent(node, errorCode string) *protos.HealthEvent {
+	return &protos.HealthEvent{
+		Version:        1,
+		Agent:          "test-node-monitor",
+		ComponentClass: "Node",
+		CheckName:      "NodeCertFailed",
+		NodeName:       node,
+		IsFatal:        true,
+		ErrorCode:      []string{errorCode},
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "v1/Node", EntityValue: node},
+		},
+	}
+}
+
+func mustMarshalSingleEvent(t *testing.T, event *protos.HealthEvent) string {
+	t.Helper()
+
+	b, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("failed to marshal single event: %v", err)
+	}
+
+	return string(b)
+}
+
+func mustMarshalMap(t *testing.T, events ...*protos.HealthEvent) string {
+	t.Helper()
+
+	m := NewHealthEventsAnnotationMap()
+	for _, e := range events {
+		m.AddOrUpdateEvent(e)
+	}
+
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("failed to marshal map: %v", err)
+	}
+
+	return string(b)
+}
+
+// TestMergeAnnotationValues_ConcurrentDistinctErrorCodes reproduces the production race where
+// two first-time fatal events for the same node/check/entity (differing only by error code)
+// are applied nearly simultaneously. Merging must retain both instead of the second
+// overwriting the first.
+func TestMergeAnnotationValues_ConcurrentDistinctErrorCodes(t *testing.T) {
+	node := "test-node-1"
+	firstEvent := nodeLevelEvent(node, "check-a/Failure")
+	secondEvent := nodeLevelEvent(node, "check-b/Failure")
+
+	// Existing annotation already holds the first event; the second event is the incoming
+	// single-event annotation built by the fresh-quarantine path.
+	existing := mustMarshalMap(t, firstEvent)
+	incoming := mustMarshalMap(t, secondEvent)
+
+	merged, err := MergeAnnotationValues(existing, incoming)
+	if err != nil {
+		t.Fatalf("MergeAnnotationValues returned error: %v", err)
+	}
+
+	var mergedMap HealthEventsAnnotationMap
+	if err := json.Unmarshal([]byte(merged), &mergedMap); err != nil {
+		t.Fatalf("failed to unmarshal merged annotation: %v", err)
+	}
+
+	if mergedMap.Count() != 2 {
+		t.Fatalf("merged Count() = %d, want 2 (both events must be retained)", mergedMap.Count())
+	}
+
+	if _, found := mergedMap.GetEvent(firstEvent); !found {
+		t.Errorf("first event missing after merge")
+	}
+
+	if _, found := mergedMap.GetEvent(secondEvent); !found {
+		t.Errorf("second event missing after merge")
+	}
+}
+
+func TestMergeAnnotationValues_EmptyExisting(t *testing.T) {
+	node := "node1"
+	incoming := mustMarshalMap(t, nodeLevelEvent(node, "check-b/Failure"))
+
+	merged, err := MergeAnnotationValues("", incoming)
+	if err != nil {
+		t.Fatalf("MergeAnnotationValues returned error: %v", err)
+	}
+
+	var mergedMap HealthEventsAnnotationMap
+	if err := json.Unmarshal([]byte(merged), &mergedMap); err != nil {
+		t.Fatalf("failed to unmarshal merged annotation: %v", err)
+	}
+
+	if mergedMap.Count() != 1 {
+		t.Fatalf("merged Count() = %d, want 1", mergedMap.Count())
+	}
+}
+
+// TestMergeAnnotationValues_LegacySingleEventExisting ensures the merge handles a node that
+// still carries the legacy single-event annotation format.
+func TestMergeAnnotationValues_LegacySingleEventExisting(t *testing.T) {
+	node := "node1"
+	existing := mustMarshalSingleEvent(t, nodeLevelEvent(node, "check-a/Failure"))
+	incoming := mustMarshalMap(t, nodeLevelEvent(node, "check-b/Failure"))
+
+	merged, err := MergeAnnotationValues(existing, incoming)
+	if err != nil {
+		t.Fatalf("MergeAnnotationValues returned error: %v", err)
+	}
+
+	var mergedMap HealthEventsAnnotationMap
+	if err := json.Unmarshal([]byte(merged), &mergedMap); err != nil {
+		t.Fatalf("failed to unmarshal merged annotation: %v", err)
+	}
+
+	if mergedMap.Count() != 2 {
+		t.Fatalf("merged Count() = %d, want 2 (legacy + new must both be retained)", mergedMap.Count())
+	}
+}
+
+// TestMergeAnnotationValues_DuplicateEventIsIdempotent ensures replaying the same event does
+// not create duplicate entries.
+func TestMergeAnnotationValues_DuplicateEventIsIdempotent(t *testing.T) {
+	node := "node1"
+	event := nodeLevelEvent(node, "check-a/Failure")
+	existing := mustMarshalMap(t, event)
+	incoming := mustMarshalMap(t, event)
+
+	merged, err := MergeAnnotationValues(existing, incoming)
+	if err != nil {
+		t.Fatalf("MergeAnnotationValues returned error: %v", err)
+	}
+
+	var mergedMap HealthEventsAnnotationMap
+	if err := json.Unmarshal([]byte(merged), &mergedMap); err != nil {
+		t.Fatalf("failed to unmarshal merged annotation: %v", err)
+	}
+
+	if mergedMap.Count() != 1 {
+		t.Fatalf("merged Count() = %d, want 1 (duplicate must not be added)", mergedMap.Count())
+	}
+}
