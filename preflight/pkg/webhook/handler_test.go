@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
+	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -58,7 +59,7 @@ func handlerConfig() *config.Config {
 			InitContainers: []config.InitContainerSpec{
 				{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
 			},
-			GPUResourceNames: []string{"nvidia.com/gpu"},
+			GPUResourceNames:   []string{"nvidia.com/gpu"},
 			ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
 			ProcessingStrategy: "EXECUTE_REMEDIATION",
 		},
@@ -235,7 +236,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, disc, func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, gang.NewResolver(disc, nil), func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg
@@ -272,7 +273,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "volcano", canHandle: true, gangID: "volcano-default-pg1"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, disc, func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, gang.NewResolver(disc, nil), func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			called = true
@@ -312,7 +313,7 @@ func TestHandleMutate(t *testing.T) {
 
 		disc := &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"}
 		cfg := handlerGangConfig()
-		handler := NewHandler(cfg, disc, func(_ context.Context, reg GangRegistration) {
+		handler := NewHandler(cfg, gang.NewResolver(disc, nil), func(_ context.Context, reg GangRegistration) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg

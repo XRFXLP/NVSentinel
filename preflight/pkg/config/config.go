@@ -83,6 +83,13 @@ type FileConfig struct {
 	GangDiscovery    GangDiscoveryConfig    `yaml:"gangDiscovery"`
 	GangCoordination GangCoordinationConfig `yaml:"gangCoordination"`
 
+	// GangDiscoveryOverrides allows specific namespaces to use a different
+	// gang discovery configuration than the cluster-wide GangDiscovery above.
+	// This is useful when different namespaces run different gang-scheduling
+	// systems (e.g. Volcano in one namespace, native Kubernetes in another).
+	// Any namespace not matched by an override falls back to GangDiscovery.
+	GangDiscoveryOverrides []NamespacedGangDiscovery `yaml:"gangDiscoveryOverrides,omitempty"`
+
 	// InitContainerPlacement controls where preflight init containers are
 	// placed relative to existing init containers in the pod spec.
 	// Valid values: "prepend", "append". Default: "append".
@@ -134,6 +141,21 @@ type GVRConfig struct {
 	Group    string `yaml:"group"`
 	Version  string `yaml:"version"`
 	Resource string `yaml:"resource"`
+}
+
+// NamespacedGangDiscovery binds a GangDiscoveryConfig to one or more
+// namespaces. Pods in a listed namespace use this config for gang discovery
+// instead of the cluster-wide default. A namespace may appear in at most one
+// override (enforced by validation).
+type NamespacedGangDiscovery struct {
+	// Namespaces is the list of namespaces this configuration applies to.
+	// Must contain at least one entry.
+	Namespaces []string `yaml:"namespaces"`
+
+	// GangDiscovery is the gang discovery configuration for the listed
+	// namespaces. The same semantics as the top-level GangDiscovery apply:
+	// an empty config selects native Kubernetes gang discovery.
+	GangDiscovery GangDiscoveryConfig `yaml:"gangDiscovery"`
 }
 
 // GangCoordinationConfig contains configuration for gang coordination.
@@ -329,6 +351,39 @@ func (c *FileConfig) validate() error {
 		}
 
 		c.GangCoordination.TimeoutDuration = timeout
+	}
+
+	if err := c.validateGangDiscoveryOverrides(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateGangDiscoveryOverrides ensures every override lists at least one
+// namespace and that no namespace is claimed by more than one override.
+func (c *FileConfig) validateGangDiscoveryOverrides() error {
+	assigned := make(map[string]int, len(c.GangDiscoveryOverrides))
+
+	for i, override := range c.GangDiscoveryOverrides {
+		if len(override.Namespaces) == 0 {
+			return fmt.Errorf("gangDiscoveryOverrides[%d].namespaces must contain at least one namespace", i)
+		}
+
+		for _, ns := range override.Namespaces {
+			if ns == "" {
+				return fmt.Errorf("gangDiscoveryOverrides[%d].namespaces must not contain an empty namespace", i)
+			}
+
+			if prev, exists := assigned[ns]; exists {
+				return fmt.Errorf(
+					"namespace %q is assigned to multiple gangDiscoveryOverrides (indexes %d and %d)",
+					ns, prev, i,
+				)
+			}
+
+			assigned[ns] = i
+		}
 	}
 
 	return nil

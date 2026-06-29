@@ -305,6 +305,42 @@ gangDiscovery:
 
 Here membership is determined by a pod label instead of an annotation. The rest of the flow is the same: look up the PodGroup CRD and extract `minCount` via CEL.
 
+### Per-namespace gang discovery
+
+By default the `gangDiscovery` config above applies cluster-wide: every namespace that the preflight webhook mutates uses the same discoverer. When different namespaces run different gang-scheduling systems (for example, Volcano for one team and native Kubernetes for another), use `gangDiscoveryOverrides` to scope a discovery config to specific namespaces.
+
+Each override entry binds a `gangDiscovery` config (identical schema to the top-level field) to a list of namespaces. A pod is resolved as follows:
+
+1. If the pod's namespace is listed in an override, that override's discoverer is used.
+2. Otherwise, the cluster-wide `gangDiscovery` is used as the default.
+
+A namespace must appear in at most one override; the preflight process fails to start if the same namespace is assigned to multiple overrides.
+
+```yaml
+# Cluster-wide default: native Kubernetes gang discovery.
+gangDiscovery: {}
+
+gangDiscoveryOverrides:
+  # team-a and its staging namespace use Volcano.
+  - namespaces: ["team-a", "team-a-staging"]
+    gangDiscovery:
+      name: "volcano"
+      annotationKeys:
+        - "scheduling.k8s.io/group-name"
+      podGroupGVR:
+        group: "scheduling.volcano.sh"
+        version: "v1beta1"
+        resource: "podgroups"
+      minCountExpr: "podGroup.spec.minMember"
+  # team-b explicitly uses native Kubernetes gang discovery.
+  - namespaces: ["team-b"]
+    gangDiscovery: {}
+```
+
+The chart automatically expands the preflight `ClusterRole` to grant read access to every `podGroupGVR` referenced across the default config and all overrides, plus the native `scheduling.k8s.io` resources whenever any namespace uses native discovery. No manual RBAC changes are required.
+
+Each override's PodGroup CRD is validated against the cluster at startup (via the API RESTMapper), so a missing CRD or malformed config fails fast on boot rather than silently at pod admission time.
+
 ## Gang coordination
 
 When `gangCoordination.enabled` is true (default in the preflight chart), the controller coordinates multi-node checks through ConfigMaps:

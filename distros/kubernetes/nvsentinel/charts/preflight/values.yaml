@@ -323,6 +323,27 @@ gangDiscovery: {}
   #   resource: "podgroups"
   # minCountExpr: "podGroup.spec.minMember"  # CEL expression
 
+# Per-namespace gang discovery overrides.
+# Each entry binds a gangDiscovery config (same schema as above) to one or
+# more namespaces. Pods in a listed namespace use that config; any namespace
+# not listed falls back to the cluster-wide gangDiscovery above. This lets
+# different namespaces run different gang-scheduling systems.
+# A namespace must not appear in more than one override.
+# The chart RBAC automatically grants read access to every podGroupGVR
+# referenced here (in addition to the default gangDiscovery).
+gangDiscoveryOverrides: []
+  # - namespaces: ["team-a", "team-a-staging"]
+  #   gangDiscovery:
+  #     name: "volcano"
+  #     annotationKeys: ["scheduling.k8s.io/group-name"]
+  #     podGroupGVR:
+  #       group: "scheduling.volcano.sh"
+  #       version: "v1beta1"
+  #       resource: "podgroups"
+  #     minCountExpr: "podGroup.spec.minMember"
+  # - namespaces: ["team-b"]
+  #   gangDiscovery: {}  # native Kubernetes gang discovery for team-b
+
 # Gang coordination configuration for multi-node checks (e.g., nccl-allreduce)
 gangCoordination:
   # Enable gang coordination (required for gang-wide checks)

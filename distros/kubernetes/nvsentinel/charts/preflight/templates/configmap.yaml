@@ -37,6 +37,10 @@ data:
     processingStrategy: {{ include "preflight.processingStrategy" . | quote }}
     gangDiscovery:
       {{- toYaml .Values.gangDiscovery | nindent 6 }}
+    {{- if .Values.gangDiscoveryOverrides }}
+    gangDiscoveryOverrides:
+      {{- toYaml .Values.gangDiscoveryOverrides | nindent 6 }}
+    {{- end }}
     gangCoordination:
       enabled: {{ .Values.gangCoordination.enabled }}
       timeout: {{ .Values.gangCoordination.timeout | quote }}

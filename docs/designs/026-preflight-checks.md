@@ -434,6 +434,22 @@ type PeerInfo struct {
 
 Controller selects implementation based on Helm config. With empty `gangDiscovery`, native Kubernetes discovery prefers the 1.36 PodGroup API when available and falls back to the 1.35 Workload API. If no gang identifier is found, the pod is treated as singleton (skip gang-wide tests).
 
+#### Per-namespace gang discovery
+
+A single cluster may host workloads scheduled by different gang systems in different namespaces. To support this, gang discovery is resolved per namespace rather than once globally.
+
+- `gangDiscovery` remains the cluster-wide default.
+- `gangDiscoveryOverrides` is an optional list; each entry binds a `gangDiscovery` config to one or more namespaces.
+
+At startup the webhook builds a `DiscovererResolver` that holds the default discoverer plus one discoverer per override entry (constructed with the same `NewDiscovererFromConfig` factory, so each is validated against the cluster's API RESTMapper). Both the admission webhook and the gang controller resolve the discoverer for a pod via `resolver.For(pod.Namespace)`:
+
+1. If the namespace appears in an override, that discoverer is returned.
+2. Otherwise the cluster-wide default is returned.
+
+A namespace may belong to at most one override (validated at config load). Because gang IDs already embed the pod namespace and peer discovery is namespace-scoped, no changes to the gang ID format or coordination ConfigMaps are needed. The chart's `ClusterRole` is generated from the union of all referenced `podGroupGVR`s plus native APIs when any namespace uses native discovery.
+
+This is fully backward compatible: omitting `gangDiscoveryOverrides` preserves the prior single-discoverer behavior.
+
 ### Gang Coordination
 
 For gang-wide checks like `nccl-allreduce`, the preflight controller maintains a ConfigMap. Webhook mounts it as a volume; init containers read from filesystem.

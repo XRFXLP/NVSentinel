@@ -44,7 +44,7 @@ var (
 	commit  = "none"
 	date    = "unknown"
 
-	discoverer     gang.GangDiscoverer
+	resolver       *gang.DiscovererResolver
 	onGangRegister webhook.GangRegistrationFunc
 )
 
@@ -95,7 +95,7 @@ func run() error {
 		}
 	}
 
-	handler := webhook.NewHandler(cfg, discoverer, onGangRegister)
+	handler := webhook.NewHandler(cfg, resolver, onGangRegister)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", handler.HandleMutate)
@@ -115,13 +115,13 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 		return fmt.Errorf("failed to create controller manager: %w", err)
 	}
 
-	discoverer, err = gang.NewDiscovererFromConfig(
-		cfg.GangDiscovery,
+	resolver, err = gang.NewResolverFromConfig(
+		cfg,
 		mgr.GetClient(),
 		mgr.GetRESTMapper(),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create gang discoverer: %w", err)
+		return fmt.Errorf("failed to create gang discoverer resolver: %w", err)
 	}
 
 	coordinatorConfig := gang.CoordinatorConfig{
@@ -133,7 +133,7 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 		cfg,
 		mgr.GetClient(),
 		coordinator,
-		discoverer,
+		resolver,
 	)
 
 	if err := gangController.SetupWithManager(mgr); err != nil {
@@ -156,6 +156,7 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 
 	slog.Info("Gang coordination enabled",
 		"discoverer", discovererName,
+		"namespaceOverrides", len(cfg.GangDiscoveryOverrides),
 		"timeout", cfg.GangCoordination.Timeout,
 		"masterPort", cfg.GangCoordination.MasterPort)
 

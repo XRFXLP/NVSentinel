@@ -48,9 +48,9 @@ type Handler struct {
 	onGangRegister GangRegistrationFunc
 }
 
-func NewHandler(cfg *config.Config, discoverer gang.GangDiscoverer, onGangRegister GangRegistrationFunc) *Handler {
+func NewHandler(cfg *config.Config, resolver *gang.DiscovererResolver, onGangRegister GangRegistrationFunc) *Handler {
 	return &Handler{
-		injector:       NewInjector(cfg, discoverer),
+		injector:       NewInjector(cfg, resolver),
 		onGangRegister: onGangRegister,
 	}
 }
