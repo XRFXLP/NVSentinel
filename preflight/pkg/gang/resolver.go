@@ -61,6 +61,12 @@ func NewResolverFromConfig(
 	c client.Client,
 	restMapper meta.RESTMapper,
 ) (*DiscovererResolver, error) {
+	// Enforce the same override rules as config.Load, in case the Config was
+	// built programmatically rather than parsed and validated by Load.
+	if err := config.ValidateGangDiscoveryOverrides(cfg.GangDiscoveryOverrides); err != nil {
+		return nil, err
+	}
+
 	defaultDiscoverer, err := NewDiscovererFromConfig(cfg.GangDiscovery, c, restMapper)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create default gang discoverer: %w", err)

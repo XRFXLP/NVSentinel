@@ -339,7 +339,7 @@ gangDiscoveryOverrides:
 
 The chart automatically expands the preflight `ClusterRole` to grant read access to every `podGroupGVR` referenced across the default config and all overrides, plus the native `scheduling.k8s.io` resources whenever any namespace uses native discovery. No manual RBAC changes are required.
 
-Each override's PodGroup CRD is validated against the cluster at startup (via the API RESTMapper), so a missing CRD or malformed config fails fast on boot rather than silently at pod admission time.
+Each configured discovery path — the cluster-wide default and every override — is validated against the cluster at startup (via the API RESTMapper). This applies regardless of the discoverer type: PodGroup-CRD overrides verify their `podGroupGVR`, and native overrides (empty `gangDiscovery`) verify the required `scheduling.k8s.io` resources. As a result, a missing resource or malformed config fails fast on boot rather than silently at pod admission time.
 
 ## Gang coordination
 

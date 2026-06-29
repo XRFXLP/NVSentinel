@@ -266,6 +266,50 @@ func TestHandleMutate(t *testing.T) {
 		assert.Equal(t, "production", captured.Namespace)
 	})
 
+	t.Run("namespace override resolved from request namespace", func(t *testing.T) {
+		var mu sync.Mutex
+		var captured GangRegistration
+
+		// Pod has no metadata namespace; the request namespace ("team-a")
+		// has an override discoverer that the resolver must select.
+		defaultDisc := &mockDiscoverer{name: "kubernetes", canHandle: true, gangID: "kubernetes-gang"}
+		overrideDisc := &mockDiscoverer{name: "volcano", canHandle: true, gangID: "volcano-gang"}
+		resolver := gang.NewResolver(defaultDisc, map[string]gang.GangDiscoverer{
+			"team-a": overrideDisc,
+		})
+
+		handler := NewHandler(handlerGangConfig(), resolver, func(_ context.Context, reg GangRegistration) {
+			mu.Lock()
+			defer mu.Unlock()
+			captured = reg
+		})
+
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "worker-0"},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name: "train", Image: "train:latest",
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("8")},
+					},
+				}},
+			},
+		}
+
+		body := buildAdmissionReview(pod, "uid-override", "team-a")
+		req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+
+		handler.HandleMutate(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, "team-a", captured.Namespace)
+		assert.Equal(t, "volcano-gang", captured.GangID, "should use the override discoverer for the request namespace")
+	})
+
 	t.Run("gang registration callback invoked", func(t *testing.T) {
 		var mu sync.Mutex
 		var captured GangRegistration

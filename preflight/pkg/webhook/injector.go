@@ -62,6 +62,9 @@ type Injector struct {
 	resolver *gang.DiscovererResolver
 }
 
+// NewInjector constructs an Injector from the preflight config and the
+// namespace-aware gang discoverer resolver used to resolve a pod's gang
+// discoverer at injection time.
 func NewInjector(cfg *config.Config, resolver *gang.DiscovererResolver) *Injector {
 	return &Injector{
 		cfg:      cfg,

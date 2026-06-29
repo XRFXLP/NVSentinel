@@ -363,9 +363,17 @@ func (c *FileConfig) validate() error {
 // validateGangDiscoveryOverrides ensures every override lists at least one
 // namespace and that no namespace is claimed by more than one override.
 func (c *FileConfig) validateGangDiscoveryOverrides() error {
-	assigned := make(map[string]int, len(c.GangDiscoveryOverrides))
+	return ValidateGangDiscoveryOverrides(c.GangDiscoveryOverrides)
+}
 
-	for i, override := range c.GangDiscoveryOverrides {
+// ValidateGangDiscoveryOverrides ensures every override lists at least one
+// non-empty namespace and that no namespace is claimed by more than one
+// override. It is exported so callers that build Config programmatically
+// (rather than via Load) can enforce the same rules.
+func ValidateGangDiscoveryOverrides(overrides []NamespacedGangDiscovery) error {
+	assigned := make(map[string]int, len(overrides))
+
+	for i, override := range overrides {
 		if len(override.Namespaces) == 0 {
 			return fmt.Errorf("gangDiscoveryOverrides[%d].namespaces must contain at least one namespace", i)
 		}

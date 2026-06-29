@@ -1232,7 +1232,7 @@ func (m *mockDiscoverer) DiscoverPeers(_ context.Context, _ *corev1.Pod) (*types
 // TestInjectInitContainers_NamespaceScopedDiscovery verifies the injector
 // selects the gang discoverer that applies to the pod's namespace, using the
 // resolver's per-namespace overrides and falling back to the default otherwise.
-func TestInjectInitContainers_NamespaceScopedDiscovery(t *testing.T) {
+func TestInjectInitContainers_NamespaceScopedDiscovery_SelectsNamespaceDiscoverer(t *testing.T) {
 	cfg := testGangConfig()
 
 	defaultDisc := &mockDiscoverer{name: "kubernetes", canHandle: true, gangID: "kubernetes-gang"}
