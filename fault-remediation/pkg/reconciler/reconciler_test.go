@@ -1465,10 +1465,15 @@ func TestPartialRecoveryLeavesLabelWhenSupportedFailurePending(t *testing.T) {
 	completionUpdated := false
 
 	// A supported failure is still active but not yet remediated (FaultRemediated nil). The node
-	// is currently remediation-failed. fault-remediation must not invent a drain/quarantine label;
-	// it leaves the current label for its own remediation flow to reconcile.
+	// is currently remediation-failed. Even though the remediation annotation already lists this
+	// event's equivalence group (the maintenance CR was created), that only means a CR exists, not
+	// that it succeeded. fault-remediation must not flip the label to remediation-succeeded; it
+	// leaves the current label for its own remediation flow to reconcile once the CR completes.
 	activeEvent := testAnnotationHealthEvent("event-a", nodeName, protos.RecommendedAction_RESTART_BM, "GPU-a")
 	mockAnnotationManager := &MockNodeAnnotationManager{
+		existingCRs: map[string]string{
+			"restart": "maintenance-test-node-event-a",
+		},
 		nodeAnnotations: quarantineAnnotationForTest(t, activeEvent),
 		nodeLabels: map[string]string{
 			statemanager.NVSentinelStateLabelKey: string(statemanager.RemediationFailedLabelValue),
@@ -1521,7 +1526,8 @@ func TestPartialRecoveryLeavesLabelWhenSupportedFailurePending(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.IsZero())
-	assert.False(t, labelUpdateCalled, "must not write a non-remediation label for a pending supported failure")
+	assert.False(t, labelUpdateCalled,
+		"must not mark remediation-succeeded based on the CR-created annotation while remediation is pending")
 	assert.True(t, completionUpdated, "recovery event should still be finalized")
 	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
 	assert.Equal(t, 1, markProcessedCount)

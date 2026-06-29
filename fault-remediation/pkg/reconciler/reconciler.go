@@ -456,7 +456,7 @@ func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
 	ctx, span := tracing.StartSpan(ctx, "fault_remediation.partial_recovery_event")
 	defer span.End()
 
-	remediationState, node, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+	_, node, err := r.annotationManager.GetRemediationState(ctx, nodeName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			slog.WarnContext(ctx, "Node no longer exists, marking partial recovery event as terminal", "node", nodeName)
@@ -477,7 +477,7 @@ func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
 	// those from the remaining active failures. Non-terminal (remediating) and pre-remediation
 	// states are owned by the in-progress flow, so we just finalize the event.
 	if isTerminalRemediationLabel(currentNodeStateLabel(node)) {
-		if err := r.reconcilePartialRecoveryLabel(ctx, nodeName, node, remediationState, healthEventStore); err != nil {
+		if err := r.reconcilePartialRecoveryLabel(ctx, nodeName, node, healthEventStore); err != nil {
 			tracing.RecordError(span, err)
 
 			return ctrl.Result{}, err
@@ -520,7 +520,6 @@ func (r *FaultRemediationReconciler) reconcilePartialRecoveryLabel(
 	ctx context.Context,
 	nodeName string,
 	node *corev1.Node,
-	remediationState *annotation.RemediationStateAnnotation,
 	healthEventStore datastore.HealthEventStore,
 ) error {
 	span := tracing.SpanFromContext(ctx)
@@ -531,14 +530,14 @@ func (r *FaultRemediationReconciler) reconcilePartialRecoveryLabel(
 	}
 
 	targetLabel, shouldUpdate, err := r.recomputePartialRecoveryNodeLabel(
-		ctx, nodeName, annotations, remediationState, healthEventStore)
+		ctx, nodeName, annotations, healthEventStore)
 	if err != nil {
 		span.SetAttributes(
 			attribute.String("fault_remediation.error.type", "partial_recovery_recompute_error"),
 			attribute.String("fault_remediation.error.message", err.Error()),
 		)
 
-		return err
+		return fmt.Errorf("failed to recompute partial recovery label for node %s: %w", nodeName, err)
 	}
 
 	if !shouldUpdate {
@@ -570,7 +569,6 @@ func (r *FaultRemediationReconciler) recomputePartialRecoveryNodeLabel(
 	ctx context.Context,
 	nodeName string,
 	annotations map[string]string,
-	remediationState *annotation.RemediationStateAnnotation,
 	healthEventStore datastore.HealthEventStore,
 ) (statemanager.NVSentinelStateLabelValue, bool, error) {
 	activeEvents, err := activeQuarantineEvents(annotations)
@@ -582,12 +580,11 @@ func (r *FaultRemediationReconciler) recomputePartialRecoveryNodeLabel(
 		return "", false, nil
 	}
 
-	coveredGroups := remediationGroups(remediationState)
 	sawRemediationSuccess := false
 
 	for _, activeEvent := range activeEvents {
 		failed, err := r.activeEventForcesRemediationFailed(
-			ctx, nodeName, activeEvent, coveredGroups, healthEventStore, &sawRemediationSuccess)
+			ctx, nodeName, activeEvent, healthEventStore, &sawRemediationSuccess)
 		if err != nil {
 			return "", false, err
 		}
@@ -610,12 +607,17 @@ func (r *FaultRemediationReconciler) recomputePartialRecoveryNodeLabel(
 // activeEventForcesRemediationFailed reports whether a still-active quarantine event requires the
 // terminal remediation-failed label: either its action is unsupported, or its remediation was
 // recorded as failed. Otherwise it records, via sawRemediationSuccess, whether the event was
-// already remediated. It deliberately ignores drain/quarantine state, which other components own.
+// already remediated.
+//
+// Success is taken only from the event's own FaultRemediated=true status. The remediation
+// annotation is intentionally not consulted: it is written when a maintenance CR is created, not
+// when it succeeds, so trusting it would mark a node remediation-succeeded while the remaining
+// failure's remediation is still in progress. Events covered by an equivalent CR independently
+// receive FaultRemediated=true once that CR completes, so no success is lost.
 func (r *FaultRemediationReconciler) activeEventForcesRemediationFailed(
 	ctx context.Context,
 	nodeName string,
 	activeEvent *protos.HealthEvent,
-	coveredGroups map[string]struct{},
 	healthEventStore datastore.HealthEventStore,
 	sawRemediationSuccess *bool,
 ) (bool, error) {
@@ -624,8 +626,7 @@ func (r *FaultRemediationReconciler) activeEventForcesRemediationFailed(
 		return false, err
 	}
 
-	groupConfig, supported := r.partialRecoveryGroupConfig(activeEvent)
-	if !supported {
+	if !r.isRemediationSupported(activeEvent) {
 		return true, nil
 	}
 
@@ -637,23 +638,15 @@ func (r *FaultRemediationReconciler) activeEventForcesRemediationFailed(
 		*sawRemediationSuccess = true
 	}
 
-	if groupConfig != nil && groupConfigMatchesAny(groupConfig, coveredGroups) {
-		*sawRemediationSuccess = true
-	}
-
 	return false, nil
 }
 
-func (r *FaultRemediationReconciler) partialRecoveryGroupConfig(
-	healthEvent *protos.HealthEvent,
-) (*common.EquivalenceGroupConfig, bool) {
+// isRemediationSupported reports whether fault-remediation has a configured action for the event.
+func (r *FaultRemediationReconciler) isRemediationSupported(healthEvent *protos.HealthEvent) bool {
 	groupConfig, lookupErr := common.GetGroupConfigForEvent(
 		r.Config.RemediationClient.GetConfig().RemediationActions, healthEvent)
-	if lookupErr != nil || unsupportedRemediationAction(healthEvent, groupConfig) {
-		return nil, false
-	}
 
-	return groupConfig, true
+	return lookupErr == nil && !unsupportedRemediationAction(healthEvent, groupConfig)
 }
 
 func activeQuarantineEvents(annotations map[string]string) ([]*protos.HealthEvent, error) {
@@ -700,19 +693,6 @@ func activeQuarantineEvents(annotations map[string]string) ([]*protos.HealthEven
 	}
 
 	return activeEvents, nil
-}
-
-func remediationGroups(remediationState *annotation.RemediationStateAnnotation) map[string]struct{} {
-	if remediationState == nil {
-		return nil
-	}
-
-	groups := make(map[string]struct{}, len(remediationState.EquivalenceGroups))
-	for groupName := range remediationState.EquivalenceGroups {
-		groups[groupName] = struct{}{}
-	}
-
-	return groups
 }
 
 // unsupportedRemediationAction reports whether an active event needs remediation but has no
