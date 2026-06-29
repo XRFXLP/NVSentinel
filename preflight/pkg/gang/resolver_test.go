@@ -79,6 +79,24 @@ func TestDiscovererResolver_NilReceiver(t *testing.T) {
 	assert.Nil(t, resolver.For("any"))
 }
 
+func TestDiscovererResolver_SetRemove(t *testing.T) {
+	def := &mockResolverDiscoverer{name: "default"}
+	volcano := &mockResolverDiscoverer{name: "volcano"}
+
+	resolver := NewResolver(def, nil)
+
+	// Unknown namespace falls back to default.
+	assert.Equal(t, "default", resolver.For("team-a").Name())
+
+	// After Set, the namespace resolves to the registered discoverer.
+	resolver.Set("team-a", volcano)
+	assert.Equal(t, "volcano", resolver.For("team-a").Name())
+
+	// After Remove, it falls back to the default again.
+	resolver.Remove("team-a")
+	assert.Equal(t, "default", resolver.For("team-a").Name())
+}
+
 func TestNewResolverFromConfig(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().Build()
 
@@ -93,24 +111,18 @@ func TestNewResolverFromConfig(t *testing.T) {
 		Group: "scheduling.volcano.sh", Version: "v1beta1", Kind: "PodGroup",
 	}, meta.RESTScopeNamespace)
 
-	t.Run("default plus volcano override", func(t *testing.T) {
+	t.Run("builds the cluster-wide default discoverer", func(t *testing.T) {
 		cfg := &config.Config{
 			FileConfig: config.FileConfig{
-				// Empty default => native Kubernetes discoverer.
-				GangDiscoveryOverrides: []config.NamespacedGangDiscovery{
-					{
-						Namespaces: []string{"team-a"},
-						GangDiscovery: config.GangDiscoveryConfig{
-							Name:           "volcano",
-							AnnotationKeys: []string{"scheduling.k8s.io/group-name"},
-							PodGroupGVR: config.GVRConfig{
-								Group:    "scheduling.volcano.sh",
-								Version:  "v1beta1",
-								Resource: "podgroups",
-							},
-							MinCountExpr: "podGroup.spec.minMember",
-						},
+				GangDiscovery: config.GangDiscoveryConfig{
+					Name:           "volcano",
+					AnnotationKeys: []string{"scheduling.k8s.io/group-name"},
+					PodGroupGVR: config.GVRConfig{
+						Group:    "scheduling.volcano.sh",
+						Version:  "v1beta1",
+						Resource: "podgroups",
 					},
+					MinCountExpr: "podGroup.spec.minMember",
 				},
 			},
 		}
@@ -118,27 +130,23 @@ func TestNewResolverFromConfig(t *testing.T) {
 		resolver, err := NewResolverFromConfig(cfg, fakeClient, restMapper)
 		require.NoError(t, err)
 
+		// Every namespace uses the default until overrides are registered.
 		assert.Equal(t, "volcano", resolver.For("team-a").Name())
-		assert.Equal(t, "kubernetes", resolver.For("team-other").Name())
+		assert.Equal(t, "volcano", resolver.For("team-other").Name())
 	})
 
-	t.Run("invalid override config fails fast", func(t *testing.T) {
+	t.Run("invalid default config fails fast", func(t *testing.T) {
 		cfg := &config.Config{
 			FileConfig: config.FileConfig{
-				GangDiscoveryOverrides: []config.NamespacedGangDiscovery{
-					{
-						Namespaces: []string{"team-a"},
-						GangDiscovery: config.GangDiscoveryConfig{
-							// name set but missing GVR/keys/expr => invalid.
-							Name: "broken",
-						},
-					},
+				GangDiscovery: config.GangDiscoveryConfig{
+					// name set but missing GVR/keys/expr => invalid.
+					Name: "broken",
 				},
 			},
 		}
 
 		_, err := NewResolverFromConfig(cfg, fakeClient, restMapper)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "gangDiscoveryOverrides[0]")
+		assert.Contains(t, err.Error(), "default gang discoverer")
 	})
 }

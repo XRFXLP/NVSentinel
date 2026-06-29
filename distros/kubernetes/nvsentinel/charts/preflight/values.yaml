@@ -323,26 +323,24 @@ gangDiscovery: {}
   #   resource: "podgroups"
   # minCountExpr: "podGroup.spec.minMember"  # CEL expression
 
-# Per-namespace gang discovery overrides.
-# Each entry binds a gangDiscovery config (same schema as above) to one or
-# more namespaces. Pods in a listed namespace use that config; any namespace
-# not listed falls back to the cluster-wide gangDiscovery above. This lets
-# different namespaces run different gang-scheduling systems.
-# A namespace must not appear in more than one override.
-# The chart RBAC automatically grants read access to every podGroupGVR
-# referenced here (in addition to the default gangDiscovery).
-gangDiscoveryOverrides: []
-  # - namespaces: ["team-a", "team-a-staging"]
-  #   gangDiscovery:
-  #     name: "volcano"
-  #     annotationKeys: ["scheduling.k8s.io/group-name"]
-  #     podGroupGVR:
-  #       group: "scheduling.volcano.sh"
-  #       version: "v1beta1"
-  #       resource: "podgroups"
-  #     minCountExpr: "podGroup.spec.minMember"
-  # - namespaces: ["team-b"]
-  #   gangDiscovery: {}  # native Kubernetes gang discovery for team-b
+# Per-namespace gang discovery is configured at runtime via PreflightConfig
+# custom resources (preflight.nvsentinel.nvidia.com/v1alpha1), not Helm values.
+# Create one PreflightConfig in a namespace to override the cluster-wide
+# gangDiscovery above for pods in that namespace, e.g.:
+#
+#   apiVersion: preflight.nvsentinel.nvidia.com/v1alpha1
+#   kind: PreflightConfig
+#   metadata: {name: default, namespace: team-a}
+#   spec:
+#     gangDiscovery:
+#       name: volcano
+#       annotationKeys: ["scheduling.k8s.io/group-name"]
+#       podGroupGVR: {group: scheduling.volcano.sh, version: v1beta1, resource: podgroups}
+#       minCountExpr: podGroup.spec.minMember
+#
+# The controller reads PodGroup CRs via an aggregated ClusterRole. To let it read
+# a scheduler CRD not covered by the built-in role, apply a ClusterRole labeled
+# preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true".
 
 # Gang coordination configuration for multi-node checks (e.g., nccl-allreduce)
 gangCoordination:

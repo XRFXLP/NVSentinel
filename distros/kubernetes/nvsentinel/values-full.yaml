@@ -1881,27 +1881,17 @@ preflight:
     # minCountExpr: "podGroup.spec.minMember"
 
   ##############################################################################
-  # GANG DISCOVERY OVERRIDES (per-namespace)
+  # PER-NAMESPACE GANG DISCOVERY (PreflightConfig CRD)
   #
-  # Bind a gangDiscovery config (same schema as above) to specific namespaces.
-  # Pods in a listed namespace use that config; namespaces not listed fall back
-  # to the cluster-wide gangDiscovery above. Lets different namespaces run
-  # different gang-scheduling systems. A namespace must appear in at most one
-  # override. Chart RBAC automatically covers every podGroupGVR referenced here.
+  # Per-namespace overrides are runtime objects, not Helm values. Create a
+  # PreflightConfig (preflight.nvsentinel.nvidia.com/v1alpha1) with a
+  # spec.gangDiscovery block in a namespace to override the cluster-wide
+  # gangDiscovery above for that namespace. The
+  # controller reads scheduler PodGroup CRs via an aggregated ClusterRole; grant
+  # access to additional scheduler CRDs with a ClusterRole labeled
+  # preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true".
   # See: docs/configuration/preflight.md#gang-discovery
   ##############################################################################
-  gangDiscoveryOverrides: []
-    # - namespaces: ["team-a", "team-a-staging"]
-    #   gangDiscovery:
-    #     name: "volcano"
-    #     annotationKeys: ["scheduling.k8s.io/group-name"]
-    #     podGroupGVR:
-    #       group: "scheduling.volcano.sh"
-    #       version: "v1beta1"
-    #       resource: "podgroups"
-    #     minCountExpr: "podGroup.spec.minMember"
-    # - namespaces: ["team-b"]
-    #   gangDiscovery: {}  # native Kubernetes gang discovery for team-b
 
   ##############################################################################
   # GANG COORDINATION

@@ -436,19 +436,24 @@ Controller selects implementation based on Helm config. With empty `gangDiscover
 
 #### Per-namespace gang discovery
 
-A single cluster may host workloads scheduled by different gang systems in different namespaces. To support this, gang discovery is resolved per namespace rather than once globally.
+A single cluster may host workloads scheduled by different gang systems in different namespaces. Gang discovery is therefore resolved per namespace rather than once globally.
 
-- `gangDiscovery` remains the cluster-wide default.
-- `gangDiscoveryOverrides` is an optional list; each entry binds a `gangDiscovery` config to one or more namespaces.
+- The Helm `gangDiscovery` value is the **cluster-wide default**.
+- A namespaced **`PreflightConfig`** CRD (`preflight.nvsentinel.nvidia.com/v1alpha1`) overrides the default for its own namespace via `spec.gangDiscovery` (same schema as the Helm value; empty selects native Kubernetes). `spec` is a container for per-namespace preflight settings, leaving room for additional namespace-scoped options later.
 
-At startup the webhook builds a `DiscovererResolver` that holds the default discoverer plus one discoverer per override entry (constructed with the same `NewDiscovererFromConfig` factory, so each is validated against the cluster's API RESTMapper). Both the admission webhook and the gang controller resolve the discoverer for a pod via `resolver.For(pod.Namespace)`:
+Both the admission webhook and the gang controller resolve a pod's discoverer via `resolver.For(pod.Namespace)`. The `DiscovererResolver` is a thread-safe registry holding the cluster-wide default plus a namespace→discoverer map. A `PreflightConfig` controller maintains that map:
 
-1. If the namespace appears in an override, that discoverer is returned.
-2. Otherwise the cluster-wide default is returned.
+- It recomputes the effective discoverer for a namespace on every event (add/update/delete), so the registry converges.
+- It builds discoverers with the existing `NewDiscovererFromConfig` factory (validating the `podGroupGVR`/native GVK against the cluster RESTMapper), updates the resolver via `Set`/`Remove`, and reports outcome in the object's `.status`.
+- At most one `PreflightConfig` per namespace is honored; multiple objects are a conflict (none take effect, all marked not ready). Invalid/unresolvable configs fall back to the default and surface the error in status rather than disrupting admission.
 
-A namespace may belong to at most one override (validated at config load). Because gang IDs already embed the pod namespace and peer discovery is namespace-scoped, no changes to the gang ID format or coordination ConfigMaps are needed. The chart's `ClusterRole` is generated from the union of all referenced `podGroupGVR`s plus native APIs when any namespace uses native discovery.
+Because gang IDs already embed the pod namespace and peer discovery is namespace-scoped, no changes to the gang ID format or coordination ConfigMaps are needed.
 
-This is fully backward compatible: omitting `gangDiscoveryOverrides` preserves the prior single-discoverer behavior.
+**RBAC.** The controller reads scheduler `PodGroup` CRs cluster-wide via an **aggregated ClusterRole**. The chart ships a built-in contributor role (native `scheduling.k8s.io` resources + the default `podGroupGVR`); a namespace that registers a different scheduler is granted access by applying a `ClusterRole` labeled `preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true"`, which the control plane merges in without a preflight restart. Granting cluster-scoped reads stays a platform action even though the per-namespace config is tenant-owned.
+
+This is backward compatible: with no `PreflightConfig` objects, every namespace uses the cluster-wide `gangDiscovery` default exactly as before.
+
+> A self-service `PreflightCheck` CRD for dynamic check registration is explored separately in ADR-041; the `PreflightConfig` CRD here is a distinct, namespaced policy object (not a check definition) following the same informer-backed, aggregated-RBAC pattern.
 
 ### Gang Coordination
 

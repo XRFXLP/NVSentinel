@@ -80,15 +80,12 @@ type FileConfig struct {
 	ConnectorSocket      string              `yaml:"connectorSocket"`
 	ProcessingStrategy   string              `yaml:"processingStrategy"`
 
+	// GangDiscovery is the cluster-wide default gang discovery configuration.
+	// Per-namespace overrides are expressed as PreflightConfig custom
+	// resources (preflight.nvsentinel.nvidia.com/v1alpha1) via
+	// spec.gangDiscovery, reconciled at runtime into the discoverer resolver.
 	GangDiscovery    GangDiscoveryConfig    `yaml:"gangDiscovery"`
 	GangCoordination GangCoordinationConfig `yaml:"gangCoordination"`
-
-	// GangDiscoveryOverrides allows specific namespaces to use a different
-	// gang discovery configuration than the cluster-wide GangDiscovery above.
-	// This is useful when different namespaces run different gang-scheduling
-	// systems (e.g. Volcano in one namespace, native Kubernetes in another).
-	// Any namespace not matched by an override falls back to GangDiscovery.
-	GangDiscoveryOverrides []NamespacedGangDiscovery `yaml:"gangDiscoveryOverrides,omitempty"`
 
 	// InitContainerPlacement controls where preflight init containers are
 	// placed relative to existing init containers in the pod spec.
@@ -141,21 +138,6 @@ type GVRConfig struct {
 	Group    string `yaml:"group"`
 	Version  string `yaml:"version"`
 	Resource string `yaml:"resource"`
-}
-
-// NamespacedGangDiscovery binds a GangDiscoveryConfig to one or more
-// namespaces. Pods in a listed namespace use this config for gang discovery
-// instead of the cluster-wide default. A namespace may appear in at most one
-// override (enforced by validation).
-type NamespacedGangDiscovery struct {
-	// Namespaces is the list of namespaces this configuration applies to.
-	// Must contain at least one entry.
-	Namespaces []string `yaml:"namespaces"`
-
-	// GangDiscovery is the gang discovery configuration for the listed
-	// namespaces. The same semantics as the top-level GangDiscovery apply:
-	// an empty config selects native Kubernetes gang discovery.
-	GangDiscovery GangDiscoveryConfig `yaml:"gangDiscovery"`
 }
 
 // GangCoordinationConfig contains configuration for gang coordination.
@@ -351,47 +333,6 @@ func (c *FileConfig) validate() error {
 		}
 
 		c.GangCoordination.TimeoutDuration = timeout
-	}
-
-	if err := c.validateGangDiscoveryOverrides(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// validateGangDiscoveryOverrides ensures every override lists at least one
-// namespace and that no namespace is claimed by more than one override.
-func (c *FileConfig) validateGangDiscoveryOverrides() error {
-	return ValidateGangDiscoveryOverrides(c.GangDiscoveryOverrides)
-}
-
-// ValidateGangDiscoveryOverrides ensures every override lists at least one
-// non-empty namespace and that no namespace is claimed by more than one
-// override. It is exported so callers that build Config programmatically
-// (rather than via Load) can enforce the same rules.
-func ValidateGangDiscoveryOverrides(overrides []NamespacedGangDiscovery) error {
-	assigned := make(map[string]int, len(overrides))
-
-	for i, override := range overrides {
-		if len(override.Namespaces) == 0 {
-			return fmt.Errorf("gangDiscoveryOverrides[%d].namespaces must contain at least one namespace", i)
-		}
-
-		for _, ns := range override.Namespaces {
-			if ns == "" {
-				return fmt.Errorf("gangDiscoveryOverrides[%d].namespaces must not contain an empty namespace", i)
-			}
-
-			if prev, exists := assigned[ns]; exists {
-				return fmt.Errorf(
-					"namespace %q is assigned to multiple gangDiscoveryOverrides (indexes %d and %d)",
-					ns, prev, i,
-				)
-			}
-
-			assigned[ns] = i
-		}
 	}
 
 	return nil

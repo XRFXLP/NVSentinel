@@ -136,7 +136,7 @@ gangCoordination:
       readOnly: false
 `
 
-	yamlGangDiscoveryOverrides = `
+	yamlGangDiscoveryDefault = `
 initContainers:
   - name: preflight-dcgm-diag
     image: dcgm:latest
@@ -150,53 +150,6 @@ gangDiscovery:
     version: v1beta1
     resource: podgroups
   minCountExpr: podGroup.spec.minMember
-gangDiscoveryOverrides:
-  - namespaces: ["team-a", "team-a-staging"]
-    gangDiscovery:
-      name: kai
-      annotationKeys: ["scheduling.run.ai/pod-group"]
-      podGroupGVR:
-        group: scheduling.run.ai
-        version: v2alpha2
-        resource: podgroups
-      minCountExpr: podGroup.spec.minMember
-  - namespaces: ["team-b"]
-    gangDiscovery: {}
-`
-
-	yamlOverrideEmptyNamespaceList = `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-gangCoordination:
-  enabled: true
-gangDiscoveryOverrides:
-  - namespaces: []
-    gangDiscovery: {}
-`
-
-	yamlOverrideEmptyNamespaceString = `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-gangCoordination:
-  enabled: true
-gangDiscoveryOverrides:
-  - namespaces: [""]
-    gangDiscovery: {}
-`
-
-	yamlOverrideDuplicateNamespace = `
-initContainers:
-  - name: preflight-dcgm-diag
-    image: dcgm:latest
-gangCoordination:
-  enabled: true
-gangDiscoveryOverrides:
-  - namespaces: ["team-a"]
-    gangDiscovery: {}
-  - namespaces: ["team-a"]
-    gangDiscovery: {}
 `
 )
 
@@ -348,37 +301,15 @@ func TestLoad(t *testing.T) {
 		assert.False(t, *cfg.GangCoordination.ExtraHostPathMounts[0].ReadOnly)
 	})
 
-	t.Run("gangDiscoveryOverrides parsed from YAML", func(t *testing.T) {
-		path := writeYAML(t, yamlGangDiscoveryOverrides)
+	t.Run("cluster-wide gangDiscovery parsed from YAML", func(t *testing.T) {
+		path := writeYAML(t, yamlGangDiscoveryDefault)
 		cfg, err := Load(path)
 		require.NoError(t, err)
 
-		require.Len(t, cfg.GangDiscoveryOverrides, 2)
-		assert.Equal(t, []string{"team-a", "team-a-staging"}, cfg.GangDiscoveryOverrides[0].Namespaces)
-		assert.Equal(t, "kai", cfg.GangDiscoveryOverrides[0].GangDiscovery.Name)
-		assert.Equal(t, []string{"team-b"}, cfg.GangDiscoveryOverrides[1].Namespaces)
-		assert.Empty(t, cfg.GangDiscoveryOverrides[1].GangDiscovery.Name)
-	})
-
-	t.Run("gangDiscoveryOverrides with empty namespace list rejected", func(t *testing.T) {
-		path := writeYAML(t, yamlOverrideEmptyNamespaceList)
-		_, err := Load(path)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "at least one namespace")
-	})
-
-	t.Run("gangDiscoveryOverrides with empty namespace string rejected", func(t *testing.T) {
-		path := writeYAML(t, yamlOverrideEmptyNamespaceString)
-		_, err := Load(path)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "empty namespace")
-	})
-
-	t.Run("gangDiscoveryOverrides duplicate namespace rejected", func(t *testing.T) {
-		path := writeYAML(t, yamlOverrideDuplicateNamespace)
-		_, err := Load(path)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "team-a")
-		assert.Contains(t, err.Error(), "multiple")
+		assert.Equal(t, "volcano", cfg.GangDiscovery.Name)
+		assert.Equal(t, []string{"scheduling.k8s.io/group-name"}, cfg.GangDiscovery.AnnotationKeys)
+		assert.Equal(t, "scheduling.volcano.sh", cfg.GangDiscovery.PodGroupGVR.Group)
+		assert.Equal(t, "podgroups", cfg.GangDiscovery.PodGroupGVR.Resource)
+		assert.Equal(t, "podGroup.spec.minMember", cfg.GangDiscovery.MinCountExpr)
 	})
 }

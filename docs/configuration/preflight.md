@@ -307,39 +307,61 @@ Here membership is determined by a pod label instead of an annotation. The rest 
 
 ### Per-namespace gang discovery
 
-By default the `gangDiscovery` config above applies cluster-wide: every namespace that the preflight webhook mutates uses the same discoverer. When different namespaces run different gang-scheduling systems (for example, Volcano for one team and native Kubernetes for another), use `gangDiscoveryOverrides` to scope a discovery config to specific namespaces.
+The Helm `gangDiscovery` value sets only the **cluster-wide default**. To make a specific namespace use a different gang-scheduling system (for example, Volcano for one team while everyone else uses native Kubernetes), create a **`PreflightConfig`** custom resource in that namespace. It is reconciled at runtime — no Helm upgrade and no controller restart.
 
-Each override entry binds a `gangDiscovery` config (identical schema to the top-level field) to a list of namespaces. A pod is resolved as follows:
+A pod is resolved as follows:
 
-1. If the pod's namespace is listed in an override, that override's discoverer is used.
-2. Otherwise, the cluster-wide `gangDiscovery` is used as the default.
+1. If the pod's namespace has a `PreflightConfig` with a `gangDiscovery` block, that discoverer is used.
+2. Otherwise, the cluster-wide `gangDiscovery` Helm value is used as the default.
 
-A namespace must appear in at most one override; the preflight process fails to start if the same namespace is assigned to multiple overrides.
+`PreflightConfig` is namespaced (`preflight.nvsentinel.nvidia.com/v1alpha1`); the object's own namespace is its scope. Its `spec.gangDiscovery` block uses the same schema as the Helm `gangDiscovery` value — an empty block selects native Kubernetes discovery. (`spec` is intentionally a container for per-namespace preflight settings, so future options can be added alongside `gangDiscovery`.)
 
 ```yaml
-# Cluster-wide default: native Kubernetes gang discovery.
-gangDiscovery: {}
-
-gangDiscoveryOverrides:
-  # team-a and its staging namespace use Volcano.
-  - namespaces: ["team-a", "team-a-staging"]
-    gangDiscovery:
-      name: "volcano"
-      annotationKeys:
-        - "scheduling.k8s.io/group-name"
-      podGroupGVR:
-        group: "scheduling.volcano.sh"
-        version: "v1beta1"
-        resource: "podgroups"
-      minCountExpr: "podGroup.spec.minMember"
-  # team-b explicitly uses native Kubernetes gang discovery.
-  - namespaces: ["team-b"]
-    gangDiscovery: {}
+# team-a uses Volcano; every other namespace uses the cluster-wide default.
+apiVersion: preflight.nvsentinel.nvidia.com/v1alpha1
+kind: PreflightConfig
+metadata:
+  name: default
+  namespace: team-a
+spec:
+  gangDiscovery:
+    name: "volcano"
+    annotationKeys: ["scheduling.k8s.io/group-name"]
+    podGroupGVR:
+      group: "scheduling.volcano.sh"
+      version: "v1beta1"
+      resource: "podgroups"
+    minCountExpr: "podGroup.spec.minMember"
 ```
 
-The chart automatically expands the preflight `ClusterRole` to grant read access to every `podGroupGVR` referenced across the default config and all overrides, plus the native `scheduling.k8s.io` resources whenever any namespace uses native discovery. No manual RBAC changes are required.
+At most one `PreflightConfig` should exist per namespace. If more than one is present, none take effect (the namespace falls back to the default) and each object is marked not ready. Check the resolved state via the object's status:
 
-Each configured discovery path — the cluster-wide default and every override — is validated against the cluster at startup (via the API RESTMapper). This applies regardless of the discoverer type: PodGroup-CRD overrides verify their `podGroupGVR`, and native overrides (empty `gangDiscovery`) verify the required `scheduling.k8s.io` resources. As a result, a missing resource or malformed config fails fast on boot rather than silently at pod admission time.
+```console
+$ kubectl -n team-a get preflightconfig
+NAME      DISCOVERER   READY   AGE
+default   volcano      true    10s
+```
+
+#### RBAC (aggregated ClusterRole)
+
+The controller reads scheduler `PodGroup` resources cluster-wide through an **aggregated ClusterRole** (`<release>-gang-discovery`). The chart ships a built-in contributor role covering the native `scheduling.k8s.io` resources plus the default `gangDiscovery.podGroupGVR`. To let the controller read a scheduler CRD that isn't covered (e.g. a namespace registers Volcano but the default is native), apply a `ClusterRole` labeled for aggregation — it is merged in automatically, with no preflight change or restart:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: preflight-gang-discovery-volcano
+  labels:
+    preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true"
+rules:
+  - apiGroups: ["scheduling.volcano.sh"]
+    resources: ["podgroups"]
+    verbs: ["get", "list", "watch"]
+```
+
+Because `ClusterRole`s are cluster-scoped, creating one is a platform/cluster-admin action — a namespace tenant declares its scheduler via the `PreflightConfig`, while the platform grants the corresponding read access. Aggregation is eventually consistent, so a brief `Forbidden` window after adding a new contributor role is expected; the controller retries.
+
+Each `PreflightConfig` is validated when reconciled: the `gangDiscovery.podGroupGVR` is resolved against the cluster's API RESTMapper (and native specs verify the `scheduling.k8s.io` resources). An invalid or unresolvable config does not disrupt admission — the namespace falls back to the default and the error is surfaced in the object's status.
 
 ## Gang coordination
 

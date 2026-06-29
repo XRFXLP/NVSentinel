@@ -30,39 +30,47 @@ rules:
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Gang discovery API - dynamically generated based on the cluster-wide
-  # gangDiscovery config plus any per-namespace gangDiscoveryOverrides.
-  {{- /* Collect every gangDiscovery config: the default plus each override. */}}
-  {{- $discoveryConfigs := list .Values.gangDiscovery }}
-  {{- range .Values.gangDiscoveryOverrides }}
-  {{- $discoveryConfigs = append $discoveryConfigs .gangDiscovery }}
-  {{- end }}
-  {{- /* Deduplicate PodGroup GVRs and track whether native APIs are needed. */}}
-  {{- $nativeNeeded := false }}
-  {{- $gvrs := dict }}
-  {{- range $discoveryConfigs }}
-  {{- if .podGroupGVR }}
-  {{- $key := printf "%s/%s" .podGroupGVR.group .podGroupGVR.resource }}
-  {{- $_ := set $gvrs $key (dict "group" .podGroupGVR.group "resource" .podGroupGVR.resource "name" (.name | default "custom")) }}
-  {{- else }}
-  {{- $nativeNeeded = true }}
-  {{- end }}
-  {{- end }}
-  {{- range $gvrs }}
-  # PodGroup-based scheduler ({{ .name }})
-  - apiGroups: [{{ .group | quote }}]
-    resources: [{{ .resource | quote }}]
+  # Per-namespace preflight configuration (PreflightConfig CRD).
+  - apiGroups: ["preflight.nvsentinel.nvidia.com"]
+    resources: ["preflightconfigs"]
     verbs: ["get", "list", "watch"]
-  {{- end }}
-  {{- if $nativeNeeded }}
-  # K8s 1.36+ PodGroup API for native gang scheduling (default)
+  - apiGroups: ["preflight.nvsentinel.nvidia.com"]
+    resources: ["preflightconfigs/status"]
+    verbs: ["get", "update", "patch"]
+---
+# Aggregate ClusterRole for scheduler PodGroup read access. The controller binds
+# to this role; built-in scheduler permissions (below) plus any per-scheduler
+# add-on ClusterRoles labeled for aggregation are merged in automatically, so a
+# new scheduler can be granted access without editing or restarting preflight.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "preflight.fullname" . }}-gang-discovery
+  labels:
+    {{- include "preflight.labels" . | nindent 4 }}
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true"
+rules: [] # filled in by the cluster controller-manager via aggregation
+---
+# Built-in scheduler permissions contributed to the aggregate role above.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "preflight.fullname" . }}-gang-discovery-builtin
+  labels:
+    {{- include "preflight.labels" . | nindent 4 }}
+    preflight.nvsentinel.nvidia.com/aggregate-to-gang-discovery: "true"
+rules:
+  # K8s 1.36+ PodGroup API + 1.35 Workload API for native gang scheduling.
   - apiGroups: ["scheduling.k8s.io"]
-    resources: ["podgroups"]
+    resources: ["podgroups", "workloads"]
     verbs: ["get", "list", "watch"]
-
-  # K8s 1.35 Workload API for native gang scheduling fallback (default)
-  - apiGroups: ["scheduling.k8s.io"]
-    resources: ["workloads"]
+  {{- if .Values.gangDiscovery.podGroupGVR }}
+  # Default PodGroup-based scheduler ({{ .Values.gangDiscovery.name | default "custom" }}).
+  - apiGroups: [{{ .Values.gangDiscovery.podGroupGVR.group | quote }}]
+    resources: [{{ .Values.gangDiscovery.podGroupGVR.resource | quote }}]
     verbs: ["get", "list", "watch"]
   {{- end }}
 

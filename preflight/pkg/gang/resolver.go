@@ -16,7 +16,7 @@ package gang
 
 import (
 	"fmt"
-	"log/slog"
+	"sync"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 
@@ -25,19 +25,20 @@ import (
 )
 
 // DiscovererResolver returns the gang discoverer that applies to a given
-// namespace. It holds a cluster-wide default discoverer plus zero or more
-// namespace-scoped overrides, allowing different namespaces to use different
-// gang-scheduling systems (e.g. Volcano in one namespace, native Kubernetes
-// in another).
+// namespace. It holds a cluster-wide default discoverer plus a set of
+// namespace-scoped discoverers that are maintained dynamically (e.g. by the
+// PreflightConfig controller) via Set and Remove. Lookups via For are
+// safe for concurrent use by the admission webhook and the gang controller.
 type DiscovererResolver struct {
 	defaultDiscoverer GangDiscoverer
-	byNamespace       map[string]GangDiscoverer
+
+	mu          sync.RWMutex
+	byNamespace map[string]GangDiscoverer
 }
 
 // NewResolver creates a DiscovererResolver from an already-constructed default
-// discoverer and an optional map of namespace -> discoverer overrides. It is
-// primarily useful for tests and callers that build discoverers themselves;
-// production code typically uses NewResolverFromConfig.
+// discoverer and an optional map of namespace -> discoverer overrides. The
+// override map is copied; later mutations should go through Set/Remove.
 func NewResolver(defaultDiscoverer GangDiscoverer, overrides map[string]GangDiscoverer) *DiscovererResolver {
 	byNamespace := make(map[string]GangDiscoverer, len(overrides))
 	for ns, d := range overrides {
@@ -50,53 +51,22 @@ func NewResolver(defaultDiscoverer GangDiscoverer, overrides map[string]GangDisc
 	}
 }
 
-// NewResolverFromConfig builds a DiscovererResolver from the preflight config.
-// It constructs the cluster-wide default discoverer from cfg.GangDiscovery and
-// one discoverer per namespace override. Each distinct configuration is
-// validated against the cluster (via NewDiscovererFromConfig), so an invalid
-// or unavailable scheduler CRD fails fast at startup rather than at admission
-// time.
+// NewResolverFromConfig builds a DiscovererResolver whose default discoverer is
+// constructed from the cluster-wide cfg.GangDiscovery. The default is validated
+// against the cluster (via NewDiscovererFromConfig), so an invalid or
+// unavailable scheduler CRD fails fast at startup. Per-namespace discoverers are
+// added later by the PreflightConfig controller via Set/Remove.
 func NewResolverFromConfig(
 	cfg *config.Config,
 	c client.Client,
 	restMapper meta.RESTMapper,
 ) (*DiscovererResolver, error) {
-	// Enforce the same override rules as config.Load, in case the Config was
-	// built programmatically rather than parsed and validated by Load.
-	if err := config.ValidateGangDiscoveryOverrides(cfg.GangDiscoveryOverrides); err != nil {
-		return nil, fmt.Errorf("invalid gangDiscoveryOverrides: %w", err)
-	}
-
 	defaultDiscoverer, err := NewDiscovererFromConfig(cfg.GangDiscovery, c, restMapper)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create default gang discoverer: %w", err)
 	}
 
-	byNamespace := make(map[string]GangDiscoverer)
-
-	// Each override entry maps one discoverer to one or more namespaces.
-	// Namespaces sharing a single override entry reuse one discoverer instance.
-	for i := range cfg.GangDiscoveryOverrides {
-		override := cfg.GangDiscoveryOverrides[i]
-
-		discoverer, err := NewDiscovererFromConfig(override.GangDiscovery, c, restMapper)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"failed to create gang discoverer for gangDiscoveryOverrides[%d] (namespaces %v): %w",
-				i, override.Namespaces, err,
-			)
-		}
-
-		for _, ns := range override.Namespaces {
-			byNamespace[ns] = discoverer
-
-			slog.Info("Registered namespace-scoped gang discoverer",
-				"namespace", ns,
-				"discoverer", discoverer.Name())
-		}
-	}
-
-	return NewResolver(defaultDiscoverer, byNamespace), nil
+	return NewResolver(defaultDiscoverer, nil), nil
 }
 
 // For returns the gang discoverer for the given namespace, falling back to the
@@ -106,9 +76,29 @@ func (r *DiscovererResolver) For(namespace string) GangDiscoverer {
 		return nil
 	}
 
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	if discoverer, ok := r.byNamespace[namespace]; ok {
 		return discoverer
 	}
 
 	return r.defaultDiscoverer
+}
+
+// Set registers (or replaces) the discoverer for a namespace.
+func (r *DiscovererResolver) Set(namespace string, discoverer GangDiscoverer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.byNamespace[namespace] = discoverer
+}
+
+// Remove drops any namespace-scoped discoverer, so the namespace falls back to
+// the cluster-wide default.
+func (r *DiscovererResolver) Remove(namespace string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.byNamespace, namespace)
 }

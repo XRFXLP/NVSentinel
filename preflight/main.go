@@ -29,10 +29,14 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	preflightv1alpha1 "github.com/nvidia/nvsentinel/preflight/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/controller"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
@@ -110,7 +114,11 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 		return fmt.Errorf("failed to get in-cluster config: %w", err)
 	}
 
-	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{})
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(preflightv1alpha1.AddToScheme(scheme))
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{Scheme: scheme})
 	if err != nil {
 		return fmt.Errorf("failed to create controller manager: %w", err)
 	}
@@ -140,6 +148,17 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 		return fmt.Errorf("failed to setup gang controller: %w", err)
 	}
 
+	// Reconciles per-namespace PreflightConfig CRs into the resolver.
+	pfcReconciler := controller.NewPreflightConfigReconciler(
+		mgr.GetClient(),
+		mgr.GetRESTMapper(),
+		resolver,
+	)
+
+	if err := pfcReconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to setup PreflightConfig controller: %w", err)
+	}
+
 	onGangRegister = gangController.RegisterPod
 
 	go func() {
@@ -155,8 +174,7 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 	}
 
 	slog.Info("Gang coordination enabled",
-		"discoverer", discovererName,
-		"namespaceOverrides", len(cfg.GangDiscoveryOverrides),
+		"defaultDiscoverer", discovererName,
 		"timeout", cfg.GangCoordination.Timeout,
 		"masterPort", cfg.GangCoordination.MasterPort)
 
