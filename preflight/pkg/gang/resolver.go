@@ -64,7 +64,7 @@ func NewResolverFromConfig(
 	// Enforce the same override rules as config.Load, in case the Config was
 	// built programmatically rather than parsed and validated by Load.
 	if err := config.ValidateGangDiscoveryOverrides(cfg.GangDiscoveryOverrides); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid gangDiscoveryOverrides: %w", err)
 	}
 
 	defaultDiscoverer, err := NewDiscovererFromConfig(cfg.GangDiscovery, c, restMapper)
