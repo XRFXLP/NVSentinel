@@ -623,7 +623,7 @@ func (r *FaultRemediationReconciler) activeEventForcesRemediationFailed(
 ) (bool, error) {
 	status, err := findHealthEventStatusByID(ctx, healthEventStore, nodeName, activeEvent.Id)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to evaluate active event %s: %w", activeEvent.Id, err)
 	}
 
 	if !r.isRemediationSupported(activeEvent) {
