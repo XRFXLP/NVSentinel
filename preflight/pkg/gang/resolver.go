@@ -72,10 +72,6 @@ func NewResolverFromConfig(
 // For returns the gang discoverer for the given namespace, falling back to the
 // cluster-wide default discoverer when the namespace has no override.
 func (r *DiscovererResolver) For(namespace string) GangDiscoverer {
-	if r == nil {
-		return nil
-	}
-
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

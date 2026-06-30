@@ -334,7 +334,7 @@ spec:
     minCountExpr: "podGroup.spec.minMember"
 ```
 
-At most one `PreflightConfig` should exist per namespace. If more than one is present, none take effect (the namespace falls back to the default) and each object is marked not ready. Check the resolved state via the object's status:
+At most one `PreflightConfig` should exist per namespace. If more than one is present, the **oldest** object (tie-broken by name) stays active so an existing working configuration is not disrupted; the additional objects are marked not ready as superseded. Check the resolved state via the object's status:
 
 ```console
 $ kubectl -n team-a get preflightconfig

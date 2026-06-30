@@ -74,11 +74,6 @@ func TestDiscovererResolver_For(t *testing.T) {
 	}
 }
 
-func TestDiscovererResolver_NilReceiver(t *testing.T) {
-	var resolver *DiscovererResolver
-	assert.Nil(t, resolver.For("any"))
-}
-
 func TestDiscovererResolver_SetRemove(t *testing.T) {
 	def := &mockResolverDiscoverer{name: "default"}
 	volcano := &mockResolverDiscoverer{name: "volcano"}

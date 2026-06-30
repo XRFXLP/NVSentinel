@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 
 	preflightv1alpha1 "github.com/nvidia/nvsentinel/preflight/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
@@ -84,7 +85,7 @@ func (r *PreflightConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return r.applyConfig(ctx, namespace, &list.Items[0])
 
 	default:
-		return r.markConflict(ctx, namespace, list.Items)
+		return r.applyOldestWithConflicts(ctx, namespace, list.Items)
 	}
 }
 
@@ -111,28 +112,39 @@ func (r *PreflightConfigReconciler) applyConfig(
 	return ctrl.Result{}, r.updateStatus(ctx, pfc, true, discoverer.Name(), "discoverer active")
 }
 
-// markConflict handles the case where a namespace has more than one
-// PreflightConfig: none take effect and every object is marked not ready.
-func (r *PreflightConfigReconciler) markConflict(
+// applyOldestWithConflicts handles a namespace with more than one
+// PreflightConfig. The oldest object (tie-broken by name) wins and is applied
+// so an existing working configuration is not disrupted by a newly-added one;
+// the remaining objects are marked not ready as superseded.
+func (r *PreflightConfigReconciler) applyOldestWithConflicts(
 	ctx context.Context,
 	namespace string,
 	items []preflightv1alpha1.PreflightConfig,
 ) (ctrl.Result, error) {
-	r.resolver.Remove(namespace)
-	slog.Error("Multiple PreflightConfig objects in namespace; none take effect",
-		"namespace", namespace, "count", len(items))
+	sort.Slice(items, func(i, j int) bool {
+		ti, tj := items[i].CreationTimestamp, items[j].CreationTimestamp
+		if ti.Equal(&tj) {
+			return items[i].Name < items[j].Name
+		}
 
-	msg := fmt.Sprintf("namespace has %d PreflightConfig objects; at most one is allowed", len(items))
+		return ti.Before(&tj)
+	})
 
-	var firstErr error
+	winner := &items[0]
+	slog.Warn("Multiple PreflightConfig objects in namespace; applying the oldest",
+		"namespace", namespace, "count", len(items), "active", winner.Name)
 
-	for i := range items {
-		if err := r.updateStatus(ctx, &items[i], false, "", msg); err != nil && firstErr == nil {
-			firstErr = err
+	res, err := r.applyConfig(ctx, namespace, winner)
+
+	msg := fmt.Sprintf("PreflightConfig %q is already active in this namespace; only one is allowed", winner.Name)
+
+	for i := 1; i < len(items); i++ {
+		if uerr := r.updateStatus(ctx, &items[i], false, "", msg); uerr != nil && err == nil {
+			err = uerr
 		}
 	}
 
-	return ctrl.Result{}, firstErr
+	return res, err
 }
 
 // updateStatus writes the observed state back to the object's status subresource.

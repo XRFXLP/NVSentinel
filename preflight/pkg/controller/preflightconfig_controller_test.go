@@ -138,23 +138,28 @@ func TestPreflightConfigReconciler_InvalidConfigFallsBack(t *testing.T) {
 	assert.Contains(t, got.Status.Message, "invalid configuration")
 }
 
-func TestPreflightConfigReconciler_ConflictWhenMultiple(t *testing.T) {
+func TestPreflightConfigReconciler_MultipleOldestWins(t *testing.T) {
 	def := &mockDiscoverer{}
 	resolver := gang.NewResolver(def, nil)
 
+	// Equal (zero) creation timestamps => tie-break by name, so "one" wins.
 	r, c := newReconcilerWith(t, resolver, volcanoPFC("team-a", "one"), volcanoPFC("team-a", "two"))
 
-	reconcile(t, r, "team-a", "one")
+	reconcile(t, r, "team-a", "two")
 
-	// Conflict: none take effect; namespace uses the default.
-	assert.Same(t, def, resolver.For("team-a"))
+	// The oldest/winning config stays active; the namespace is not disrupted.
+	require.NotNil(t, resolver.For("team-a"))
+	assert.Equal(t, "volcano", resolver.For("team-a").Name())
 
-	for _, name := range []string{"one", "two"} {
-		var got preflightv1alpha1.PreflightConfig
-		require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: name}, &got))
-		assert.False(t, got.Status.Ready)
-		assert.Contains(t, got.Status.Message, "at most one is allowed")
-	}
+	var winner preflightv1alpha1.PreflightConfig
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "one"}, &winner))
+	assert.True(t, winner.Status.Ready)
+	assert.Equal(t, "volcano", winner.Status.Discoverer)
+
+	var loser preflightv1alpha1.PreflightConfig
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "two"}, &loser))
+	assert.False(t, loser.Status.Ready)
+	assert.Contains(t, loser.Status.Message, `"one" is already active`)
 }
 
 func TestPreflightConfigReconciler_RemovalFallsBack(t *testing.T) {

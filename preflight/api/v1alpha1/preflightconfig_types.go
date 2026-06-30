@@ -115,8 +115,9 @@ type PreflightConfigStatus struct {
 
 // PreflightConfig holds per-namespace preflight configuration. Pods admitted in
 // this namespace use it instead of the cluster-wide defaults. At most one
-// PreflightConfig should exist per namespace; if more than one is present, none
-// take effect and each is marked not ready.
+// PreflightConfig should exist per namespace; if more than one is present, the
+// oldest (tie-broken by name) stays active and the rest are marked not ready as
+// superseded.
 type PreflightConfig struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

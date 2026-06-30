@@ -445,7 +445,7 @@ Both the admission webhook and the gang controller resolve a pod's discoverer vi
 
 - It recomputes the effective discoverer for a namespace on every event (add/update/delete), so the registry converges.
 - It builds discoverers with the existing `NewDiscovererFromConfig` factory (validating the `podGroupGVR`/native GVK against the cluster RESTMapper), updates the resolver via `Set`/`Remove`, and reports outcome in the object's `.status`.
-- At most one `PreflightConfig` per namespace is honored; multiple objects are a conflict (none take effect, all marked not ready). Invalid/unresolvable configs fall back to the default and surface the error in status rather than disrupting admission.
+- At most one `PreflightConfig` per namespace is honored. If multiple exist, the oldest (tie-broken by name) wins and stays active so a working namespace is not disrupted by a newly-added object; the rest are marked not ready as superseded. Invalid/unresolvable configs fall back to the default and surface the error in status rather than disrupting admission. (A validating webhook to reject a second object at creation is noted as future hardening, aligning with ADR-041.)
 
 Because gang IDs already embed the pod namespace and peer discovery is namespace-scoped, no changes to the gang ID format or coordination ConfigMaps are needed.
 
