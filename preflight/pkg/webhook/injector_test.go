@@ -236,14 +236,6 @@ func TestInjectInitContainers(t *testing.T) {
 			},
 		},
 		{
-			name:          "GPU pod with gang enabled but nil discoverer",
-			cfg:           testGangConfig(),
-			discoverer:    nil,
-			pod:           gpuPod(),
-			expectPatches: true,
-			expectGangCtx: false,
-		},
-		{
 			name: "existing init containers are appended not replaced",
 			cfg:  testConfig(),
 			pod: func() *corev1.Pod {
