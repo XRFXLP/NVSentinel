@@ -33,9 +33,9 @@ spec:
     - jsonPath: .status.discoverer
       name: Discoverer
       type: string
-    - jsonPath: .status.ready
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
-      type: boolean
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -121,8 +121,10 @@ spec:
               Read-only.
             properties:
               conditions:
-                description: Conditions represent the latest available observations
-                  of the object's state.
+                description: |-
+                  Conditions represent the latest available observations of the object's state.
+                  The "Ready" condition reports whether the configuration was successfully
+                  applied (its message explains why, when not ready).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -184,23 +186,13 @@ spec:
               discoverer:
                 description: |-
                   Discoverer is the resolved gang discoverer name in effect for the namespace
-                  (e.g. "volcano", "kubernetes"). Empty when not ready.
-                type: string
-              message:
-                description: |-
-                  Message is a human-readable explanation of the current state, populated
-                  when the configuration is invalid or conflicts with another object.
+                  (e.g. "volcano", "kubernetes"). Empty when the config is not active.
                 type: string
               observedGeneration:
                 description: ObservedGeneration is the .metadata.generation last processed
                   by the controller.
                 format: int64
                 type: integer
-              ready:
-                description: |-
-                  Ready is true when the configuration was successfully applied (e.g. the
-                  gang discovery config resolved into an active discoverer for the namespace).
-                type: boolean
             type: object
         type: object
     served: true

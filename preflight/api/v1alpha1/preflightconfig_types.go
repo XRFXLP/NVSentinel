@@ -84,22 +84,14 @@ type PreflightConfigStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Ready is true when the configuration was successfully applied (e.g. the
-	// gang discovery config resolved into an active discoverer for the namespace).
-	// +optional
-	Ready bool `json:"ready,omitempty"`
-
 	// Discoverer is the resolved gang discoverer name in effect for the namespace
-	// (e.g. "volcano", "kubernetes"). Empty when not ready.
+	// (e.g. "volcano", "kubernetes"). Empty when the config is not active.
 	// +optional
 	Discoverer string `json:"discoverer,omitempty"`
 
-	// Message is a human-readable explanation of the current state, populated
-	// when the configuration is invalid or conflicts with another object.
-	// +optional
-	Message string `json:"message,omitempty"`
-
 	// Conditions represent the latest available observations of the object's state.
+	// The "Ready" condition reports whether the configuration was successfully
+	// applied (its message explains why, when not ready).
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -110,7 +102,7 @@ type PreflightConfigStatus struct {
 // +kubebuilder:resource:scope=Namespaced,shortName=pfc
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Discoverer",type="string",JSONPath=".status.discoverer"
-// +kubebuilder:printcolumn:name="Ready",type="boolean",JSONPath=".status.ready"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // PreflightConfig holds per-namespace preflight configuration. Pods admitted in

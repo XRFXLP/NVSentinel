@@ -108,11 +108,24 @@ func TestPreflightConfigReconciler_RegistersDiscoverer(t *testing.T) {
 	require.NotNil(t, resolver.For("team-a"))
 	assert.Equal(t, "volcano", resolver.For("team-a").Name())
 
-	// Status reflects readiness.
+	// Status reflects readiness via the Ready condition.
 	var got preflightv1alpha1.PreflightConfig
 	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "default"}, &got))
-	assert.True(t, got.Status.Ready)
+	assert.True(t, meta.IsStatusConditionTrue(got.Status.Conditions, preflightv1alpha1.ConditionReady))
 	assert.Equal(t, "volcano", got.Status.Discoverer)
+}
+
+// readyCondition returns the Ready condition of a PreflightConfig (or nil).
+func readyCondition(t *testing.T, c client.Client, namespace, name string) *metav1.Condition {
+	t.Helper()
+
+	var pfc preflightv1alpha1.PreflightConfig
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: name}, &pfc))
+
+	cond := meta.FindStatusCondition(pfc.Status.Conditions, preflightv1alpha1.ConditionReady)
+	require.NotNil(t, cond, "Ready condition should be set")
+
+	return cond
 }
 
 func TestPreflightConfigReconciler_InvalidConfigFallsBack(t *testing.T) {
@@ -133,10 +146,9 @@ func TestPreflightConfigReconciler_InvalidConfigFallsBack(t *testing.T) {
 	// No override registered; namespace falls back to the default discoverer.
 	assert.Same(t, def, resolver.For("team-a"))
 
-	var got preflightv1alpha1.PreflightConfig
-	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "default"}, &got))
-	assert.False(t, got.Status.Ready)
-	assert.Contains(t, got.Status.Message, "invalid configuration")
+	cond := readyCondition(t, c, "team-a", "default")
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Contains(t, cond.Message, "invalid configuration")
 }
 
 func TestPreflightConfigReconciler_MultipleOldestWins(t *testing.T) {
@@ -152,15 +164,15 @@ func TestPreflightConfigReconciler_MultipleOldestWins(t *testing.T) {
 	require.NotNil(t, resolver.For("team-a"))
 	assert.Equal(t, "volcano", resolver.For("team-a").Name())
 
+	assert.Equal(t, metav1.ConditionTrue, readyCondition(t, c, "team-a", "one").Status)
+
 	var winner preflightv1alpha1.PreflightConfig
 	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "one"}, &winner))
-	assert.True(t, winner.Status.Ready)
 	assert.Equal(t, "volcano", winner.Status.Discoverer)
 
-	var loser preflightv1alpha1.PreflightConfig
-	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "two"}, &loser))
-	assert.False(t, loser.Status.Ready)
-	assert.Contains(t, loser.Status.Message, `"one" is already active`)
+	loser := readyCondition(t, c, "team-a", "two")
+	assert.Equal(t, metav1.ConditionFalse, loser.Status)
+	assert.Contains(t, loser.Message, `"one" is already active`)
 }
 
 func TestPreflightConfigReconciler_MultipleOldestInvalid(t *testing.T) {
@@ -188,17 +200,15 @@ func TestPreflightConfigReconciler_MultipleOldestInvalid(t *testing.T) {
 	// Invalid winner is not activated => namespace falls back to the default.
 	assert.Same(t, def, resolver.For("team-a"))
 
-	var winner preflightv1alpha1.PreflightConfig
-	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "z-broken"}, &winner))
-	assert.False(t, winner.Status.Ready)
-	assert.Contains(t, winner.Status.Message, "invalid configuration")
+	winner := readyCondition(t, c, "team-a", "z-broken")
+	assert.Equal(t, metav1.ConditionFalse, winner.Status)
+	assert.Contains(t, winner.Message, "invalid configuration")
 
-	var younger preflightv1alpha1.PreflightConfig
-	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "a-valid"}, &younger))
-	assert.False(t, younger.Status.Ready)
+	younger := readyCondition(t, c, "team-a", "a-valid")
+	assert.Equal(t, metav1.ConditionFalse, younger.Status)
 	// Must not falsely claim the winner is active.
-	assert.NotContains(t, younger.Status.Message, "is already active")
-	assert.Contains(t, younger.Status.Message, "not active: invalid configuration")
+	assert.NotContains(t, younger.Message, "is already active")
+	assert.Contains(t, younger.Message, "not active: invalid configuration")
 }
 
 func TestPreflightConfigReconciler_RemovalFallsBack(t *testing.T) {

@@ -339,8 +339,10 @@ At most one `PreflightConfig` should exist per namespace. If more than one is pr
 ```console
 $ kubectl -n team-a get preflightconfig
 NAME      DISCOVERER   READY   AGE
-default   volcano      true    10s
+default   volcano      True    10s
 ```
+
+Readiness is reported via the `Ready` status condition (the `READY` column above is its status); its message explains why a config is not ready (invalid or superseded). Inspect it with `kubectl -n team-a get preflightconfig default -o yaml` under `.status.conditions`.
 
 #### RBAC (aggregated ClusterRole)
 
@@ -362,6 +364,12 @@ rules:
 Because `ClusterRole`s are cluster-scoped, creating one is a platform/cluster-admin action — a namespace tenant declares its scheduler via the `PreflightConfig`, while the platform grants the corresponding read access. Aggregation is eventually consistent, so a brief `Forbidden` window after adding a new contributor role is expected; the controller retries.
 
 Each `PreflightConfig` is validated when reconciled: the `gangDiscovery.podGroupGVR` is resolved against the cluster's API RESTMapper (and native specs verify the `scheduling.k8s.io` resources). An invalid or unresolvable config does not disrupt admission — the namespace falls back to the default and the error is surfaced in the object's status.
+
+#### Changing gang discovery configuration
+
+`PreflightConfig` changes take effect on **newly-admitted gangs** and are applied per pod at admission. Avoid editing or deleting a namespace's active `PreflightConfig` (or deleting it so a different one becomes active) **while multi-node preflight gangs are being launched** in that namespace.
+
+The gang ID embeds the discoverer name (`<discoverer>-<namespace>-<podGroup>`), and discovery is resolved per pod. If the effective discoverer for a namespace changes mid-flight, pods of the same gang admitted before and after the change can derive **different gang IDs** and fail to coordinate (peers never converge). Such a gang's `preflight-nccl-allreduce` check then waits until `gangCoordination.timeout` and fails — the pod stays in `Init:Error` and follows the normal NVSentinel quarantine path. This fails safe (no false "healthy" result) but causes a spurious preflight failure, so treat gang discovery config as a namespace setting to change during a quiet window. Adding a *second* `PreflightConfig` is safe — the active (oldest) one is unaffected (see above); the risk is specifically changing or removing the currently-active config.
 
 ## Gang coordination
 

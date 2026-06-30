@@ -178,14 +178,12 @@ func (r *PreflightConfigReconciler) updateStatus(
 
 	// Skip the write when nothing observable changed, to avoid status-only
 	// updates triggering further reconciles.
-	if statusUpToDate(pfc, ready, discoverer, message, status, reason) {
+	if statusUpToDate(pfc, discoverer, status, reason, message) {
 		return nil
 	}
 
 	pfc.Status.ObservedGeneration = pfc.Generation
-	pfc.Status.Ready = ready
 	pfc.Status.Discoverer = discoverer
-	pfc.Status.Message = message
 
 	apimeta.SetStatusCondition(&pfc.Status.Conditions, metav1.Condition{
 		Type:               preflightv1alpha1.ConditionReady,
@@ -203,21 +201,19 @@ func (r *PreflightConfigReconciler) updateStatus(
 }
 
 // statusUpToDate reports whether the object's current status already matches the
-// desired values, so a redundant status write can be skipped.
+// desired values, so a redundant status write can be skipped. Readiness and its
+// message live solely on the Ready condition.
 func statusUpToDate(
 	pfc *preflightv1alpha1.PreflightConfig,
-	ready bool,
-	discoverer, message string,
+	discoverer string,
 	condStatus metav1.ConditionStatus,
-	reason string,
+	reason, message string,
 ) bool {
 	existing := apimeta.FindStatusCondition(pfc.Status.Conditions, preflightv1alpha1.ConditionReady)
 
 	return existing != nil &&
 		pfc.Status.ObservedGeneration == pfc.Generation &&
-		pfc.Status.Ready == ready &&
 		pfc.Status.Discoverer == discoverer &&
-		pfc.Status.Message == message &&
 		existing.Status == condStatus &&
 		existing.Reason == reason &&
 		existing.Message == message
