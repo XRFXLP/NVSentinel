@@ -86,7 +86,8 @@ func (r *DiscovererResolver) For(namespace string) GangDiscoverer {
 	return r.defaultDiscoverer
 }
 
-// Set registers (or replaces) the discoverer for a namespace.
+// Set registers (or replaces) the discoverer for a namespace. Its only caller
+// is the PreflightConfig controller, which always holds a non-nil resolver.
 func (r *DiscovererResolver) Set(namespace string, discoverer GangDiscoverer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -95,7 +96,8 @@ func (r *DiscovererResolver) Set(namespace string, discoverer GangDiscoverer) {
 }
 
 // Remove drops any namespace-scoped discoverer, so the namespace falls back to
-// the cluster-wide default.
+// the cluster-wide default. Its only caller is the PreflightConfig controller,
+// which always holds a non-nil resolver.
 func (r *DiscovererResolver) Remove(namespace string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

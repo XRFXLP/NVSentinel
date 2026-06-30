@@ -142,11 +142,6 @@ func (r *PreflightConfigReconciler) updateStatus(
 	ready bool,
 	discoverer, message string,
 ) error {
-	pfc.Status.ObservedGeneration = pfc.Generation
-	pfc.Status.Ready = ready
-	pfc.Status.Discoverer = discoverer
-	pfc.Status.Message = message
-
 	status := metav1.ConditionFalse
 	reason := "InvalidOrConflicting"
 
@@ -154,6 +149,17 @@ func (r *PreflightConfigReconciler) updateStatus(
 		status = metav1.ConditionTrue
 		reason = "DiscovererActive"
 	}
+
+	// Skip the write when nothing observable changed, to avoid status-only
+	// updates triggering further reconciles.
+	if statusUpToDate(pfc, ready, discoverer, message, status, reason) {
+		return nil
+	}
+
+	pfc.Status.ObservedGeneration = pfc.Generation
+	pfc.Status.Ready = ready
+	pfc.Status.Discoverer = discoverer
+	pfc.Status.Message = message
 
 	apimeta.SetStatusCondition(&pfc.Status.Conditions, metav1.Condition{
 		Type:               preflightv1alpha1.ConditionReady,
@@ -168,6 +174,27 @@ func (r *PreflightConfigReconciler) updateStatus(
 	}
 
 	return nil
+}
+
+// statusUpToDate reports whether the object's current status already matches the
+// desired values, so a redundant status write can be skipped.
+func statusUpToDate(
+	pfc *preflightv1alpha1.PreflightConfig,
+	ready bool,
+	discoverer, message string,
+	condStatus metav1.ConditionStatus,
+	reason string,
+) bool {
+	existing := apimeta.FindStatusCondition(pfc.Status.Conditions, preflightv1alpha1.ConditionReady)
+
+	return existing != nil &&
+		pfc.Status.ObservedGeneration == pfc.Generation &&
+		pfc.Status.Ready == ready &&
+		pfc.Status.Discoverer == discoverer &&
+		pfc.Status.Message == message &&
+		existing.Status == condStatus &&
+		existing.Reason == reason &&
+		existing.Message == message
 }
 
 // specToConfig converts the CRD gang discovery spec into the internal gang

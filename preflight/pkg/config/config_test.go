@@ -309,6 +309,7 @@ func TestLoad(t *testing.T) {
 		assert.Equal(t, "volcano", cfg.GangDiscovery.Name)
 		assert.Equal(t, []string{"scheduling.k8s.io/group-name"}, cfg.GangDiscovery.AnnotationKeys)
 		assert.Equal(t, "scheduling.volcano.sh", cfg.GangDiscovery.PodGroupGVR.Group)
+		assert.Equal(t, "v1beta1", cfg.GangDiscovery.PodGroupGVR.Version)
 		assert.Equal(t, "podgroups", cfg.GangDiscovery.PodGroupGVR.Resource)
 		assert.Equal(t, "podGroup.spec.minMember", cfg.GangDiscovery.MinCountExpr)
 	})
