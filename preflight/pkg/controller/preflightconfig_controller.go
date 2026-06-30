@@ -82,19 +82,23 @@ func (r *PreflightConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 
 	case 1:
-		return r.applyConfig(ctx, namespace, &list.Items[0])
+		res, _, err := r.applyConfig(ctx, namespace, &list.Items[0])
+		return res, err
 
 	default:
 		return r.applyOldestWithConflicts(ctx, namespace, list.Items)
 	}
 }
 
-// applyConfig builds the discoverer for a single config and registers it.
+// applyConfig builds the discoverer for a single config and registers it. The
+// returned bool reports whether the config became the active discoverer for the
+// namespace (false when the config is invalid and the namespace falls back to
+// the cluster-wide default).
 func (r *PreflightConfigReconciler) applyConfig(
 	ctx context.Context,
 	namespace string,
 	pfc *preflightv1alpha1.PreflightConfig,
-) (ctrl.Result, error) {
+) (ctrl.Result, bool, error) {
 	discoverer, err := gang.NewDiscovererFromConfig(specToConfig(pfc.Spec.GangDiscovery), r.Client, r.restMapper)
 	if err != nil {
 		// Invalid or unavailable config: fall back to the default and report.
@@ -102,14 +106,14 @@ func (r *PreflightConfigReconciler) applyConfig(
 		slog.Error("Invalid PreflightConfig; namespace falls back to default discoverer",
 			"namespace", namespace, "name", pfc.Name, "error", err)
 
-		return ctrl.Result{}, r.updateStatus(ctx, pfc, false, "", fmt.Sprintf("invalid configuration: %v", err))
+		return ctrl.Result{}, false, r.updateStatus(ctx, pfc, false, "", fmt.Sprintf("invalid configuration: %v", err))
 	}
 
 	r.resolver.Set(namespace, discoverer)
 	slog.Info("Registered namespace-scoped gang discoverer from PreflightConfig",
 		"namespace", namespace, "name", pfc.Name, "discoverer", discoverer.Name())
 
-	return ctrl.Result{}, r.updateStatus(ctx, pfc, true, discoverer.Name(), "discoverer active")
+	return ctrl.Result{}, true, r.updateStatus(ctx, pfc, true, discoverer.Name(), "discoverer active")
 }
 
 // applyOldestWithConflicts handles a namespace with more than one
@@ -134,9 +138,19 @@ func (r *PreflightConfigReconciler) applyOldestWithConflicts(
 	slog.Warn("Multiple PreflightConfig objects in namespace; applying the oldest",
 		"namespace", namespace, "count", len(items), "active", winner.Name)
 
-	res, err := r.applyConfig(ctx, namespace, winner)
+	res, activated, err := r.applyConfig(ctx, namespace, winner)
 
-	msg := fmt.Sprintf("PreflightConfig %q is already active in this namespace; only one is allowed", winner.Name)
+	// Describe why the other objects are not ready accurately: only claim the
+	// winner is "active" when it really became the namespace's discoverer.
+	var msg string
+	if activated {
+		msg = fmt.Sprintf("PreflightConfig %q is already active in this namespace; only one is allowed", winner.Name)
+	} else {
+		msg = fmt.Sprintf(
+			"superseded by older PreflightConfig %q (not active: invalid configuration); only one is allowed per namespace",
+			winner.Name,
+		)
+	}
 
 	for i := 1; i < len(items); i++ {
 		if uerr := r.updateStatus(ctx, &items[i], false, "", msg); uerr != nil && err == nil {

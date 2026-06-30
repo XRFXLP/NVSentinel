@@ -162,6 +162,39 @@ func TestPreflightConfigReconciler_MultipleOldestWins(t *testing.T) {
 	assert.Contains(t, loser.Status.Message, `"one" is already active`)
 }
 
+func TestPreflightConfigReconciler_MultipleOldestInvalid(t *testing.T) {
+	def := &mockDiscoverer{}
+	resolver := gang.NewResolver(def, nil)
+
+	// Tie-break by name => "a-broken" (invalid) is the oldest/winner; "b-valid"
+	// is a younger, valid config that must NOT be told the winner is active.
+	broken := &preflightv1alpha1.PreflightConfig{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "a-broken"},
+		Spec: preflightv1alpha1.PreflightConfigSpec{
+			GangDiscovery: preflightv1alpha1.GangDiscoverySpec{Name: "broken"},
+		},
+	}
+	valid := volcanoPFC("team-a", "b-valid")
+	r, c := newReconcilerWith(t, resolver, broken, valid)
+
+	reconcile(t, r, "team-a", "a-broken")
+
+	// Invalid winner is not activated => namespace falls back to the default.
+	assert.Same(t, def, resolver.For("team-a"))
+
+	var winner preflightv1alpha1.PreflightConfig
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "a-broken"}, &winner))
+	assert.False(t, winner.Status.Ready)
+	assert.Contains(t, winner.Status.Message, "invalid configuration")
+
+	var younger preflightv1alpha1.PreflightConfig
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "b-valid"}, &younger))
+	assert.False(t, younger.Status.Ready)
+	// Must not falsely claim the winner is active.
+	assert.NotContains(t, younger.Status.Message, "is already active")
+	assert.Contains(t, younger.Status.Message, "not active: invalid configuration")
+}
+
 func TestPreflightConfigReconciler_RemovalFallsBack(t *testing.T) {
 	def := &mockDiscoverer{}
 	volcano := &mockDiscoverer{}
