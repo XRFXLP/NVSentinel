@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	preflightv1alpha1 "github.com/nvidia/nvsentinel/preflight/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
@@ -166,29 +167,34 @@ func TestPreflightConfigReconciler_MultipleOldestInvalid(t *testing.T) {
 	def := &mockDiscoverer{}
 	resolver := gang.NewResolver(def, nil)
 
-	// Tie-break by name => "a-broken" (invalid) is the oldest/winner; "b-valid"
-	// is a younger, valid config that must NOT be told the winner is active.
+	// Selection must be by age, not name: the invalid config is explicitly the
+	// OLDEST (earlier CreationTimestamp) yet named so a name-based tiebreak would
+	// pick the other one. If timestamp ordering works, "z-broken" wins.
+	older := metav1.NewTime(time.Now().Add(-time.Hour))
+	newer := metav1.NewTime(time.Now())
+
 	broken := &preflightv1alpha1.PreflightConfig{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "a-broken"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "z-broken", CreationTimestamp: older},
 		Spec: preflightv1alpha1.PreflightConfigSpec{
 			GangDiscovery: preflightv1alpha1.GangDiscoverySpec{Name: "broken"},
 		},
 	}
-	valid := volcanoPFC("team-a", "b-valid")
+	valid := volcanoPFC("team-a", "a-valid")
+	valid.CreationTimestamp = newer
 	r, c := newReconcilerWith(t, resolver, broken, valid)
 
-	reconcile(t, r, "team-a", "a-broken")
+	reconcile(t, r, "team-a", "z-broken")
 
 	// Invalid winner is not activated => namespace falls back to the default.
 	assert.Same(t, def, resolver.For("team-a"))
 
 	var winner preflightv1alpha1.PreflightConfig
-	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "a-broken"}, &winner))
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "z-broken"}, &winner))
 	assert.False(t, winner.Status.Ready)
 	assert.Contains(t, winner.Status.Message, "invalid configuration")
 
 	var younger preflightv1alpha1.PreflightConfig
-	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "b-valid"}, &younger))
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "a-valid"}, &younger))
 	assert.False(t, younger.Status.Ready)
 	// Must not falsely claim the winner is active.
 	assert.NotContains(t, younger.Status.Message, "is already active")
