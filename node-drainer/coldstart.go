@@ -31,47 +31,6 @@ import (
 
 const coldStartBatchSize = 1000
 
-// dataStoreAdapter adapts client.DatabaseClient to queue.DataStore
-type dataStoreAdapter struct {
-	client.DatabaseClient
-}
-
-func (d *dataStoreAdapter) FindDocument(ctx context.Context, filter interface{},
-	options *client.FindOneOptions) (client.SingleResult, error) {
-	return d.FindOne(ctx, filter, options)
-}
-
-func (d *dataStoreAdapter) FindDocuments(ctx context.Context, filter interface{},
-	options *client.FindOptions) (client.Cursor, error) {
-	return d.Find(ctx, filter, options)
-}
-
-// coldStartQuery returns the query for events that may still require draining after a
-// restart: in-progress drains and quarantined/already-quarantined events that were
-// never processed. Note that this intentionally matches records regardless of whether
-// their quarantine session has since ended; that filtering happens per-event so we can
-// also tombstone stale records (see handleColdStart).
-func coldStartQuery() *query.Builder {
-	return query.New().Build(
-		query.Or(
-			// Events that were in-progress
-			query.Eq("healtheventstatus.userpodsevictionstatus.status", string(model.StatusInProgress)),
-
-			// Quarantined events that haven't been processed yet
-			query.And(
-				query.Eq("healtheventstatus.nodequarantined", string(model.Quarantined)),
-				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
-			),
-
-			// AlreadyQuarantined events that haven't been processed yet
-			query.And(
-				query.Eq("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
-				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
-			),
-		),
-	)
-}
-
 // handleColdStart re-processes events that were in-progress or quarantined during a restart.
 // Events are fetched in bounded batches via FindHealthEventsByQueryBatched to prevent
 // unbounded memory usage. All matching events are loaded (not just latest per node)
@@ -111,6 +70,32 @@ func handleColdStart(ctx context.Context, components *initializer.Components) er
 	slog.InfoContext(ctx, "Cold start processing completed")
 
 	return nil
+}
+
+// coldStartQuery returns the query for events that may still require draining after a
+// restart: in-progress drains and quarantined/already-quarantined events that were
+// never processed. Note that this intentionally matches records regardless of whether
+// their quarantine session has since ended; that filtering happens per-event so we can
+// also tombstone stale records (see handleColdStart).
+func coldStartQuery() *query.Builder {
+	return query.New().Build(
+		query.Or(
+			// Events that were in-progress
+			query.Eq("healtheventstatus.userpodsevictionstatus.status", string(model.StatusInProgress)),
+
+			// Quarantined events that haven't been processed yet
+			query.And(
+				query.Eq("healtheventstatus.nodequarantined", string(model.Quarantined)),
+				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
+			),
+
+			// AlreadyQuarantined events that haven't been processed yet
+			query.And(
+				query.Eq("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
+				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
+			),
+		),
+	)
 }
 
 // processColdStartEvent evaluates a single cold-start candidate: it either tombstones a
@@ -197,9 +182,8 @@ func skipStaleColdStartEvent(
 	documentID interface{},
 	eventCreatedAt time.Time,
 ) bool {
-	// Only quarantine records can be orphaned by a lost in-memory cancellation.
-	// UnQuarantined/Cancelled records must always be re-queued so they run to
-	// completion and let fault-remediation clean up node state.
+	// Staleness only applies to active quarantine records. UnQuarantined/Cancelled are
+	// the session-end signals we compare against, so they must never be tombstoned.
 	if !isActiveQuarantineStatus(parsed.HealthEventStatus.NodeQuarantined) {
 		return false
 	}
@@ -253,12 +237,6 @@ func tombstoneStaleQuarantineEvent(ctx context.Context, dbClient client.Database
 	return nil
 }
 
-// sessionEndFinder is the subset of datastore.HealthEventStore needed to look up
-// quarantine session-ending events. It exists to keep quarantineSessionResolver testable.
-type sessionEndFinder interface {
-	FindHealthEventsByQuery(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
-}
-
 // quarantineSessionResolver answers, per node, whether a quarantine record predates a
 // later UnQuarantined/Cancelled event (i.e. its quarantine session has already ended).
 // Results are cached per node because a cold-start batch commonly contains multiple
@@ -266,6 +244,12 @@ type sessionEndFinder interface {
 type quarantineSessionResolver struct {
 	finder sessionEndFinder
 	cache  map[string]sessionEndInfo
+}
+
+// sessionEndFinder is the subset of datastore.HealthEventStore needed to look up
+// quarantine session-ending events. It exists to keep quarantineSessionResolver testable.
+type sessionEndFinder interface {
+	FindHealthEventsByQuery(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
 }
 
 // sessionEndInfo captures the most recent quarantine session end observed for a node.
@@ -341,4 +325,19 @@ func (r *quarantineSessionResolver) lookupLatestSessionEnd(
 	}
 
 	return info, nil
+}
+
+// dataStoreAdapter adapts client.DatabaseClient to queue.DataStore
+type dataStoreAdapter struct {
+	client.DatabaseClient
+}
+
+func (d *dataStoreAdapter) FindDocument(ctx context.Context, filter interface{},
+	options *client.FindOneOptions) (client.SingleResult, error) {
+	return d.FindOne(ctx, filter, options)
+}
+
+func (d *dataStoreAdapter) FindDocuments(ctx context.Context, filter interface{},
+	options *client.FindOptions) (client.Cursor, error) {
+	return d.Find(ctx, filter, options)
 }
