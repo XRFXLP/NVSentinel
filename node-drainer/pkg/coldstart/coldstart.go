@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+// Package coldstart re-processes health events that were in-progress or quarantined
+// while node-drainer was offline. On restart node-drainer's in-memory cancellation
+// state is lost, so this package also guards against replaying quarantine records
+// whose session has already ended (see handleColdStart / quarantineSessionResolver).
+package coldstart
 
 import (
 	"context"
@@ -22,16 +26,24 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
-	"github.com/nvidia/nvsentinel/node-drainer/pkg/initializer"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
-const coldStartBatchSize = 1000
+const batchSize = 1000
 
-// handleColdStart re-processes events that were in-progress or quarantined during a restart.
+// Dependencies bundles the collaborators cold start needs. It is intentionally
+// decoupled from initializer.Components so the package stays independently testable.
+type Dependencies struct {
+	QueueManager     queue.EventQueueManager
+	DatabaseClient   client.DatabaseClient
+	HealthEventStore datastore.HealthEventStore
+}
+
+// Handle re-processes events that were in-progress or quarantined during a restart.
 // Events are fetched in bounded batches via FindHealthEventsByQueryBatched to prevent
 // unbounded memory usage. All matching events are loaded (not just latest per node)
 // because a single node can have multiple concurrent partial drains.
@@ -44,21 +56,20 @@ const coldStartBatchSize = 1000
 // remediation-failed label. To avoid that, each quarantine record is checked against
 // later UnQuarantined/Cancelled events for the same node; stale records are tombstoned
 // instead of re-queued.
-func handleColdStart(ctx context.Context, components *initializer.Components) error {
+func Handle(ctx context.Context, deps Dependencies) error {
 	slog.InfoContext(ctx, "Querying for events requiring processing")
 
 	q := coldStartQuery()
 
-	healthStore := components.DataStore.HealthEventStore()
-	dbAdapter := &dataStoreAdapter{DatabaseClient: components.DatabaseClient}
-	resolver := newQuarantineSessionResolver(healthStore)
+	dbAdapter := &dataStoreAdapter{DatabaseClient: deps.DatabaseClient}
+	resolver := newQuarantineSessionResolver(deps.HealthEventStore)
 
-	err := healthStore.FindHealthEventsByQueryBatched(ctx, q, coldStartBatchSize,
+	err := deps.HealthEventStore.FindHealthEventsByQueryBatched(ctx, q, batchSize,
 		func(batch []datastore.HealthEventWithStatus) error {
 			slog.Info("Processing cold start batch", "count", len(batch))
 
 			for i := range batch {
-				processColdStartEvent(ctx, components, healthStore, dbAdapter, resolver, batch[i])
+				processColdStartEvent(ctx, deps, dbAdapter, resolver, batch[i])
 			}
 
 			return nil
@@ -76,7 +87,7 @@ func handleColdStart(ctx context.Context, components *initializer.Components) er
 // restart: in-progress drains and quarantined/already-quarantined events that were
 // never processed. Note that this intentionally matches records regardless of whether
 // their quarantine session has since ended; that filtering happens per-event so we can
-// also tombstone stale records (see handleColdStart).
+// also tombstone stale records (see Handle).
 func coldStartQuery() *query.Builder {
 	return query.New().Build(
 		query.Or(
@@ -103,8 +114,7 @@ func coldStartQuery() *query.Builder {
 // normal drain pipeline.
 func processColdStartEvent(
 	ctx context.Context,
-	components *initializer.Components,
-	healthStore datastore.HealthEventStore,
+	deps Dependencies,
 	dbAdapter *dataStoreAdapter,
 	resolver *quarantineSessionResolver,
 	he datastore.HealthEventWithStatus,
@@ -118,8 +128,8 @@ func processColdStartEvent(
 		return
 	}
 
-	if enqueueErr := components.QueueManager.EnqueueEventGeneric(
-		ctx, nodeName, he.RawEvent, dbAdapter, healthStore, documentID); enqueueErr != nil {
+	if enqueueErr := deps.QueueManager.EnqueueEventGeneric(
+		ctx, nodeName, he.RawEvent, dbAdapter, deps.HealthEventStore, documentID); enqueueErr != nil {
 		slog.Error("Failed to enqueue cold start event", "error", enqueueErr, "nodeName", nodeName)
 	} else {
 		slog.InfoContext(ctx, "Re-queued event from cold start", "nodeName", nodeName)
@@ -237,97 +247,7 @@ func tombstoneStaleQuarantineEvent(ctx context.Context, dbClient client.Database
 	return nil
 }
 
-// quarantineSessionResolver answers, per node, whether a quarantine record predates a
-// later UnQuarantined/Cancelled event (i.e. its quarantine session has already ended).
-// Results are cached per node because a cold-start batch commonly contains multiple
-// records for the same node.
-type quarantineSessionResolver struct {
-	finder sessionEndFinder
-	cache  map[string]sessionEndInfo
-}
-
-// sessionEndFinder is the subset of datastore.HealthEventStore needed to look up
-// quarantine session-ending events. It exists to keep quarantineSessionResolver testable.
-type sessionEndFinder interface {
-	FindHealthEventsByQuery(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
-}
-
-// sessionEndInfo captures the most recent quarantine session end observed for a node.
-type sessionEndInfo struct {
-	latest time.Time
-	exists bool
-}
-
-func newQuarantineSessionResolver(finder sessionEndFinder) *quarantineSessionResolver {
-	return &quarantineSessionResolver{
-		finder: finder,
-		cache:  make(map[string]sessionEndInfo),
-	}
-}
-
-// quarantineSessionEnded reports whether an UnQuarantined/Cancelled event exists for the
-// node that is strictly newer than eventCreatedAt. When the candidate has no usable
-// timestamp, it returns false so the caller re-queues rather than dropping the event.
-func (r *quarantineSessionResolver) quarantineSessionEnded(
-	ctx context.Context, nodeName string, eventCreatedAt time.Time,
-) (bool, error) {
-	if eventCreatedAt.IsZero() {
-		return false, nil
-	}
-
-	info, ok := r.cache[nodeName]
-	if !ok {
-		var err error
-
-		info, err = r.lookupLatestSessionEnd(ctx, nodeName)
-		if err != nil {
-			return false, err
-		}
-
-		r.cache[nodeName] = info
-	}
-
-	if !info.exists {
-		return false, nil
-	}
-
-	return info.latest.After(eventCreatedAt), nil
-}
-
-// lookupLatestSessionEnd finds the newest UnQuarantined/Cancelled event for a node.
-func (r *quarantineSessionResolver) lookupLatestSessionEnd(
-	ctx context.Context, nodeName string,
-) (sessionEndInfo, error) {
-	q := query.New().Build(
-		query.And(
-			query.Eq("healthevent.nodename", nodeName),
-			query.In("healtheventstatus.nodequarantined",
-				[]interface{}{string(model.UnQuarantined), string(model.Cancelled)}),
-		),
-	)
-
-	events, err := r.finder.FindHealthEventsByQuery(ctx, q)
-	if err != nil {
-		return sessionEndInfo{}, fmt.Errorf("failed to look up quarantine session end for node %s: %w", nodeName, err)
-	}
-
-	var info sessionEndInfo
-
-	for i := range events {
-		created := events[i].CreatedAt
-		if created.IsZero() {
-			continue
-		}
-
-		if !info.exists || created.After(info.latest) {
-			info = sessionEndInfo{latest: created, exists: true}
-		}
-	}
-
-	return info, nil
-}
-
-// dataStoreAdapter adapts client.DatabaseClient to queue.DataStore
+// dataStoreAdapter adapts client.DatabaseClient to queue.DataStore.
 type dataStoreAdapter struct {
 	client.DatabaseClient
 }

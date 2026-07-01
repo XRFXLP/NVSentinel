@@ -33,6 +33,7 @@ import (
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/initializer"
 )
 
@@ -149,7 +150,11 @@ func run() error {
 	// Handle cold start - re-process any events that were in-progress during restart
 	slog.InfoContext(gCtx, "Handling cold start")
 
-	if err := handleColdStart(gCtx, components); err != nil {
+	if err := coldstart.Handle(gCtx, coldstart.Dependencies{
+		QueueManager:     components.QueueManager,
+		DatabaseClient:   components.DatabaseClient,
+		HealthEventStore: components.DataStore.HealthEventStore(),
+	}); err != nil {
 		slog.ErrorContext(gCtx, "Cold start handling failed", "error", err)
 	}
 

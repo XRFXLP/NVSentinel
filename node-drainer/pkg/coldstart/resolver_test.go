@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package coldstart
 
 import (
 	"context"
@@ -48,25 +48,14 @@ func (f *fakeSessionEndFinder) FindHealthEventsByQuery(
 }
 
 func sessionEndEvent(status model.Status, createdAt time.Time) datastore.HealthEventWithStatus {
+	s := datastore.Status(status)
+
 	return datastore.HealthEventWithStatus{
 		CreatedAt: createdAt,
 		HealthEventStatus: datastore.HealthEventStatus{
-			NodeQuarantined: statusPtr(datastore.Status(status)),
+			NodeQuarantined: &s,
 		},
 	}
-}
-
-func statusPtr(s datastore.Status) *datastore.Status {
-	return &s
-}
-
-func TestIsActiveQuarantineStatus(t *testing.T) {
-	assert.True(t, isActiveQuarantineStatus(string(model.Quarantined)))
-	assert.True(t, isActiveQuarantineStatus(string(model.AlreadyQuarantined)))
-	assert.False(t, isActiveQuarantineStatus(string(model.UnQuarantined)))
-	assert.False(t, isActiveQuarantineStatus(string(model.Cancelled)))
-	assert.False(t, isActiveQuarantineStatus(string(model.StatusNotStarted)))
-	assert.False(t, isActiveQuarantineStatus(""))
 }
 
 func TestQuarantineSessionEnded(t *testing.T) {
