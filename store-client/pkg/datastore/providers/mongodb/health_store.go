@@ -310,6 +310,42 @@ func (h *MongoHealthEventStore) FindLatestEventForNode(
 	return &event, nil
 }
 
+// FindLatestHealthEventByQuery returns the newest matching event (by createdAt) using a
+// server-side sort and limit, so it never loads more than one document.
+func (h *MongoHealthEventStore) FindLatestHealthEventByQuery(ctx context.Context,
+	builder datastore.QueryBuilder) (*datastore.HealthEventWithStatus, error) {
+	filter := builder.ToMongo()
+
+	options := &client.FindOneOptions{
+		Sort: map[string]interface{}{"createdAt": -1},
+	}
+
+	result, err := h.databaseClient.FindOne(ctx, filter, options)
+	if err != nil {
+		return nil, datastore.NewQueryError(
+			datastore.ProviderMongoDB,
+			"failed to find latest health event by query",
+			err,
+		)
+	}
+
+	var event datastore.HealthEventWithStatus
+
+	if err := result.Decode(&event); err != nil {
+		if client.IsNoDocumentsError(err) {
+			return nil, nil // No matching event
+		}
+
+		return nil, datastore.NewQueryError(
+			datastore.ProviderMongoDB,
+			"failed to decode latest health event by query",
+			err,
+		)
+	}
+
+	return &event, nil
+}
+
 // FindHealthEventsByQuery finds health events using query builder
 // MongoDB: converts builder to map and uses existing FindHealthEventsByFilter
 func (h *MongoHealthEventStore) FindHealthEventsByQuery(ctx context.Context,

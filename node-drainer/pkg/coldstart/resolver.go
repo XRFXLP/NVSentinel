@@ -27,7 +27,9 @@ import (
 // sessionEndFinder is the subset of datastore.HealthEventStore needed to look up
 // quarantine session-ending events. It exists to keep quarantineSessionResolver testable.
 type sessionEndFinder interface {
-	FindHealthEventsByQuery(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
+	FindLatestHealthEventByQuery(
+		ctx context.Context, builder datastore.QueryBuilder,
+	) (*datastore.HealthEventWithStatus, error)
 }
 
 // quarantineSessionResolver answers, per node, whether a quarantine record predates a
@@ -81,7 +83,9 @@ func (r *quarantineSessionResolver) quarantineSessionEnded(
 	return info.latest.After(eventCreatedAt), nil
 }
 
-// lookupLatestSessionEnd finds the newest UnQuarantined/Cancelled event for a node.
+// lookupLatestSessionEnd finds the newest UnQuarantined/Cancelled event for a node. The
+// sort+limit is pushed to the datastore so a node with many past sessions does not load
+// every session-end record into memory.
 func (r *quarantineSessionResolver) lookupLatestSessionEnd(
 	ctx context.Context, nodeName string,
 ) (sessionEndInfo, error) {
@@ -93,23 +97,16 @@ func (r *quarantineSessionResolver) lookupLatestSessionEnd(
 		),
 	)
 
-	events, err := r.finder.FindHealthEventsByQuery(ctx, q)
+	event, err := r.finder.FindLatestHealthEventByQuery(ctx, q)
 	if err != nil {
 		return sessionEndInfo{}, fmt.Errorf("failed to look up quarantine session end for node %s: %w", nodeName, err)
 	}
 
-	var info sessionEndInfo
-
-	for i := range events {
-		created := events[i].CreatedAt
-		if created.IsZero() {
-			continue
-		}
-
-		if !info.exists || created.After(info.latest) {
-			info = sessionEndInfo{latest: created, exists: true}
-		}
+	// No session-end marker, or one without a usable timestamp: treat as "not ended"
+	// so the caller re-queues rather than dropping the event.
+	if event == nil || event.CreatedAt.IsZero() {
+		return sessionEndInfo{}, nil
 	}
 
-	return info, nil
+	return sessionEndInfo{latest: event.CreatedAt, exists: true}, nil
 }

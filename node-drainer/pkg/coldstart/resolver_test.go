@@ -35,16 +35,31 @@ type fakeSessionEndFinder struct {
 	callCount int
 }
 
-func (f *fakeSessionEndFinder) FindHealthEventsByQuery(
+// FindLatestHealthEventByQuery mimics the datastore's server-side sort+limit by
+// returning the configured event with the newest non-zero CreatedAt (or nil).
+func (f *fakeSessionEndFinder) FindLatestHealthEventByQuery(
 	_ context.Context, _ datastore.QueryBuilder,
-) ([]datastore.HealthEventWithStatus, error) {
+) (*datastore.HealthEventWithStatus, error) {
 	f.callCount++
 
 	if f.err != nil {
 		return nil, f.err
 	}
 
-	return f.events, nil
+	var latest *datastore.HealthEventWithStatus
+
+	for i := range f.events {
+		event := f.events[i]
+		if event.CreatedAt.IsZero() {
+			continue
+		}
+
+		if latest == nil || event.CreatedAt.After(latest.CreatedAt) {
+			latest = &event
+		}
+	}
+
+	return latest, nil
 }
 
 func sessionEndEvent(status model.Status, createdAt time.Time) datastore.HealthEventWithStatus {

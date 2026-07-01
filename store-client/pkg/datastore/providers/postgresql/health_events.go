@@ -867,6 +867,46 @@ func (p *PostgreSQLHealthEventStore) FindLatestEventForNode(
 	return &event, nil
 }
 
+// FindLatestHealthEventByQuery returns the newest matching event (by created_at) using
+// ORDER BY created_at DESC LIMIT 1, so it never loads more than one row.
+func (p *PostgreSQLHealthEventStore) FindLatestHealthEventByQuery(ctx context.Context,
+	builder datastore.QueryBuilder) (*datastore.HealthEventWithStatus, error) {
+	whereClause, args := builder.ToSQL()
+
+	//nolint:gosec // G202 false positive - using parameterized query with placeholders
+	query := `
+		SELECT document FROM health_events
+		WHERE ` + whereClause + `
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	var documentJSON []byte
+
+	err := p.db.QueryRowContext(ctx, query, args...).Scan(&documentJSON)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to find latest health event by query: %w", err)
+	}
+
+	var event datastore.HealthEventWithStatus
+	if err := json.Unmarshal(documentJSON, &event); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal health event: %w", err)
+	}
+
+	var rawEvent map[string]interface{}
+	if err := json.Unmarshal(documentJSON, &rawEvent); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal raw event: %w", err)
+	}
+
+	event.RawEvent = rawEvent
+
+	return &event, nil
+}
+
 // FindHealthEventsByQuery finds health events using query builder
 // PostgreSQL: converts builder to SQL and uses native query
 func (p *PostgreSQLHealthEventStore) FindHealthEventsByQuery(ctx context.Context,
