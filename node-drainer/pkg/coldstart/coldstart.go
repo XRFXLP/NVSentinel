@@ -15,7 +15,7 @@
 // Package coldstart re-processes health events that were in-progress or quarantined
 // while node-drainer was offline. On restart node-drainer's in-memory cancellation
 // state is lost, so this package also guards against replaying quarantine records
-// whose session has already ended (see handleColdStart / quarantineSessionResolver).
+// whose session has already ended (see Handle / quarantineSessionResolver).
 package coldstart
 
 import (
