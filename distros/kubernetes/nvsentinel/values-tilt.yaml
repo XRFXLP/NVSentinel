@@ -4139,7 +4139,10 @@ platformConnector:
     burst: 10
 
   dedup:
-    enabled: true
+    # Keep disabled by default in Tilt because health-events-analyzer E2E tests
+    # intentionally send repeated same-key unhealthy events. Dedup-specific E2E
+    # tests enable this stage only for their own setup and restore it afterward.
+    enabled: false
     burstWindow: "3m"
     evictionInterval: "60s"
     skipChecks:

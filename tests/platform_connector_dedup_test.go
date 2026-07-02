@@ -33,7 +33,8 @@ import (
 type platformConnectorDedupContextKey string
 
 const (
-	keyPlatformConnectorDedupNodeName platformConnectorDedupContextKey = "platformConnectorDedupNodeName"
+	keyPlatformConnectorDedupNodeName        platformConnectorDedupContextKey = "platformConnectorDedupNodeName"
+	keyPlatformConnectorDedupConfigMapBackup platformConnectorDedupContextKey = "platformConnectorDedupConfigMapBackup"
 )
 
 func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
@@ -46,6 +47,12 @@ func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
 		require.NoError(t, err, "failed to create kubernetes client")
 
 		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/syslog-xid-cordon-configmap.yaml")
+
+		configMapBackup := helpers.EnablePlatformConnectorDedup(ctx, t, client, "3m", "60s", []string{
+			"SysLogsGPUFallenOff",
+			"GpuXidError",
+		})
+		ctx = context.WithValue(ctx, keyPlatformConnectorDedupConfigMapBackup, configMapBackup)
 
 		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
 		ctx = context.WithValue(ctx, keyPlatformConnectorDedupNodeName, nodeName)
@@ -209,6 +216,10 @@ func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
 		}
 
 		helpers.RestoreQuarantineConfig(ctx, t, c)
+
+		if configMapBackup, ok := ctx.Value(keyPlatformConnectorDedupConfigMapBackup).([]byte); ok {
+			helpers.RestorePlatformConnectorConfig(ctx, t, client, configMapBackup)
+		}
 
 		return ctx
 	})

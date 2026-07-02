@@ -16,14 +16,28 @@ package helpers
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 )
+
+const (
+	platformConnectorName = "platform-connectors"
+)
+
+type platformConnectorPipelineStage struct {
+	Name       string `json:"name"`
+	Enabled    bool   `json:"enabled"`
+	ConfigPath string `json:"config,omitempty"`
+}
 
 // UpsertNodeCondition adds or replaces a node condition through the status subresource.
 func UpsertNodeCondition(
@@ -76,4 +90,170 @@ func UpsertNodeCondition(
 
 		return true
 	}, EventuallyWaitTimeout, WaitInterval, "failed to upsert node condition")
+}
+
+// EnablePlatformConnectorDedup enables the dedup filter for one E2E scenario and
+// returns a ConfigMap backup that must be restored by the caller.
+func EnablePlatformConnectorDedup(
+	ctx context.Context,
+	t *testing.T,
+	client klient.Client,
+	burstWindow string,
+	evictionInterval string,
+	skipChecks []string,
+) []byte {
+	t.Helper()
+
+	backupData, err := BackupConfigMap(ctx, client, platformConnectorName, NVSentinelNamespace)
+	require.NoError(t, err, "failed to backup platform connector ConfigMap")
+
+	err = setPlatformConnectorDedup(ctx, client, true, burstWindow, evictionInterval, skipChecks)
+	require.NoError(t, err, "failed to enable platform connector dedup")
+
+	restartPlatformConnector(ctx, t, client)
+
+	return backupData
+}
+
+func RestorePlatformConnectorConfig(
+	ctx context.Context,
+	t *testing.T,
+	client klient.Client,
+	configMapBackup []byte,
+) {
+	t.Helper()
+
+	if configMapBackup == nil {
+		t.Log("No platform connector ConfigMap backup to restore")
+		return
+	}
+
+	err := createConfigMapFromBytes(
+		ctx, client, configMapBackup, platformConnectorName, NVSentinelNamespace,
+	)
+	require.NoError(t, err, "failed to restore platform connector ConfigMap")
+
+	restartPlatformConnector(ctx, t, client)
+}
+
+func setPlatformConnectorDedup(
+	ctx context.Context,
+	client klient.Client,
+	enabled bool,
+	burstWindow string,
+	evictionInterval string,
+	skipChecks []string,
+) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		cm := &v1.ConfigMap{}
+		if err := client.Resources().Get(ctx, platformConnectorName, NVSentinelNamespace, cm); err != nil {
+			return err
+		}
+
+		if cm.Data == nil {
+			return fmt.Errorf("configmap %s/%s has no data", NVSentinelNamespace, platformConnectorName)
+		}
+
+		configJSON, ok := cm.Data["config.json"]
+		if !ok {
+			return fmt.Errorf("configmap %s/%s missing config.json", NVSentinelNamespace, platformConnectorName)
+		}
+
+		updatedConfig, err := setDedupPipelineStage(configJSON, enabled)
+		if err != nil {
+			return err
+		}
+
+		dedupTOML, err := buildDedupTOML(burstWindow, evictionInterval, skipChecks)
+		if err != nil {
+			return err
+		}
+
+		cm.Data["config.json"] = updatedConfig
+		cm.Data["dedup.toml"] = dedupTOML
+
+		return client.Resources().Update(ctx, cm)
+	})
+}
+
+func setDedupPipelineStage(configJSON string, enabled bool) (string, error) {
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		return "", fmt.Errorf("failed to unmarshal platform connector config.json: %w", err)
+	}
+
+	var pipeline []platformConnectorPipelineStage
+	if rawPipeline, ok := config["pipeline"]; ok {
+		if err := json.Unmarshal(rawPipeline, &pipeline); err != nil {
+			return "", fmt.Errorf("failed to unmarshal platform connector pipeline: %w", err)
+		}
+	}
+
+	foundDedup := false
+
+	for i := range pipeline {
+		if pipeline[i].Name == "Deduplicator" {
+			pipeline[i].Enabled = enabled
+			pipeline[i].ConfigPath = "/etc/config/dedup.toml"
+			foundDedup = true
+
+			break
+		}
+	}
+
+	if !foundDedup {
+		pipeline = append(pipeline, platformConnectorPipelineStage{
+			Name:       "Deduplicator",
+			Enabled:    enabled,
+			ConfigPath: "/etc/config/dedup.toml",
+		})
+	}
+
+	pipelineJSON, err := json.Marshal(pipeline)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal platform connector pipeline: %w", err)
+	}
+
+	config["pipeline"] = pipelineJSON
+
+	updated, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal platform connector config.json: %w", err)
+	}
+
+	return string(updated), nil
+}
+
+func buildDedupTOML(burstWindow string, evictionInterval string, skipChecks []string) (string, error) {
+	skipChecksJSON, err := json.Marshal(skipChecks)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal dedup skip checks: %w", err)
+	}
+
+	return fmt.Sprintf("burstWindow = %q\nevictionInterval = %q\nskipChecks = %s\n",
+		burstWindow, evictionInterval, string(skipChecksJSON)), nil
+}
+
+func restartPlatformConnector(ctx context.Context, t *testing.T, client klient.Client) {
+	t.Helper()
+
+	restartTime := time.Now().Format(time.RFC3339)
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		daemonSet := &appsv1.DaemonSet{}
+		if err := client.Resources().Get(ctx, platformConnectorName, NVSentinelNamespace, daemonSet); err != nil {
+			return err
+		}
+
+		if daemonSet.Spec.Template.Annotations == nil {
+			daemonSet.Spec.Template.Annotations = make(map[string]string)
+		}
+
+		daemonSet.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = restartTime
+
+		return client.Resources().Update(ctx, daemonSet)
+	})
+	require.NoError(t, err, "failed to restart platform connector DaemonSet")
+
+	waitForDaemonSetRollout(ctx, t, client, platformConnectorName)
 }
