@@ -14,25 +14,26 @@ These reach fault-quarantine and node-drainer as distinct events: redundant drai
 
 ## Decision
 
-Add a **deduplication filter** to the platform-connector event-processing pipeline (see [ADR-023](./023-health-event-transformer-pipeline.md)), after the existing transformers `MetadataAugmentor` and `OverrideTransformer`. The filter uses a generic key derived from the event itself:
+Add a **deduplication transformer** to the platform-connector event-processing pipeline (see [ADR-023](./023-health-event-transformer-pipeline.md)), after the existing transformers `MetadataAugmentor` and `OverrideTransformer`. The transformer uses a generic key derived from the event itself:
 
 ```
 key = (NodeName, CheckName, canonical(EntitiesImpacted), canonical(ErrorCode), ProcessingStrategy, IsHealthy)
 ```
 
-Within a configurable **burst window** TTL, an event whose key is already in the seen set is suppressed. Once the entry expires, the next event with that key emits as the start of a fresh burst.
+Within a configurable **suppression window** TTL, an unhealthy event whose key is already in the seen set is marked `STORE_ONLY`. Once the entry expires, the next event with that key remains `EXECUTE_REMEDIATION` and starts a fresh window.
 
 ```mermaid
 flowchart TD
     Recv["HealthEventOccurredV1"] --> Pipe["Pipeline.Process(event)"]
     Pipe --> MA["MetadataAugmentor<br/>(transformer)"]
     MA --> OT["OverrideTransformer<br/>(transformer)"]
-    OT --> Dedup["DeduplicationFilter<br/>(filter)"]
+    OT --> Dedup["Deduplicator<br/>(transformer)"]
     Dedup --> KeyExtract["key = (NodeName,<br/>CheckName,<br/>canonical(EntitiesImpacted),<br/>canonical(ErrorCode),<br/>IsHealthy)"]
     KeyExtract --> Seen{"key in seen set<br/>and within TTL?"}
-    Seen -->|Yes| Drop["Drop event<br/>(log Info, increment counter)"]
+    Seen -->|Yes| StoreOnly["Mark STORE_ONLY<br/>(log Info, increment counter)"]
     Seen -->|No| Mark["Mark seen<br/>(timestamp = now)"]
-    Mark --> Enqueue["Enqueue to ring buffer"]
+    StoreOnly --> Enqueue["Enqueue to ring buffer"]
+    Mark --> Enqueue
 ```
 
 ### Canonicalisation
@@ -40,23 +41,23 @@ flowchart TD
 - `CheckName` is included so that two distinct checks producing the same `(entities, ErrorCode)` for the same physical resource don't collide. NIC monitor is the canonical example: `InfiniBandStateCheck` and `InfiniBandDegradationCheck` can both fire for the same port, neither sets `ErrorCode`, and without `CheckName` in the key they would suppress each other.
 - `EntitiesImpacted` is a slice; the same logical set may arrive in different orders. The dedup stage sorts entities lexicographically by `(EntityType, EntityValue)` before hashing.
 - `ErrorCode` is `[]string`; sorted lexicographically before hashing.
-- `ProcessingStrategy` is included so a `STORE_ONLY` observation cannot suppress a later `EXECUTE_REMEDIATION` event for the same fault identity. This matters for tests and workflows that intentionally send both forms to verify downstream behavior.
-- `IsHealthy` is a bool; included so healthy events with the same `(node, check, entities, ErrorCode, ProcessingStrategy)` shape as a prior unhealthy event are not suppressed against it. This matters for the synthetic healthy events emitted by the cancellation rules in [ADR-038](./038-health-monitor-cancellation-rules.md), which by design carry the same `ErrorCode` as the unhealthy event they cancel.
+- `ProcessingStrategy` is included so a `STORE_ONLY` observation cannot deduplicate a later `EXECUTE_REMEDIATION` event for the same fault identity. This matters for tests and workflows that intentionally send both forms to verify downstream behavior.
+- `IsHealthy` is a bool; included so healthy events with the same `(node, check, entities, ErrorCode, ProcessingStrategy)` shape as a prior unhealthy event are not deduplicated against it. This matters for the synthetic healthy events emitted by the cancellation rules in [ADR-038](./038-health-monitor-cancellation-rules.md), which by design carry the same `ErrorCode` as the unhealthy event they cancel.
 - The hash function (e.g., FNV-1a over the canonical encoding) is deterministic so the same event always maps to the same key.
 
 ### What clears the dedup
 
 | Signal                                                          | Cleared                                                                                              |
 |-----------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
-| Healthy event passes the filter for `(node, check, entities, ErrorCode, ProcessingStrategy)` | The corresponding unhealthy entry (same tuple, `IsHealthy=false`) — fresh recurrence emits as new   |
+| Healthy event passes the transformer for `(node, check, entities, ErrorCode, ProcessingStrategy)` | The corresponding unhealthy entry (same tuple, `IsHealthy=false`) — fresh recurrence emits as new   |
 | TTL elapses on a seen entry                                     | That entry only — next identical event re-emits                                                      |
 | Platform-connector pod restart                                  | All entries (state is in-memory only)                                                                |
 
-A healthy event clears entries whose keys match `(node, check, entities, ErrorCode, ProcessingStrategy)` with `IsHealthy=false` before it continues downstream. Healthy events are always forwarded rather than suppressed, because platform-connector cannot know whether a previous healthy baseline or recovery event updated every downstream consumer. Repeated unhealthy fault observations are still deduplicated.
+A healthy event clears entries whose keys match `(node, check, entities, ErrorCode, ProcessingStrategy)` with `IsHealthy=false` before it continues downstream. Healthy events are never downgraded, because platform-connector cannot know whether a previous healthy baseline or recovery event updated every downstream consumer. Repeated unhealthy fault observations are deduplicated by downgrading duplicates to `STORE_ONLY`.
 
 ### TTL semantics
 
-The TTL is the **suppression window** — the duration for which repeated events with the same dedup key are suppressed. Default: **3 minutes**. Configurable via the helm value `platformConnector.dedup.suppressionWindow` (Go duration string, e.g. `"3m"`, `"180s"`).
+The TTL is the **suppression window** — the duration for which repeated events with the same dedup key are downgraded to `STORE_ONLY`. Default: **3 minutes**. Configurable via the helm value `platformConnector.dedup.suppressionWindow` (Go duration string, e.g. `"3m"`, `"180s"`).
 
 ## Implementation
 
@@ -99,34 +100,19 @@ func (t *Tracker) Clear()
 
 The tracker holds no persistent state; on platform-connector pod restart it starts empty.
 
-### Pipeline extension
+### Dedup transformer
 
-The pipeline today (per ADR-023) has only one stage kind: `Transformer`, which mutates an event in place and returns an error. Dedup needs to *drop* events, so this ADR introduces a second stage kind, `Filter`, with its own interface:
-
-```go
-// Filter inspects an event and returns whether to keep it. Filters never
-// mutate the event; that's a transformer's job.
-type Filter interface {
-    Filter(ctx context.Context, event *pb.HealthEvent) (keep bool, err error)
-    Name() string
-}
-```
-
-`pipeline.Pipeline.Process` is extended to run all transformers in order, then all filters in order, against the same event. If any filter returns `keep == false`, the event is dropped from the outgoing batch and subsequent filters are not run for that event. Filter errors are logged and treated as `keep`.
-
-### Dedup filter
-
-`Deduplicator` implements `Filter`:
+`Deduplicator` implements the existing `Transformer` interface. It mutates duplicate unhealthy events in place by setting `ProcessingStrategy=STORE_ONLY`; downstream connectors already understand that strategy. The store connector still persists the duplicate for observability, while the Kubernetes connector skips Kubernetes-side remediation effects for `STORE_ONLY` events.
 
 ```go
 type Deduplicator struct {
     tracker *dedup.Tracker
-    skip    map[string]bool   // checks excluded from dedup
+    include map[string]bool   // checks eligible for dedup; empty means all
 }
 
-func (d *Deduplicator) Filter(ctx context.Context, event *pb.HealthEvent) (bool, error) {
-    if d.skip[event.CheckName] {
-        return true, nil
+func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) error {
+    if len(d.include) > 0 && !d.include[event.CheckName] {
+        return nil
     }
 
     // A healthy event always invalidates its unhealthy counterpart, even if
@@ -135,22 +121,24 @@ func (d *Deduplicator) Filter(ctx context.Context, event *pb.HealthEvent) (bool,
     // remain stuck behind the first healthy's TTL.
     if event.IsHealthy {
         d.tracker.ClearUnhealthyCounterpart(event)
+        return nil
     }
 
     if d.tracker.IsDuplicate(event) {
-        dedupSuppressedCounter.WithLabelValues(event.CheckName, event.NodeName, errCodeLabel(event)).Inc()
-        return false, nil
+        dedupStoreOnlyCounter.WithLabelValues(event.CheckName, event.NodeName, errCodeLabel(event)).Inc()
+        event.ProcessingStrategy = pb.ProcessingStrategy_STORE_ONLY
+        return nil
     }
     d.tracker.Mark(event)
-    return true, nil
+    return nil
 }
 ```
 
-`platform-connectors/pkg/pipeline/pipeline.go` adds the `Filter` interface, a `filters []Filter` field on `Pipeline`, and the post-transform loop. The gRPC handler in `platform_connector_server.go` collects per-event drop verdicts from filters before enqueueing to ring buffers.
+The existing transformer pipeline is sufficient; no new filter/drop stage is needed.
 
-### Per-check opt-out
+### Per-check opt-in
 
-Some checks already run their own correlation (e.g., `SysLogsGPUFallenOff`'s 5-minute PCI-keyed map, where source-side correlation is the right semantic). Helm config:
+Dedup is scoped to configured check names so the transformer does not accidentally change semantics for checks where every repeated event is meaningful. Helm config:
 
 ```yaml
 platformConnector:
@@ -158,26 +146,27 @@ platformConnector:
     enabled: true
     suppressionWindow: "3m"
     cleanupInterval: "60s"
-    skipChecks:
-      - SysLogsGPUFallenOff
+    includeChecks:
+      - SysLogsXIDError
+      - SysLogsSXIDError
 ```
 
-### Suppressed-event metric
+### Dedup STORE_ONLY metric
 
 ```go
-var dedupSuppressedCounter = promauto.NewCounterVec(
+var dedupStoreOnlyCounter = promauto.NewCounterVec(
     prometheus.CounterOpts{
-        Name: "nvsentinel_platform_connector_dedup_suppressed_total",
-        Help: "Total number of health events suppressed by deduplication.",
+        Name: "nvsentinel_platform_connector_dedup_store_only_total",
+        Help: "Total number of duplicate health events marked STORE_ONLY by deduplication.",
     },
     []string{"check", "node", "err_code"},
 )
 ```
 
-Suppression rate as a fraction of true error rate (using each monitor's existing kernel-rate counter, e.g. `syslog_health_monitor_xid_errors`):
+Dedup rate as a fraction of true error rate (using each monitor's existing kernel-rate counter, e.g. `syslog_health_monitor_xid_errors`):
 
 ```promql
-rate(nvsentinel_platform_connector_dedup_suppressed_total{check="SysLogsXIDError", node="gpu-node-1"}[5m])
+rate(nvsentinel_platform_connector_dedup_store_only_total{check="SysLogsXIDError", node="gpu-node-1"}[5m])
   /
 rate(syslog_health_monitor_xid_errors{node="gpu-node-1"}[5m])
 ```
@@ -192,22 +181,20 @@ The dedup tracker lives entirely in memory. A single background goroutine calls 
 |---------------------------------------------------------------|------------------------------------------------------------------------------------------|
 | `commons/pkg/dedup/tracker.go`                                | **New** — `Tracker`, `Key`, canonicalisation                                             |
 | `commons/pkg/dedup/tracker_test.go`                           | **New** — unit tests: TTL eviction, canonicalisation, healthy-clears-unhealthy           |
-| `platform-connectors/pkg/pipeline/pipeline.go`                | Add `Filter` interface and `filters` field on `Pipeline`; run filters after transformers |
-| `platform-connectors/pkg/filters/dedup/factory.go`            | **New** — registers `Deduplicator` in pipeline registry                                  |
-| `platform-connectors/pkg/filters/dedup/filter.go`             | **New** — `Deduplicator.Filter`, periodic `EvictExpired` timer                           |
-| `platform-connectors/pkg/server/platform_connector_server.go` | Collect per-event drop verdicts from filters before ring-buffer enqueue                  |
+| `platform-connectors/pkg/transformers/dedup/factory.go`       | **New** — registers `Deduplicator` in pipeline registry                                  |
+| `platform-connectors/pkg/transformers/dedup/transformer.go`   | **New** — `Deduplicator.Transform`, periodic `EvictExpired` timer                        |
 | `distros/kubernetes/nvsentinel/charts/platform-connectors/values.yaml` | Add `dedup` config block                                                        |
 
 ## Consequences
 
 ### Positive
-- Eliminates redundant gRPC traffic, store rows, and audit-log entries within a burst, for every monitor that flows through the platform connector.
+- Eliminates redundant Kubernetes/remediation side effects within a burst, for every monitor that flows through the platform connector.
 - Single implementation, single configuration point. Adding dedup for a new monitor is opt-out only — by default it works.
 - One event still emerges per burst, so any consumer that counts bursts (or correlates faults over time) continues to work.
 - No per-monitor source code change; monitors are unaware of dedup.
 
 ### Negative
-- Events still travel monitor → platform-connector before being suppressed; the gRPC traffic between them is unchanged. The hop is a co-located Unix socket, not a network call.
+- Events still travel monitor → platform-connector and are still stored; dedup only downgrades duplicate remediation behavior. The hop is a co-located Unix socket, not a network call.
 - Dedup behaviour is governed entirely by what producers put in `EntitiesImpacted`, `ErrorCode`, and `ProcessingStrategy`. Two events with the same tuple are treated as the same fault — including two XID 79 emissions whose only difference is `pid` in the `Message` text. A monitor that needs to distinguish those must include pid as an entity.
 - Entity and `ErrorCode` slices are now canonicalised by sorting; producers must treat them as sets, not ordered lists.
 - Dedup state is in-memory only. On a platform-connector pod restart, currently-active faults re-emit once each as their next emission arrives, then dedup picks up from there.

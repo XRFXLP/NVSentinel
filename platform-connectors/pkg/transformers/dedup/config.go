@@ -31,7 +31,7 @@ const (
 type Config struct {
 	SuppressionWindow time.Duration `toml:"suppressionWindow"`
 	CleanupInterval   time.Duration `toml:"cleanupInterval"`
-	SkipChecks        []string      `toml:"skipChecks"`
+	IncludeChecks     []string      `toml:"includeChecks"`
 }
 
 // LoadConfig loads dedup configuration from path, returning defaults when absent.
@@ -57,7 +57,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		SuppressionWindow: DefaultSuppressionWindow,
 		CleanupInterval:   DefaultCleanupInterval,
-		SkipChecks:        []string{},
+		IncludeChecks:     []string{},
 	}
 }
 

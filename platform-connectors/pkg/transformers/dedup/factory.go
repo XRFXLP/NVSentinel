@@ -23,10 +23,10 @@ import (
 )
 
 func init() {
-	pipeline.RegisterFilter(Name, newFromConfig)
+	pipeline.Register(Name, newFromConfig)
 }
 
-func newFromConfig(cfg *pipeline.Config) (pipeline.Filter, error) {
+func newFromConfig(cfg *pipeline.Config, opts pipeline.Options) (pipeline.Transformer, error) {
 	dedupCfg, err := LoadConfig(cfg.ConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load dedup configuration: %w", err)
@@ -37,9 +37,9 @@ func newFromConfig(cfg *pipeline.Config) (pipeline.Filter, error) {
 	}
 
 	tracker := commondedup.NewTracker(dedupCfg.SuppressionWindow)
-	//nolint:gosec // cancel is owned by the returned filter and invoked by Pipeline.Close.
+	//nolint:gosec // cancel is owned by the returned transformer and invoked by Pipeline.Close.
 	ctx, cancel := context.WithCancel(context.Background())
 	startEvictExpired(ctx, tracker, dedupCfg.CleanupInterval)
 
-	return NewDeduplicator(tracker, dedupCfg.SkipChecks, cancel), nil
+	return NewDeduplicator(tracker, dedupCfg.IncludeChecks, cancel), nil
 }

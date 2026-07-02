@@ -43,7 +43,7 @@ data:
   dedup.toml: |
     suppressionWindow = "{{ .Values.platformConnector.dedup.suppressionWindow }}"
     cleanupInterval = "{{ .Values.platformConnector.dedup.cleanupInterval }}"
-    skipChecks = {{ .Values.platformConnector.dedup.skipChecks | default list | toJson }}
+    includeChecks = {{ .Values.platformConnector.dedup.includeChecks | default list | toJson }}
   {{- end }}
   {{- if .Values.platformConnector.transformers.MetadataAugmentor }}
   metadata.toml: |

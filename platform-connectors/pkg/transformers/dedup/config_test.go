@@ -24,12 +24,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLoadConfigParsesDurationsAndSkipChecks(t *testing.T) {
+func TestLoadConfigParsesDurationsAndIncludeChecks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dedup.toml")
 	err := os.WriteFile(path, []byte(`
 suppressionWindow = "3m"
 cleanupInterval = "60s"
-skipChecks = ["SysLogsGPUFallenOff"]
+includeChecks = ["SysLogsXIDError", "SysLogsSXIDError"]
 `), 0o600)
 	require.NoError(t, err)
 
@@ -38,7 +38,7 @@ skipChecks = ["SysLogsGPUFallenOff"]
 	require.NoError(t, err)
 	assert.Equal(t, 3*time.Minute, cfg.SuppressionWindow)
 	assert.Equal(t, time.Minute, cfg.CleanupInterval)
-	assert.Equal(t, []string{"SysLogsGPUFallenOff"}, cfg.SkipChecks)
+	assert.Equal(t, []string{"SysLogsXIDError", "SysLogsSXIDError"}, cfg.IncludeChecks)
 }
 
 func TestLoadConfigDefaultsWhenPathMissing(t *testing.T) {

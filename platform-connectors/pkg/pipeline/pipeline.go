@@ -32,43 +32,31 @@ type Transformer interface {
 	Name() string
 }
 
-// Filter inspects a health event and returns whether it should continue downstream.
-type Filter interface {
-	Filter(ctx context.Context, event *pb.HealthEvent) (keep bool, err error)
-	Name() string
-}
-
-// Pipeline runs configured transformers followed by filters for each event.
+// Pipeline runs configured transformers for each event.
 type Pipeline struct {
 	transformers []Transformer
-	filters      []Filter
 }
 
 func New(transformers ...Transformer) *Pipeline {
 	return &Pipeline{transformers: transformers}
 }
 
-// NewWithFilters creates a pipeline with transformer and filter stages.
-func NewWithFilters(transformers []Transformer, filters []Filter) *Pipeline {
-	return &Pipeline{transformers: transformers, filters: filters}
-}
-
-// Close releases resources owned by filters that expose a Close method.
+// Close releases resources owned by transformers that expose a Close method.
 func (p *Pipeline) Close() {
-	for _, f := range p.filters {
-		closer, ok := f.(interface{ Close() error })
+	for _, t := range p.transformers {
+		closer, ok := t.(interface{ Close() error })
 		if !ok {
 			continue
 		}
 
 		if err := closer.Close(); err != nil {
-			slog.Warn("Failed to close pipeline filter", "filter", f.Name(), "error", err)
+			slog.Warn("Failed to close pipeline transformer", "transformer", t.Name(), "error", err)
 		}
 	}
 }
 
-// Process applies the pipeline and returns false when a filter drops the event.
-func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) bool {
+// Process applies the pipeline to the event.
+func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) {
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.pipeline.process")
 	defer span.End()
 
@@ -91,35 +79,5 @@ func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) bool {
 		}
 	}
 
-	for _, f := range p.filters {
-		keep, err := f.Filter(ctx, event)
-		if err != nil {
-			failedCount++
-
-			slog.WarnContext(ctx, "Filter failed",
-				"filter", f.Name(),
-				"node", event.NodeName,
-				"error", err)
-			tracing.RecordError(span, err)
-			span.AddEvent("platform_connector.pipeline.filter_failed", trace.WithAttributes(
-				attribute.String("platform_connector.pipeline.failed_filter", f.Name()),
-				attribute.String("platform_connector.pipeline.error.type", "running_filter_failed"),
-				attribute.String("platform_connector.pipeline.error.message", err.Error()),
-			))
-
-			continue
-		}
-
-		if !keep {
-			span.AddEvent("platform_connector.pipeline.event_dropped", trace.WithAttributes(
-				attribute.String("platform_connector.pipeline.filter", f.Name()),
-			))
-
-			return false
-		}
-	}
-
 	span.SetAttributes(attribute.Int("platform_connector.pipeline.failed_stage_count", failedCount))
-
-	return true
 }

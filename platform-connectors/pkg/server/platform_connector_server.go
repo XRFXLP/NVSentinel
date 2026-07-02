@@ -79,19 +79,9 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 	}
 
 	if p.Pipeline != nil {
-		kept := he.Events[:0]
 		for i := range he.Events {
-			if p.Pipeline.Process(ctx, he.Events[i]) {
-				kept = append(kept, he.Events[i])
-			}
+			p.Pipeline.Process(ctx, he.Events[i])
 		}
-
-		he.Events = kept
-	}
-
-	if len(he.Events) == 0 {
-		slog.InfoContext(ctx, "All health events dropped by pipeline")
-		return nil, nil
 	}
 
 	// Enqueue with trace context so store and K8s connectors continue this trace

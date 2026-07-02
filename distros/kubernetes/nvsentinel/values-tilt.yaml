@@ -4139,13 +4139,12 @@ platformConnector:
     burst: 10
 
   dedup:
-    # Keep disabled by default in Tilt because health-events-analyzer E2E tests
-    # intentionally send repeated same-key unhealthy events. Dedup-specific E2E
-    # tests enable this stage only for their own setup and restore it afterward.
-    enabled: false
-    # Dormant while disabled; keeps the rendered dedup.toml valid for manual toggles.
+    enabled: true
     suppressionWindow: "3m"
     cleanupInterval: "60s"
+    includeChecks:
+      - SysLogsXIDError
+      - SysLogsSXIDError
   
   pipeline:
     - name: MetadataAugmentor

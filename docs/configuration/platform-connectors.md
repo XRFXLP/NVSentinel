@@ -42,7 +42,7 @@ platformConnector:
 
 ## Event Processing Pipeline
 
-Configures the event processing pipeline that processes health events before storage and Kubernetes propagation. Transformers mutate events in order; filters inspect transformed events and may drop them before connector fan-out.
+Configures the event processing pipeline that processes health events before storage and Kubernetes propagation. Transformers mutate events in order before connector fan-out.
 
 ```yaml
 platformConnector:
@@ -58,8 +58,9 @@ platformConnector:
     enabled: true
     suppressionWindow: "3m"
     cleanupInterval: "60s"
-    skipChecks:
-      - SysLogsGPUFallenOff
+    includeChecks:
+      - SysLogsXIDError
+      - SysLogsSXIDError
 
   transformers:
     MetadataAugmentor:
@@ -80,15 +81,15 @@ Array of transformer stages to execute in order:
 - **enabled**: Enable/disable the transformer
 - **config**: Path to transformer-specific configuration file
 
-The chart appends the `Deduplicator` filter stage from `platformConnector.dedup`; operators normally configure deduplication through the `dedup` block rather than adding it manually to `pipeline`.
+The chart appends the `Deduplicator` transformer stage from `platformConnector.dedup`; operators normally configure deduplication through the `dedup` block rather than adding it manually to `pipeline`.
 
 #### dedup
-Deduplication filter configuration. See [Deduplication Filter Configuration](#deduplication-filter-configuration).
+Deduplication transformer configuration. See [Deduplication Transformer Configuration](#deduplication-transformer-configuration).
 
 #### transformers
 Transformer-specific configurations, nested by transformer name.
 
-**Note:** Transformers execute sequentially. `MetadataAugmentor` should run first to provide node metadata for subsequent transformers. Filters run after all transformers.
+**Note:** Transformers execute sequentially. `MetadataAugmentor` should run first to provide node metadata for subsequent transformers.
 
 ## Metadata Augmentor Configuration
 
@@ -193,7 +194,7 @@ transformers:
           recommendedAction: "NONE"
 ```
 
-## Deduplication Filter Configuration
+## Deduplication Transformer Configuration
 
 Suppresses repeated health events within a burst window before they are written to the datastore or propagated to Kubernetes. The dedup key is derived from:
 
@@ -209,35 +210,33 @@ platformConnector:
     enabled: true
     suppressionWindow: "3m"
     cleanupInterval: "60s"
-    skipChecks:
-      - SysLogsGPUFallenOff
+    includeChecks:
+      - SysLogsXIDError
+      - SysLogsSXIDError
 ```
 
 ### Parameters
 
 #### enabled
-Enables the deduplication filter. When disabled, every event that reaches platform-connectors continues to downstream connectors.
+Enables the deduplication transformer. When disabled, every event that reaches platform-connectors keeps its original processing strategy.
 
 #### suppressionWindow
-Go duration string that controls how long repeated events with the same key are suppressed. After the window expires, the next matching event is emitted again.
+Go duration string that controls how long repeated events with the same key are downgraded to `STORE_ONLY`. After the window expires, the next matching event remains `EXECUTE_REMEDIATION`.
 
 #### cleanupInterval
 Go duration string that controls how often the in-memory tracker removes expired keys that have not recurred.
 
-#### skipChecks
-Optional list of check names that should never be deduplicated.
-
-#### skipChecks
-List of `checkName` values excluded from platform-connector deduplication. Use this for checks that already implement source-specific correlation semantics.
+#### includeChecks
+List of `checkName` values eligible for platform-connector deduplication. Keep this focused on high-volume repeated signal streams, such as `SysLogsXIDError` and `SysLogsSXIDError`; every other check passes through unchanged.
 
 ### Healthy Event Behavior
 
-Healthy events are not suppressed by the dedup filter. Before they continue downstream, they clear any matching unhealthy entries from the in-memory tracker. This keeps recovery and baseline events reliable even when a previous healthy event did not update every downstream consumer, while repeated unhealthy fault observations are still deduplicated.
+Healthy events are not downgraded by deduplication. Before they continue downstream, they clear any matching unhealthy entries from the in-memory tracker. This keeps recovery and baseline events reliable even when a previous healthy event did not update every downstream consumer, while repeated unhealthy fault observations are still deduplicated.
 
 ### Operational Notes
 
 - Dedup state is in-memory only and is cleared on platform-connectors pod restart.
-- The suppression counter is exposed as `nvsentinel_platform_connector_dedup_suppressed_total{check,node,err_code}`.
+- The dedup counter is exposed as `nvsentinel_platform_connector_dedup_store_only_total{check,node,err_code}`.
 - `entitiesImpacted` and `errorCode` are canonicalized as sets for keying; ordering differences do not create distinct events.
 
 ## Kubernetes Connector

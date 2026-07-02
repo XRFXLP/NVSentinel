@@ -26,10 +26,10 @@ import (
 
 const noErrorCodeLabel = "none"
 
-var dedupSuppressedCounter = promauto.NewCounterVec(
+var dedupStoreOnlyCounter = promauto.NewCounterVec(
 	prometheus.CounterOpts{
-		Name: "nvsentinel_platform_connector_dedup_suppressed_total",
-		Help: "Total number of health events suppressed by deduplication.",
+		Name: "nvsentinel_platform_connector_dedup_store_only_total",
+		Help: "Total number of duplicate health events marked STORE_ONLY by deduplication.",
 	},
 	[]string{"check", "node", "err_code"},
 )

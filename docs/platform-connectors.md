@@ -14,7 +14,7 @@ Platform Connectors provides the glue that connects monitoring to action:
 - **Data persistence**: Stores events in the datastore for the remediation pipeline
 - **Kubernetes integration**: Updates node conditions and events based on health status
 - **Metadata enrichment**: Optionally augments events with node metadata (cloud provider info, labels, etc.)
-- **Burst deduplication**: Suppresses repeated health events with the same fault identity before downstream fan-out
+- **Burst deduplication**: Marks repeated health events with the same fault identity as `STORE_ONLY` before downstream fan-out
 - **Decoupling**: Keeps health monitors independent from platform-specific implementations
 
 Without Platform Connectors, health monitors would need to directly integrate with each platform's storage and APIs, creating tight coupling and complexity.
@@ -28,15 +28,15 @@ Platform Connectors typically runs as a deployment in the cluster:
 3. Processes events through the transformer pipeline:
    - **Metadata Augmentor**: Augments events with node metadata (cloud provider, labels, topology)
    - **Override Transformer**: Applies CEL-based rules to modify event properties
-4. Applies filters after transformation:
-   - **Deduplicator**: Suppresses repeated events with the same node, check, impacted entities, error code, and health state
-5. Queues kept events in ring buffers for parallel processing
+4. Runs deduplication as a transformer:
+   - **Deduplicator**: Marks repeated events with the same node, check, impacted entities, error code, and health state as `STORE_ONLY`
+5. Queues events in ring buffers for parallel processing
 6. Processes events through multiple connectors:
    - **Store Connector**: Persists events to the datastore
    - **Kubernetes Connector**: Updates node conditions and Kubernetes events
 7. Each connector processes events independently for resilience
 
-The event processing pipeline runs transformers first, allowing each transformer to build on previous enrichments, then runs filters such as deduplication. The ring buffer architecture ensures kept events are processed reliably even under high load, with retry logic for transient failures.
+The event processing pipeline runs transformers in order, allowing each transformer to build on previous enrichments. The ring buffer architecture ensures events are processed reliably even under high load, with retry logic for transient failures.
 
 ## Configuration
 
@@ -55,13 +55,14 @@ platformConnector:
       enabled: false
       config: /etc/config/overrides.toml
 
-  # Health event burst deduplication filter
+  # Health event burst deduplication transformer
   dedup:
     enabled: true
     suppressionWindow: "3m"
     cleanupInterval: "60s"
-    skipChecks:
-      - SysLogsGPUFallenOff
+    includeChecks:
+      - SysLogsXIDError
+      - SysLogsSXIDError
   
   # Transformer configurations
   transformers:
@@ -87,7 +88,7 @@ platformConnector:
 ### Configuration Options
 
 - **Pipeline**: Configure transformer execution order and enable/disable individual transformers
-- **Deduplication**: Configure repeated event suppression before datastore/Kubernetes fan-out
+- **Deduplication**: Configure repeated event downgrading before datastore/Kubernetes fan-out
 - **Transformers**: Transformer-specific configurations (MetadataAugmentor, OverrideTransformer)
 - **Metadata Augmentor**: Configure node metadata enrichment, cache settings, and allowed labels
 - **Override Transformer**: Define CEL-based rules to modify event properties
@@ -127,7 +128,7 @@ Processes events through configurable transformer pipeline:
 - Transformers execute in configured order with non-blocking error handling
 
 ### Event Deduplication
-Suppresses repeated events within a configurable burst window before they are persisted or sent to Kubernetes. The key uses `nodeName`, `checkName`, sorted `entitiesImpacted`, sorted `errorCode`, `processingStrategy`, and `isHealthy`; message-only variations do not create distinct faults.
+Marks repeated events for configured checks as `STORE_ONLY` within a configurable burst window before they are sent to connectors. The key uses `nodeName`, `checkName`, sorted `entitiesImpacted`, sorted `errorCode`, `processingStrategy`, and `isHealthy`; message-only variations do not create distinct faults.
 
 ### Data Persistence
 Stores health events in the datastore:
@@ -143,7 +144,7 @@ Updates cluster state based on health events:
 
 ## Event Processing Pipeline
 
-The event processing pipeline processes health events before they reach storage or Kubernetes. Transformers run in a configurable order, with each transformer able to modify events based on the enrichments from previous transformers. Filters run after transformers and can drop events from the outgoing batch.
+The event processing pipeline processes health events before they reach storage or Kubernetes. Transformers run in a configurable order, with each transformer able to modify events based on the enrichments from previous transformers.
 
 ### Available Transformers
 
@@ -166,11 +167,11 @@ Use cases:
 
 ### Transformer Configuration
 
-Transformers and filters are configured through Helm values with these sections:
+Transformers are configured through Helm values with these sections:
 
 1. **pipeline** - defines which transformers run and in what order
 2. **transformers** - contains transformer-specific configurations
-3. **dedup** - configures the deduplication filter appended by the chart
+3. **dedup** - configures the deduplication transformer appended by the chart
 
 ```yaml
 platformConnector:
@@ -195,8 +196,9 @@ platformConnector:
     enabled: true
     suppressionWindow: "3m"
     cleanupInterval: "60s"
-    skipChecks:
-      - SysLogsGPUFallenOff
+    includeChecks:
+      - SysLogsXIDError
+      - SysLogsSXIDError
 ```
 
 ### Error Handling

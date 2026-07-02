@@ -33,9 +33,7 @@ import (
 type platformConnectorDedupContextKey string
 
 const (
-	keyPlatformConnectorDedupNodeName        platformConnectorDedupContextKey = "platformConnectorDedupNodeName"
-	keyPlatformConnectorDedupConfigMapBackup platformConnectorDedupContextKey = "platformConnectorDedupConfigMapBackup"
-	keyPlatformConnectorDedupSenderNodeName  platformConnectorDedupContextKey = "platformConnectorDedupSenderNodeName"
+	keyPlatformConnectorDedupNodeName platformConnectorDedupContextKey = "platformConnectorDedupNodeName"
 )
 
 func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
@@ -49,22 +47,13 @@ func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
 
 		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/syslog-xid-cordon-configmap.yaml")
 
-		senderNodeName := helpers.PlatformConnectorSenderNode(ctx, t, client)
-		ctx = context.WithValue(ctx, keyPlatformConnectorDedupSenderNodeName, senderNodeName)
-
-		configMapBackup := helpers.EnablePlatformConnectorDedup(ctx, t, client, senderNodeName, "3m", "60s", []string{
-			"SysLogsGPUFallenOff",
-			"GpuXidError",
-		})
-		ctx = context.WithValue(ctx, keyPlatformConnectorDedupConfigMapBackup, configMapBackup)
-
 		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
 		ctx = context.WithValue(ctx, keyPlatformConnectorDedupNodeName, nodeName)
 
 		return ctx
 	})
 
-	feature.Assess("Repeated health events update quarantine annotation only for unique faults",
+	feature.Assess("Repeated health events trigger quarantine only for unique faults",
 		func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			client, err := c.NewClient()
 			require.NoError(t, err, "failed to create kubernetes client")
@@ -185,7 +174,7 @@ func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
 					summary.ByErrorCode["95"] == 6 &&
 					summary.ByErrorCode["119"] == 2
 			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
-				"quarantine annotation should contain exactly the unique dedup keys that passed the platform connector")
+				"quarantine annotation should contain exactly the unique faults that remained EXECUTE_REMEDIATION")
 
 			return ctx
 		})
@@ -212,19 +201,22 @@ func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
 					t.Logf("failed to count quarantine annotation events during cleanup: %v", err)
 					return false
 				}
-				t.Logf("Waiting for cleanup: current quarantine annotation total=%d XID95=%d XID119=%d",
-					summary.Total, summary.ByErrorCode["95"], summary.ByErrorCode["119"])
 
-				return summary.Total == 0
-			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "quarantine annotation should be cleared")
+				node, err := helpers.GetNodeByName(ctx, client, nodeName)
+				if err != nil {
+					t.Logf("failed to get node during cleanup: %v", err)
+					return false
+				}
+
+				t.Logf("Waiting for cleanup: current quarantine annotation total=%d XID95=%d XID119=%d cordoned=%v",
+					summary.Total, summary.ByErrorCode["95"], summary.ByErrorCode["119"], node.Spec.Unschedulable)
+
+				return summary.Total == 0 && !node.Spec.Unschedulable
+			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+				"quarantine annotation should be cleared and node should be uncordoned")
 		}
 
 		helpers.RestoreQuarantineConfig(ctx, t, c)
-
-		if configMapBackup, ok := ctx.Value(keyPlatformConnectorDedupConfigMapBackup).([]byte); ok {
-			senderNodeName, _ := ctx.Value(keyPlatformConnectorDedupSenderNodeName).(string)
-			helpers.RestorePlatformConnectorConfig(ctx, t, client, configMapBackup, senderNodeName)
-		}
 
 		return ctx
 	})

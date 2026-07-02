@@ -37,7 +37,7 @@ When a health monitor wants observability-only behavior, it publishes health eve
 - Node quarantine (fault-quarantine skips - no taint, labels, or annotations)
 - Node draining (node-drainer module won't receive them - filtered by pipeline)
 - Remediation CR creation (fault-remediation module won't receive them - filtered by pipeline)
-- Pattern analysis (health-events-analyzer ignores incoming `processingStrategy=STORE_ONLY` events for pattern detection and does not consider them while running the query)
+- Direct remediation side effects from the source event. Health-events-analyzer may still use `STORE_ONLY` source events as analysis input; the analyzer output event's own `processingStrategy` controls whether an inferred pattern can modify cluster state.
 
 ---
 
@@ -69,14 +69,12 @@ When a health monitor wants observability-only behavior, it publishes health eve
 					  ↓                      ↓                           ↓
 ┌────────────────────────────┐  ┌────────────────────────────┐  ┌────────────────────────────┐
 │ Health Events Analyzer     │  │ Fault Quarantine           │  │ Event Exporter             │
-│ Filter + Process           │  │ Filter                     │  │ Process event              │
-│ - Change-stream filter     │  │ - Change-stream filter     │  │ - Transform to CloudEvent  │
-│   excludes STORE_ONLY      │  │   excludes STORE_ONLY      │  │ - Include                  │
-│ - Rule queries exclude     │  │ - NO cordon/taints         │  │   processingStrategy       │
-│   STORE_ONLY events        │  │ - NO labels/annotations    │  │ - Publish event            │
-│ - If publishing as         │  │ - NO status update         │  │                            │
-│   STORE_ONLY: publish      │  │                            │  │                            │
-│   events with STORE_ONLY   │  │                            │  │                            │
+│ Analyze + Publish          │  │ Filter                     │  │ Process event              │
+│ - May analyze STORE_ONLY   │  │ - Change-stream filter     │  │ - Transform to CloudEvent  │
+│   source events            │  │   excludes STORE_ONLY      │  │ - Include                  │
+│ - Output event's           │  │ - NO cordon/taints         │  │   processingStrategy       │
+│   processingStrategy       │  │ - NO labels/annotations    │  │ - Publish event            │
+│   controls downstream      │  │ - NO status update         │  │                            │
 └────────────────────────────┘  └────────────────────────────┘  └────────────────────────────┘
 											↓
 									Database NOT Updated
@@ -421,7 +419,7 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 
 We need new methods in mongodb and postgres pipeline builder:
 1. `BuildProcessableHealthEventInsertsPipeline` which filters `processingStrategy=EXECUTE_REMEDIATION` inserted events for fault-quarantine module
-2. `BuildProcessableNonFatalUnhealthyInsertsPipeline` which filters `processingStrategy=EXECUTE_REMEDIATION`, non-fatal and unhealthy inserted events for health-events-analyzer module.
+2. `BuildProcessableNonFatalUnhealthyInsertsPipeline` which filters non-fatal and unhealthy inserted events for health-events-analyzer module. It intentionally includes `STORE_ONLY` source events as analyzer input; the analyzer output event's own processing strategy controls downstream side effects.
 
 File: `store-client/pkg/client/mongodb_pipeline_builder.go`
 
@@ -555,22 +553,20 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 Health Events Analyzer has two distinct processingStrategy concerns:
 
-1. **Incoming/historic events**: if an incoming (or historical) health event has `processingStrategy=STORE_ONLY`, it should be ignored
-   by the analyzer for pattern detection (no queries/state transitions triggered by audit-only events).
+1. **Incoming/historic events**: the analyzer may use incoming (or historical) `processingStrategy=STORE_ONLY` events for pattern detection. It is an analyzer over stored observations; it does not directly mutate cluster state from the source event.
 2. **Analyzer’s own output strategy**: if the analyzer itself is configured to publish with `STORE_ONLY`, then any aggregated health events
    it publishes must have `processingStrategy=STORE_ONLY`.
 3. **Rule-based output strategy**: a single rule can also be configured to publish with `STORE_ONLY`; any new event it publishes should also use `STORE_ONLY`.
 
-**Skip processing STORE_ONLY events in events-analyzer**
+**Analyze non-fatal unhealthy events, including STORE_ONLY source events**
 
-Update the change-stream pipeline to exclude `processingStrategy=STORE_ONLY` events, so the analyzer does not receive observability-only events for pattern detection.
+Use the non-fatal unhealthy pipeline without excluding `STORE_ONLY`; the analyzer's published event carries the processing strategy that controls whether downstream modules can act.
 
 File: `health-events-analyzer/main.go`
 
 ```go
 func createPipeline() interface{} {
 	builder := client.GetPipelineBuilder()
-	// use new helper method which filters events with processingStrategy=EXECUTE_REMEDIATION
 	return builder.BuildProcessableNonFatalUnhealthyInsertsPipeline()
 }
 ```

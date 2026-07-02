@@ -15,6 +15,7 @@
 package client
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -62,6 +63,8 @@ func TestAllHealthEventInsertsPipeline(t *testing.T) {
 			require.NotNil(t, pipeline)
 			require.NotEmpty(t, pipeline)
 			assert.Len(t, pipeline, 1, "Pipeline should have 1 stage")
+			assert.NotContains(t, fmt.Sprint(pipeline), "processingstrategy",
+				"HEA input pipeline should include STORE_ONLY source events")
 		})
 	}
 }

@@ -46,26 +46,6 @@ func (m *mockTransformer) Name() string {
 	return m.name
 }
 
-type mockFilter struct {
-	name   string
-	called bool
-	keep   bool
-	fail   bool
-}
-
-func (m *mockFilter) Filter(ctx context.Context, event *pb.HealthEvent) (bool, error) {
-	m.called = true
-	if m.fail {
-		return true, fmt.Errorf("mock filter error")
-	}
-
-	return m.keep, nil
-}
-
-func (m *mockFilter) Name() string {
-	return m.name
-}
-
 func TestPipeline(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -145,47 +125,4 @@ func TestPipelineOrder(t *testing.T) {
 	pipeline.Process(context.Background(), event)
 
 	assert.Equal(t, []string{"first", "second"}, order)
-}
-
-func TestPipelineFiltersRunAfterTransformers(t *testing.T) {
-	order := []string{}
-
-	t1 := &mockTransformer{
-		name: "first",
-		mutate: func(e *pb.HealthEvent) {
-			order = append(order, "transformer")
-		},
-	}
-	f1 := &mockFilter{name: "filter", keep: true}
-	pipeline := NewWithFilters([]Transformer{t1}, []Filter{f1})
-
-	keep := pipeline.Process(context.Background(), &pb.HealthEvent{})
-
-	assert.True(t, keep)
-	assert.True(t, f1.called)
-	assert.Equal(t, []string{"transformer"}, order)
-}
-
-func TestPipelineDropsWhenFilterReturnsFalse(t *testing.T) {
-	drop := &mockFilter{name: "drop", keep: false}
-	notCalled := &mockFilter{name: "not-called", keep: true}
-	pipeline := NewWithFilters(nil, []Filter{drop, notCalled})
-
-	keep := pipeline.Process(context.Background(), &pb.HealthEvent{})
-
-	assert.False(t, keep)
-	assert.True(t, drop.called)
-	assert.False(t, notCalled.called)
-}
-
-func TestPipelineKeepsWhenFilterErrors(t *testing.T) {
-	failing := &mockFilter{name: "failing", keep: false, fail: true}
-	next := &mockFilter{name: "next", keep: true}
-	pipeline := NewWithFilters(nil, []Filter{failing, next})
-
-	keep := pipeline.Process(context.Background(), &pb.HealthEvent{})
-
-	assert.True(t, keep)
-	assert.True(t, failing.called)
-	assert.True(t, next.called)
 }

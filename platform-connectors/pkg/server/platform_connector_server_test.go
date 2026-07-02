@@ -23,16 +23,20 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-type dropCheckFilter struct {
+type storeOnlyTransformer struct {
 	checkName string
 }
 
-func (f *dropCheckFilter) Filter(ctx context.Context, event *pb.HealthEvent) (bool, error) {
-	return event.CheckName != f.checkName, nil
+func (t *storeOnlyTransformer) Transform(ctx context.Context, event *pb.HealthEvent) error {
+	if event.CheckName == t.checkName {
+		event.ProcessingStrategy = pb.ProcessingStrategy_STORE_ONLY
+	}
+
+	return nil
 }
 
-func (f *dropCheckFilter) Name() string {
-	return "drop-check"
+func (t *storeOnlyTransformer) Name() string {
+	return "store-only"
 }
 
 func TestHealthEventOccurredV1_ProcessingStrategyNormalization(t *testing.T) {
@@ -80,22 +84,23 @@ func TestHealthEventOccurredV1_ProcessingStrategyNormalization(t *testing.T) {
 	}
 }
 
-func TestHealthEventOccurredV1_DroppedEventsRemovedFromBatch(t *testing.T) {
+func TestHealthEventOccurredV1_PipelineMutationsKeepFullBatch(t *testing.T) {
 	server := &PlatformConnectorServer{
-		Pipeline: pipeline.NewWithFilters(nil, []pipeline.Filter{
-			&dropCheckFilter{checkName: "drop-me"},
-		}),
+		Pipeline: pipeline.New(&storeOnlyTransformer{checkName: "duplicate"}),
 	}
 	healthEvents := &pb.HealthEvents{
 		Events: []*pb.HealthEvent{
 			{NodeName: "test-node", CheckName: "keep-me"},
-			{NodeName: "test-node", CheckName: "drop-me"},
+			{NodeName: "test-node", CheckName: "duplicate"},
 		},
 	}
 
 	_, err := server.HealthEventOccurredV1(context.Background(), healthEvents)
 
 	assert.NoError(t, err)
-	assert.Len(t, healthEvents.Events, 1)
+	assert.Len(t, healthEvents.Events, 2)
 	assert.Equal(t, "keep-me", healthEvents.Events[0].CheckName)
+	assert.Equal(t, pb.ProcessingStrategy_EXECUTE_REMEDIATION, healthEvents.Events[0].ProcessingStrategy)
+	assert.Equal(t, "duplicate", healthEvents.Events[1].CheckName)
+	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, healthEvents.Events[1].ProcessingStrategy)
 }

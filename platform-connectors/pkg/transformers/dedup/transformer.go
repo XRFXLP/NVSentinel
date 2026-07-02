@@ -23,30 +23,30 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-// Name is the pipeline registry name for the deduplication filter.
+// Name is the pipeline registry name for the deduplication transformer.
 const Name = "Deduplicator"
 
-// Deduplicator suppresses repeated health events within a tracker suppression window.
+// Deduplicator marks repeated health events as STORE_ONLY within a tracker suppression window.
 type Deduplicator struct {
 	tracker *commondedup.Tracker
-	skip    map[string]bool
+	include map[string]bool
 	cancel  context.CancelFunc
 }
 
-// NewDeduplicator creates a filter backed by tracker and a check-name skip list.
+// NewDeduplicator creates a transformer backed by tracker and a check-name include list.
 func NewDeduplicator(
 	tracker *commondedup.Tracker,
-	skipChecks []string,
+	includeChecks []string,
 	cancel ...context.CancelFunc,
 ) *Deduplicator {
-	skip := make(map[string]bool, len(skipChecks))
-	for _, check := range skipChecks {
-		skip[check] = true
+	include := make(map[string]bool, len(includeChecks))
+	for _, check := range includeChecks {
+		include[check] = true
 	}
 
 	d := &Deduplicator{
 		tracker: tracker,
-		skip:    skip,
+		include: include,
 	}
 	if len(cancel) > 0 {
 		d.cancel = cancel[0]
@@ -55,7 +55,7 @@ func NewDeduplicator(
 	return d
 }
 
-// Close stops the background eviction loop, if this filter owns one.
+// Close stops the background eviction loop, if this transformer owns one.
 func (d *Deduplicator) Close() error {
 	if d.cancel != nil {
 		d.cancel()
@@ -69,10 +69,11 @@ func (d *Deduplicator) Name() string {
 	return Name
 }
 
-// Filter returns false for duplicate events and true for events that should continue downstream.
-func (d *Deduplicator) Filter(ctx context.Context, event *pb.HealthEvent) (bool, error) {
-	if d.skip[event.GetCheckName()] {
-		return true, nil
+// Transform downgrades duplicate unhealthy events to STORE_ONLY so they are persisted
+// but do not create Kubernetes-side remediation effects.
+func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) error {
+	if len(d.include) > 0 && !d.include[event.GetCheckName()] {
+		return nil
 	}
 
 	if event.GetIsHealthy() {
@@ -84,26 +85,27 @@ func (d *Deduplicator) Filter(ctx context.Context, event *pb.HealthEvent) (bool,
 				"err_code", errCodeLabel(event))
 		}
 
-		return true, nil
+		return nil
 	}
 
 	if d.tracker.IsDuplicate(event) {
-		dedupSuppressedCounter.WithLabelValues(
+		dedupStoreOnlyCounter.WithLabelValues(
 			event.GetCheckName(),
 			event.GetNodeName(),
 			errCodeLabel(event),
 		).Inc()
-		slog.InfoContext(ctx, "Health event suppressed by deduplication",
+		event.ProcessingStrategy = pb.ProcessingStrategy_STORE_ONLY
+		slog.InfoContext(ctx, "Duplicate health event marked STORE_ONLY by deduplication",
 			"node", event.GetNodeName(),
 			"check", event.GetCheckName(),
 			"err_code", errCodeLabel(event))
 
-		return false, nil
+		return nil
 	}
 
 	d.tracker.Mark(event)
 
-	return true, nil
+	return nil
 }
 
 func startEvictExpired(ctx context.Context, tracker *commondedup.Tracker, interval time.Duration) {

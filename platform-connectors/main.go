@@ -39,10 +39,10 @@ import (
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/grpcsink"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/filters/dedup"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
+	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/dedup"
 	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/metadata"
 	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/overrides"
 )
