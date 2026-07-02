@@ -19,10 +19,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
-	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
@@ -30,7 +28,8 @@ import (
 )
 
 const (
-	platformConnectorName = "platform-connectors"
+	platformConnectorName  = "platform-connectors"
+	simpleHealthClientName = "simple-health-client"
 )
 
 type platformConnectorPipelineStage struct {
@@ -98,6 +97,7 @@ func EnablePlatformConnectorDedup(
 	ctx context.Context,
 	t *testing.T,
 	client klient.Client,
+	connectorNodeName string,
 	burstWindow string,
 	evictionInterval string,
 	skipChecks []string,
@@ -110,7 +110,7 @@ func EnablePlatformConnectorDedup(
 	err = setPlatformConnectorDedup(ctx, client, true, burstWindow, evictionInterval, skipChecks)
 	require.NoError(t, err, "failed to enable platform connector dedup")
 
-	restartPlatformConnector(ctx, t, client)
+	restartPlatformConnectorOnNode(ctx, t, client, connectorNodeName)
 
 	return backupData
 }
@@ -120,6 +120,7 @@ func RestorePlatformConnectorConfig(
 	t *testing.T,
 	client klient.Client,
 	configMapBackup []byte,
+	connectorNodeName string,
 ) {
 	t.Helper()
 
@@ -133,7 +134,16 @@ func RestorePlatformConnectorConfig(
 	)
 	require.NoError(t, err, "failed to restore platform connector ConfigMap")
 
-	restartPlatformConnector(ctx, t, client)
+	restartPlatformConnectorOnNode(ctx, t, client, connectorNodeName)
+}
+
+func PlatformConnectorSenderNode(ctx context.Context, t *testing.T, client klient.Client) string {
+	t.Helper()
+
+	pod, err := GetPodOnWorkerNode(ctx, t, client, NVSentinelNamespace, simpleHealthClientName)
+	require.NoError(t, err, "failed to find %s pod", simpleHealthClientName)
+
+	return pod.Spec.NodeName
 }
 
 func setPlatformConnectorDedup(
@@ -234,26 +244,15 @@ func buildDedupTOML(burstWindow string, evictionInterval string, skipChecks []st
 		burstWindow, evictionInterval, string(skipChecksJSON)), nil
 }
 
-func restartPlatformConnector(ctx context.Context, t *testing.T, client klient.Client) {
+func restartPlatformConnectorOnNode(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
 	t.Helper()
 
-	restartTime := time.Now().Format(time.RFC3339)
+	require.NotEmpty(t, nodeName, "platform connector restart node must be set")
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		daemonSet := &appsv1.DaemonSet{}
-		if err := client.Resources().Get(ctx, platformConnectorName, NVSentinelNamespace, daemonSet); err != nil {
-			return err
-		}
+	pod, err := GetDaemonSetPodOnWorkerNode(ctx, t, client, platformConnectorName, platformConnectorName, nodeName)
+	require.NoError(t, err, "failed to find platform connector pod on node %s", nodeName)
 
-		if daemonSet.Spec.Template.Annotations == nil {
-			daemonSet.Spec.Template.Annotations = make(map[string]string)
-		}
-
-		daemonSet.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = restartTime
-
-		return client.Resources().Update(ctx, daemonSet)
-	})
-	require.NoError(t, err, "failed to restart platform connector DaemonSet")
-
-	waitForDaemonSetRollout(ctx, t, client, platformConnectorName)
+	RestartDaemonSetPodOnNode(
+		ctx, t, client, NVSentinelNamespace, platformConnectorName, platformConnectorName, nodeName, pod.Name,
+	)
 }

@@ -35,6 +35,7 @@ type platformConnectorDedupContextKey string
 const (
 	keyPlatformConnectorDedupNodeName        platformConnectorDedupContextKey = "platformConnectorDedupNodeName"
 	keyPlatformConnectorDedupConfigMapBackup platformConnectorDedupContextKey = "platformConnectorDedupConfigMapBackup"
+	keyPlatformConnectorDedupSenderNodeName  platformConnectorDedupContextKey = "platformConnectorDedupSenderNodeName"
 )
 
 func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
@@ -48,7 +49,10 @@ func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
 
 		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/syslog-xid-cordon-configmap.yaml")
 
-		configMapBackup := helpers.EnablePlatformConnectorDedup(ctx, t, client, "3m", "60s", []string{
+		senderNodeName := helpers.PlatformConnectorSenderNode(ctx, t, client)
+		ctx = context.WithValue(ctx, keyPlatformConnectorDedupSenderNodeName, senderNodeName)
+
+		configMapBackup := helpers.EnablePlatformConnectorDedup(ctx, t, client, senderNodeName, "3m", "60s", []string{
 			"SysLogsGPUFallenOff",
 			"GpuXidError",
 		})
@@ -218,7 +222,8 @@ func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
 		helpers.RestoreQuarantineConfig(ctx, t, c)
 
 		if configMapBackup, ok := ctx.Value(keyPlatformConnectorDedupConfigMapBackup).([]byte); ok {
-			helpers.RestorePlatformConnectorConfig(ctx, t, client, configMapBackup)
+			senderNodeName, _ := ctx.Value(keyPlatformConnectorDedupSenderNodeName).(string)
+			helpers.RestorePlatformConnectorConfig(ctx, t, client, configMapBackup, senderNodeName)
 		}
 
 		return ctx
