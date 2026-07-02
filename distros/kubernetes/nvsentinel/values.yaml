@@ -252,11 +252,18 @@ platformConnector:
     burst: 10
 
   dedup:
+    # Enable the platform-connector dedup filter before events fan out to connectors.
     enabled: true
+    # How long repeated events with the same dedup key are suppressed.
+    # Example: with "3m", a matching unhealthy event re-emits only after 3 minutes.
     suppressionWindow: "3m"
+    # How often expired dedup keys are removed from the in-memory tracker.
     cleanupInterval: "60s"
+    # Checks that should never be deduplicated. Use this for checks where every
+    # repeated event is meaningful to downstream analyzers or remediation.
     skipChecks:
       - SysLogsGPUFallenOff
+      - SysLogsNICDriverError
 
   # Node metadata enrichment configuration
   # Health event transformers pipeline

@@ -300,6 +300,7 @@ platformConnector:
     cleanupInterval: "60s"
     skipChecks:
       - SysLogsGPUFallenOff
+      - SysLogsNICDriverError
 
   # Health event transformers pipeline
   # Transformers process health events before storage and propagation
