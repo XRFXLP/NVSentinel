@@ -27,8 +27,8 @@ import (
 func TestLoadConfigParsesDurationsAndSkipChecks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dedup.toml")
 	err := os.WriteFile(path, []byte(`
-burstWindow = "3m"
-evictionInterval = "60s"
+suppressionWindow = "3m"
+cleanupInterval = "60s"
 skipChecks = ["SysLogsGPUFallenOff"]
 `), 0o600)
 	require.NoError(t, err)
@@ -36,8 +36,8 @@ skipChecks = ["SysLogsGPUFallenOff"]
 	cfg, err := LoadConfig(path)
 
 	require.NoError(t, err)
-	assert.Equal(t, 3*time.Minute, cfg.BurstWindow)
-	assert.Equal(t, time.Minute, cfg.EvictionInterval)
+	assert.Equal(t, 3*time.Minute, cfg.SuppressionWindow)
+	assert.Equal(t, time.Minute, cfg.CleanupInterval)
 	assert.Equal(t, []string{"SysLogsGPUFallenOff"}, cfg.SkipChecks)
 }
 

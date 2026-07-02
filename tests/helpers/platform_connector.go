@@ -98,8 +98,8 @@ func EnablePlatformConnectorDedup(
 	t *testing.T,
 	client klient.Client,
 	connectorNodeName string,
-	burstWindow string,
-	evictionInterval string,
+	suppressionWindow string,
+	cleanupInterval string,
 	skipChecks []string,
 ) []byte {
 	t.Helper()
@@ -107,7 +107,7 @@ func EnablePlatformConnectorDedup(
 	backupData, err := BackupConfigMap(ctx, client, platformConnectorName, NVSentinelNamespace)
 	require.NoError(t, err, "failed to backup platform connector ConfigMap")
 
-	err = setPlatformConnectorDedup(ctx, client, true, burstWindow, evictionInterval, skipChecks)
+	err = setPlatformConnectorDedup(ctx, client, true, suppressionWindow, cleanupInterval, skipChecks)
 	require.NoError(t, err, "failed to enable platform connector dedup")
 
 	restartPlatformConnectorOnNode(ctx, t, client, connectorNodeName)
@@ -150,8 +150,8 @@ func setPlatformConnectorDedup(
 	ctx context.Context,
 	client klient.Client,
 	enabled bool,
-	burstWindow string,
-	evictionInterval string,
+	suppressionWindow string,
+	cleanupInterval string,
 	skipChecks []string,
 ) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -174,7 +174,7 @@ func setPlatformConnectorDedup(
 			return err
 		}
 
-		dedupTOML, err := buildDedupTOML(burstWindow, evictionInterval, skipChecks)
+		dedupTOML, err := buildDedupTOML(suppressionWindow, cleanupInterval, skipChecks)
 		if err != nil {
 			return err
 		}
@@ -234,14 +234,14 @@ func setDedupPipelineStage(configJSON string, enabled bool) (string, error) {
 	return string(updated), nil
 }
 
-func buildDedupTOML(burstWindow string, evictionInterval string, skipChecks []string) (string, error) {
+func buildDedupTOML(suppressionWindow string, cleanupInterval string, skipChecks []string) (string, error) {
 	skipChecksJSON, err := json.Marshal(skipChecks)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal dedup skip checks: %w", err)
 	}
 
-	return fmt.Sprintf("burstWindow = %q\nevictionInterval = %q\nskipChecks = %s\n",
-		burstWindow, evictionInterval, string(skipChecksJSON)), nil
+	return fmt.Sprintf("suppressionWindow = %q\ncleanupInterval = %q\nskipChecks = %s\n",
+		suppressionWindow, cleanupInterval, string(skipChecksJSON)), nil
 }
 
 func restartPlatformConnectorOnNode(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {

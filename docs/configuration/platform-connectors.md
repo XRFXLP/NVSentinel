@@ -56,8 +56,8 @@ platformConnector:
   
   dedup:
     enabled: true
-    burstWindow: "3m"
-    evictionInterval: "60s"
+    suppressionWindow: "3m"
+    cleanupInterval: "60s"
     skipChecks:
       - SysLogsGPUFallenOff
 
@@ -207,8 +207,8 @@ Suppresses repeated health events within a burst window before they are written 
 platformConnector:
   dedup:
     enabled: true
-    burstWindow: "3m"
-    evictionInterval: "60s"
+    suppressionWindow: "3m"
+    cleanupInterval: "60s"
     skipChecks:
       - SysLogsGPUFallenOff
 ```
@@ -218,11 +218,14 @@ platformConnector:
 #### enabled
 Enables the deduplication filter. When disabled, every event that reaches platform-connectors continues to downstream connectors.
 
-#### burstWindow
-Go duration string that controls how long repeated events with the same key are suppressed. After the window expires, the next matching event is emitted as a fresh burst.
+#### suppressionWindow
+Go duration string that controls how long repeated events with the same key are suppressed. After the window expires, the next matching event is emitted again.
 
-#### evictionInterval
-Go duration string that controls how often the in-memory tracker evicts expired keys that have not recurred.
+#### cleanupInterval
+Go duration string that controls how often the in-memory tracker removes expired keys that have not recurred.
+
+#### skipChecks
+Optional list of check names that should never be deduplicated.
 
 #### skipChecks
 List of `checkName` values excluded from platform-connector deduplication. Use this for checks that already implement source-specific correlation semantics.

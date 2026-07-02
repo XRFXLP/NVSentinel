@@ -26,7 +26,7 @@ import (
 // Name is the pipeline registry name for the deduplication filter.
 const Name = "Deduplicator"
 
-// Deduplicator suppresses repeated health events within a tracker burst window.
+// Deduplicator suppresses repeated health events within a tracker suppression window.
 type Deduplicator struct {
 	tracker *commondedup.Tracker
 	skip    map[string]bool

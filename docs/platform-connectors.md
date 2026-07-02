@@ -58,8 +58,8 @@ platformConnector:
   # Health event burst deduplication filter
   dedup:
     enabled: true
-    burstWindow: "3m"
-    evictionInterval: "60s"
+    suppressionWindow: "3m"
+    cleanupInterval: "60s"
     skipChecks:
       - SysLogsGPUFallenOff
   
@@ -193,8 +193,8 @@ platformConnector:
 
   dedup:
     enabled: true
-    burstWindow: "3m"
-    evictionInterval: "60s"
+    suppressionWindow: "3m"
+    cleanupInterval: "60s"
     skipChecks:
       - SysLogsGPUFallenOff
 ```

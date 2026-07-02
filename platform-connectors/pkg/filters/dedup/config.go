@@ -23,15 +23,15 @@ import (
 )
 
 const (
-	DefaultBurstWindow      = 3 * time.Minute
-	DefaultEvictionInterval = 1 * time.Minute
+	DefaultSuppressionWindow = 3 * time.Minute
+	DefaultCleanupInterval   = 1 * time.Minute
 )
 
 // Config controls platform-connector health-event deduplication.
 type Config struct {
-	BurstWindow      time.Duration `toml:"burstWindow"`
-	EvictionInterval time.Duration `toml:"evictionInterval"`
-	SkipChecks       []string      `toml:"skipChecks"`
+	SuppressionWindow time.Duration `toml:"suppressionWindow"`
+	CleanupInterval   time.Duration `toml:"cleanupInterval"`
+	SkipChecks        []string      `toml:"skipChecks"`
 }
 
 // LoadConfig loads dedup configuration from path, returning defaults when absent.
@@ -55,20 +55,20 @@ func LoadConfig(path string) (*Config, error) {
 // DefaultConfig returns the production default dedup configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		BurstWindow:      DefaultBurstWindow,
-		EvictionInterval: DefaultEvictionInterval,
-		SkipChecks:       []string{},
+		SuppressionWindow: DefaultSuppressionWindow,
+		CleanupInterval:   DefaultCleanupInterval,
+		SkipChecks:        []string{},
 	}
 }
 
 // Validate checks that dedup durations are usable.
 func (c *Config) Validate() error {
-	if c.BurstWindow <= 0 {
-		return fmt.Errorf("burstWindow must be positive")
+	if c.SuppressionWindow <= 0 {
+		return fmt.Errorf("suppressionWindow must be positive")
 	}
 
-	if c.EvictionInterval <= 0 {
-		return fmt.Errorf("evictionInterval must be positive")
+	if c.CleanupInterval <= 0 {
+		return fmt.Errorf("cleanupInterval must be positive")
 	}
 
 	return nil

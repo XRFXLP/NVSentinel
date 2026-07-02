@@ -56,7 +56,7 @@ A healthy event clears entries whose keys match `(node, check, entities, ErrorCo
 
 ### TTL semantics
 
-The TTL is the **burst window** — the smallest gap between two events that should still count as the same burst. Default: **3 minutes**. Configurable via the helm value `platformConnector.dedup.burstWindow` (Go duration string, e.g. `"3m"`, `"180s"`).
+The TTL is the **suppression window** — the duration for which repeated events with the same dedup key are suppressed. Default: **3 minutes**. Configurable via the helm value `platformConnector.dedup.suppressionWindow` (Go duration string, e.g. `"3m"`, `"180s"`).
 
 ## Implementation
 
@@ -156,7 +156,8 @@ Some checks already run their own correlation (e.g., `SysLogsGPUFallenOff`'s 5-m
 platformConnector:
   dedup:
     enabled: true
-    burstWindow: "3m"
+    suppressionWindow: "3m"
+    cleanupInterval: "60s"
     skipChecks:
       - SysLogsGPUFallenOff
 ```
@@ -183,7 +184,7 @@ rate(syslog_health_monitor_xid_errors{node="gpu-node-1"}[5m])
 
 ### Lifecycle
 
-The dedup tracker lives entirely in memory. A single background goroutine calls `EvictExpired()` on a timer (default every 60s) so entries whose events stop recurring don't accumulate past `BurstWindow`. There is no on-disk state, no boot-id detection, and no startup restore: pod restart and node reboot both result in an empty tracker, and currently-active faults re-emit once each as the kernel re-observes them.
+The dedup tracker lives entirely in memory. A single background goroutine calls `EvictExpired()` on a cleanup interval (default every 60s) so entries whose events stop recurring don't accumulate past `suppressionWindow`. There is no on-disk state, no boot-id detection, and no startup restore: pod restart and node reboot both result in an empty tracker, and currently-active faults re-emit once each as the kernel re-observes them.
 
 ### Files touched
 

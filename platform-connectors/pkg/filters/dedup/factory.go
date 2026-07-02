@@ -36,10 +36,10 @@ func newFromConfig(cfg *pipeline.Config) (pipeline.Filter, error) {
 		return nil, fmt.Errorf("invalid dedup configuration: %w", err)
 	}
 
-	tracker := commondedup.NewTracker(dedupCfg.BurstWindow)
+	tracker := commondedup.NewTracker(dedupCfg.SuppressionWindow)
 	//nolint:gosec // cancel is owned by the returned filter and invoked by Pipeline.Close.
 	ctx, cancel := context.WithCancel(context.Background())
-	startEvictExpired(ctx, tracker, dedupCfg.EvictionInterval)
+	startEvictExpired(ctx, tracker, dedupCfg.CleanupInterval)
 
 	return NewDeduplicator(tracker, dedupCfg.SkipChecks, cancel), nil
 }

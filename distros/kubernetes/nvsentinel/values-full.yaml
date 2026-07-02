@@ -296,8 +296,8 @@ platformConnector:
   # Suppresses repeated events with the same node, check, impacted entities, error code, and health state.
   dedup:
     enabled: true
-    burstWindow: "3m"
-    evictionInterval: "60s"
+    suppressionWindow: "3m"
+    cleanupInterval: "60s"
     skipChecks:
       - SysLogsGPUFallenOff
 

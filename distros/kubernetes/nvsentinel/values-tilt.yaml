@@ -4143,19 +4143,9 @@ platformConnector:
     # intentionally send repeated same-key unhealthy events. Dedup-specific E2E
     # tests enable this stage only for their own setup and restore it afterward.
     enabled: false
-    burstWindow: "3m"
-    evictionInterval: "60s"
-    skipChecks:
-      - SysLogsGPUFallenOff
-      # Tilt/E2E tests commonly use helpers.NewHealthEvent, which emits the
-      # generic gpu-health-monitor GpuXidError shape and makes individual test
-      # events unique by changing only Message. Platform-connector dedup
-      # intentionally ignores Message because production syslog spam often
-      # differs only by timestamp/pid text, so enabling dedup for GpuXidError in
-      # this environment can drop test setup events before they reach MongoDB.
-      # Cold-start tests in particular depend on every helper-generated event
-      # being persisted while node-drainer/fault-remediation is offline.
-      - GpuXidError
+    # Dormant while disabled; keeps the rendered dedup.toml valid for manual toggles.
+    suppressionWindow: "3m"
+    cleanupInterval: "60s"
   
   pipeline:
     - name: MetadataAugmentor

@@ -41,8 +41,8 @@ data:
     }
   {{- if .Values.platformConnector.dedup }}
   dedup.toml: |
-    burstWindow = "{{ .Values.platformConnector.dedup.burstWindow }}"
-    evictionInterval = "{{ .Values.platformConnector.dedup.evictionInterval }}"
+    suppressionWindow = "{{ .Values.platformConnector.dedup.suppressionWindow }}"
+    cleanupInterval = "{{ .Values.platformConnector.dedup.cleanupInterval }}"
     skipChecks = {{ .Values.platformConnector.dedup.skipChecks | default list | toJson }}
   {{- end }}
   {{- if .Values.platformConnector.transformers.MetadataAugmentor }}
