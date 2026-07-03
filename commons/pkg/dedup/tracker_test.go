@@ -15,6 +15,8 @@
 package dedup
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -127,6 +129,30 @@ func TestTrackerDeduplicatesWithinTTLAndReemitsAfterExpiry(t *testing.T) {
 
 	assert.False(t, tracker.IsDuplicate(event))
 	assert.Empty(t, tracker.seen)
+}
+
+func TestTrackerCheckAndMarkIsAtomic(t *testing.T) {
+	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
+	tracker := NewTracker(3*time.Minute, WithNow(func() time.Time { return now }))
+	event := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsXIDError", ErrorCode: []string{"79"}}
+
+	const workers = 32
+
+	var uniqueCount atomic.Int32
+	var wg sync.WaitGroup
+
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			if !tracker.CheckAndMark(event) {
+				uniqueCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	assert.Equal(t, int32(1), uniqueCount.Load())
 }
 
 func TestTrackerEvictExpiredRemovesStaleEntries(t *testing.T) {

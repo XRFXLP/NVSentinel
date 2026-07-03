@@ -88,7 +88,7 @@ func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) err
 		return nil
 	}
 
-	if d.tracker.IsDuplicate(event) {
+	if d.tracker.CheckAndMark(event) {
 		dedupStoreOnlyCounter.WithLabelValues(
 			event.GetCheckName(),
 			event.GetNodeName(),
@@ -102,8 +102,6 @@ func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) err
 
 		return nil
 	}
-
-	d.tracker.Mark(event)
 
 	return nil
 }

@@ -295,7 +295,7 @@ platformConnector:
   # Health event deduplication transformer
   # Marks repeated events for configured high-volume checks as STORE_ONLY.
   dedup:
-    enabled: true
+    enabled: false
     suppressionWindow: "3m"
     cleanupInterval: "60s"
     includeChecks:

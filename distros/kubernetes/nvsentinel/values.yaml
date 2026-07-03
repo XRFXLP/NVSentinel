@@ -252,8 +252,8 @@ platformConnector:
     burst: 10
 
   dedup:
-    # Enable the platform-connector dedup transformer before events fan out to connectors.
-    enabled: true
+    # Enable to mark repeated health events STORE_ONLY before connector fan-out.
+    enabled: false
     # How long repeated events with the same dedup key are marked STORE_ONLY.
     # Example: with "3m", a matching unhealthy event can trigger remediation again only after 3 minutes.
     suppressionWindow: "3m"

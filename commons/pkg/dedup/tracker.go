@@ -88,6 +88,26 @@ func (t *Tracker) IsDuplicate(event *pb.HealthEvent) bool {
 	return true
 }
 
+// CheckAndMark returns true if the event's key is already tracked within ttl.
+// Otherwise it records the key before returning false. The check and mark happen
+// under one lock so concurrent callers cannot both treat the same new key as unique.
+func (t *Tracker) CheckAndMark(event *pb.HealthEvent) bool {
+	k := keyWithHealthState(event, event.GetIsHealthy())
+	now := t.now()
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	firstSeen, ok := t.seen[k]
+	if ok && now.Sub(firstSeen) < t.ttl {
+		return true
+	}
+
+	t.seen[k] = now
+
+	return false
+}
+
 // Mark records the event's key.
 func (t *Tracker) Mark(event *pb.HealthEvent) {
 	t.mu.Lock()
