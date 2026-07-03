@@ -34,6 +34,7 @@ type platformConnectorDedupContextKey string
 
 const (
 	keyPlatformConnectorDedupNodeName platformConnectorDedupContextKey = "platformConnectorDedupNodeName"
+	platformConnectorDedupCheckName   string                           = "PlatformConnectorDedupTestXIDError"
 )
 
 func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
@@ -157,6 +158,7 @@ func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
 			)
 
 			for _, event := range events {
+				event.WithCheckName(platformConnectorDedupCheckName)
 				helpers.SendHealthEvent(ctx, t, event)
 			}
 
@@ -184,10 +186,10 @@ func TestPlatformConnectorDeduplicatesRepeatedHealthEvents(t *testing.T) {
 		require.NoError(t, err, "failed to create kubernetes client")
 
 		if nodeName, ok := ctx.Value(keyPlatformConnectorDedupNodeName).(string); ok && nodeName != "" {
-			t.Log("Sending check-level healthy SysLogsXIDError event to clear quarantine annotation")
+			t.Logf("Sending check-level healthy %s event to clear quarantine annotation", platformConnectorDedupCheckName)
 			helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(nodeName).
 				WithAgent("syslog-health-monitor").
-				WithCheckName("SysLogsXIDError").
+				WithCheckName(platformConnectorDedupCheckName).
 				WithComponentClass("GPU").
 				WithHealthy(true).
 				WithFatal(false).

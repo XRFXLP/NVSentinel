@@ -4142,9 +4142,10 @@ platformConnector:
     enabled: true
     suppressionWindow: "3m"
     cleanupInterval: "60s"
+    # Tilt keeps platform-connector dedup scoped to the dedicated E2E check so
+    # syslog and health-events-analyzer tests can still exercise repeated XID/SXID flows.
     includeChecks:
-      - SysLogsXIDError
-      - SysLogsSXIDError
+      - PlatformConnectorDedupTestXIDError
   
   pipeline:
     - name: MetadataAugmentor
