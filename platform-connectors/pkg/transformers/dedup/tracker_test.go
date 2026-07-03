@@ -107,9 +107,9 @@ func TestKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.equal {
-				assert.Equal(t, Key(tt.left), Key(tt.right))
+				assert.Equal(t, key(tt.left), key(tt.right))
 			} else {
-				assert.NotEqual(t, Key(tt.left), Key(tt.right))
+				assert.NotEqual(t, key(tt.left), key(tt.right))
 			}
 		})
 	}
@@ -117,23 +117,23 @@ func TestKey(t *testing.T) {
 
 func TestTrackerDeduplicatesWithinTTLAndReemitsAfterExpiry(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := NewTracker(3*time.Minute, WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	event := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsXIDError", ErrorCode: []string{"79"}}
 
-	require.False(t, tracker.IsDuplicate(event))
-	tracker.Mark(event)
+	require.False(t, tracker.isDuplicate(event))
+	tracker.mark(event)
 
-	assert.True(t, tracker.IsDuplicate(event))
+	assert.True(t, tracker.isDuplicate(event))
 
 	now = now.Add(3 * time.Minute)
 
-	assert.False(t, tracker.IsDuplicate(event))
+	assert.False(t, tracker.isDuplicate(event))
 	assert.Empty(t, tracker.seen)
 }
 
 func TestTrackerCheckAndMarkIsAtomic(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := NewTracker(3*time.Minute, WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	event := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsXIDError", ErrorCode: []string{"79"}}
 
 	const workers = 32
@@ -145,7 +145,7 @@ func TestTrackerCheckAndMarkIsAtomic(t *testing.T) {
 	for range workers {
 		go func() {
 			defer wg.Done()
-			if !tracker.CheckAndMark(event) {
+			if !tracker.checkAndMark(event) {
 				uniqueCount.Add(1)
 			}
 		}()
@@ -157,24 +157,24 @@ func TestTrackerCheckAndMarkIsAtomic(t *testing.T) {
 
 func TestTrackerEvictExpiredRemovesStaleEntries(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := NewTracker(3*time.Minute, WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	stale := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsXIDError", ErrorCode: []string{"79"}}
 	fresh := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsSXIDError", ErrorCode: []string{"95"}}
 
-	tracker.Mark(stale)
+	tracker.mark(stale)
 	now = now.Add(2 * time.Minute)
-	tracker.Mark(fresh)
+	tracker.mark(fresh)
 	now = now.Add(90 * time.Second)
 
-	tracker.EvictExpired()
+	tracker.evictExpired()
 
-	assert.False(t, tracker.IsDuplicate(stale))
-	assert.True(t, tracker.IsDuplicate(fresh))
+	assert.False(t, tracker.isDuplicate(stale))
+	assert.True(t, tracker.isDuplicate(fresh))
 }
 
 func TestClearUnhealthyCounterpart(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := NewTracker(3*time.Minute, WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	unhealthy := &pb.HealthEvent{
 		NodeName:  "node-a",
 		CheckName: "SysLogsXIDError",
@@ -193,22 +193,22 @@ func TestClearUnhealthyCounterpart(t *testing.T) {
 		},
 	}
 
-	tracker.Mark(unhealthy)
-	tracker.Mark(healthy)
+	tracker.mark(unhealthy)
+	tracker.mark(healthy)
 
-	require.True(t, tracker.IsDuplicate(unhealthy))
-	require.True(t, tracker.IsDuplicate(healthy))
+	require.True(t, tracker.isDuplicate(unhealthy))
+	require.True(t, tracker.isDuplicate(healthy))
 
-	cleared := tracker.ClearUnhealthyCounterpart(healthy)
+	cleared := tracker.clearUnhealthyCounterpart(healthy)
 
 	assert.True(t, cleared)
-	assert.False(t, tracker.IsDuplicate(unhealthy))
-	assert.True(t, tracker.IsDuplicate(healthy))
+	assert.False(t, tracker.isDuplicate(unhealthy))
+	assert.True(t, tracker.isDuplicate(healthy))
 }
 
 func TestClearUnhealthyCounterpartWithCheckLevelHealthyEvent(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := NewTracker(3*time.Minute, WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	unhealthy := &pb.HealthEvent{
 		NodeName:           "node-a",
 		CheckName:          "GpuDcgmConnectivityFailure",
@@ -222,27 +222,27 @@ func TestClearUnhealthyCounterpartWithCheckLevelHealthyEvent(t *testing.T) {
 		ProcessingStrategy: unhealthy.ProcessingStrategy,
 	}
 
-	tracker.Mark(unhealthy)
-	tracker.Mark(healthy)
+	tracker.mark(unhealthy)
+	tracker.mark(healthy)
 
-	require.True(t, tracker.IsDuplicate(unhealthy))
-	require.True(t, tracker.IsDuplicate(healthy))
+	require.True(t, tracker.isDuplicate(unhealthy))
+	require.True(t, tracker.isDuplicate(healthy))
 
-	cleared := tracker.ClearUnhealthyCounterpart(healthy)
+	cleared := tracker.clearUnhealthyCounterpart(healthy)
 
 	assert.True(t, cleared)
-	assert.False(t, tracker.IsDuplicate(unhealthy))
-	assert.True(t, tracker.IsDuplicate(healthy))
+	assert.False(t, tracker.isDuplicate(unhealthy))
+	assert.True(t, tracker.isDuplicate(healthy))
 }
 
 func TestClearUnhealthyCounterpartNoopForUnhealthyEvent(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := NewTracker(3*time.Minute, WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	event := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsXIDError"}
 
-	tracker.Mark(event)
-	cleared := tracker.ClearUnhealthyCounterpart(event)
+	tracker.mark(event)
+	cleared := tracker.clearUnhealthyCounterpart(event)
 
 	assert.False(t, cleared)
-	assert.True(t, tracker.IsDuplicate(event))
+	assert.True(t, tracker.isDuplicate(event))
 }

@@ -19,7 +19,6 @@ import (
 	"log/slog"
 	"time"
 
-	commondedup "github.com/nvidia/nvsentinel/commons/pkg/dedup"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
@@ -28,14 +27,14 @@ const Name = "Deduplicator"
 
 // Deduplicator marks repeated health events as STORE_ONLY within a tracker suppression window.
 type Deduplicator struct {
-	tracker *commondedup.Tracker
+	tracker *tracker
 	include map[string]bool
 	cancel  context.CancelFunc
 }
 
 // NewDeduplicator creates a transformer backed by tracker and a check-name include list.
 func NewDeduplicator(
-	tracker *commondedup.Tracker,
+	tracker *tracker,
 	includeChecks []string,
 	cancel ...context.CancelFunc,
 ) *Deduplicator {
@@ -77,7 +76,7 @@ func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) err
 	}
 
 	if event.GetIsHealthy() {
-		clearedUnhealthy := d.tracker.ClearUnhealthyCounterpart(event)
+		clearedUnhealthy := d.tracker.clearUnhealthyCounterpart(event)
 		if clearedUnhealthy {
 			slog.InfoContext(ctx, "Healthy event cleared unhealthy dedup counterpart",
 				"node", event.GetNodeName(),
@@ -88,7 +87,7 @@ func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) err
 		return nil
 	}
 
-	if d.tracker.CheckAndMark(event) {
+	if d.tracker.checkAndMark(event) {
 		dedupStoreOnlyCounter.WithLabelValues(
 			event.GetCheckName(),
 			event.GetNodeName(),
@@ -106,7 +105,7 @@ func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) err
 	return nil
 }
 
-func startEvictExpired(ctx context.Context, tracker *commondedup.Tracker, interval time.Duration) {
+func startEvictExpired(ctx context.Context, tracker *tracker, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 
 	go func() {
@@ -117,7 +116,7 @@ func startEvictExpired(ctx context.Context, tracker *commondedup.Tracker, interv
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				tracker.EvictExpired()
+				tracker.evictExpired()
 			}
 		}
 	}()

@@ -22,13 +22,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	commondedup "github.com/nvidia/nvsentinel/commons/pkg/dedup"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 func TestDeduplicatorMarksDuplicateEventsStoreOnly(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := commondedup.NewTracker(3*time.Minute, commondedup.WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	transformer := NewDeduplicator(tracker, nil)
 	event := &pb.HealthEvent{
 		NodeName:           "node-a",
@@ -49,7 +48,7 @@ func TestDeduplicatorMarksDuplicateEventsStoreOnly(t *testing.T) {
 
 func TestDeduplicatorOnlyDeduplicatesIncludedChecks(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := commondedup.NewTracker(3*time.Minute, commondedup.WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	transformer := NewDeduplicator(tracker, []string{"SysLogsXIDError"})
 	event := &pb.HealthEvent{
 		NodeName:           "node-a",
@@ -79,7 +78,7 @@ func TestDeduplicatorOnlyDeduplicatesIncludedChecks(t *testing.T) {
 
 func TestDeduplicatorAlwaysKeepsHealthyEvents(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := commondedup.NewTracker(3*time.Minute, commondedup.WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	transformer := NewDeduplicator(tracker, nil)
 	event := &pb.HealthEvent{
 		NodeName:           "node-a",
@@ -97,7 +96,7 @@ func TestDeduplicatorAlwaysKeepsHealthyEvents(t *testing.T) {
 
 func TestDeduplicatorHealthyClearsUnhealthyCounterpart(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := commondedup.NewTracker(3*time.Minute, commondedup.WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	transformer := NewDeduplicator(tracker, nil)
 	unhealthy := &pb.HealthEvent{
 		NodeName:           "node-a",
@@ -134,7 +133,7 @@ func TestDeduplicatorHealthyClearsUnhealthyCounterpart(t *testing.T) {
 
 func TestDeduplicatorKeepsHealthyEventThatClearsUnhealthyCounterpart(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := commondedup.NewTracker(3*time.Minute, commondedup.WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	transformer := NewDeduplicator(tracker, nil)
 	unhealthy := &pb.HealthEvent{
 		NodeName:           "node-a",
@@ -171,7 +170,7 @@ func TestDeduplicatorKeepsHealthyEventThatClearsUnhealthyCounterpart(t *testing.
 
 func TestDeduplicatorKeepsCheckLevelHealthyEventThatClearsUnhealthyCounterpart(t *testing.T) {
 	now := time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC)
-	tracker := commondedup.NewTracker(3*time.Minute, commondedup.WithNow(func() time.Time { return now }))
+	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	transformer := NewDeduplicator(tracker, nil)
 	unhealthy := &pb.HealthEvent{
 		NodeName:           "node-a",

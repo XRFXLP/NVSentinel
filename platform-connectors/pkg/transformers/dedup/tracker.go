@@ -27,28 +27,28 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-type Option func(*Tracker)
+type trackerOption func(*tracker)
 
-// WithNow injects the clock used by the tracker. It is intended for tests.
-func WithNow(now func() time.Time) Option {
-	return func(t *Tracker) {
+// withNow injects the clock used by the tracker. It is intended for tests.
+func withNow(now func() time.Time) trackerOption {
+	return func(t *tracker) {
 		if now != nil {
 			t.now = now
 		}
 	}
 }
 
-// Tracker remembers recently seen health-event keys for one burst window.
-type Tracker struct {
+// tracker remembers recently seen health-event keys for one burst window.
+type tracker struct {
 	mu   sync.RWMutex
 	seen map[eventKey]time.Time
 	ttl  time.Duration
 	now  func() time.Time
 }
 
-// NewTracker creates a tracker that treats repeated keys within ttl as duplicates.
-func NewTracker(ttl time.Duration, opts ...Option) *Tracker {
-	t := &Tracker{
+// newTracker creates a tracker that treats repeated keys within ttl as duplicates.
+func newTracker(ttl time.Duration, opts ...trackerOption) *tracker {
+	t := &tracker{
 		seen: make(map[eventKey]time.Time),
 		ttl:  ttl,
 		now:  time.Now,
@@ -61,14 +61,14 @@ func NewTracker(ttl time.Duration, opts ...Option) *Tracker {
 	return t
 }
 
-// Key extracts the canonical key from an event.
-func Key(event *pb.HealthEvent) uint64 {
+// key extracts the canonical key from an event.
+func key(event *pb.HealthEvent) uint64 {
 	return keyWithHealthState(event, event.GetIsHealthy()).hash()
 }
 
-// IsDuplicate is true iff the event's key is already in the tracker and within ttl.
+// isDuplicate is true iff the event's key is already in the tracker and within ttl.
 // Side effect: evicts the queried key if expired (lazy eviction).
-func (t *Tracker) IsDuplicate(event *pb.HealthEvent) bool {
+func (t *tracker) isDuplicate(event *pb.HealthEvent) bool {
 	k := keyWithHealthState(event, event.GetIsHealthy())
 	now := t.now()
 
@@ -88,10 +88,10 @@ func (t *Tracker) IsDuplicate(event *pb.HealthEvent) bool {
 	return true
 }
 
-// CheckAndMark returns true if the event's key is already tracked within ttl.
+// checkAndMark returns true if the event's key is already tracked within ttl.
 // Otherwise it records the key before returning false. The check and mark happen
 // under one lock so concurrent callers cannot both treat the same new key as unique.
-func (t *Tracker) CheckAndMark(event *pb.HealthEvent) bool {
+func (t *tracker) checkAndMark(event *pb.HealthEvent) bool {
 	k := keyWithHealthState(event, event.GetIsHealthy())
 	now := t.now()
 
@@ -108,18 +108,18 @@ func (t *Tracker) CheckAndMark(event *pb.HealthEvent) bool {
 	return false
 }
 
-// Mark records the event's key.
-func (t *Tracker) Mark(event *pb.HealthEvent) {
+// mark records the event's key.
+func (t *tracker) mark(event *pb.HealthEvent) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	t.seen[keyWithHealthState(event, event.GetIsHealthy())] = t.now()
 }
 
-// ClearUnhealthyCounterpart removes the prior unhealthy entry that a healthy
+// clearUnhealthyCounterpart removes the prior unhealthy entry that a healthy
 // recovery event resolves. It returns true when an unhealthy entry was removed.
 // Unhealthy events do not resolve anything, so they are ignored.
-func (t *Tracker) ClearUnhealthyCounterpart(event *pb.HealthEvent) bool {
+func (t *tracker) clearUnhealthyCounterpart(event *pb.HealthEvent) bool {
 	if !event.GetIsHealthy() {
 		return false
 	}
@@ -141,8 +141,8 @@ func (t *Tracker) ClearUnhealthyCounterpart(event *pb.HealthEvent) bool {
 	return cleared
 }
 
-// EvictExpired walks the entire seen set and removes entries past ttl.
-func (t *Tracker) EvictExpired() {
+// evictExpired walks the entire seen set and removes entries past ttl.
+func (t *tracker) evictExpired() {
 	now := t.now()
 
 	t.mu.Lock()
@@ -155,8 +155,8 @@ func (t *Tracker) EvictExpired() {
 	}
 }
 
-// Clear removes all tracked keys.
-func (t *Tracker) Clear() {
+// clear removes all tracked keys.
+func (t *tracker) clear() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 

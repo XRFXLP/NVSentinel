@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 
-	commondedup "github.com/nvidia/nvsentinel/commons/pkg/dedup"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 )
 
@@ -36,7 +35,7 @@ func newFromConfig(cfg *pipeline.Config, opts pipeline.Options) (pipeline.Transf
 		return nil, fmt.Errorf("invalid dedup configuration: %w", err)
 	}
 
-	tracker := commondedup.NewTracker(dedupCfg.SuppressionWindow)
+	tracker := newTracker(dedupCfg.SuppressionWindow)
 	//nolint:gosec // cancel is owned by the returned transformer and invoked by Pipeline.Close.
 	ctx, cancel := context.WithCancel(context.Background())
 	startEvictExpired(ctx, tracker, dedupCfg.CleanupInterval)
