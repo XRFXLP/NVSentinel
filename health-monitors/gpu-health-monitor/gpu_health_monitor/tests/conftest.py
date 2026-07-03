@@ -175,6 +175,8 @@ class MockDCGMFields:
     # Add device field constants as needed
     for i in range(320):  # Mock 320 device fields as expected by tests
         locals()[f"DCGM_FI_DEV_FIELD_{i}"] = i
+    DCGM_FI_DEV_GPU_TEMP_TLIMIT = 153
+    del DCGM_FI_DEV_FIELD_153
 
 
 class MockDCGMValue:

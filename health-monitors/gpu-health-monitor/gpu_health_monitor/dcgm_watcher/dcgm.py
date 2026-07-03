@@ -47,13 +47,14 @@ def _run_dcgm_server(port: int, bind_address: str) -> None:
 # 1. Add a new entry here (key = config key from [dcgmfieldsmonitoring])
 # 2. Add the key to configmap.yaml under [dcgmfieldsmonitoring]
 # 3. Add evaluation logic in _evaluate_* method if needed
-DCGM_FIELDS_MONITORING: dict[str, types.DCGMFieldMonitor] = {
-    "gputemplimitmonitoringenabled": types.DCGMFieldMonitor(
-        field_id=getattr(dcgm_fields, "DCGM_FI_DEV_GPU_TEMP_LIMIT", 153),
+DCGM_FIELDS_MONITORING: dict[str, types.DCGMFieldMonitor] = {}
+_gpu_temp_limit_field_id = getattr(dcgm_fields, "DCGM_FI_DEV_GPU_TEMP_TLIMIT", None)
+if _gpu_temp_limit_field_id is not None:
+    DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"] = types.DCGMFieldMonitor(
+        field_id=_gpu_temp_limit_field_id,
         watch_name="DCGM_HEALTH_WATCH_THERMAL_MARGIN",
         violation_code="GPU_TEMP_HW_SLOWDOWN_VIOLATION",
-    ),
-}
+    )
 
 
 class DCGMWatcher:
@@ -70,7 +71,13 @@ class DCGMWatcher:
         self._addr = addr
         self._poll_interval_seconds = poll_interval_seconds
         self._callbacks = callbacks
-        self._thermal_margin_enabled = thermal_margin_enabled
+        thermal_margin_supported = "gputemplimitmonitoringenabled" in DCGM_FIELDS_MONITORING
+        self._thermal_margin_enabled = thermal_margin_enabled and thermal_margin_supported
+        if thermal_margin_enabled and not thermal_margin_supported:
+            log.warning(
+                "GpuThermalMarginWatch requested but DCGM_FI_DEV_GPU_TEMP_TLIMIT (field 153) is unavailable; "
+                "disabling the optional monitor"
+            )
         self._metadata_reader = metadata_reader
         self._field_group = None
         self._dcgm_mode = dcgm_mode

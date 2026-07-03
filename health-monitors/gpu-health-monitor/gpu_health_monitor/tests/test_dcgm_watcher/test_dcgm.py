@@ -63,6 +63,27 @@ class TestDCGMHealthChecks:
         incident.entityInfo.entityId = entity_id
         return incident
 
+    def test_unsupported_thermal_margin_field_is_disabled(self, monkeypatch):
+        monkeypatch.delitem(dcgm.DCGM_FIELDS_MONITORING, "gputemplimitmonitoringenabled")
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            thermal_margin_enabled=True,
+            metadata_reader=MagicMock(),
+        )
+        dcgm_group = MagicMock()
+        dcgm_group.GetGpuIds.return_value = [0]
+        watcher._create_dcgm_group_with_all_entities = MagicMock(return_value=dcgm_group)
+        watcher._get_gpu_serial_numbers = MagicMock(return_value={})
+
+        watcher._initialize_dcgm_monitoring(MagicMock())
+
+        assert watcher._thermal_margin_enabled is False
+        dcgm_group.health.Set.assert_called_once_with(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
+        dcgm_group.samples.WatchFields.assert_not_called()
+
     def test_get_available_health_watches(self):
         watcher = dcgm.DCGMWatcher(
             addr="localhost:5555",
