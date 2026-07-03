@@ -16,8 +16,6 @@
 package dedup
 
 import (
-	"encoding/binary"
-	"hash/fnv"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,15 +26,6 @@ import (
 )
 
 type trackerOption func(*tracker)
-
-// withNow injects the clock used by the tracker. It is intended for tests.
-func withNow(now func() time.Time) trackerOption {
-	return func(t *tracker) {
-		if now != nil {
-			t.now = now
-		}
-	}
-}
 
 // tracker remembers recently seen health-event keys for one burst window.
 type tracker struct {
@@ -61,33 +50,6 @@ func newTracker(ttl time.Duration, opts ...trackerOption) *tracker {
 	return t
 }
 
-// key extracts the canonical key from an event.
-func key(event *pb.HealthEvent) uint64 {
-	return keyWithHealthState(event, event.GetIsHealthy()).hash()
-}
-
-// isDuplicate is true iff the event's key is already in the tracker and within ttl.
-// Side effect: evicts the queried key if expired (lazy eviction).
-func (t *tracker) isDuplicate(event *pb.HealthEvent) bool {
-	k := keyWithHealthState(event, event.GetIsHealthy())
-	now := t.now()
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	firstSeen, ok := t.seen[k]
-	if !ok {
-		return false
-	}
-
-	if now.Sub(firstSeen) >= t.ttl {
-		delete(t.seen, k)
-		return false
-	}
-
-	return true
-}
-
 // checkAndMark returns true if the event's key is already tracked within ttl.
 // Otherwise it records the key before returning false. The check and mark happen
 // under one lock so concurrent callers cannot both treat the same new key as unique.
@@ -106,14 +68,6 @@ func (t *tracker) checkAndMark(event *pb.HealthEvent) bool {
 	t.seen[k] = now
 
 	return false
-}
-
-// mark records the event's key.
-func (t *tracker) mark(event *pb.HealthEvent) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.seen[keyWithHealthState(event, event.GetIsHealthy())] = t.now()
 }
 
 // clearUnhealthyCounterpart removes the prior unhealthy entry that a healthy
@@ -155,14 +109,6 @@ func (t *tracker) evictExpired() {
 	}
 }
 
-// clear removes all tracked keys.
-func (t *tracker) clear() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.seen = make(map[eventKey]time.Time)
-}
-
 // keyWithHealthState builds the canonical event key while allowing callers to
 // evaluate the same event as healthy or unhealthy. Recovery handling uses this
 // to clear the unhealthy key that corresponds to an incoming healthy event.
@@ -188,24 +134,6 @@ type eventKey struct {
 	errorCodes         string
 	processingStrategy string
 	isHealthy          bool
-}
-
-func (k eventKey) hash() uint64 {
-	h := fnv.New64a()
-
-	writeString(h, k.nodeName)
-	writeString(h, k.checkName)
-	writeString(h, k.entities)
-	writeString(h, k.errorCodes)
-	writeString(h, k.processingStrategy)
-
-	if k.isHealthy {
-		_, _ = h.Write([]byte{1})
-	} else {
-		_, _ = h.Write([]byte{0})
-	}
-
-	return h.Sum64()
 }
 
 func (k eventKey) matchesUnhealthyCounterpart(clearKey eventKey, event *pb.HealthEvent) bool {
@@ -278,19 +206,4 @@ func writeCanonicalString(b *strings.Builder, value string) {
 	b.WriteByte(':')
 	b.WriteString(value)
 	b.WriteByte(';')
-}
-
-type byteWriter interface {
-	Write([]byte) (int, error)
-}
-
-func writeString(w byteWriter, value string) {
-	writeUint64(w, uint64(len(value)))
-	_, _ = w.Write([]byte(value))
-}
-
-func writeUint64(w byteWriter, value uint64) {
-	var buf [8]byte
-	binary.LittleEndian.PutUint64(buf[:], value)
-	_, _ = w.Write(buf[:])
 }

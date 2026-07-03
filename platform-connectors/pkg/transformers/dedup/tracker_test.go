@@ -26,6 +26,14 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
+func withNow(now func() time.Time) trackerOption {
+	return func(t *tracker) {
+		if now != nil {
+			t.now = now
+		}
+	}
+}
+
 func TestKey(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -107,9 +115,13 @@ func TestKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.equal {
-				assert.Equal(t, key(tt.left), key(tt.right))
+				assert.Equal(t,
+					keyWithHealthState(tt.left, tt.left.GetIsHealthy()),
+					keyWithHealthState(tt.right, tt.right.GetIsHealthy()))
 			} else {
-				assert.NotEqual(t, key(tt.left), key(tt.right))
+				assert.NotEqual(t,
+					keyWithHealthState(tt.left, tt.left.GetIsHealthy()),
+					keyWithHealthState(tt.right, tt.right.GetIsHealthy()))
 			}
 		})
 	}
@@ -120,15 +132,13 @@ func TestTrackerDeduplicatesWithinTTLAndReemitsAfterExpiry(t *testing.T) {
 	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	event := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsXIDError", ErrorCode: []string{"79"}}
 
-	require.False(t, tracker.isDuplicate(event))
-	tracker.mark(event)
-
-	assert.True(t, tracker.isDuplicate(event))
+	require.False(t, tracker.checkAndMark(event))
+	assert.True(t, tracker.checkAndMark(event))
 
 	now = now.Add(3 * time.Minute)
 
-	assert.False(t, tracker.isDuplicate(event))
-	assert.Empty(t, tracker.seen)
+	assert.False(t, tracker.checkAndMark(event))
+	assert.Len(t, tracker.seen, 1)
 }
 
 func TestTrackerCheckAndMarkIsAtomic(t *testing.T) {
@@ -161,15 +171,15 @@ func TestTrackerEvictExpiredRemovesStaleEntries(t *testing.T) {
 	stale := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsXIDError", ErrorCode: []string{"79"}}
 	fresh := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsSXIDError", ErrorCode: []string{"95"}}
 
-	tracker.mark(stale)
+	require.False(t, tracker.checkAndMark(stale))
 	now = now.Add(2 * time.Minute)
-	tracker.mark(fresh)
+	require.False(t, tracker.checkAndMark(fresh))
 	now = now.Add(90 * time.Second)
 
 	tracker.evictExpired()
 
-	assert.False(t, tracker.isDuplicate(stale))
-	assert.True(t, tracker.isDuplicate(fresh))
+	assert.False(t, tracker.checkAndMark(stale))
+	assert.True(t, tracker.checkAndMark(fresh))
 }
 
 func TestClearUnhealthyCounterpart(t *testing.T) {
@@ -193,17 +203,17 @@ func TestClearUnhealthyCounterpart(t *testing.T) {
 		},
 	}
 
-	tracker.mark(unhealthy)
-	tracker.mark(healthy)
+	require.False(t, tracker.checkAndMark(unhealthy))
+	require.False(t, tracker.checkAndMark(healthy))
 
-	require.True(t, tracker.isDuplicate(unhealthy))
-	require.True(t, tracker.isDuplicate(healthy))
+	require.True(t, tracker.checkAndMark(unhealthy))
+	require.True(t, tracker.checkAndMark(healthy))
 
 	cleared := tracker.clearUnhealthyCounterpart(healthy)
 
 	assert.True(t, cleared)
-	assert.False(t, tracker.isDuplicate(unhealthy))
-	assert.True(t, tracker.isDuplicate(healthy))
+	assert.False(t, tracker.checkAndMark(unhealthy))
+	assert.True(t, tracker.checkAndMark(healthy))
 }
 
 func TestClearUnhealthyCounterpartWithCheckLevelHealthyEvent(t *testing.T) {
@@ -222,17 +232,17 @@ func TestClearUnhealthyCounterpartWithCheckLevelHealthyEvent(t *testing.T) {
 		ProcessingStrategy: unhealthy.ProcessingStrategy,
 	}
 
-	tracker.mark(unhealthy)
-	tracker.mark(healthy)
+	require.False(t, tracker.checkAndMark(unhealthy))
+	require.False(t, tracker.checkAndMark(healthy))
 
-	require.True(t, tracker.isDuplicate(unhealthy))
-	require.True(t, tracker.isDuplicate(healthy))
+	require.True(t, tracker.checkAndMark(unhealthy))
+	require.True(t, tracker.checkAndMark(healthy))
 
 	cleared := tracker.clearUnhealthyCounterpart(healthy)
 
 	assert.True(t, cleared)
-	assert.False(t, tracker.isDuplicate(unhealthy))
-	assert.True(t, tracker.isDuplicate(healthy))
+	assert.False(t, tracker.checkAndMark(unhealthy))
+	assert.True(t, tracker.checkAndMark(healthy))
 }
 
 func TestClearUnhealthyCounterpartNoopForUnhealthyEvent(t *testing.T) {
@@ -240,9 +250,9 @@ func TestClearUnhealthyCounterpartNoopForUnhealthyEvent(t *testing.T) {
 	tracker := newTracker(3*time.Minute, withNow(func() time.Time { return now }))
 	event := &pb.HealthEvent{NodeName: "node-a", CheckName: "SysLogsXIDError"}
 
-	tracker.mark(event)
+	tracker.checkAndMark(event)
 	cleared := tracker.clearUnhealthyCounterpart(event)
 
 	assert.False(t, cleared)
-	assert.True(t, tracker.isDuplicate(event))
+	assert.True(t, tracker.checkAndMark(event))
 }
