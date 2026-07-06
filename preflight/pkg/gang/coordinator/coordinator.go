@@ -458,6 +458,7 @@ func (c *Coordinator) addOwnerReference(cm *corev1.ConfigMap, ownerReference *me
 			}
 
 			cm.OwnerReferences[idx] = *ownerReference
+
 			return true
 		}
 	}
