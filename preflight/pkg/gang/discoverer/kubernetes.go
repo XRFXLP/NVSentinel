@@ -139,15 +139,16 @@ func (w *WorkloadRefDiscoverer) DiscoverPeers(
 		"podGroup", podGroup,
 		"gangID", gangID)
 
-	ownerReference, err := w.OwnerReference(ctx, pod)
+	workload, err := w.getWorkload(ctx, pod.Namespace, workloadName)
 	if err != nil {
-		slog.Warn("Failed to get Workload owner reference, ConfigMap GC will rely on later backfill",
+		slog.Warn("Failed to get Workload, will use discovered pod count and skip owner reference",
 			"workload", workloadName,
 			"namespace", pod.Namespace,
 			"error", err)
 	}
 
-	expectedMinCount := w.fetchExpectedMinCount(ctx, pod.Namespace, workloadName, podGroup)
+	ownerReference := ownerReferenceForUnstructured(workload, WorkloadGVK)
+	expectedMinCount := w.fetchExpectedMinCount(pod.Namespace, workloadName, podGroup, workload)
 
 	peers, err := w.findPeers(ctx, pod.Namespace, workloadName, podGroup)
 	if err != nil {
@@ -179,10 +180,14 @@ func (w *WorkloadRefDiscoverer) DiscoverPeers(
 
 // fetchExpectedMinCount retrieves expected count, logging any errors.
 func (w *WorkloadRefDiscoverer) fetchExpectedMinCount(
-	ctx context.Context,
 	namespace, workloadName, podGroup string,
+	workload *unstructured.Unstructured,
 ) int {
-	count, err := w.getWorkloadMinCount(ctx, namespace, workloadName, podGroup)
+	if workload == nil {
+		return 0
+	}
+
+	count, err := w.getWorkloadMinCount(namespace, workloadName, podGroup, workload)
 	if err != nil {
 		slog.Warn("Failed to get Workload minCount, will use discovered pod count",
 			"workload", workloadName,
@@ -245,14 +250,9 @@ func (w *WorkloadRefDiscoverer) isPeerMatch(p *unstructured.Unstructured, worklo
 
 // getWorkloadMinCount retrieves the minCount from a Workload's podGroup gang policy.
 func (w *WorkloadRefDiscoverer) getWorkloadMinCount(
-	ctx context.Context,
 	namespace, name, podGroup string,
+	workload *unstructured.Unstructured,
 ) (int, error) {
-	workload, err := w.getWorkload(ctx, namespace, name)
-	if err != nil {
-		return 0, err
-	}
-
 	podGroups, found, err := unstructured.NestedSlice(workload.Object, "spec", "podGroups")
 	if err != nil {
 		return 0, fmt.Errorf("failed to get podGroups from Workload %s/%s: %w", namespace, name, err)
