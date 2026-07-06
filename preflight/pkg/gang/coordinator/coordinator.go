@@ -449,7 +449,8 @@ func (c *Coordinator) addOwnerReference(cm *corev1.ConfigMap, ownerReference *me
 		return false
 	}
 
-	for idx, existing := range cm.OwnerReferences {
+	ownerReferences := cm.GetOwnerReferences()
+	for idx, existing := range ownerReferences {
 		if existing.APIVersion == ownerReference.APIVersion &&
 			existing.Kind == ownerReference.Kind &&
 			existing.Name == ownerReference.Name {
@@ -457,13 +458,14 @@ func (c *Coordinator) addOwnerReference(cm *corev1.ConfigMap, ownerReference *me
 				return false
 			}
 
-			cm.OwnerReferences[idx] = *ownerReference
+			ownerReferences[idx] = *ownerReference
+			cm.SetOwnerReferences(ownerReferences)
 
 			return true
 		}
 	}
 
-	cm.OwnerReferences = append(cm.OwnerReferences, *ownerReference)
+	cm.SetOwnerReferences(append(ownerReferences, *ownerReference))
 
 	return true
 }
