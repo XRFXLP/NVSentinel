@@ -456,7 +456,7 @@ func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
 	ctx, span := tracing.StartSpan(ctx, "fault_remediation.partial_recovery_event")
 	defer span.End()
 
-	_, node, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+	remediationState, node, err := r.annotationManager.GetRemediationState(ctx, nodeName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			slog.WarnContext(ctx, "Node no longer exists, marking partial recovery event as terminal", "node", nodeName)
@@ -477,7 +477,7 @@ func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
 	// those from the remaining active failures. Non-terminal (remediating) and pre-remediation
 	// states are owned by the in-progress flow, so we just finalize the event.
 	if isTerminalRemediationLabel(currentNodeStateLabel(node)) {
-		if err := r.reconcilePartialRecoveryLabel(ctx, nodeName, node, healthEventStore); err != nil {
+		if err := r.reconcilePartialRecoveryLabel(ctx, nodeName, node, remediationState, healthEventStore); err != nil {
 			tracing.RecordError(span, err)
 
 			return ctrl.Result{}, err
@@ -520,6 +520,7 @@ func (r *FaultRemediationReconciler) reconcilePartialRecoveryLabel(
 	ctx context.Context,
 	nodeName string,
 	node *corev1.Node,
+	remediationState *annotation.RemediationStateAnnotation,
 	healthEventStore datastore.HealthEventStore,
 ) error {
 	span := tracing.SpanFromContext(ctx)
@@ -530,7 +531,7 @@ func (r *FaultRemediationReconciler) reconcilePartialRecoveryLabel(
 	}
 
 	targetLabel, shouldUpdate, err := r.recomputePartialRecoveryNodeLabel(
-		ctx, nodeName, annotations, healthEventStore)
+		ctx, nodeName, annotations, remediationState, healthEventStore)
 	if err != nil {
 		span.SetAttributes(
 			attribute.String("fault_remediation.error.type", "partial_recovery_recompute_error"),
@@ -569,6 +570,7 @@ func (r *FaultRemediationReconciler) recomputePartialRecoveryNodeLabel(
 	ctx context.Context,
 	nodeName string,
 	annotations map[string]string,
+	remediationState *annotation.RemediationStateAnnotation,
 	healthEventStore datastore.HealthEventStore,
 ) (statemanager.NVSentinelStateLabelValue, bool, error) {
 	activeEvents, err := activeQuarantineEvents(annotations)
@@ -584,7 +586,7 @@ func (r *FaultRemediationReconciler) recomputePartialRecoveryNodeLabel(
 
 	for _, activeEvent := range activeEvents {
 		failed, err := r.activeEventForcesRemediationFailed(
-			ctx, nodeName, activeEvent, healthEventStore, &sawRemediationSuccess)
+			ctx, nodeName, activeEvent, remediationState, healthEventStore, &sawRemediationSuccess)
 		if err != nil {
 			return "", false, err
 		}
@@ -598,26 +600,28 @@ func (r *FaultRemediationReconciler) recomputePartialRecoveryNodeLabel(
 		return statemanager.RemediationSucceededLabelValue, true, nil
 	}
 
-	// A remaining failure is supported but not yet remediated. fault-remediation does not own
-	// the pre-remediation labels (quarantined/draining/drain-*), and its normal remediation flow
-	// will set the correct remediation label, so leave the current label untouched.
+	// A remaining failure is supported but has no remediation outcome yet and no maintenance CR
+	// covering it, so it has not been skipped and the normal remediation flow will create a CR and
+	// set the correct label. Leave the current label untouched.
 	return "", false, nil
 }
 
 // activeEventForcesRemediationFailed reports whether a still-active quarantine event requires the
 // terminal remediation-failed label: either its action is unsupported, or its remediation was
-// recorded as failed. Otherwise it records, via sawRemediationSuccess, whether the event was
-// already remediated.
+// recorded as failed. Otherwise it records, via sawRemediationSuccess, whether the event has been
+// remediated.
 //
-// Success is taken only from the event's own FaultRemediated=true status. The remediation
-// annotation is intentionally not consulted: it is written when a maintenance CR is created, not
-// when it succeeds, so trusting it would mark a node remediation-succeeded while the remaining
-// failure's remediation is still in progress. Events covered by an equivalent CR independently
-// receive FaultRemediated=true once that CR completes, so no success is lost.
+// Success is taken from the event's own FaultRemediated=true status when present. When it is nil,
+// the event may have been skipped behind an equivalent maintenance CR (handleExistingCRSkip
+// advances the resume token without writing FaultRemediated and does not requeue, so the flag can
+// stay nil). In that case we consult the actual covering-CR status: an in-progress or succeeded CR
+// means the node is being/has been remediated, matching the normal flow that sets
+// remediation-succeeded on CR creation.
 func (r *FaultRemediationReconciler) activeEventForcesRemediationFailed(
 	ctx context.Context,
 	nodeName string,
 	activeEvent *protos.HealthEvent,
+	remediationState *annotation.RemediationStateAnnotation,
 	healthEventStore datastore.HealthEventStore,
 	sawRemediationSuccess *bool,
 ) (bool, error) {
@@ -626,7 +630,8 @@ func (r *FaultRemediationReconciler) activeEventForcesRemediationFailed(
 		return false, fmt.Errorf("failed to evaluate active event %s: %w", activeEvent.Id, err)
 	}
 
-	if !r.isRemediationSupported(activeEvent) {
+	groupConfig, supported := r.partialRecoveryGroupConfig(activeEvent)
+	if !supported {
 		return true, nil
 	}
 
@@ -636,17 +641,56 @@ func (r *FaultRemediationReconciler) activeEventForcesRemediationFailed(
 		}
 
 		*sawRemediationSuccess = true
+
+		return false, nil
+	}
+
+	if r.coveredByActiveRemediationCR(ctx, groupConfig, remediationState) {
+		*sawRemediationSuccess = true
 	}
 
 	return false, nil
 }
 
-// isRemediationSupported reports whether fault-remediation has a configured action for the event.
-func (r *FaultRemediationReconciler) isRemediationSupported(healthEvent *protos.HealthEvent) bool {
+// partialRecoveryGroupConfig returns the event's remediation group config and whether the action
+// is supported. A nil config with a non-NONE action means the action is unsupported.
+func (r *FaultRemediationReconciler) partialRecoveryGroupConfig(
+	healthEvent *protos.HealthEvent,
+) (*common.EquivalenceGroupConfig, bool) {
 	groupConfig, lookupErr := common.GetGroupConfigForEvent(
 		r.Config.RemediationClient.GetConfig().RemediationActions, healthEvent)
+	if lookupErr != nil || unsupportedRemediationAction(healthEvent, groupConfig) {
+		return nil, false
+	}
 
-	return lookupErr == nil && !unsupportedRemediationAction(healthEvent, groupConfig)
+	return groupConfig, true
+}
+
+// coveredByActiveRemediationCR reports whether an equivalent maintenance CR that is in progress or
+// succeeded covers the event's remediation group. It reads the live CR status (not just annotation
+// membership), so a recorded CR that has since failed or been deleted does not count as coverage.
+func (r *FaultRemediationReconciler) coveredByActiveRemediationCR(
+	ctx context.Context,
+	groupConfig *common.EquivalenceGroupConfig,
+	remediationState *annotation.RemediationStateAnnotation,
+) bool {
+	if groupConfig == nil || remediationState == nil {
+		return false
+	}
+
+	statusChecker := r.Config.RemediationClient.GetStatusChecker()
+	if statusChecker == nil {
+		return false
+	}
+
+	for _, groupState := range common.FilterEquivalenceGroupStates(groupConfig, remediationState) {
+		state := statusChecker.GetCRState(ctx, groupState.ActionName, groupState.MaintenanceCR)
+		if state == crstatus.CRStateInProgress || state == crstatus.CRStateSucceeded {
+			return true
+		}
+	}
+
+	return false
 }
 
 func activeQuarantineEvents(annotations map[string]string) ([]*protos.HealthEvent, error) {
@@ -711,11 +755,13 @@ func isPartialRecoveryRemediationEvent(healthEventWithStatus model.HealthEventWi
 		return false
 	}
 
-	healthEvent := healthEventWithStatus.HealthEvent
 	status := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
-	return healthEvent.IsHealthy &&
-		healthEvent.RecommendedAction == protos.RecommendedAction_NONE &&
+	// A healthy event that leaves the node quarantined is a partial recovery: the recovered
+	// failure cleared while other active failures keep the node quarantined. IsHealthy is the
+	// discriminator from a normal (unhealthy) remediation event — a healthy event never needs
+	// remediation regardless of its RecommendedAction, so we do not gate on the action.
+	return healthEventWithStatus.HealthEvent.IsHealthy &&
 		(status == string(model.Quarantined) || status == string(model.AlreadyQuarantined))
 }
 

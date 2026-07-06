@@ -1457,18 +1457,17 @@ func TestPartialRecoveryKeepsRemediationFailedWhenUnsupportedEventRemains(t *tes
 	assert.Equal(t, 1, markProcessedCount)
 }
 
-func TestPartialRecoveryLeavesLabelWhenSupportedFailurePending(t *testing.T) {
+func TestPartialRecoveryLeavesLabelWhenNoActiveCoveringCR(t *testing.T) {
 	ctx := context.Background()
 	nodeName := "test-node"
 	recoveryEventID := "event-c"
 	labelUpdateCalled := false
 	completionUpdated := false
 
-	// A supported failure is still active but not yet remediated (FaultRemediated nil). The node
-	// is currently remediation-failed. Even though the remediation annotation already lists this
-	// event's equivalence group (the maintenance CR was created), that only means a CR exists, not
-	// that it succeeded. fault-remediation must not flip the label to remediation-succeeded; it
-	// leaves the current label for its own remediation flow to reconcile once the CR completes.
+	// A supported failure is still active with FaultRemediated nil. The remediation annotation
+	// lists its equivalence group, but the covering CR is no longer active (Failed). Annotation
+	// membership alone must not be treated as success, and the event was not skipped behind an
+	// active CR, so the normal remediation flow will retry it. Leave the current label untouched.
 	activeEvent := testAnnotationHealthEvent("event-a", nodeName, protos.RecommendedAction_RESTART_BM, "GPU-a")
 	mockAnnotationManager := &MockNodeAnnotationManager{
 		existingCRs: map[string]string{
@@ -1481,7 +1480,14 @@ func TestPartialRecoveryLeavesLabelWhenSupportedFailurePending(t *testing.T) {
 	}
 
 	cfg := ReconcilerConfig{
-		RemediationClient: &MockK8sClient{annotationManagerOverride: mockAnnotationManager},
+		RemediationClient: &MockK8sClient{
+			annotationManagerOverride: mockAnnotationManager,
+			mockStatusChecker: &mockStatusChecker{
+				stateByCR: map[string]crstatus.CRState{
+					"maintenance-test-node-event-a": crstatus.CRStateFailed,
+				},
+			},
+		},
 		StateManager: &statemanager.MockStateManager{
 			UpdateNVSentinelStateNodeLabelFn: func(context.Context, string,
 				statemanager.NVSentinelStateLabelValue, bool) (bool, error) {
@@ -1527,8 +1533,90 @@ func TestPartialRecoveryLeavesLabelWhenSupportedFailurePending(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, result.IsZero())
 	assert.False(t, labelUpdateCalled,
-		"must not mark remediation-succeeded based on the CR-created annotation while remediation is pending")
+		"must not mark remediation-succeeded when no in-progress/succeeded covering CR exists")
 	assert.True(t, completionUpdated, "recovery event should still be finalized")
+	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
+	assert.Equal(t, 1, markProcessedCount)
+}
+
+func TestPartialRecoveryRecomputesSucceededWhenCoveringCRInProgress(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "test-node"
+	recoveryEventID := "event-c"
+	targetLabels := make([]statemanager.NVSentinelStateLabelValue, 0)
+
+	// A supported failure is still active with FaultRemediated nil because it was skipped behind an
+	// equivalent maintenance CR (handleExistingCRSkip never wrote FaultRemediated and did not
+	// requeue). The covering CR is in progress, so remediation is underway for the node's remaining
+	// failure; the stale remediation-failed label must be recomputed to remediation-succeeded,
+	// matching the normal flow that sets the label on CR creation.
+	activeEvent := testAnnotationHealthEvent("event-a", nodeName, protos.RecommendedAction_RESTART_BM, "GPU-a")
+	mockAnnotationManager := &MockNodeAnnotationManager{
+		existingCRs: map[string]string{
+			"restart": "maintenance-test-node-event-a",
+		},
+		nodeAnnotations: quarantineAnnotationForTest(t, activeEvent),
+		nodeLabels: map[string]string{
+			statemanager.NVSentinelStateLabelKey: string(statemanager.RemediationFailedLabelValue),
+		},
+	}
+
+	cfg := ReconcilerConfig{
+		RemediationClient: &MockK8sClient{
+			annotationManagerOverride: mockAnnotationManager,
+			mockStatusChecker: &mockStatusChecker{
+				stateByCR: map[string]crstatus.CRState{
+					"maintenance-test-node-event-a": crstatus.CRStateInProgress,
+				},
+			},
+		},
+		StateManager: &statemanager.MockStateManager{
+			UpdateNVSentinelStateNodeLabelFn: func(_ context.Context, nodeName string,
+				newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
+				assert.Equal(t, "test-node", nodeName)
+				assert.False(t, removeStateLabel)
+				targetLabels = append(targetLabels, newStateLabelValue)
+
+				return true, nil
+			},
+		},
+	}
+
+	mockStore := &MockHealthEventStore{
+		FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+			return []datastore.HealthEventWithStatus{
+				{
+					HealthEventStatus: datastore.HealthEventStatus{
+						UserPodsEvictionStatus: datastore.OperationStatus{
+							Status: datastore.StatusSucceeded,
+						},
+					},
+				},
+			}, nil
+		},
+		UpdateHealthEventStatusFn: func(_ context.Context, id string, status datastore.HealthEventStatus) error {
+			assert.Equal(t, recoveryEventID, id)
+			assert.NotNil(t, status.FaultRemediated)
+			assert.True(t, *status.FaultRemediated)
+
+			return nil
+		},
+	}
+
+	r := NewFaultRemediationReconciler(nil, nil, mockStore, cfg, false)
+	mockWatcher := &MockChangeStreamWatcher{}
+	eventWithToken := datastore.EventWithToken{
+		Event:       testRawHealthEvent(recoveryEventID, nodeName, protos.RecommendedAction_NONE),
+		ResumeToken: []byte("resume-token"),
+	}
+
+	result, err := r.handlePartialRecoveryEvent(ctx, nodeName, mockWatcher, eventWithToken, mockStore)
+
+	assert.NoError(t, err)
+	assert.True(t, result.IsZero())
+	assert.Equal(t, []statemanager.NVSentinelStateLabelValue{
+		statemanager.RemediationSucceededLabelValue,
+	}, targetLabels)
 	_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
 	assert.Equal(t, 1, markProcessedCount)
 }
