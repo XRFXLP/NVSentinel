@@ -50,6 +50,10 @@ import (
 
 type eventStatusMap map[string]model.Status
 
+type cancellationCutoff struct {
+	createdAt time.Time
+}
+
 type Reconciler struct {
 	Config              config.ReconcilerConfig
 	NodeEvictionContext sync.Map
@@ -62,7 +66,7 @@ type Reconciler struct {
 	healthEventStore    datastore.HealthEventStore
 	customDrainClient   *customdrain.Client
 	nodeEventsMap       map[string]eventStatusMap
-	cancelledNodes      map[string]struct{}
+	cancelledNodes      map[string]cancellationCutoff
 	nodeEventsMapMu     sync.Mutex
 }
 
@@ -103,7 +107,7 @@ func NewReconciler(
 		healthEventStore:    healthEventStore,
 		customDrainClient:   customDrainClient,
 		nodeEventsMap:       make(map[string]eventStatusMap),
-		cancelledNodes:      make(map[string]struct{}),
+		cancelledNodes:      make(map[string]cancellationCutoff),
 	}
 
 	queueManager.SetDataStoreEventProcessor(reconciler)
@@ -196,7 +200,7 @@ func (r *Reconciler) PreprocessAndEnqueueEvent(ctx context.Context, event client
 	status := (&healthEventWithStatus.HealthEventStatus.NodeQuarantined)
 	// Handle cancellation logic (Cancelled/UnQuarantined events)
 	if shouldSkip := r.handleEventCancellation(
-		ctx, documentID, nodeName, (*model.Status)(status)); shouldSkip {
+		ctx, documentID, nodeName, (*model.Status)(status), healthEventWithStatus.CreatedAt); shouldSkip {
 		slog.DebugContext(ctx, "Event skipped due to cancellation", "node", nodeName)
 
 		enqueueSpan.SetAttributes(
@@ -217,6 +221,7 @@ func (r *Reconciler) handleEventCancellation(
 	documentID interface{},
 	nodeName string,
 	statusPtr *model.Status,
+	eventCreatedAt time.Time,
 ) bool {
 	if statusPtr == nil {
 		return false
@@ -241,7 +246,7 @@ func (r *Reconciler) handleEventCancellation(
 		slog.InfoContext(ctx, "Detected UnQuarantined event, marking all in-progress events for node as cancelled",
 			"node", nodeName,
 			"eventID", eventID)
-		r.HandleCancellation(ctx, eventID, nodeName, model.UnQuarantined)
+		r.HandleCancellation(ctx, eventID, nodeName, model.UnQuarantined, eventCreatedAt)
 	}
 
 	return false
@@ -382,7 +387,8 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 
 	nodeQuarantinedStatus := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
-	if r.isEventCancelled(eventID, nodeName, (*model.Status)(&nodeQuarantinedStatus)) {
+	if r.isEventCancelled(eventID, nodeName, (*model.Status)(&nodeQuarantinedStatus),
+		healthEventWithStatus.CreatedAt) {
 		slog.InfoContext(ctx, "Event was cancelled, performing cleanup", "node", nodeName, "eventID", eventID)
 
 		err := r.handleCancelledEvent(ctx, nodeName, &healthEventWithStatus, event, database, eventID)
@@ -1007,7 +1013,9 @@ func (r *Reconciler) parseHealthEventFromEvent(event datastore.Event,
 // For Cancelled status, it marks the specific event as cancelled.
 // For UnQuarantined status, it sets a node-level cancellation flag affecting all events.
 // Other known statuses are logged and ignored; unknown statuses trigger a warning.
-func (r *Reconciler) HandleCancellation(ctx context.Context, eventID string, nodeName string, status model.Status) {
+func (r *Reconciler) HandleCancellation(
+	ctx context.Context, eventID string, nodeName string, status model.Status, eventCreatedAt ...time.Time,
+) {
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
@@ -1022,11 +1030,16 @@ func (r *Reconciler) HandleCancellation(ctx context.Context, eventID string, nod
 		r.nodeEventsMap[nodeName][eventID] = model.Cancelled
 		slog.InfoContext(ctx, "Marked specific event as cancelled", "node", nodeName, "eventID", eventID)
 	case model.UnQuarantined:
-		// Set node-level cancellation flag. This ensures any events queued but not yet
-		// processed will see the cancellation, even if they haven't been added to
-		// nodeEventsMap yet (race condition protection).
-		r.cancelledNodes[nodeName] = struct{}{}
-		slog.InfoContext(ctx, "Marked node as cancelled", "node", nodeName)
+		// Set a node-level cancellation cutoff. This ensures events queued before
+		// the recovery are cancelled even if they have not been added to
+		// nodeEventsMap yet, while allowing later quarantine sessions to proceed.
+		cutoff := cancellationCutoff{createdAt: time.Now().UTC()}
+		if len(eventCreatedAt) > 0 && !eventCreatedAt[0].IsZero() {
+			cutoff.createdAt = eventCreatedAt[0]
+		}
+
+		r.cancelledNodes[nodeName] = cutoff
+		slog.InfoContext(ctx, "Marked node as cancelled", "node", nodeName, "cutoff", cutoff.createdAt)
 
 		if eventsMap, exists := r.nodeEventsMap[nodeName]; exists {
 			for evtID := range eventsMap {
@@ -1045,7 +1058,9 @@ func (r *Reconciler) HandleCancellation(ctx context.Context, eventID string, nod
 	slog.DebugContext(ctx, "Cancellation processed", "node", nodeName, "eventID", eventID)
 }
 
-func (r *Reconciler) isEventCancelled(eventID string, nodeName string, nodeQuarantinedStatus *model.Status) bool {
+func (r *Reconciler) isEventCancelled(
+	eventID string, nodeName string, nodeQuarantinedStatus *model.Status, eventCreatedAt time.Time,
+) bool {
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
@@ -1053,11 +1068,11 @@ func (r *Reconciler) isEventCancelled(eventID string, nodeName string, nodeQuara
 	// UnQuarantined events must process normally to set userpodsevictionstatus=Succeeded
 	// so that FR can process them and clear remediation annotations.
 	isUnQuarantinedEvent := nodeQuarantinedStatus != nil && *nodeQuarantinedStatus == model.UnQuarantined
-	_, nodeCancelled := r.cancelledNodes[nodeName]
+	cutoff, nodeCancelled := r.cancelledNodes[nodeName]
 
 	// Check node-level cancellation flag for non-UnQuarantined events
 	// (handles race condition where UnQuarantined arrives before Quarantined events are processed)
-	if !isUnQuarantinedEvent && nodeCancelled {
+	if !isUnQuarantinedEvent && nodeCancelled && eventAtOrBeforeCutoff(eventCreatedAt, cutoff) {
 		// Ensure the event is tracked so clearEventStatus can clean up the flag
 		eventsMap, exists := r.nodeEventsMap[nodeName]
 		if !exists {
@@ -1083,14 +1098,22 @@ func (r *Reconciler) isEventCancelled(eventID string, nodeName string, nodeQuara
 	return eventExists && status == model.Cancelled
 }
 
+func eventAtOrBeforeCutoff(eventCreatedAt time.Time, cutoff cancellationCutoff) bool {
+	if eventCreatedAt.IsZero() || cutoff.createdAt.IsZero() {
+		return true
+	}
+
+	return !eventCreatedAt.After(cutoff.createdAt)
+}
+
 func (r *Reconciler) markEventInProgress(ctx context.Context, eventID string, nodeName string) {
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
 	if r.nodeEventsMap[nodeName] == nil {
 		r.nodeEventsMap[nodeName] = make(eventStatusMap)
-		// Clear node-level cancellation flag when starting fresh drain
-		// (re-arm the node for new quarantine session)
+		// Clear stale node-level cancellation cutoff when no older events remain
+		// and a fresh drain session starts.
 		_, wasNodeCancelled := r.cancelledNodes[nodeName]
 		if wasNodeCancelled {
 			slog.InfoContext(ctx, "Clearing node-level cancellation flag when starting new drain session", "node", nodeName)
