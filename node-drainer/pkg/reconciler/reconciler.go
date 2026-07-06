@@ -1112,14 +1112,6 @@ func (r *Reconciler) markEventInProgress(ctx context.Context, eventID string, no
 
 	if r.nodeEventsMap[nodeName] == nil {
 		r.nodeEventsMap[nodeName] = make(eventStatusMap)
-		// Clear stale node-level cancellation cutoff when no older events remain
-		// and a fresh drain session starts.
-		_, wasNodeCancelled := r.cancelledNodes[nodeName]
-		if wasNodeCancelled {
-			slog.InfoContext(ctx, "Clearing node-level cancellation flag when starting new drain session", "node", nodeName)
-		}
-
-		delete(r.cancelledNodes, nodeName)
 	}
 
 	r.nodeEventsMap[nodeName][eventID] = model.StatusInProgress
