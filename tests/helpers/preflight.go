@@ -489,6 +489,7 @@ func WaitForGangConfigMapDeleted(
 
 	require.Eventually(t, func() bool {
 		var cm v1.ConfigMap
+
 		err := client.Resources(namespace).Get(ctx, name, namespace, &cm)
 
 		return apierrors.IsNotFound(err)
