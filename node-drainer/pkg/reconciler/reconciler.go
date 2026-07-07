@@ -50,6 +50,8 @@ import (
 
 type eventStatusMap map[string]model.Status
 
+const cancellationCutoffTTL = 24 * time.Hour
+
 type cancellationCutoff struct {
 	createdAt time.Time
 }
@@ -1022,6 +1024,8 @@ func (r *Reconciler) HandleCancellation(
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
+	r.cleanupExpiredCancellationCutoffsLocked(time.Now().UTC())
+
 	slog.DebugContext(ctx, "HandleCancellation called", "node", nodeName, "eventID", eventID, "status", status)
 
 	switch status {
@@ -1067,6 +1071,8 @@ func (r *Reconciler) isEventCancelled(
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
+	r.cleanupExpiredCancellationCutoffsLocked(time.Now().UTC())
+
 	// Don't apply node-level cancellation to UnQuarantined events themselves.
 	// UnQuarantined events must process normally to set userpodsevictionstatus=Succeeded
 	// so that FR can process them and clear remediation annotations.
@@ -1109,6 +1115,25 @@ func eventAtOrBeforeCutoff(eventCreatedAt time.Time, cutoff cancellationCutoff) 
 	return !eventCreatedAt.After(cutoff.createdAt)
 }
 
+func (r *Reconciler) cleanupExpiredCancellationCutoffsLocked(now time.Time) {
+	if now.IsZero() {
+		return
+	}
+
+	expiresBefore := now.Add(-cancellationCutoffTTL)
+	for nodeName, cutoff := range r.cancelledNodes {
+		if cutoff.createdAt.IsZero() || cutoff.createdAt.After(expiresBefore) {
+			continue
+		}
+
+		if eventsMap, exists := r.nodeEventsMap[nodeName]; exists && len(eventsMap) > 0 {
+			continue
+		}
+
+		delete(r.cancelledNodes, nodeName)
+	}
+}
+
 func (r *Reconciler) markEventInProgress(ctx context.Context, eventID string, nodeName string) {
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
@@ -1139,6 +1164,7 @@ func (r *Reconciler) clearEventStatus(eventID string, nodeName string) {
 	// Fresh events are protected by the cutoff timestamp comparison.
 	if len(eventsMap) == 0 {
 		delete(r.nodeEventsMap, nodeName)
+		r.cleanupExpiredCancellationCutoffsLocked(time.Now().UTC())
 	}
 }
 
