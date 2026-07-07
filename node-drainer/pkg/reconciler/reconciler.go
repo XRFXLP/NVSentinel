@@ -48,12 +48,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-type eventStatusMap map[string]model.Status
+type eventStatus struct {
+	status    model.Status
+	createdAt time.Time
+}
 
-const (
-	cancellationCutoffTTL             = 24 * time.Hour
-	cancellationCutoffCleanupInterval = time.Hour
-)
+type eventStatusMap map[string]eventStatus
 
 type cancellationCutoff struct {
 	createdAt time.Time
@@ -130,23 +130,6 @@ func (r *Reconciler) GetCustomDrainClient() *customdrain.Client {
 
 func (r *Reconciler) Shutdown() {
 	r.queueManager.Shutdown()
-}
-
-func (r *Reconciler) StartCancellationCutoffCleanup(ctx context.Context) {
-	ticker := time.NewTicker(cancellationCutoffCleanupInterval)
-
-	go func() {
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case now := <-ticker.C:
-				r.cleanupExpiredCancellationCutoffs(now.UTC())
-			}
-		}
-	}()
 }
 
 // PreprocessAndEnqueueEvent preprocesses an event from the change stream before enqueueing it.
@@ -426,7 +409,7 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 		return err
 	}
 
-	r.markEventInProgress(ctx, eventID, nodeName)
+	r.markEventInProgress(ctx, eventID, nodeName, healthEventWithStatus.CreatedAt)
 
 	actionResult, err := r.evaluator.EvaluateEventWithDatabase(ctx, healthEventWithStatus, database, healthEventStore)
 	if err != nil {
@@ -700,11 +683,11 @@ func (r *Reconciler) isTimeoutEvictionCancelled(
 	ctx context.Context, eventID, nodeName string, eventCreatedAt time.Time,
 ) bool {
 	r.nodeEventsMapMu.Lock()
-	eventStatus, eventExists := r.nodeEventsMap[nodeName][eventID]
+	trackedEvent, eventExists := r.nodeEventsMap[nodeName][eventID]
 	cutoff, nodeCancelled := r.cancelledNodes[nodeName]
 	r.nodeEventsMapMu.Unlock()
 
-	if (eventExists && eventStatus == model.Cancelled) ||
+	if (eventExists && trackedEvent.status == model.Cancelled) ||
 		(nodeCancelled && eventAtOrBeforeCutoff(eventCreatedAt, cutoff)) {
 		slog.InfoContext(ctx, "Event cancelled, aborting timeout eviction",
 			"node", nodeName, "eventID", eventID)
@@ -1052,7 +1035,7 @@ func (r *Reconciler) HandleCancellation(
 			r.nodeEventsMap[nodeName] = make(eventStatusMap)
 		}
 
-		r.nodeEventsMap[nodeName][eventID] = model.Cancelled
+		r.nodeEventsMap[nodeName][eventID] = eventStatus{status: model.Cancelled}
 		slog.InfoContext(ctx, "Marked specific event as cancelled", "node", nodeName, "eventID", eventID)
 	case model.UnQuarantined:
 		// Set a node-level cancellation cutoff. This ensures events queued before
@@ -1067,8 +1050,12 @@ func (r *Reconciler) HandleCancellation(
 		slog.InfoContext(ctx, "Marked node as cancelled", "node", nodeName, "cutoff", cutoff.createdAt)
 
 		if eventsMap, exists := r.nodeEventsMap[nodeName]; exists {
-			for evtID := range eventsMap {
-				eventsMap[evtID] = model.Cancelled
+			for evtID, trackedEvent := range eventsMap {
+				if !eventAtOrBeforeCutoff(trackedEvent.createdAt, cutoff) {
+					continue
+				}
+
+				eventsMap[evtID] = eventStatus{status: model.Cancelled, createdAt: trackedEvent.createdAt}
 				slog.InfoContext(ctx, "Marked event as cancelled for node", "node", nodeName, "eventID", evtID)
 			}
 		}
@@ -1106,7 +1093,7 @@ func (r *Reconciler) isEventCancelled(
 		}
 
 		if _, ok := eventsMap[eventID]; !ok {
-			eventsMap[eventID] = model.Cancelled
+			eventsMap[eventID] = eventStatus{status: model.Cancelled, createdAt: eventCreatedAt}
 		}
 
 		return true
@@ -1118,9 +1105,9 @@ func (r *Reconciler) isEventCancelled(
 		return false
 	}
 
-	status, eventExists := eventsMap[eventID]
+	trackedEvent, eventExists := eventsMap[eventID]
 
-	return eventExists && status == model.Cancelled
+	return eventExists && trackedEvent.status == model.Cancelled
 }
 
 func eventAtOrBeforeCutoff(eventCreatedAt time.Time, cutoff cancellationCutoff) bool {
@@ -1131,33 +1118,7 @@ func eventAtOrBeforeCutoff(eventCreatedAt time.Time, cutoff cancellationCutoff) 
 	return !eventCreatedAt.After(cutoff.createdAt)
 }
 
-func (r *Reconciler) cleanupExpiredCancellationCutoffs(now time.Time) {
-	r.nodeEventsMapMu.Lock()
-	defer r.nodeEventsMapMu.Unlock()
-
-	r.cleanupExpiredCancellationCutoffsLocked(now)
-}
-
-func (r *Reconciler) cleanupExpiredCancellationCutoffsLocked(now time.Time) {
-	if now.IsZero() {
-		return
-	}
-
-	expiresBefore := now.Add(-cancellationCutoffTTL)
-	for nodeName, cutoff := range r.cancelledNodes {
-		if cutoff.createdAt.IsZero() || cutoff.createdAt.After(expiresBefore) {
-			continue
-		}
-
-		if eventsMap, exists := r.nodeEventsMap[nodeName]; exists && len(eventsMap) > 0 {
-			continue
-		}
-
-		delete(r.cancelledNodes, nodeName)
-	}
-}
-
-func (r *Reconciler) markEventInProgress(ctx context.Context, eventID string, nodeName string) {
+func (r *Reconciler) markEventInProgress(ctx context.Context, eventID string, nodeName string, eventCreatedAt time.Time) {
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
@@ -1165,7 +1126,7 @@ func (r *Reconciler) markEventInProgress(ctx context.Context, eventID string, no
 		r.nodeEventsMap[nodeName] = make(eventStatusMap)
 	}
 
-	r.nodeEventsMap[nodeName][eventID] = model.StatusInProgress
+	r.nodeEventsMap[nodeName][eventID] = eventStatus{status: model.StatusInProgress, createdAt: eventCreatedAt}
 
 	slog.DebugContext(ctx, "Event marked as in progress", "node", nodeName, "eventID", eventID)
 }

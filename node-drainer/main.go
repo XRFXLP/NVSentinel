@@ -146,7 +146,6 @@ func run() error {
 
 	slog.InfoContext(gCtx, "Starting queue worker")
 	components.QueueManager.Start(gCtx)
-	components.Reconciler.StartCancellationCutoffCleanup(gCtx)
 
 	// Handle cold start - re-process any events that were in-progress during restart
 	slog.InfoContext(gCtx, "Handling cold start")
