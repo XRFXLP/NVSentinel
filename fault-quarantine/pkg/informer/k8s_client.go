@@ -320,6 +320,7 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 	}
 
 	err := c.UpdateNode(ctx, nodename, updateFn)
+
 	return alreadyQuarantined, err
 }
 
@@ -452,6 +453,7 @@ func parseHealthEventsAnnotation(value string) (*healthEventsAnnotation.HealthEv
 	}
 
 	healthEventsMap.AddOrUpdateEvent(&singleEvent)
+
 	return healthEventsMap, nil
 }
 
