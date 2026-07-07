@@ -78,10 +78,6 @@ func checkPreconditions(ctx context.Context, healthEvent model.HealthEventWithSt
 		return &DrainActionResult{Action: ActionSkip}
 	}
 
-	if healthEvent.HealthEvent.IsHealthy {
-		return &DrainActionResult{Action: ActionMarkAlreadyDrained, Status: model.AlreadyDrained}
-	}
-
 	// Honor DrainOverrides.Skip: mark drain as already completed so
 	// fault-remediation can proceed immediately without waiting for pods.
 	// This is used by ergatos debug events where drain is intentionally
