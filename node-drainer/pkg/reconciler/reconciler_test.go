@@ -38,7 +38,7 @@ func TestCleanupExpiredCancellationCutoffsLocked(t *testing.T) {
 		},
 	}
 
-	r.cleanupExpiredCancellationCutoffsLocked(now)
+	r.cleanupExpiredCancellationCutoffs(now)
 
 	if _, exists := r.cancelledNodes["expired"]; exists {
 		t.Fatal("expired untracked cutoff should be removed")

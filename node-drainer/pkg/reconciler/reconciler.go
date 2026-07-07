@@ -50,7 +50,10 @@ import (
 
 type eventStatusMap map[string]model.Status
 
-const cancellationCutoffTTL = 24 * time.Hour
+const (
+	cancellationCutoffTTL             = 24 * time.Hour
+	cancellationCutoffCleanupInterval = time.Hour
+)
 
 type cancellationCutoff struct {
 	createdAt time.Time
@@ -127,6 +130,23 @@ func (r *Reconciler) GetCustomDrainClient() *customdrain.Client {
 
 func (r *Reconciler) Shutdown() {
 	r.queueManager.Shutdown()
+}
+
+func (r *Reconciler) StartCancellationCutoffCleanup(ctx context.Context) {
+	ticker := time.NewTicker(cancellationCutoffCleanupInterval)
+
+	go func() {
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				r.cleanupExpiredCancellationCutoffs(now.UTC())
+			}
+		}
+	}()
 }
 
 // PreprocessAndEnqueueEvent preprocesses an event from the change stream before enqueueing it.
@@ -1024,8 +1044,6 @@ func (r *Reconciler) HandleCancellation(
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
-	r.cleanupExpiredCancellationCutoffsLocked(time.Now().UTC())
-
 	slog.DebugContext(ctx, "HandleCancellation called", "node", nodeName, "eventID", eventID, "status", status)
 
 	switch status {
@@ -1071,8 +1089,6 @@ func (r *Reconciler) isEventCancelled(
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
-	r.cleanupExpiredCancellationCutoffsLocked(time.Now().UTC())
-
 	// Don't apply node-level cancellation to UnQuarantined events themselves.
 	// UnQuarantined events must process normally to set userpodsevictionstatus=Succeeded
 	// so that FR can process them and clear remediation annotations.
@@ -1113,6 +1129,13 @@ func eventAtOrBeforeCutoff(eventCreatedAt time.Time, cutoff cancellationCutoff) 
 	}
 
 	return !eventCreatedAt.After(cutoff.createdAt)
+}
+
+func (r *Reconciler) cleanupExpiredCancellationCutoffs(now time.Time) {
+	r.nodeEventsMapMu.Lock()
+	defer r.nodeEventsMapMu.Unlock()
+
+	r.cleanupExpiredCancellationCutoffsLocked(now)
 }
 
 func (r *Reconciler) cleanupExpiredCancellationCutoffsLocked(now time.Time) {
@@ -1164,7 +1187,6 @@ func (r *Reconciler) clearEventStatus(eventID string, nodeName string) {
 	// Fresh events are protected by the cutoff timestamp comparison.
 	if len(eventsMap) == 0 {
 		delete(r.nodeEventsMap, nodeName)
-		r.cleanupExpiredCancellationCutoffsLocked(time.Now().UTC())
 	}
 }
 
