@@ -2093,6 +2093,53 @@ func TestReconciler_UnQuarantineCutoffStillCancelsUntrackedOldEventsAfterFreshSe
 		"pre-cutoff event that was not tracked before the fresh session should still be cancelled")
 }
 
+func TestReconciler_UnQuarantineCutoffDoesNotCancelFreshTimeoutEviction(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "timeout-*", Mode: config.ModeDeleteAfterTimeout},
+	}, false)
+
+	nodeName := testutils.GenerateTestNodeName("fresh-timeout-after-unquarantine")
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "timeout-test")
+	createPod(setup.ctx, t, setup.client, "timeout-test", "held-pod", nodeName, v1.PodRunning, nil, nil)
+
+	baseTime := time.Now().UTC()
+	freshEvent := createHealthEvent(healthEventOptions{
+		nodeName:        nodeName,
+		eventID:         "fresh-timeout-event",
+		nodeQuarantined: model.Quarantined,
+		createdAt:       baseTime.Add(2 * time.Second),
+	})
+
+	setup.reconciler.HandleCancellation(setup.ctx, "unquarantined-event", nodeName,
+		model.UnQuarantined, baseTime.Add(time.Second))
+
+	cancelledUpdates := make(map[string]bool)
+	setup.mockCollection.UpdateDocumentFunc = func(_ context.Context, filter interface{},
+		update interface{}) (*sdkclient.UpdateResult, error) {
+		filterMap, ok := filter.(map[string]any)
+		require.True(t, ok)
+
+		documentID := fmt.Sprintf("%v", filterMap["_id"])
+		if updateMap, ok := update.(map[string]any); ok {
+			if setMap, ok := updateMap["$set"].(map[string]any); ok {
+				if statusMap, ok := setMap["healtheventstatus.userpodsevictionstatus"].(map[string]interface{}); ok {
+					cancelledUpdates[documentID] = statusMap["status"] == string(model.Cancelled)
+				}
+			}
+		}
+
+		return &sdkclient.UpdateResult{ModifiedCount: 1}, nil
+	}
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, freshEvent, setup.mockCollection,
+		setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for 1 pods to complete or timeout")
+	assert.False(t, cancelledUpdates["fresh-timeout-event"],
+		"fresh timeout eviction after UnQuarantined cutoff must not be cancelled")
+}
+
 func TestReconciler_HandleCancellation_UnknownStatus_LogsWarning(t *testing.T) {
 	setup := setupDirectTest(t, nil, false)
 

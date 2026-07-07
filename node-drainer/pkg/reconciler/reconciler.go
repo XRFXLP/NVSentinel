@@ -651,13 +651,13 @@ func (r *Reconciler) executeTimeoutEviction(ctx context.Context, action *evaluat
 	slog.DebugContext(ctx, "Checking cancellation status before timeout eviction",
 		"node", nodeName, "eventID", eventID)
 
-	if r.isTimeoutEvictionCancelled(ctx, eventID, nodeName) {
+	if r.isTimeoutEvictionCancelled(ctx, eventID, nodeName, healthEvent.CreatedAt) {
 		return nil
 	}
 
 	if err := r.informers.DeletePodsAfterTimeout(ctx,
 		nodeName, action.Namespaces, timeoutMinutes, &healthEvent, partialDrainEntity); err != nil {
-		if r.isTimeoutEvictionCancelled(ctx, eventID, nodeName) {
+		if r.isTimeoutEvictionCancelled(ctx, eventID, nodeName, healthEvent.CreatedAt) {
 			return nil
 		}
 
@@ -674,13 +674,16 @@ func (r *Reconciler) executeTimeoutEviction(ctx context.Context, action *evaluat
 	return fmt.Errorf("timeout eviction initiated, requeuing for status verification")
 }
 
-func (r *Reconciler) isTimeoutEvictionCancelled(ctx context.Context, eventID, nodeName string) bool {
+func (r *Reconciler) isTimeoutEvictionCancelled(
+	ctx context.Context, eventID, nodeName string, eventCreatedAt time.Time,
+) bool {
 	r.nodeEventsMapMu.Lock()
 	eventStatus, eventExists := r.nodeEventsMap[nodeName][eventID]
-	_, nodeCancelled := r.cancelledNodes[nodeName]
+	cutoff, nodeCancelled := r.cancelledNodes[nodeName]
 	r.nodeEventsMapMu.Unlock()
 
-	if (eventExists && eventStatus == model.Cancelled) || nodeCancelled {
+	if (eventExists && eventStatus == model.Cancelled) ||
+		(nodeCancelled && eventAtOrBeforeCutoff(eventCreatedAt, cutoff)) {
 		slog.InfoContext(ctx, "Event cancelled, aborting timeout eviction",
 			"node", nodeName, "eventID", eventID)
 
@@ -1130,12 +1133,12 @@ func (r *Reconciler) clearEventStatus(eventID string, nodeName string) {
 
 	delete(eventsMap, eventID)
 
-	// Clean up the node entry when no events remain.
-	// This also clears the node-level cancellation flag since all queued events
-	// have been processed and handled the cancellation.
+	// Clean up the node entry when no events remain. The cancellation cutoff is
+	// intentionally retained: nodeEventsMap only tracks events that have reached
+	// processing, so an older pre-cutoff event may still be queued but untracked.
+	// Fresh events are protected by the cutoff timestamp comparison.
 	if len(eventsMap) == 0 {
 		delete(r.nodeEventsMap, nodeName)
-		delete(r.cancelledNodes, nodeName)
 	}
 }
 
