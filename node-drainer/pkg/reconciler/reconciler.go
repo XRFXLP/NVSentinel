@@ -1031,34 +1031,10 @@ func (r *Reconciler) HandleCancellation(
 
 	switch status {
 	case model.Cancelled:
-		if r.nodeEventsMap[nodeName] == nil {
-			r.nodeEventsMap[nodeName] = make(eventStatusMap)
-		}
-
-		r.nodeEventsMap[nodeName][eventID] = eventStatus{status: model.Cancelled}
+		r.markSpecificEventCancelledLocked(eventID, nodeName)
 		slog.InfoContext(ctx, "Marked specific event as cancelled", "node", nodeName, "eventID", eventID)
 	case model.UnQuarantined:
-		// Set a node-level cancellation cutoff. This ensures events queued before
-		// the recovery are cancelled even if they have not been added to
-		// nodeEventsMap yet, while allowing later quarantine sessions to proceed.
-		cutoff := cancellationCutoff{createdAt: time.Now().UTC()}
-		if len(eventCreatedAt) > 0 && !eventCreatedAt[0].IsZero() {
-			cutoff.createdAt = eventCreatedAt[0]
-		}
-
-		r.cancelledNodes[nodeName] = cutoff
-		slog.InfoContext(ctx, "Marked node as cancelled", "node", nodeName, "cutoff", cutoff.createdAt)
-
-		if eventsMap, exists := r.nodeEventsMap[nodeName]; exists {
-			for evtID, trackedEvent := range eventsMap {
-				if !eventAtOrBeforeCutoff(trackedEvent.createdAt, cutoff) {
-					continue
-				}
-
-				eventsMap[evtID] = eventStatus{status: model.Cancelled, createdAt: trackedEvent.createdAt}
-				slog.InfoContext(ctx, "Marked event as cancelled for node", "node", nodeName, "eventID", evtID)
-			}
-		}
+		r.handleUnQuarantinedCancellationLocked(ctx, eventID, nodeName, eventCreatedAt...)
 	case model.StatusNotStarted, model.StatusInProgress, model.StatusFailed,
 		model.StatusSucceeded, model.AlreadyDrained, model.Quarantined,
 		model.AlreadyQuarantined:
@@ -1068,6 +1044,51 @@ func (r *Reconciler) HandleCancellation(
 	}
 
 	slog.DebugContext(ctx, "Cancellation processed", "node", nodeName, "eventID", eventID)
+}
+
+func (r *Reconciler) markSpecificEventCancelledLocked(eventID string, nodeName string) {
+	if r.nodeEventsMap[nodeName] == nil {
+		r.nodeEventsMap[nodeName] = make(eventStatusMap)
+	}
+
+	r.nodeEventsMap[nodeName][eventID] = eventStatus{status: model.Cancelled}
+}
+
+func (r *Reconciler) handleUnQuarantinedCancellationLocked(
+	ctx context.Context, eventID string, nodeName string, eventCreatedAt ...time.Time,
+) {
+	cutoff := cancellationCutoffFrom(eventCreatedAt...)
+	r.cancelledNodes[nodeName] = cutoff
+	slog.InfoContext(ctx, "Marked node as cancelled", "node", nodeName, "cutoff", cutoff.createdAt)
+
+	r.cancelTrackedEventsAtOrBeforeCutoffLocked(ctx, nodeName, cutoff)
+}
+
+func cancellationCutoffFrom(eventCreatedAt ...time.Time) cancellationCutoff {
+	cutoff := cancellationCutoff{createdAt: time.Now().UTC()}
+	if len(eventCreatedAt) > 0 && !eventCreatedAt[0].IsZero() {
+		cutoff.createdAt = eventCreatedAt[0]
+	}
+
+	return cutoff
+}
+
+func (r *Reconciler) cancelTrackedEventsAtOrBeforeCutoffLocked(
+	ctx context.Context, nodeName string, cutoff cancellationCutoff,
+) {
+	eventsMap, exists := r.nodeEventsMap[nodeName]
+	if !exists {
+		return
+	}
+
+	for evtID, trackedEvent := range eventsMap {
+		if !eventAtOrBeforeCutoff(trackedEvent.createdAt, cutoff) {
+			continue
+		}
+
+		eventsMap[evtID] = eventStatus{status: model.Cancelled, createdAt: trackedEvent.createdAt}
+		slog.InfoContext(ctx, "Marked event as cancelled for node", "node", nodeName, "eventID", evtID)
+	}
 }
 
 func (r *Reconciler) isEventCancelled(
@@ -1118,7 +1139,9 @@ func eventAtOrBeforeCutoff(eventCreatedAt time.Time, cutoff cancellationCutoff) 
 	return !eventCreatedAt.After(cutoff.createdAt)
 }
 
-func (r *Reconciler) markEventInProgress(ctx context.Context, eventID string, nodeName string, eventCreatedAt time.Time) {
+func (r *Reconciler) markEventInProgress(
+	ctx context.Context, eventID string, nodeName string, eventCreatedAt time.Time,
+) {
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
@@ -1126,7 +1149,10 @@ func (r *Reconciler) markEventInProgress(ctx context.Context, eventID string, no
 		r.nodeEventsMap[nodeName] = make(eventStatusMap)
 	}
 
-	r.nodeEventsMap[nodeName][eventID] = eventStatus{status: model.StatusInProgress, createdAt: eventCreatedAt}
+	r.nodeEventsMap[nodeName][eventID] = eventStatus{
+		status:    model.StatusInProgress,
+		createdAt: eventCreatedAt,
+	}
 
 	slog.DebugContext(ctx, "Event marked as in progress", "node", nodeName, "eventID", eventID)
 }
