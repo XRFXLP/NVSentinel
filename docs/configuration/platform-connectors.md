@@ -236,7 +236,7 @@ Healthy events are not downgraded by deduplication. Before they continue downstr
 ### Operational Notes
 
 - Dedup state is in-memory only and is cleared on platform-connectors pod restart.
-- The dedup counter is exposed as `nvsentinel_platform_connector_dedup_store_only_total{check,node,err_code}`.
+- The dedup counter is exposed as `nvsentinel_platform_connector_dedup_store_and_analyse_total{check,node,err_code}`.
 - `entitiesImpacted` and `errorCode` are canonicalized as sets for keying; ordering differences do not create distinct events.
 
 ## Kubernetes Connector

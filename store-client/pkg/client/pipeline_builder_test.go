@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -63,8 +64,6 @@ func TestAllHealthEventInsertsPipeline(t *testing.T) {
 			require.NotNil(t, pipeline)
 			require.NotEmpty(t, pipeline)
 			assert.Len(t, pipeline, 1, "Pipeline should have 1 stage")
-			assert.NotContains(t, fmt.Sprint(pipeline), "processingstrategy",
-				"HEA input pipeline should include STORE_ONLY source events")
 		})
 	}
 }
@@ -103,6 +102,10 @@ func TestProcessableNonFatalUnhealthyInsertsPipeline(t *testing.T) {
 			require.NotNil(t, pipeline)
 			require.NotEmpty(t, pipeline)
 			assert.Len(t, pipeline, 1, "Pipeline should have 1 stage")
+			assert.Contains(t, fmt.Sprint(pipeline), "processingstrategy",
+				"HEA input pipeline should explicitly filter processing strategies")
+			assert.Contains(t, fmt.Sprint(pipeline), fmt.Sprint(int32(protos.ProcessingStrategy_STORE_AND_ANALYSE)),
+				"HEA input pipeline should include STORE_AND_ANALYSE source events")
 		})
 	}
 }

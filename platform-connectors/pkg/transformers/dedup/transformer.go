@@ -88,13 +88,13 @@ func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) err
 	}
 
 	if d.tracker.checkAndMark(event) {
-		dedupStoreOnlyCounter.WithLabelValues(
+		dedupStoreAndAnalyseCounter.WithLabelValues(
 			event.GetCheckName(),
 			event.GetNodeName(),
 			errCodeLabel(event),
 		).Inc()
-		event.ProcessingStrategy = pb.ProcessingStrategy_STORE_ONLY
-		slog.InfoContext(ctx, "Duplicate health event marked STORE_ONLY by deduplication",
+		event.ProcessingStrategy = pb.ProcessingStrategy_STORE_AND_ANALYSE
+		slog.InfoContext(ctx, "Duplicate health event marked STORE_AND_ANALYSE by deduplication",
 			"node", event.GetNodeName(),
 			"check", event.GetCheckName(),
 			"err_code", errCodeLabel(event))

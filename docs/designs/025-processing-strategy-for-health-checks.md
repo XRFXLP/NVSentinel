@@ -558,9 +558,9 @@ Health Events Analyzer has two distinct processingStrategy concerns:
    it publishes must have `processingStrategy=STORE_ONLY`.
 3. **Rule-based output strategy**: a single rule can also be configured to publish with `STORE_ONLY`; any new event it publishes should also use `STORE_ONLY`.
 
-**Analyze non-fatal unhealthy events, including STORE_ONLY source events**
+**Analyze non-fatal unhealthy events, including STORE_AND_ANALYSE source events**
 
-Use the non-fatal unhealthy pipeline without excluding `STORE_ONLY`; the analyzer's published event carries the processing strategy that controls whether downstream modules can act.
+Use the non-fatal unhealthy pipeline to include `EXECUTE_REMEDIATION`, `STORE_AND_ANALYSE`, and legacy events with no strategy. Continue excluding `STORE_ONLY`; the analyzer's published event carries the processing strategy that controls whether downstream modules can act.
 
 File: `health-events-analyzer/main.go`
 

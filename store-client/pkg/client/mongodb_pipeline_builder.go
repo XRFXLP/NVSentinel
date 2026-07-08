@@ -113,9 +113,9 @@ func (b *MongoDBPipelineBuilder) BuildProcessableHealthEventInsertsPipeline() da
 }
 
 // BuildProcessableNonFatalUnhealthyInsertsPipeline creates a pipeline for non-fatal,
-// unhealthy event inserts. This is used by health-events-analyzer for pattern analysis,
-// so STORE_ONLY source events are included as analyzer input; HEA's emitted event
-// processingStrategy controls downstream remediation behavior.
+// unhealthy event inserts. This is used by health-events-analyzer for pattern analysis.
+// STORE_AND_ANALYSE source events are included as analyzer input; STORE_ONLY events
+// remain observability-only and are excluded.
 func (b *MongoDBPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
@@ -123,6 +123,20 @@ func (b *MongoDBPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipelin
 				datastore.E("operationType", "insert"),
 				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E("$ne", "health-events-analyzer"))),
 				datastore.E("fullDocument.healthevent.ishealthy", false),
+				datastore.E("$or", datastore.A(
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
+					)),
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						int32(protos.ProcessingStrategy_STORE_AND_ANALYSE),
+					)),
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						datastore.D(datastore.E("$exists", false)),
+					)),
+				)),
 			)),
 		),
 	)

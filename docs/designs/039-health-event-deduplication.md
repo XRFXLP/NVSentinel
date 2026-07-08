@@ -154,10 +154,10 @@ platformConnector:
 ### Dedup STORE_ONLY metric
 
 ```go
-var dedupStoreOnlyCounter = promauto.NewCounterVec(
+var dedupStoreAndAnalyseCounter = promauto.NewCounterVec(
     prometheus.CounterOpts{
-        Name: "nvsentinel_platform_connector_dedup_store_only_total",
-        Help: "Total number of duplicate health events marked STORE_ONLY by deduplication.",
+        Name: "nvsentinel_platform_connector_dedup_store_and_analyse_total",
+        Help: "Total number of duplicate health events marked STORE_AND_ANALYSE by deduplication.",
     },
     []string{"check", "node", "err_code"},
 )
@@ -166,7 +166,7 @@ var dedupStoreOnlyCounter = promauto.NewCounterVec(
 Dedup rate as a fraction of true error rate (using each monitor's existing kernel-rate counter, e.g. `syslog_health_monitor_xid_errors`):
 
 ```promql
-rate(nvsentinel_platform_connector_dedup_store_only_total{check="SysLogsXIDError", node="gpu-node-1"}[5m])
+rate(nvsentinel_platform_connector_dedup_store_and_analyse_total{check="SysLogsXIDError", node="gpu-node-1"}[5m])
   /
 rate(syslog_health_monitor_xid_errors{node="gpu-node-1"}[5m])
 ```

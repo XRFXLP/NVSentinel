@@ -43,7 +43,7 @@ func TestDeduplicatorMarksDuplicateEventsStoreOnly(t *testing.T) {
 
 	err = transformer.Transform(context.Background(), event)
 	require.NoError(t, err)
-	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, event.ProcessingStrategy)
+	assert.Equal(t, pb.ProcessingStrategy_STORE_AND_ANALYSE, event.ProcessingStrategy)
 }
 
 func TestDeduplicatorOnlyDeduplicatesIncludedChecks(t *testing.T) {
@@ -73,7 +73,7 @@ func TestDeduplicatorOnlyDeduplicatesIncludedChecks(t *testing.T) {
 
 	err = transformer.Transform(context.Background(), included)
 	require.NoError(t, err)
-	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, included.ProcessingStrategy)
+	assert.Equal(t, pb.ProcessingStrategy_STORE_AND_ANALYSE, included.ProcessingStrategy)
 }
 
 func TestDeduplicatorAlwaysKeepsHealthyEvents(t *testing.T) {

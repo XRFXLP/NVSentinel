@@ -502,6 +502,17 @@ func (r *Reconciler) getPipelineStages(
 		{
 			"$match": map[string]interface{}{
 				"healthevent.agent": map[string]interface{}{"$ne": "health-events-analyzer"},
+				"$or": []interface{}{
+					map[string]interface{}{
+						"healthevent.processingstrategy": int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
+					},
+					map[string]interface{}{
+						"healthevent.processingstrategy": int32(protos.ProcessingStrategy_STORE_AND_ANALYSE),
+					},
+					map[string]interface{}{
+						"healthevent.processingstrategy": map[string]interface{}{"$exists": false},
+					},
+				},
 			},
 		},
 	}

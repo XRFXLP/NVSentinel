@@ -289,7 +289,7 @@ func BuildNodeQuarantineStatusUpdatesPipeline() datastore.Pipeline {
 }
 
 // BuildProcessableNonFatalUnhealthyInsertsPipeline creates a pipeline that watches for non-fatal,
-// unhealthy event inserts for health-events-analyzer input.
+// unhealthy EXECUTE_REMEDIATION and STORE_AND_ANALYSE events for health-events-analyzer input.
 //
 // Deprecated: Use GetPipelineBuilder().BuildProcessableNonFatalUnhealthyInsertsPipeline() instead.
 // This function is maintained for backward compatibility and will be removed in a future version.
