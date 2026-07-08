@@ -500,6 +500,7 @@ func mergeAppliedTaints(existingTaints, incomingTaints []config.Taint) []config.
 			if existing, ok := mergedByKey[key]; ok {
 				taint.PreExisting = existing.PreExisting || taint.PreExisting
 			}
+
 			mergedByKey[key] = taint
 		}
 	}
