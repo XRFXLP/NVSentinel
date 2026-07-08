@@ -644,6 +644,13 @@ func (w *PostgreSQLChangeStreamWatcher) buildSQLFilter() (string, []interface{})
 		return "", nil
 	}
 
+	if !builder.IsComplete() {
+		slog.Debug("SQL filter conversion incomplete, using application-side filter only",
+			"client", w.clientName)
+
+		return "", nil
+	}
+
 	clause := builder.GetWhereClauseWithAnd()
 	args := builder.GetArgs()
 
