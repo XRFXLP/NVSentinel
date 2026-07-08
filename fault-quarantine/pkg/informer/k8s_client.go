@@ -396,6 +396,15 @@ func (c *FaultQuarantineClient) applyAnnotations(
 			annotationValue = mergedValue
 		}
 
+		if annotationKey == common.QuarantineHealthEventAppliedTaintsAnnotationKey {
+			mergedValue, err := mergeAppliedTaintsAnnotation(node.Annotations[annotationKey], annotationValue)
+			if err != nil {
+				return fmt.Errorf("failed to merge annotation %q on node %s: %w", annotationKey, nodename, err)
+			}
+
+			annotationValue = mergedValue
+		}
+
 		node.Annotations[annotationKey] = annotationValue
 	}
 
@@ -411,6 +420,32 @@ func hasNonEmptyQuarantineHealthEvent(node *v1.Node) bool {
 }
 
 func mergeQuarantineHealthEventAnnotation(existingValue, incomingValue string) (string, error) {
+	return mergeAnnotation(
+		existingValue,
+		incomingValue,
+		"quarantine health event",
+		parseHealthEventsAnnotation,
+		mergeHealthEventsAnnotations,
+	)
+}
+
+func mergeAppliedTaintsAnnotation(existingValue, incomingValue string) (string, error) {
+	return mergeAnnotation(
+		existingValue,
+		incomingValue,
+		"applied taints",
+		parseAppliedTaintsAnnotation,
+		mergeAppliedTaints,
+	)
+}
+
+func mergeAnnotation[T any](
+	existingValue string,
+	incomingValue string,
+	annotationName string,
+	parse func(string) (T, error),
+	merge func(T, T) T,
+) (string, error) {
 	if annotationutil.IsEmptyValue(existingValue) {
 		return incomingValue, nil
 	}
@@ -419,26 +454,62 @@ func mergeQuarantineHealthEventAnnotation(existingValue, incomingValue string) (
 		return existingValue, nil
 	}
 
-	merged, err := parseHealthEventsAnnotation(existingValue)
+	existing, err := parse(existingValue)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse existing quarantine health event annotation: %w", err)
+		return "", fmt.Errorf("failed to parse existing %s annotation: %w", annotationName, err)
 	}
 
-	incoming, err := parseHealthEventsAnnotation(incomingValue)
+	incoming, err := parse(incomingValue)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse incoming quarantine health event annotation: %w", err)
+		return "", fmt.Errorf("failed to parse incoming %s annotation: %w", annotationName, err)
 	}
 
-	for _, event := range incoming.Events {
-		merged.AddOrUpdateEvent(event)
-	}
-
-	annotationBytes, err := json.Marshal(merged)
+	annotationBytes, err := json.Marshal(merge(existing, incoming))
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal merged quarantine health event annotation: %w", err)
+		return "", fmt.Errorf("failed to marshal merged %s annotation: %w", annotationName, err)
 	}
 
 	return string(annotationBytes), nil
+}
+
+func mergeHealthEventsAnnotations(
+	existing *healthEventsAnnotation.HealthEventsAnnotationMap,
+	incoming *healthEventsAnnotation.HealthEventsAnnotationMap,
+) *healthEventsAnnotation.HealthEventsAnnotationMap {
+	for _, event := range incoming.Events {
+		existing.AddOrUpdateEvent(event)
+	}
+
+	return existing
+}
+
+func parseAppliedTaintsAnnotation(value string) ([]config.Taint, error) {
+	var taints []config.Taint
+	if err := json.Unmarshal([]byte(value), &taints); err != nil {
+		return nil, err
+	}
+
+	return taints, nil
+}
+
+func mergeAppliedTaints(existingTaints, incomingTaints []config.Taint) []config.Taint {
+	mergedByKey := make(map[config.Taint]config.Taint, len(existingTaints)+len(incomingTaints))
+	for _, taints := range [][]config.Taint{existingTaints, incomingTaints} {
+		for _, taint := range taints {
+			key := config.Taint{Key: taint.Key, Value: taint.Value, Effect: taint.Effect}
+			if existing, ok := mergedByKey[key]; ok {
+				taint.PreExisting = existing.PreExisting || taint.PreExisting
+			}
+			mergedByKey[key] = taint
+		}
+	}
+
+	mergedTaints := make([]config.Taint, 0, len(mergedByKey))
+	for _, taint := range mergedByKey {
+		mergedTaints = append(mergedTaints, taint)
+	}
+
+	return mergedTaints
 }
 
 func parseHealthEventsAnnotation(value string) (*healthEventsAnnotation.HealthEventsAnnotationMap, error) {
