@@ -151,7 +151,8 @@ func (s *kubernetesResumeControlStore) GetMode(ctx context.Context, clientName s
 	}
 
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to get resume control config map %s in namespace %s: %w",
+			s.name, s.namespace, err)
 	}
 
 	if cm.Data == nil {
@@ -203,7 +204,7 @@ func (s *kubernetesResumeControlStore) SetMode(ctx context.Context, clientName, 
 		cm.Data[clientName] = mode
 
 		_, err = s.client.CoreV1().ConfigMaps(s.namespace).Update(ctx, cm, metav1.UpdateOptions{})
-		
+
 		return err
 	})
 }
