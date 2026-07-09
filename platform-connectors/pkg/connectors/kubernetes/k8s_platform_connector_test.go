@@ -1562,6 +1562,27 @@ func TestProcessHealthEvents_StoreOnlyStrategy(t *testing.T) {
 			description:            "STORE_ONLY fatal event should not create node condition",
 		},
 		{
+			name: "STORE_AND_ANALYSE event should not create node condition",
+			healthEvents: []*protos.HealthEvent{
+				{
+					CheckName:          "GpuXidError",
+					Agent:              "gpu-health-monitor",
+					ComponentClass:     "GPU",
+					ErrorCode:          []string{"79"},
+					IsFatal:            true,
+					IsHealthy:          false,
+					GeneratedTimestamp: timestamppb.New(time.Now()),
+					RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
+					Message:            "XID 79: GPU has fallen off the bus",
+					NodeName:           "store-only-test-node",
+					ProcessingStrategy: protos.ProcessingStrategy_STORE_AND_ANALYSE,
+				},
+			},
+			expectNodeConditions:   false,
+			expectKubernetesEvents: false,
+			description:            "STORE_AND_ANALYSE fatal event should not create node condition",
+		},
+		{
 			name: "STORE_ONLY non-fatal event should not create Kubernetes event",
 			healthEvents: []*protos.HealthEvent{
 				{
@@ -1754,7 +1775,7 @@ func TestProcessHealthEvents_StoreOnlyStrategy(t *testing.T) {
 					"Expected condition type %s, got %s", tc.expectedConditionType, nvsentinelConditions[0].Type)
 			} else {
 				assert.Empty(t, nvsentinelConditions,
-					"Expected no NVSentinel node conditions for STORE_ONLY events, got %d", len(nvsentinelConditions))
+					"Expected no NVSentinel node conditions for non-remediation events, got %d", len(nvsentinelConditions))
 			}
 
 			// Verify Kubernetes events
@@ -1770,7 +1791,7 @@ func TestProcessHealthEvents_StoreOnlyStrategy(t *testing.T) {
 					"Expected event type %s, got %s", tc.expectedEventType, events.Items[0].Type)
 			} else {
 				assert.Empty(t, events.Items,
-					"Expected no Kubernetes events for STORE_ONLY events, got %d", len(events.Items))
+					"Expected no Kubernetes events for non-remediation events, got %d", len(events.Items))
 			}
 
 			t.Logf("Test passed: %s", tc.description)
