@@ -252,9 +252,9 @@ platformConnector:
     burst: 10
 
   dedup:
-    # Enable to mark repeated health events STORE_ONLY before connector fan-out.
+    # Enable to mark repeated health events STORE_AND_ANALYSE before connector fan-out.
     enabled: false
-    # How long repeated events with the same dedup key are marked STORE_ONLY.
+    # How long repeated events with the same dedup key are marked STORE_AND_ANALYSE.
     # Example: with "3m", a matching unhealthy event can trigger remediation again only after 3 minutes.
     suppressionWindow: "3m"
     # How often expired dedup keys are removed from the in-memory tracker.

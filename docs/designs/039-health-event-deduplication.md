@@ -20,7 +20,7 @@ Add a **deduplication transformer** to the platform-connector event-processing p
 key = (NodeName, CheckName, canonical(EntitiesImpacted), canonical(ErrorCode), ProcessingStrategy, IsHealthy)
 ```
 
-Within a configurable **suppression window** TTL, an unhealthy event whose key is already in the seen set is marked `STORE_ONLY`. Once the entry expires, the next event with that key remains `EXECUTE_REMEDIATION` and starts a fresh window.
+Within a configurable **suppression window** TTL, an unhealthy event whose key is already in the seen set is marked `STORE_AND_ANALYSE`. Once the entry expires, the next event with that key remains `EXECUTE_REMEDIATION` and starts a fresh window.
 
 ```mermaid
 flowchart TD
@@ -28,22 +28,22 @@ flowchart TD
     Pipe --> MA["MetadataAugmentor<br/>(transformer)"]
     MA --> OT["OverrideTransformer<br/>(transformer)"]
     OT --> Dedup["Deduplicator<br/>(transformer)"]
-    Dedup --> KeyExtract["key = (NodeName,<br/>CheckName,<br/>canonical(EntitiesImpacted),<br/>canonical(ErrorCode),<br/>IsHealthy)"]
+    Dedup --> KeyExtract["key = (NodeName,<br/>CheckName,<br/>canonical(EntitiesImpacted),<br/>canonical(ErrorCode),<br/>ProcessingStrategy,<br/>IsHealthy)"]
     KeyExtract --> Seen{"key in seen set<br/>and within TTL?"}
-    Seen -->|Yes| StoreOnly["Mark STORE_ONLY<br/>(log Info, increment counter)"]
+    Seen -->|Yes| StoreAndAnalyse["Mark STORE_AND_ANALYSE<br/>(log Info, increment counter)"]
     Seen -->|No| Mark["Mark seen<br/>(timestamp = now)"]
-    StoreOnly --> Enqueue["Enqueue to ring buffer"]
+    StoreAndAnalyse --> Enqueue["Enqueue to ring buffer"]
     Mark --> Enqueue
 ```
 
 ### Canonicalisation
 
 - `CheckName` is included so that two distinct checks producing the same `(entities, ErrorCode)` for the same physical resource don't collide. NIC monitor is the canonical example: `InfiniBandStateCheck` and `InfiniBandDegradationCheck` can both fire for the same port, neither sets `ErrorCode`, and without `CheckName` in the key they would suppress each other.
-- `EntitiesImpacted` is a slice; the same logical set may arrive in different orders. The dedup stage sorts entities lexicographically by `(EntityType, EntityValue)` before hashing.
-- `ErrorCode` is `[]string`; sorted lexicographically before hashing.
-- `ProcessingStrategy` is included so a `STORE_ONLY` observation cannot deduplicate a later `EXECUTE_REMEDIATION` event for the same fault identity. This matters for tests and workflows that intentionally send both forms to verify downstream behavior.
+- `EntitiesImpacted` is a slice; the same logical set may arrive in different orders. The dedup stage sorts entities lexicographically by `(EntityType, EntityValue)` before encoding.
+- `ErrorCode` is `[]string`; sorted lexicographically before encoding.
+- `ProcessingStrategy` is included so a `STORE_AND_ANALYSE` observation cannot deduplicate a later `EXECUTE_REMEDIATION` event for the same fault identity. This matters for tests and workflows that intentionally send both forms to verify downstream behavior.
 - `IsHealthy` is a bool; included so healthy events with the same `(node, check, entities, ErrorCode, ProcessingStrategy)` shape as a prior unhealthy event are not deduplicated against it. This matters for the synthetic healthy events emitted by the cancellation rules in [ADR-038](./038-health-monitor-cancellation-rules.md), which by design carry the same `ErrorCode` as the unhealthy event they cancel.
-- The hash function (e.g., FNV-1a over the canonical encoding) is deterministic so the same event always maps to the same key.
+- The entities and error codes are encoded into fixed, length-prefixed strings (so `"ab" + "c"` can never collide with `"a" + "bc"`) and stored as fields of a comparable `eventKey` struct, which Go uses directly as a map key — deterministic by construction, with no hashing step and no collision risk.
 
 ### What clears the dedup
 
@@ -53,65 +53,64 @@ flowchart TD
 | TTL elapses on a seen entry                                     | That entry only — next identical event re-emits                                                      |
 | Platform-connector pod restart                                  | All entries (state is in-memory only)                                                                |
 
-A healthy event clears entries whose keys match `(node, check, entities, ErrorCode, ProcessingStrategy)` with `IsHealthy=false` before it continues downstream. Healthy events are never downgraded, because platform-connector cannot know whether a previous healthy baseline or recovery event updated every downstream consumer. Repeated unhealthy fault observations are deduplicated by downgrading duplicates to `STORE_ONLY`.
+A healthy event clears entries whose keys match `(node, check, entities, ErrorCode, ProcessingStrategy)` with `IsHealthy=false` before it continues downstream. Healthy events are never downgraded, because platform-connector cannot know whether a previous healthy baseline or recovery event updated every downstream consumer. Repeated unhealthy fault observations are deduplicated by downgrading duplicates to `STORE_AND_ANALYSE`.
 
 ### TTL semantics
 
-The TTL is the **suppression window** — the duration for which repeated events with the same dedup key are downgraded to `STORE_ONLY`. Default: **3 minutes**. Configurable via the helm value `platformConnector.dedup.suppressionWindow` (Go duration string, e.g. `"3m"`, `"180s"`).
+The TTL is the **suppression window** — the duration for which repeated events with the same dedup key are downgraded to `STORE_AND_ANALYSE`. Default: **3 minutes**. Configurable via the helm value `platformConnector.dedup.suppressionWindow` (Go duration string, e.g. `"3m"`, `"180s"`).
 
 ## Implementation
 
-### `commons/pkg/dedup` (new)
+### `platform-connectors/pkg/transformers/dedup` (new)
+
+The tracker is a package-private type; it has no callers outside the `Deduplicator` transformer, so nothing here is exported.
 
 ```go
 package dedup
 
-type Tracker struct {
-    mu     sync.RWMutex
-    seen   map[uint64]time.Time   // canonical-key hash → first-seen
-    ttl    time.Duration
-    now    func() time.Time       // injectable for tests
+type tracker struct {
+    mu   sync.RWMutex
+    seen map[eventKey]time.Time // canonical key → first-seen
+    ttl  time.Duration
+    now  func() time.Time       // injectable for tests
 }
 
-func NewTracker(ttl time.Duration) *Tracker
+func newTracker(ttl time.Duration, opts ...trackerOption) *tracker
 
-// Key extracts the canonical key from an event.
-func Key(event *pb.HealthEvent) uint64
+// checkAndMark returns true iff the event's key is already tracked within ttl
+// (a duplicate). Otherwise it records the key and returns false. The check
+// and mark happen under one lock so concurrent callers can't both treat the
+// same new key as unique.
+func (t *tracker) checkAndMark(event *pb.HealthEvent) bool
 
-// IsDuplicate is true iff the event's key is already in the tracker and within ttl.
-// Side effect: evicts the queried key if expired (lazy eviction).
-func (t *Tracker) IsDuplicate(event *pb.HealthEvent) bool
+// clearUnhealthyCounterpart removes the prior unhealthy entry that a healthy
+// recovery event resolves. Returns true when an entry was removed.
+func (t *tracker) clearUnhealthyCounterpart(event *pb.HealthEvent) bool
 
-// Mark records the event's key.
-func (t *Tracker) Mark(event *pb.HealthEvent)
-
-// ClearUnhealthyCounterpart removes the seen entry that matches the given
-// healthy event with IsHealthy flipped to false. No-op if no match.
-func (t *Tracker) ClearUnhealthyCounterpart(event *pb.HealthEvent)
-
-// EvictExpired walks the entire seen set and removes entries past ttl.
-// Required because IsDuplicate only evicts keys it queries — keys whose
-// events never recur would otherwise stay in memory indefinitely.
-// The platform connector calls this on a timer (default: every 60s).
-func (t *Tracker) EvictExpired()
-
-func (t *Tracker) Clear()
+// evictExpired walks the entire seen set and removes entries past ttl.
+// Required because checkAndMark only evicts the key it queries — keys whose
+// events never recur would otherwise stay in memory indefinitely. The
+// platform connector runs this on a timer (default: every 60s).
+func (t *tracker) evictExpired()
 ```
+
+`eventKey` is the canonicalised `(NodeName, CheckName, EntitiesImpacted, ErrorCode, ProcessingStrategy, IsHealthy)` tuple described above, encoded as a comparable Go struct of strings (length-prefixed to avoid delimiter collisions) rather than a hash — collisions are impossible by construction, at the cost of a larger map key.
 
 The tracker holds no persistent state; on platform-connector pod restart it starts empty.
 
 ### Dedup transformer
 
-`Deduplicator` implements the existing `Transformer` interface. It mutates duplicate unhealthy events in place by setting `ProcessingStrategy=STORE_ONLY`; downstream connectors already understand that strategy. The store connector still persists the duplicate for observability, while the Kubernetes connector skips Kubernetes-side remediation effects for `STORE_ONLY` events.
+`Deduplicator` implements the existing `pipeline.Transformer` interface (see [ADR-023](./023-health-event-transformer-pipeline.md)). It mutates duplicate unhealthy events in place by setting `ProcessingStrategy=STORE_AND_ANALYSE`; downstream connectors already understand that strategy. The store connector still persists the duplicate and health-events-analyzer still consumes it for pattern analysis, while the Kubernetes connector and fault-quarantine skip cluster-mutating side effects for `STORE_AND_ANALYSE` events, exactly as they do for `STORE_ONLY`.
 
 ```go
 type Deduplicator struct {
-    tracker *dedup.Tracker
-    include map[string]bool   // checks eligible for dedup; empty means all
+    tracker *tracker
+    include map[string]bool // checks eligible for dedup; empty means all
+    cancel  context.CancelFunc
 }
 
 func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) error {
-    if len(d.include) > 0 && !d.include[event.CheckName] {
+    if len(d.include) > 0 && !d.include[event.GetCheckName()] {
         return nil
     }
 
@@ -119,22 +118,25 @@ func (d *Deduplicator) Transform(ctx context.Context, event *pb.HealthEvent) err
     // this particular healthy event is itself a duplicate of a recent one.
     // Otherwise an unhealthy recurrence between two healthy emissions can
     // remain stuck behind the first healthy's TTL.
-    if event.IsHealthy {
-        d.tracker.ClearUnhealthyCounterpart(event)
+    if event.GetIsHealthy() {
+        d.tracker.clearUnhealthyCounterpart(event)
         return nil
     }
 
-    if d.tracker.IsDuplicate(event) {
-        dedupStoreOnlyCounter.WithLabelValues(event.CheckName, event.NodeName, errCodeLabel(event)).Inc()
-        event.ProcessingStrategy = pb.ProcessingStrategy_STORE_ONLY
+    if d.tracker.checkAndMark(event) {
+        dedupStoreAndAnalyseCounter.WithLabelValues(
+            event.GetCheckName(), event.GetNodeName(), errCodeLabel(event),
+        ).Inc()
+        event.ProcessingStrategy = pb.ProcessingStrategy_STORE_AND_ANALYSE
+
         return nil
     }
-    d.tracker.Mark(event)
+
     return nil
 }
 ```
 
-The existing transformer pipeline is sufficient; no new filter/drop stage is needed.
+The existing transformer pipeline is sufficient; no new filter/drop stage is needed — the `Filter` interface that used to let pipeline stages drop events entirely has been removed from `platform-connectors/pkg/pipeline`, since every stage (including dedup) is now a transformer that mutates events in place.
 
 ### Per-check opt-in
 
@@ -151,7 +153,7 @@ platformConnector:
       - SysLogsSXIDError
 ```
 
-### Dedup STORE_ONLY metric
+### Dedup STORE_AND_ANALYSE metric
 
 ```go
 var dedupStoreAndAnalyseCounter = promauto.NewCounterVec(
@@ -173,17 +175,21 @@ rate(syslog_health_monitor_xid_errors{node="gpu-node-1"}[5m])
 
 ### Lifecycle
 
-The dedup tracker lives entirely in memory. A single background goroutine calls `EvictExpired()` on a cleanup interval (default every 60s) so entries whose events stop recurring don't accumulate past `suppressionWindow`. There is no on-disk state, no boot-id detection, and no startup restore: pod restart and node reboot both result in an empty tracker, and currently-active faults re-emit once each as the kernel re-observes them.
+The dedup tracker lives entirely in memory. A single background goroutine, started by the factory alongside the transformer, calls `evictExpired()` on a cleanup interval (default every 60s) so entries whose events stop recurring don't accumulate past `suppressionWindow`. There is no on-disk state, no boot-id detection, and no startup restore: pod restart and node reboot both result in an empty tracker, and currently-active faults re-emit once each as the kernel re-observes them.
 
 ### Files touched
 
 | File                                                          | Change                                                                                   |
 |---------------------------------------------------------------|------------------------------------------------------------------------------------------|
-| `commons/pkg/dedup/tracker.go`                                | **New** — `Tracker`, `Key`, canonicalisation                                             |
-| `commons/pkg/dedup/tracker_test.go`                           | **New** — unit tests: TTL eviction, canonicalisation, healthy-clears-unhealthy           |
-| `platform-connectors/pkg/transformers/dedup/factory.go`       | **New** — registers `Deduplicator` in pipeline registry                                  |
-| `platform-connectors/pkg/transformers/dedup/transformer.go`   | **New** — `Deduplicator.Transform`, periodic `EvictExpired` timer                        |
-| `distros/kubernetes/nvsentinel/charts/platform-connectors/values.yaml` | Add `dedup` config block                                                        |
+| `data-models/protobufs/health_event.proto`                    | Add `STORE_AND_ANALYSE` to the `ProcessingStrategy` enum                                 |
+| `platform-connectors/pkg/transformers/dedup/tracker.go`        | **New** — `tracker`, `eventKey`, canonicalisation (all package-private)                 |
+| `platform-connectors/pkg/transformers/dedup/tracker_test.go`   | **New** — unit tests: TTL eviction, canonicalisation, healthy-clears-unhealthy           |
+| `platform-connectors/pkg/transformers/dedup/config.go`         | **New** — `Config`, `LoadConfig`, defaults and validation                                |
+| `platform-connectors/pkg/transformers/dedup/metrics.go`        | **New** — `nvsentinel_platform_connector_dedup_store_and_analyse_total` counter          |
+| `platform-connectors/pkg/transformers/dedup/factory.go`        | **New** — registers `Deduplicator` in the pipeline registry                              |
+| `platform-connectors/pkg/transformers/dedup/transformer.go`    | **New** — `Deduplicator.Transform`, periodic `evictExpired` timer                        |
+| `platform-connectors/pkg/pipeline/pipeline.go`                 | Removed the `Filter` interface; every pipeline stage is now a `Transformer`              |
+| `distros/kubernetes/nvsentinel/values.yaml`, `values-full.yaml`, `values-tilt.yaml` | Add `platformConnector.dedup` config block                          |
 
 ## Consequences
 

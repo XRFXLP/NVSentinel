@@ -293,7 +293,7 @@ platformConnector:
     burst: 10
 
   # Health event deduplication transformer
-  # Marks repeated events for configured high-volume checks as STORE_ONLY.
+  # Marks repeated events for configured high-volume checks as STORE_AND_ANALYSE.
   dedup:
     enabled: false
     suppressionWindow: "3m"
