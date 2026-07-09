@@ -44,7 +44,7 @@ node-drainer:
 
 ### Change Stream Resume Token
 
-Controls whether node-drainer deletes its stored change stream resume token before startup. Use `""` to inherit `global.changeStream.resumeToken.resetOnStart`; set `true` to skip accumulated events and start from the current stream head.
+Controls whether node-drainer deletes its stored change stream resume token before startup. Use `""` to inherit `global.changeStream.resumeToken.resetOnStart`, set `true` to force reset-on-start for node-drainer, or set `false` to opt out when the global default is `true`.
 
 ```yaml
 node-drainer:

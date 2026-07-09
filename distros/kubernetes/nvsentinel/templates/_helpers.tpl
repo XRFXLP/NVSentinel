@@ -113,8 +113,10 @@ Local chart value overrides global only when set to true or false; "" or null me
 {{- $globalValues := get .Values "global" | default (dict) -}}
 {{- $globalChangeStream := get $globalValues "changeStream" | default (dict) -}}
 {{- $globalResumeToken := get $globalChangeStream "resumeToken" | default (dict) -}}
-{{- if hasKey $globalResumeToken "resetOnStart" -}}
-  {{- $resetOnStart = $globalResumeToken.resetOnStart -}}
+{{- $globalResetOnStart := get $globalResumeToken "resetOnStart" -}}
+{{- $globalIsUnset := or (kindIs "invalid" $globalResetOnStart) (and (kindIs "string" $globalResetOnStart) (eq $globalResetOnStart "")) -}}
+{{- if and (hasKey $globalResumeToken "resetOnStart") (not $globalIsUnset) -}}
+  {{- $resetOnStart = $globalResetOnStart -}}
 {{- end -}}
 {{- $localChangeStream := get .Values "changeStream" | default (dict) -}}
 {{- $localResumeToken := get $localChangeStream "resumeToken" | default (dict) -}}

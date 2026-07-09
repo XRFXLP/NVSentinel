@@ -38,6 +38,8 @@ global:
 
 Watcher-based components persist change stream resume tokens so they can resume from the last processed event after a restart. To skip accumulated events and start from the current stream head, set `resetOnStart` to `true`. This deletes only each component's own change stream resume token before its watcher starts.
 
+`resetOnStart` is intended as a one-time operational reset. Set it back to `false` after the intended restart or rollout; otherwise every later pod restart will delete the component's resume token again.
+
 ```yaml
 global:
   changeStream:

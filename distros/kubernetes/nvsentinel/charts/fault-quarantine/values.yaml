@@ -46,6 +46,7 @@ changeStream:
     # "" inherits global.changeStream.resumeToken.resetOnStart.
     # Set true to delete only fault-quarantine's stored change stream resume token
     # before startup and begin from the current stream head.
+    # Set false to opt out even when global.changeStream.resumeToken.resetOnStart is true.
     resetOnStart: ""
 
 # Label prefix for node labels and annotations
