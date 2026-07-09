@@ -52,13 +52,15 @@ kubectl create secret generic event-exporter-oidc-secret \
 
 ### Change Stream Resume Token
 
-Controls whether event-exporter deletes its stored change stream resume token before startup. Use `""` to inherit `global.changeStream.resumeToken.resetOnStart`; set `true` to start from the current stream head. When `exporter.backfill.enabled` is `true`, deleting the token also makes the exporter treat startup like a first deployment for backfill detection.
+To make event-exporter start from the current stream head, set its key in the shared resume-control ConfigMap to `CREATE` and restart the deployment. Event-exporter deletes only its own resume token and resets the key back to `RESUME` during startup. When `exporter.backfill.enabled` is `true`, deleting the token also makes the exporter treat startup like a first deployment for backfill detection.
 
-```yaml
-event-exporter:
-  changeStream:
-    resumeToken:
-      resetOnStart: ""
+```bash
+kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
+  kubectl -n nvsentinel create configmap resume-control
+kubectl -n nvsentinel patch configmap resume-control \
+  --type merge \
+  -p '{"data":{"event-exporter":"CREATE"}}'
+kubectl -n nvsentinel rollout restart deployment/event-exporter
 ```
 
 ## Metadata Configuration

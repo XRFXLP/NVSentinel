@@ -150,7 +150,6 @@ spec:
             # App name for connection identification in logs and currentOp
             - name: APP_NAME
               value: {{ .Chart.Name | quote }}
-            {{- include "nvsentinel.changeStream.resumeToken.envVars" . | nindent 12 }}
             {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
             {{- end }}

@@ -36,24 +36,20 @@ global:
 
 ### Change Stream Resume Tokens
 
-Watcher-based components persist change stream resume tokens so they can resume from the last processed event after a restart. To skip accumulated events and start from the current stream head, set `resetOnStart` to `true`. This deletes only each component's own change stream resume token before its watcher starts.
+Watcher-based components persist change stream resume tokens so they can resume from the last processed event after a restart. To skip accumulated events and start from the current stream head, patch the component's key in the runtime resume-control ConfigMap from `RESUME` to `CREATE`, then restart that component. The component deletes only its own resume token before its watcher starts and writes its key back to `RESUME`.
 
-`resetOnStart` is intended as a one-time operational reset. Set it back to `false` after the intended restart or rollout; otherwise every later pod restart will delete the component's resume token again.
+Helm does not create the resume-control ConfigMap. Components create it at runtime if it is missing, so GitOps tools such as Argo CD do not revert operator patches to its data.
+When a component starts and its key is missing, it writes its key as `RESUME`; the ConfigMap therefore self-populates with explicit per-component state over time.
 
-```yaml
-global:
-  changeStream:
-    resumeToken:
-      resetOnStart: false
-```
+Example one-shot reset for node-drainer:
 
-Component charts can override the global value. Use `""` to inherit the global value, or set `true`/`false` explicitly.
-
-```yaml
-node-drainer:
-  changeStream:
-    resumeToken:
-      resetOnStart: ""
+```bash
+kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
+  kubectl -n nvsentinel create configmap resume-control
+kubectl -n nvsentinel patch configmap resume-control \
+  --type merge \
+  -p '{"data":{"node-drainer":"CREATE"}}'
+kubectl -n nvsentinel rollout restart deployment/node-drainer
 ```
 
 This applies to `fault-quarantine`, `node-drainer`, `fault-remediation`, `health-events-analyzer`, and `event-exporter`.

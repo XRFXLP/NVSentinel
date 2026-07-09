@@ -40,6 +40,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      serviceAccountName: {{ include "event-exporter.fullname" . }}
       {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       initContainers:
         - name: fix-cert-permissions
@@ -128,7 +129,6 @@ spec:
             # App name for connection identification in logs and currentOp
             - name: APP_NAME
               value: {{ .Chart.Name | quote }}
-            {{- include "nvsentinel.changeStream.resumeToken.envVars" . | nindent 12 }}
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
             - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
               value: "/etc/ssl/client-certs"

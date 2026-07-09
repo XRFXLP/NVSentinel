@@ -44,13 +44,15 @@ fault-remediation:
 
 ### Change Stream Resume Token
 
-Controls whether fault-remediation deletes its stored change stream resume token before startup. Use `""` to inherit `global.changeStream.resumeToken.resetOnStart`; set `true` to skip accumulated events and start from the current stream head.
+To make fault-remediation skip accumulated events and start from the current stream head, set its key in the shared resume-control ConfigMap to `CREATE` and restart the deployment. Fault-remediation deletes only its own resume token and resets the key back to `RESUME` during startup.
 
-```yaml
-fault-remediation:
-  changeStream:
-    resumeToken:
-      resetOnStart: ""
+```bash
+kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
+  kubectl -n nvsentinel create configmap resume-control
+kubectl -n nvsentinel patch configmap resume-control \
+  --type merge \
+  -p '{"data":{"fault-remediation":"CREATE"}}'
+kubectl -n nvsentinel rollout restart deployment/fault-remediation
 ```
 
 ## Maintenance Resource Configuration

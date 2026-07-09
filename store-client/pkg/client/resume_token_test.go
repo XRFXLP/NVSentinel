@@ -20,7 +20,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nvidia/nvsentinel/store-client/pkg/config"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 type mockResumeTokenDBClient struct {
@@ -90,15 +92,38 @@ func (m *mockResumeTokenDBClient) Close(context.Context) error {
 	return nil
 }
 
-func TestResetResumeTokenOnStartIfConfigured_DisabledNoop(t *testing.T) {
-	t.Setenv(config.EnvChangeStreamResumeTokenResetOnStart, "false")
+type mockResumeControlStore struct {
+	mode       string
+	getErr     error
+	setErr     error
+	setCalls   int
+	setClient  string
+	setMode    string
+	lastClient string
+}
 
+func (m *mockResumeControlStore) GetMode(_ context.Context, clientName string) (string, error) {
+	m.lastClient = clientName
+
+	return m.mode, m.getErr
+}
+
+func (m *mockResumeControlStore) SetMode(_ context.Context, clientName, mode string) error {
+	m.setCalls++
+	m.setClient = clientName
+	m.setMode = mode
+
+	return m.setErr
+}
+
+func TestResetResumeTokenOnStartWithStore_ResumeNoop(t *testing.T) {
 	dbClient := &mockResumeTokenDBClient{}
-	err := ResetResumeTokenOnStartIfConfigured(context.Background(), dbClient, TokenConfig{
+	store := &mockResumeControlStore{mode: ResumeControlModeResume}
+	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
 		ClientName:      "node-drainer",
 		TokenDatabase:   "HealthEventsDatabase",
 		TokenCollection: "ResumeTokens",
-	})
+	}, store)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,19 +131,22 @@ func TestResetResumeTokenOnStartIfConfigured_DisabledNoop(t *testing.T) {
 	if dbClient.deleteCalls != 0 {
 		t.Fatalf("DeleteResumeToken called %d times, want 0", dbClient.deleteCalls)
 	}
+
+	if store.setCalls != 0 {
+		t.Fatalf("SetMode called %d times, want 0", store.setCalls)
+	}
 }
 
-func TestResetResumeTokenOnStartIfConfigured_EnabledDeletesToken(t *testing.T) {
-	t.Setenv(config.EnvChangeStreamResumeTokenResetOnStart, "true")
-
+func TestResetResumeTokenOnStartWithStore_CreateDeletesTokenAndResetsMode(t *testing.T) {
 	tokenConfig := TokenConfig{
 		ClientName:      "node-drainer",
 		TokenDatabase:   "HealthEventsDatabase",
 		TokenCollection: "ResumeTokens",
 	}
 	dbClient := &mockResumeTokenDBClient{}
+	store := &mockResumeControlStore{mode: ResumeControlModeCreate}
 
-	err := ResetResumeTokenOnStartIfConfigured(context.Background(), dbClient, tokenConfig)
+	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, tokenConfig, store)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -130,21 +158,35 @@ func TestResetResumeTokenOnStartIfConfigured_EnabledDeletesToken(t *testing.T) {
 	if dbClient.tokenConfig != tokenConfig {
 		t.Fatalf("DeleteResumeToken got token config %+v, want %+v", dbClient.tokenConfig, tokenConfig)
 	}
+
+	if store.setCalls != 1 {
+		t.Fatalf("SetMode called %d times, want 1", store.setCalls)
+	}
+
+	if store.setClient != tokenConfig.ClientName || store.setMode != ResumeControlModeResume {
+		t.Fatalf("SetMode got client=%q mode=%q, want client=%q mode=%q",
+			store.setClient, store.setMode, tokenConfig.ClientName, ResumeControlModeResume)
+	}
 }
 
-func TestResetResumeTokenOnStartIfConfigured_ConfigParseError(t *testing.T) {
-	t.Setenv(config.EnvChangeStreamResumeTokenResetOnStart, "sometimes")
-
+func TestResetResumeTokenOnStartWithStore_ReadError(t *testing.T) {
+	readErr := errors.New("read failed")
 	dbClient := &mockResumeTokenDBClient{}
-	err := ResetResumeTokenOnStartIfConfigured(context.Background(), dbClient, TokenConfig{
+	store := &mockResumeControlStore{getErr: readErr}
+
+	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
 		ClientName: "node-drainer",
-	})
+	}, store)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "failed to load change stream resume token reset-on-start configuration") {
-		t.Fatalf("error %q missing configuration context", err)
+	if !errors.Is(err, readErr) {
+		t.Fatalf("errors.Is(err, readErr) = false, err=%v", err)
+	}
+
+	if !strings.Contains(err.Error(), "failed to read change stream resume control") {
+		t.Fatalf("error %q missing read context", err)
 	}
 
 	if dbClient.deleteCalls != 0 {
@@ -152,15 +194,14 @@ func TestResetResumeTokenOnStartIfConfigured_ConfigParseError(t *testing.T) {
 	}
 }
 
-func TestResetResumeTokenOnStartIfConfigured_DeleteError(t *testing.T) {
-	t.Setenv(config.EnvChangeStreamResumeTokenResetOnStart, "true")
-
+func TestResetResumeTokenOnStartWithStore_DeleteError(t *testing.T) {
 	deleteErr := errors.New("delete failed")
 	dbClient := &mockResumeTokenDBClient{deleteErr: deleteErr}
+	store := &mockResumeControlStore{mode: ResumeControlModeCreate}
 
-	err := ResetResumeTokenOnStartIfConfigured(context.Background(), dbClient, TokenConfig{
+	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
 		ClientName: "node-drainer",
-	})
+	}, store)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -175,5 +216,143 @@ func TestResetResumeTokenOnStartIfConfigured_DeleteError(t *testing.T) {
 
 	if dbClient.deleteCalls != 1 {
 		t.Fatalf("DeleteResumeToken called %d times, want 1", dbClient.deleteCalls)
+	}
+
+	if store.setCalls != 0 {
+		t.Fatalf("SetMode called %d times, want 0", store.setCalls)
+	}
+}
+
+func TestResetResumeTokenOnStartWithStore_ResetModeError(t *testing.T) {
+	setErr := errors.New("set failed")
+	dbClient := &mockResumeTokenDBClient{}
+	store := &mockResumeControlStore{mode: ResumeControlModeCreate, setErr: setErr}
+
+	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
+		ClientName: "node-drainer",
+	}, store)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !errors.Is(err, setErr) {
+		t.Fatalf("errors.Is(err, setErr) = false, err=%v", err)
+	}
+
+	if !strings.Contains(err.Error(), "failed to reset change stream resume control") {
+		t.Fatalf("error %q missing reset context", err)
+	}
+
+	if dbClient.deleteCalls != 1 {
+		t.Fatalf("DeleteResumeToken called %d times, want 1", dbClient.deleteCalls)
+	}
+}
+
+func TestResetResumeTokenOnStartWithStore_InvalidMode(t *testing.T) {
+	dbClient := &mockResumeTokenDBClient{}
+	store := &mockResumeControlStore{mode: "MAYBE"}
+
+	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
+		ClientName: "node-drainer",
+	}, store)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "invalid change stream resume control mode") {
+		t.Fatalf("error %q missing invalid mode context", err)
+	}
+
+	if dbClient.deleteCalls != 0 {
+		t.Fatalf("DeleteResumeToken called %d times, want 0", dbClient.deleteCalls)
+	}
+}
+
+func TestKubernetesResumeControlStore_GetModeCreatesMissingConfigMap(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset()
+	store := &kubernetesResumeControlStore{
+		client:    clientset,
+		name:      "resume-control",
+		namespace: "nvsentinel",
+	}
+
+	mode, err := store.GetMode(ctx, "node-drainer")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mode != ResumeControlModeResume {
+		t.Fatalf("mode = %q, want %q", mode, ResumeControlModeResume)
+	}
+
+	cm, err := clientset.CoreV1().ConfigMaps("nvsentinel").Get(ctx, "resume-control", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("expected ConfigMap to be created: %v", err)
+	}
+
+	if got := cm.Data["node-drainer"]; got != ResumeControlModeResume {
+		t.Fatalf("node-drainer mode = %q, want %q", got, ResumeControlModeResume)
+	}
+}
+
+func TestKubernetesResumeControlStore_GetModeMissingKeyWritesResume(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "resume-control", Namespace: "nvsentinel"},
+		Data:       map[string]string{"event-exporter": ResumeControlModeCreate},
+	})
+	store := &kubernetesResumeControlStore{
+		client:    clientset,
+		name:      "resume-control",
+		namespace: "nvsentinel",
+	}
+
+	mode, err := store.GetMode(ctx, "node-drainer")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mode != ResumeControlModeResume {
+		t.Fatalf("mode = %q, want %q", mode, ResumeControlModeResume)
+	}
+
+	cm, err := clientset.CoreV1().ConfigMaps("nvsentinel").Get(ctx, "resume-control", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("expected ConfigMap to exist: %v", err)
+	}
+
+	if got := cm.Data["node-drainer"]; got != ResumeControlModeResume {
+		t.Fatalf("node-drainer mode = %q, want %q", got, ResumeControlModeResume)
+	}
+}
+
+func TestKubernetesResumeControlStore_SetModePreservesExistingKeys(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "resume-control", Namespace: "nvsentinel"},
+		Data:       map[string]string{"event-exporter": ResumeControlModeCreate},
+	})
+	store := &kubernetesResumeControlStore{
+		client:    clientset,
+		name:      "resume-control",
+		namespace: "nvsentinel",
+	}
+
+	if err := store.SetMode(ctx, "node-drainer", ResumeControlModeResume); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cm, err := clientset.CoreV1().ConfigMaps("nvsentinel").Get(ctx, "resume-control", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("expected ConfigMap to exist: %v", err)
+	}
+
+	if got := cm.Data["event-exporter"]; got != ResumeControlModeCreate {
+		t.Fatalf("event-exporter mode = %q, want %q", got, ResumeControlModeCreate)
+	}
+
+	if got := cm.Data["node-drainer"]; got != ResumeControlModeResume {
+		t.Fatalf("node-drainer mode = %q, want %q", got, ResumeControlModeResume)
 	}
 }

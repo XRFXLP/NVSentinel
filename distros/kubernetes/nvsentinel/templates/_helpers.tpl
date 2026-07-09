@@ -105,38 +105,6 @@ Audit logging environment variables
 {{- end }}
 
 {{/*
-Effective change stream resume token reset-on-start value.
-Local chart value overrides global only when set to true or false; "" or null means inherit global.
-*/}}
-{{- define "nvsentinel.changeStream.resumeToken.resetOnStart" -}}
-{{- $resetOnStart := false -}}
-{{- $globalValues := get .Values "global" | default (dict) -}}
-{{- $globalChangeStream := get $globalValues "changeStream" | default (dict) -}}
-{{- $globalResumeToken := get $globalChangeStream "resumeToken" | default (dict) -}}
-{{- $globalResetOnStart := get $globalResumeToken "resetOnStart" -}}
-{{- $globalIsUnset := or (kindIs "invalid" $globalResetOnStart) (and (kindIs "string" $globalResetOnStart) (eq $globalResetOnStart "")) -}}
-{{- if and (hasKey $globalResumeToken "resetOnStart") (not $globalIsUnset) -}}
-  {{- $resetOnStart = $globalResetOnStart -}}
-{{- end -}}
-{{- $localChangeStream := get .Values "changeStream" | default (dict) -}}
-{{- $localResumeToken := get $localChangeStream "resumeToken" | default (dict) -}}
-{{- $localResetOnStart := get $localResumeToken "resetOnStart" -}}
-{{- $localIsUnset := or (kindIs "invalid" $localResetOnStart) (and (kindIs "string" $localResetOnStart) (eq $localResetOnStart "")) -}}
-{{- if and (hasKey $localResumeToken "resetOnStart") (not $localIsUnset) -}}
-  {{- $resetOnStart = $localResetOnStart -}}
-{{- end -}}
-{{- $resetOnStart -}}
-{{- end }}
-
-{{/*
-Environment variable consumed by store-client before change stream watcher creation.
-*/}}
-{{- define "nvsentinel.changeStream.resumeToken.envVars" -}}
-- name: CHANGE_STREAM_RESUME_TOKEN_RESET_ON_START
-  value: {{ include "nvsentinel.changeStream.resumeToken.resetOnStart" . | quote }}
-{{- end }}
-
-{{/*
 MongoDB client certificate secret name.
 Returns (in priority order):
   1. global.datastore.auth.clientCertSecretName  (x509 auth with user-provided cert)

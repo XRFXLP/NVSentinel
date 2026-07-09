@@ -134,7 +134,6 @@ spec:
             # App name for connection identification in logs and currentOp
             - name: APP_NAME
               value: {{ .Chart.Name | quote }}
-            {{- include "nvsentinel.changeStream.resumeToken.envVars" . | nindent 12 }}
             {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
             {{- if $certMountPath }}
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
