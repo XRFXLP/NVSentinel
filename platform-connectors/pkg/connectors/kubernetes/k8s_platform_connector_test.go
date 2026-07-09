@@ -604,6 +604,38 @@ func TestRemoveImpactedEntitiesMessagesScoped(t *testing.T) {
 			},
 		},
 		{
+			name: "composite NIC identity: shared port on different NIC is not cleared",
+			messages: []string{
+				"NIC:mlx5_0 NICPort:1 link down Recommended Action=RESTART_VM;",
+				"NIC:mlx5_1 NICPort:1 link down Recommended Action=RESTART_VM;",
+			},
+			entities: []protos.Entity{
+				{EntityType: "NIC", EntityValue: "mlx5_1"},
+				{EntityType: "NICPort", EntityValue: "1"},
+			},
+			errorCodes: nil,
+			expected: []string{
+				"NIC:mlx5_0 NICPort:1 link down Recommended Action=RESTART_VM;",
+			},
+		},
+		{
+			name: "scoped clear: composite entity identity preserves unrelated code",
+			messages: []string{
+				"ErrorCode:163 PCI:0000:03:00 GPU_UUID:GPU-1 boom Recommended Action=RESTART_VM;",
+				"ErrorCode:98 PCI:0000:03:00 GPU_UUID:GPU-1 unrelated Recommended Action=RESTART_VM;",
+				"ErrorCode:163 PCI:0000:04:00 GPU_UUID:GPU-2 boom Recommended Action=RESTART_VM;",
+			},
+			entities: []protos.Entity{
+				{EntityType: "PCI", EntityValue: "0000:03:00"},
+				{EntityType: "GPU_UUID", EntityValue: "GPU-1"},
+			},
+			errorCodes: []string{"163"},
+			expected: []string{
+				"ErrorCode:98 PCI:0000:03:00 GPU_UUID:GPU-1 unrelated Recommended Action=RESTART_VM;",
+				"ErrorCode:163 PCI:0000:04:00 GPU_UUID:GPU-2 boom Recommended Action=RESTART_VM;",
+			},
+		},
+		{
 			name: "Tier 1 truncated entity cleared by healthy event",
 			messages: []string{
 				"ErrorCode:POD_STUCK_AFTER_DELETION v1/Pod:prod/61f345d08c9a432a-134... Recommended Action=RESTART_VM;",

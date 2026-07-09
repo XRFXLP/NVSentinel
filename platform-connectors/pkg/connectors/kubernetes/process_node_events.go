@@ -405,8 +405,22 @@ func entityMatchesMessage(msg string, entity *protos.Entity) bool {
 	return false
 }
 
-// removeImpactedEntitiesMessagesScoped removes messages that mention any
-// supplied entity. When errorCodes is non-empty, the message must also carry
+func entitiesMatchMessage(msg string, entities []*protos.Entity) bool {
+	if len(entities) == 0 {
+		return false
+	}
+
+	for _, entity := range entities {
+		if !entityMatchesMessage(msg, entity) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// removeImpactedEntitiesMessagesScoped removes messages that mention all
+// supplied entities. When errorCodes is non-empty, the message must also carry
 // a matching ErrorCode token; this prevents an "X cancels Y" rule from
 // clearing an unrelated fault Z on the same entity.
 func (r *K8sConnector) removeImpactedEntitiesMessagesScoped(
@@ -417,14 +431,7 @@ func (r *K8sConnector) removeImpactedEntitiesMessagesScoped(
 	var newMessages []string
 
 	for _, msg := range messages {
-		entityFound := false
-
-		for _, entity := range entities {
-			if entityMatchesMessage(msg, entity) {
-				entityFound = true
-				break
-			}
-		}
+		entityFound := entitiesMatchMessage(msg, entities)
 
 		if entityFound && !messageMatchesAnyErrorCode(msg, errorCodes) {
 			entityFound = false
