@@ -40,6 +40,14 @@ logLevel: info
 # Client certificate mount path for database connections
 clientCertMountPath: /etc/ssl/client-certs
 
+# Change stream watcher configuration.
+changeStream:
+  resumeToken:
+    # "" inherits global.changeStream.resumeToken.resetOnStart.
+    # Set true to delete only fault-quarantine's stored change stream resume token
+    # before startup and begin from the current stream head.
+    resetOnStart: ""
+
 # Label prefix for node labels and annotations
 # Used to generate label keys like: <labelPrefix>cordon-by, <labelPrefix>cordon-reason, <labelPrefix>cordon-timestamp
 # Also used for uncordon labels: <labelPrefix>uncordon-by, <labelPrefix>uncordon-reason, <labelPrefix>uncordon-timestamp

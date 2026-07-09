@@ -74,3 +74,61 @@ func TestNewPostgreSQLCompatibleConfig_PasswordWithSpecialChars(t *testing.T) {
 		t.Errorf("expected properly quoted password in URI, got: %s", uri)
 	}
 }
+
+func TestChangeStreamResumeTokenResetOnStartFromEnv(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		set       bool
+		want      bool
+		wantError bool
+	}{
+		{
+			name: "unset defaults false",
+			want: false,
+		},
+		{
+			name:  "true parses true",
+			value: "true",
+			set:   true,
+			want:  true,
+		},
+		{
+			name:  "false parses false",
+			value: "false",
+			set:   true,
+			want:  false,
+		},
+		{
+			name:      "invalid value errors",
+			value:     "sometimes",
+			set:       true,
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.set {
+				t.Setenv(EnvChangeStreamResumeTokenResetOnStart, tt.value)
+			}
+
+			got, err := ChangeStreamResumeTokenResetOnStartFromEnv()
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if got != tt.want {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

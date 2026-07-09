@@ -22,6 +22,13 @@ global:
     pullPolicy: IfNotPresent
   metricsPort: 2112
 
+  # Change stream watcher configuration.
+  changeStream:
+    resumeToken:
+      # When true, watcher-based components delete their own stored change stream
+      # resume token before startup and begin from the current stream head.
+      resetOnStart: false
+
   # Datastore configuration
   # By default, datastore is not configured (internal mongodb-config ConfigMap is used).
   # Uncomment and configure this section to use an external/managed database service,

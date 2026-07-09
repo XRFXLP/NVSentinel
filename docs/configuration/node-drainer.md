@@ -42,6 +42,17 @@ node-drainer:
 
 > Note: This module depends on the results from fault-quarantine. It also depends on the datastore being enabled. Therefore, ensure the datastore and the other modules are also enabled.
 
+### Change Stream Resume Token
+
+Controls whether node-drainer deletes its stored change stream resume token before startup. Use `""` to inherit `global.changeStream.resumeToken.resetOnStart`; set `true` to skip accumulated events and start from the current stream head.
+
+```yaml
+node-drainer:
+  changeStream:
+    resumeToken:
+      resetOnStart: ""
+```
+
 ### Partial Drain
 
 If enabled, the node-drainer will only drain pods which are leveraging the GPU_UUID impacted entity in COMPONENT_RESET HealthEvents. If disabled, the node-drainer will drain all eligible pods on the impacted node for the configured namespaces regardless of the remediation action. HealthEvents with the COMPONENT_RESET remediation action must include an impacted entity for the unhealthy GPU_UUID or else the drain will fail. 

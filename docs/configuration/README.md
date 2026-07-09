@@ -34,6 +34,28 @@ global:
   metricsPort: 2112
 ```
 
+### Change Stream Resume Tokens
+
+Watcher-based components persist change stream resume tokens so they can resume from the last processed event after a restart. To skip accumulated events and start from the current stream head, set `resetOnStart` to `true`. This deletes only each component's own change stream resume token before its watcher starts.
+
+```yaml
+global:
+  changeStream:
+    resumeToken:
+      resetOnStart: false
+```
+
+Component charts can override the global value. Use `""` to inherit the global value, or set `true`/`false` explicitly.
+
+```yaml
+node-drainer:
+  changeStream:
+    resumeToken:
+      resetOnStart: ""
+```
+
+This applies to `fault-quarantine`, `node-drainer`, `fault-remediation`, `health-events-analyzer`, and `event-exporter`.
+
 ### Node Scheduling
 
 Control where NVSentinel pods are scheduled.

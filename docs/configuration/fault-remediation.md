@@ -42,6 +42,17 @@ fault-remediation:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+### Change Stream Resume Token
+
+Controls whether fault-remediation deletes its stored change stream resume token before startup. Use `""` to inherit `global.changeStream.resumeToken.resetOnStart`; set `true` to skip accumulated events and start from the current stream head.
+
+```yaml
+fault-remediation:
+  changeStream:
+    resumeToken:
+      resetOnStart: ""
+```
+
 ## Maintenance Resource Configuration
 
 Defines the Custom Resource that will be created to trigger remediation actions.

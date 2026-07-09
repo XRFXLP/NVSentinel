@@ -65,6 +65,14 @@ enableRepeatedNICDegradationRule: true
 # Client certificate mount path for database connections
 clientCertMountPath: /etc/ssl/client-certs
 
+# Change stream watcher configuration.
+changeStream:
+  resumeToken:
+    # "" inherits global.changeStream.resumeToken.resetOnStart.
+    # Set true to delete only health-events-analyzer's stored change stream
+    # resume token before startup and begin from the current stream head.
+    resetOnStart: ""
+
 config: |
   # The node condition for these rules needs to be removed manually because health-events-analyzer does not publish healthy events to clear it.
   # Please run the command below to remove the node condition:

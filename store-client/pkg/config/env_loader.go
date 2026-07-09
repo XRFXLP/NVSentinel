@@ -67,8 +67,9 @@ const (
 	EnvMongoDBChangeStreamRetryDeadlineSeconds = "MONGODB_CHANGE_STREAM_RETRY_DEADLINE_SECONDS"
 	EnvMongoDBChangeStreamRetryIntervalSeconds = "MONGODB_CHANGE_STREAM_RETRY_INTERVAL_SECONDS"
 	// Legacy: Non-prefixed versions (for backward compatibility)
-	EnvChangeStreamRetryDeadlineSeconds = "CHANGE_STREAM_RETRY_DEADLINE_SECONDS"
-	EnvChangeStreamRetryIntervalSeconds = "CHANGE_STREAM_RETRY_INTERVAL_SECONDS"
+	EnvChangeStreamRetryDeadlineSeconds    = "CHANGE_STREAM_RETRY_DEADLINE_SECONDS"
+	EnvChangeStreamRetryIntervalSeconds    = "CHANGE_STREAM_RETRY_INTERVAL_SECONDS"
+	EnvChangeStreamResumeTokenResetOnStart = "CHANGE_STREAM_RESUME_TOKEN_RESET_ON_START" // nolint:gosec
 	// Certificate rotation configuration
 	EnvMongoDBEnableCertRotation = "MONGODB_ENABLE_CERT_ROTATION"
 )
@@ -475,6 +476,22 @@ func TokenConfigFromEnv(clientName string) (TokenConfig, error) {
 		TokenDatabase:   tokenDatabase,
 		TokenCollection: tokenCollection,
 	}, nil
+}
+
+// ChangeStreamResumeTokenResetOnStartFromEnv returns whether the component should
+// delete its stored change stream resume token before creating a watcher.
+func ChangeStreamResumeTokenResetOnStartFromEnv() (bool, error) {
+	value := os.Getenv(EnvChangeStreamResumeTokenResetOnStart)
+	if value == "" {
+		return false, nil
+	}
+
+	resetOnStart, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse %s as bool: %w", EnvChangeStreamResumeTokenResetOnStart, err)
+	}
+
+	return resetOnStart, nil
 }
 
 // TokenConfig holds resume token configuration

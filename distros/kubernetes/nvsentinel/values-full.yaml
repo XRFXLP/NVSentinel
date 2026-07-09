@@ -68,6 +68,15 @@ global:
   # - Reboot or terminate nodes (janitor)
   dryRun: false
 
+  # Change stream watcher configuration.
+  changeStream:
+    resumeToken:
+      # When true, watcher-based components delete their own stored change stream
+      # resume token before startup and begin from the current stream head.
+      # This applies to fault-quarantine, node-drainer, fault-remediation,
+      # health-events-analyzer, and event-exporter.
+      resetOnStart: false
+
   # Image pull secrets for private container registries
   # Create these secrets in Kubernetes before installing NVSentinel:
   # kubectl create secret docker-registry my-registry-secret \
@@ -416,6 +425,14 @@ fault-quarantine:
   tolerations: []
   podAnnotations: {}
 
+  # Change stream watcher configuration.
+  changeStream:
+    resumeToken:
+      # "" inherits global.changeStream.resumeToken.resetOnStart.
+      # Set true to delete only fault-quarantine's stored change stream resume token
+      # before startup and begin from the current stream head.
+      resetOnStart: ""
+
   # Label prefix for node labels and annotations
   # Used to create labels like: <labelPrefix>cordon-by, <labelPrefix>cordon-reason
   # These labels track when and why nodes were quarantined
@@ -585,6 +602,14 @@ node-drainer:
 
   podAnnotations: {}
 
+  # Change stream watcher configuration.
+  changeStream:
+    resumeToken:
+      # "" inherits global.changeStream.resumeToken.resetOnStart.
+      # Set true to delete only node-drainer's stored change stream resume token
+      # before startup and begin from the current stream head.
+      resetOnStart: ""
+
   # Eviction timeout in seconds
   # Maximum time to wait for a pod to terminate gracefully
   # After this timeout, pod may be force deleted (depends on eviction mode)
@@ -688,6 +713,14 @@ fault-remediation:
   tolerations:
     - operator: "Exists"
   podAnnotations: {}
+
+  # Change stream watcher configuration.
+  changeStream:
+    resumeToken:
+      # "" inherits global.changeStream.resumeToken.resetOnStart.
+      # Set true to delete only fault-remediation's stored change stream resume token
+      # before startup and begin from the current stream head.
+      resetOnStart: ""
 
   # Multi-template remediation configuration
   # Allows different remediation actions to use different CRDs and operators
@@ -1453,6 +1486,21 @@ mongodb-store:
         tag: 0.41.2-debian-12-r1
 
 ################################################################################
+# HEALTH-EVENTS-ANALYZER CONFIGURATION
+#
+# Analyzes health event patterns and can update event status/recommendations.
+# Requires: datastore enabled
+################################################################################
+health-events-analyzer:
+  # Change stream watcher configuration.
+  changeStream:
+    resumeToken:
+      # "" inherits global.changeStream.resumeToken.resetOnStart.
+      # Set true to delete only health-events-analyzer's stored change stream
+      # resume token before startup and begin from the current stream head.
+      resetOnStart: ""
+
+################################################################################
 # EVENT-EXPORTER CONFIGURATION
 #
 # Exports health events from MongoDB to external endpoints in CloudEvents format.
@@ -1486,6 +1534,14 @@ event-exporter:
     requests:
       cpu: "500m"
       memory: "512Mi"
+
+  # Change stream watcher configuration.
+  changeStream:
+    resumeToken:
+      # "" inherits global.changeStream.resumeToken.resetOnStart.
+      # Set true to delete only event-exporter's stored change stream resume token
+      # before startup and begin from the current stream head.
+      resetOnStart: ""
 
   # OIDC secret configuration
   # The secret must contain a key named 'oidc-client-secret' with the OAuth2 client secret

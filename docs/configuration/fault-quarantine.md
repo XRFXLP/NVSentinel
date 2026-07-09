@@ -42,6 +42,17 @@ fault-quarantine:
   logLevel: info  # Options: debug, info, warn, error
 ```
 
+### Change Stream Resume Token
+
+Controls whether fault-quarantine deletes its stored change stream resume token before startup. Use `""` to inherit `global.changeStream.resumeToken.resetOnStart`; set `true` to skip accumulated events and start from the current stream head.
+
+```yaml
+fault-quarantine:
+  changeStream:
+    resumeToken:
+      resetOnStart: ""
+```
+
 ### Label Prefix
 
 Defines the prefix for all node labels created by the module to track cordon/uncordon lifecycle.

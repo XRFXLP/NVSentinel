@@ -20,6 +20,14 @@ logLevel: info
 # Client certificate mount path for database connections
 clientCertMountPath: /etc/ssl/client-certs
 
+# Change stream watcher configuration.
+changeStream:
+  resumeToken:
+    # "" inherits global.changeStream.resumeToken.resetOnStart.
+    # Set true to delete only fault-remediation's stored change stream resume token
+    # before startup and begin from the current stream head.
+    resetOnStart: ""
+
 image:
   repository: ghcr.io/nvidia/nvsentinel/fault-remediation
   pullPolicy: IfNotPresent
