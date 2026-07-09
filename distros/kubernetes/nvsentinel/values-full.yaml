@@ -426,7 +426,6 @@ fault-quarantine:
   tolerations: []
   podAnnotations: {}
 
-
   # Label prefix for node labels and annotations
   # Used to create labels like: <labelPrefix>cordon-by, <labelPrefix>cordon-reason
   # These labels track when and why nodes were quarantined
@@ -596,7 +595,6 @@ node-drainer:
 
   podAnnotations: {}
 
-
   # Eviction timeout in seconds
   # Maximum time to wait for a pod to terminate gracefully
   # After this timeout, pod may be force deleted (depends on eviction mode)
@@ -700,7 +698,6 @@ fault-remediation:
   tolerations:
     - operator: "Exists"
   podAnnotations: {}
-
 
   # Multi-template remediation configuration
   # Allows different remediation actions to use different CRDs and operators
@@ -1499,7 +1496,6 @@ event-exporter:
     requests:
       cpu: "500m"
       memory: "512Mi"
-
 
   # OIDC secret configuration
   # The secret must contain a key named 'oidc-client-secret' with the OAuth2 client secret
