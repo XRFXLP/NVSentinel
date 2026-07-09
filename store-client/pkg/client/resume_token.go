@@ -203,6 +203,7 @@ func (s *kubernetesResumeControlStore) SetMode(ctx context.Context, clientName, 
 		cm.Data[clientName] = mode
 
 		_, err = s.client.CoreV1().ConfigMaps(s.namespace).Update(ctx, cm, metav1.UpdateOptions{})
+		
 		return err
 	})
 }
