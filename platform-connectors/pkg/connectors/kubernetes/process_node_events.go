@@ -575,16 +575,18 @@ func (r *K8sConnector) constructHealthEventMessage(healthEvent *protos.HealthEve
 	return message
 }
 
-// filterProcessableEvents filters out STORE_ONLY events that should not create node conditions or K8s events.
+// filterProcessableEvents filters out events that should not create node conditions or K8s events.
 func filterProcessableEvents(ctx context.Context, healthEvents *protos.HealthEvents) []*protos.HealthEvent {
 	var processableEvents []*protos.HealthEvent
 
 	for _, healthEvent := range healthEvents.Events {
-		if healthEvent.ProcessingStrategy == protos.ProcessingStrategy_STORE_ONLY {
-			slog.InfoContext(ctx, "Skipping STORE_ONLY health event (no node conditions / node events)",
+		if healthEvent.ProcessingStrategy == protos.ProcessingStrategy_STORE_ONLY ||
+			healthEvent.ProcessingStrategy == protos.ProcessingStrategy_STORE_AND_ANALYSE {
+			slog.InfoContext(ctx, "Skipping non-remediation health event (no node conditions / node events)",
 				"node", healthEvent.NodeName,
 				"checkName", healthEvent.CheckName,
-				"agent", healthEvent.Agent)
+				"agent", healthEvent.Agent,
+				"processingStrategy", healthEvent.ProcessingStrategy.String())
 
 			continue
 		}
