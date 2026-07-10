@@ -100,6 +100,8 @@ type mockResumeControlStore struct {
 	setCalls     int
 	setClient    string
 	setMode      string
+	beginCalls   int
+	beginErr     error
 	lastClient   string
 	cutoff       time.Time
 	cutoffErr    error
@@ -129,6 +131,19 @@ func (m *mockResumeControlStore) SetColdStartCutoff(_ context.Context, _ string,
 	m.setCutoff = cutoff
 
 	return m.setCutoffErr
+}
+
+func (m *mockResumeControlStore) BeginCreate(_ context.Context, clientName string, cutoff time.Time) error {
+	m.beginCalls++
+	m.setClient = clientName
+	if m.beginErr != nil {
+		return m.beginErr
+	}
+
+	m.mode = resumeControlModeCreating
+	m.cutoff = cutoff
+
+	return nil
 }
 
 func TestResetResumeTokenOnStartWithStore_ResumeNoop(t *testing.T) {
@@ -211,8 +226,12 @@ func TestResetResumeTokenOnStartWithStore_CreateDeletesTokenAndResetsMode(t *tes
 		t.Fatal("ColdStartCutoff is zero, want CREATE cutoff")
 	}
 
-	if !store.setCutoff.Equal(decision.ColdStartCutoff) {
-		t.Fatalf("SetColdStartCutoff got %v, want %v", store.setCutoff, decision.ColdStartCutoff)
+	if !store.cutoff.Equal(decision.ColdStartCutoff) {
+		t.Fatalf("BeginCreate cutoff got %v, want %v", store.cutoff, decision.ColdStartCutoff)
+	}
+
+	if store.beginCalls != 1 {
+		t.Fatalf("BeginCreate called %d times, want 1", store.beginCalls)
 	}
 
 	if store.setCalls != 1 {
@@ -304,10 +323,10 @@ func TestResetResumeTokenOnStartWithStore_ResetModeError(t *testing.T) {
 	}
 }
 
-func TestResetResumeTokenOnStartWithStore_SetCutoffError(t *testing.T) {
-	setErr := errors.New("set cutoff failed")
+func TestResetResumeTokenOnStartWithStore_BeginCreateError(t *testing.T) {
+	setErr := errors.New("begin create failed")
 	dbClient := &mockResumeTokenDBClient{}
-	store := &mockResumeControlStore{mode: ResumeControlModeCreate, setCutoffErr: setErr}
+	store := &mockResumeControlStore{mode: ResumeControlModeCreate, beginErr: setErr}
 
 	_, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
 		ClientName: "node-drainer",
@@ -320,12 +339,55 @@ func TestResetResumeTokenOnStartWithStore_SetCutoffError(t *testing.T) {
 		t.Fatalf("errors.Is(err, setErr) = false, err=%v", err)
 	}
 
-	if !strings.Contains(err.Error(), "failed to set cold-start cutoff") {
-		t.Fatalf("error %q missing cutoff context", err)
+	if !strings.Contains(err.Error(), "failed to begin resume-control CREATE") {
+		t.Fatalf("error %q missing begin-create context", err)
 	}
 
-	if dbClient.deleteCalls != 1 {
-		t.Fatalf("DeleteResumeToken called %d times, want 1", dbClient.deleteCalls)
+	if dbClient.deleteCalls != 0 {
+		t.Fatalf("DeleteResumeToken called %d times, want 0", dbClient.deleteCalls)
+	}
+}
+
+func TestResetResumeTokenOnStartWithStore_RetryReusesPersistedCutoff(t *testing.T) {
+	deleteErr := errors.New("delete failed")
+	dbClient := &mockResumeTokenDBClient{deleteErr: deleteErr}
+	store := &mockResumeControlStore{mode: ResumeControlModeCreate}
+
+	_, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
+		ClientName: "node-drainer",
+	}, store)
+	if err == nil {
+		t.Fatal("expected first attempt to fail")
+	}
+
+	persistedCutoff := store.cutoff
+	if persistedCutoff.IsZero() {
+		t.Fatal("persisted cutoff is zero")
+	}
+	eventAfterOriginalCutoff := persistedCutoff.Add(time.Second)
+
+	dbClient.deleteErr = nil
+	decision, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
+		ClientName: "node-drainer",
+	}, store)
+	if err != nil {
+		t.Fatalf("unexpected retry error: %v", err)
+	}
+
+	if !decision.StartFresh {
+		t.Fatal("StartFresh = false, want true")
+	}
+
+	if !decision.ColdStartCutoff.Equal(persistedCutoff) {
+		t.Fatalf("retry cutoff = %v, want persisted cutoff %v", decision.ColdStartCutoff, persistedCutoff)
+	}
+
+	if !eventAfterOriginalCutoff.After(decision.ColdStartCutoff) {
+		t.Fatalf("event at %v would be skipped by retry cutoff %v", eventAfterOriginalCutoff, decision.ColdStartCutoff)
+	}
+
+	if store.beginCalls != 1 {
+		t.Fatalf("BeginCreate called %d times, want 1", store.beginCalls)
 	}
 }
 
@@ -462,5 +524,36 @@ func TestKubernetesResumeControlStore_ColdStartCutoffRoundTrip(t *testing.T) {
 
 	if !got.Equal(cutoff) {
 		t.Fatalf("cutoff = %v, want %v", got, cutoff)
+	}
+}
+
+func TestKubernetesResumeControlStore_BeginCreateSetsPhaseAndCutoff(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "resume-control", Namespace: "nvsentinel"},
+		Data:       map[string]string{"node-drainer": ResumeControlModeCreate},
+	})
+	store := &kubernetesResumeControlStore{
+		client:    clientset,
+		name:      "resume-control",
+		namespace: "nvsentinel",
+	}
+	cutoff := time.Date(2026, 7, 10, 10, 0, 0, 123, time.UTC)
+
+	if err := store.BeginCreate(ctx, "node-drainer", cutoff); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cm, err := clientset.CoreV1().ConfigMaps("nvsentinel").Get(ctx, "resume-control", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("expected ConfigMap to exist: %v", err)
+	}
+
+	if got := cm.Data["node-drainer"]; got != resumeControlModeCreating {
+		t.Fatalf("node-drainer mode = %q, want %q", got, resumeControlModeCreating)
+	}
+
+	if got := cm.Data[coldStartCutoffKey("node-drainer")]; got != cutoff.Format(time.RFC3339Nano) {
+		t.Fatalf("cutoff = %q, want %q", got, cutoff.Format(time.RFC3339Nano))
 	}
 }

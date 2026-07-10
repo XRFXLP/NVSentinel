@@ -1586,6 +1586,7 @@ func (w *PostgreSQLChangeStreamWatcherWithUnwrap) Unwrap() client.ChangeStreamWa
 	return w.adapter
 }
 
+// ResumeControlDecision returns the watcher's current resume-control startup decision.
 func (w *PostgreSQLChangeStreamWatcherWithUnwrap) ResumeControlDecision() client.ResumeControlDecision {
 	return w.decision
 }
