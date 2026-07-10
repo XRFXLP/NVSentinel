@@ -240,29 +240,30 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 		return fmt.Errorf("failed to mark event as processed: %w", err)
 	}
 
-	// Update resume position without moving the bookmark backwards for
-	// out-of-order changelog rows that committed after a later ID.
+	// Serialize resume position selection and persistence so concurrent
+	// MarkProcessed calls cannot persist an older bookmark after a newer one.
 	w.mu.Lock()
 
 	if processedEventID > w.lastEventID {
 		w.lastEventID = processedEventID
 		w.lastTimestamp = timestamp
-	} else {
-		eventID = w.lastEventID
-		timestamp = w.lastTimestamp
 	}
+
+	resumeEventID := w.lastEventID
+	resumeTimestamp := w.lastTimestamp
+	saveErr := w.saveResumePosition(ctx, resumeTimestamp, resumeEventID)
 
 	w.mu.Unlock()
 
-	if err := w.saveResumePosition(ctx, timestamp, eventID); err != nil {
-		slog.Error("Failed to save resume position", "error", err)
+	if saveErr != nil {
+		slog.Error("Failed to save resume position", "error", saveErr)
 	}
 
 	slog.Debug("Marked events processed",
 		"client", w.clientName,
 		"eventID", processedEventID,
-		"resumeEventID", eventID,
-		"timestamp", timestamp,
+		"resumeEventID", resumeEventID,
+		"timestamp", resumeTimestamp,
 		"table", w.tableName)
 
 	return nil
@@ -537,7 +538,7 @@ func (w *PostgreSQLChangeStreamWatcher) fetchChangeByID(ctx context.Context, eve
 
 	events, err := w.processChangelogRows(rows)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to process recovered changelog row %d: %w", eventID, err)
 	}
 
 	if len(events) == 0 {
@@ -548,7 +549,11 @@ func (w *PostgreSQLChangeStreamWatcher) fetchChangeByID(ctx context.Context, eve
 		return nil
 	}
 
-	return w.sendEventsToChannel(ctx, events)
+	if err := w.sendEventsToChannel(ctx, events); err != nil {
+		return fmt.Errorf("failed to deliver recovered changelog row %d: %w", eventID, err)
+	}
+
+	return nil
 }
 
 // adaptiveFallbackPoller implements adaptive polling based on NOTIFY health
@@ -1137,9 +1142,9 @@ func (w *PostgreSQLChangeStreamWatcher) hasRecentlySeenEventID(eventID int64) bo
 	defer w.mu.Unlock()
 
 	w.pruneRecentEventIDsLocked(time.Now())
-	_, ok := w.recentEventIDs[eventID]
+	_, recentlySeen := w.recentEventIDs[eventID]
 
-	return ok
+	return recentlySeen
 }
 
 func (w *PostgreSQLChangeStreamWatcher) recordRecentEventIDLocked(eventID int64, now time.Time) {
