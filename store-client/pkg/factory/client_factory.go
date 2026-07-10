@@ -171,11 +171,21 @@ func (f *ClientFactory) CreateChangeStreamWatcher(
 		providerPipeline = pipeline
 	}
 
-	watcher, err := dbClient.NewChangeStreamWatcher(ctx, client.TokenConfig{
+	clientTokenConfig := client.TokenConfig{
 		ClientName:      tokenConfig.ClientName,
 		TokenDatabase:   tokenConfig.TokenDatabase,
 		TokenCollection: tokenConfig.TokenCollection,
-	}, providerPipeline)
+	}
+
+	if err := client.ResetResumeTokenOnStartIfConfigured(ctx, dbClient, clientTokenConfig); err != nil {
+		return nil, datastore.NewConfigurationError(
+			providerType,
+			"failed to reset change stream resume token on startup",
+			err,
+		).WithMetadata("clientName", clientName).WithMetadata("tokenConfig", tokenConfig)
+	}
+
+	watcher, err := dbClient.NewChangeStreamWatcher(ctx, clientTokenConfig, providerPipeline)
 	if err != nil {
 		return nil, datastore.NewChangeStreamError(
 			providerType,

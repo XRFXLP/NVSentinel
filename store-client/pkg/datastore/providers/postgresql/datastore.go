@@ -144,6 +144,12 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 		return nil, err
 	}
 
+	if err := client.ResetResumeTokenOnStartIfConfigured(ctx, p.GetDatabaseClient(), client.TokenConfig{
+		ClientName: clientName,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to reset change stream resume token on startup: %w", err)
+	}
+
 	pipelineFilter := buildPipelineFilter(pipeline, tableName, clientName)
 
 	// Convert PascalCase table name to snake_case for PostgreSQL compatibility
