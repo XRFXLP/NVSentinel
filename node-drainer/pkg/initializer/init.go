@@ -259,6 +259,7 @@ func initializeDatastoreComponents(ctx context.Context, ds datastore.DataStore,
 	}
 
 	var resumeControlDecision client.ResumeControlDecision
+
 	type resumeControlDecisionProvider interface {
 		ResumeControlDecision() client.ResumeControlDecision
 	}
