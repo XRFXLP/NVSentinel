@@ -16,12 +16,14 @@ package postgresql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -392,7 +394,7 @@ func TestConcurrentClientsWithDifferentFilters(t *testing.T) {
 
 	err = watcher1.MarkProcessed(ctx, []byte("1"))
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), watcher1.lastEventID)
+	assert.Equal(t, int64(2), watcher1.lastEventID, "Client 1 should retain bookmark advanced through filtered event 2")
 
 	// Client 2 marks event 2
 	mock.ExpectExec("UPDATE datastore_changelog SET processed").
@@ -405,8 +407,10 @@ func TestConcurrentClientsWithDifferentFilters(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), watcher2.lastEventID)
 
-	// Verify each client has independent resume positions
-	assert.Equal(t, int64(1), watcher1.lastEventID, "Client 1 should be at event 1")
+	// Verify each client has independent resume positions. Client 1 has already
+	// advanced through filtered event 2, so MarkProcessed for event 1 must not
+	// move its bookmark backwards.
+	assert.Equal(t, int64(2), watcher1.lastEventID, "Client 1 should stay advanced through filtered event 2")
 	assert.Equal(t, int64(2), watcher2.lastEventID, "Client 2 should be at event 2")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -685,6 +689,89 @@ func TestMixedFilteredAndPassedEvents(t *testing.T) {
 	// Even though events 1, 3, 5 were filtered, position advances through ALL
 	assert.Equal(t, int64(5), watcher.lastEventID,
 		"lastEventID must advance to 5 (through all events including filtered)")
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestOutOfOrderNotifyBelowBookmarkFetchesUnseenEvent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+	tableName := "health_events"
+	changedAt := time.Date(2026, 7, 8, 11, 32, 20, 0, time.UTC)
+	recordID := uuid.New().String()
+
+	watcher := &PostgreSQLChangeStreamWatcher{
+		db:             db,
+		clientName:     "node-drainer",
+		tableName:      tableName,
+		events:         make(chan datastore.EventWithToken, 1),
+		stopCh:         make(chan struct{}),
+		lastEventID:    453,
+		lastTimestamp:  changedAt.Add(time.Second),
+		recentEventIDs: map[int64]time.Time{453: changedAt},
+		recentEventSeq: []int64{453},
+	}
+
+	rows := sqlmock.NewRows([]string{"id", "record_id", "operation", "old_values", "new_values", "changed_at"}).
+		AddRow(
+			int64(452),
+			recordID,
+			"UPDATE",
+			sql.NullString{Valid: true, String: `{"document":{"id":"` + recordID + `"}}`},
+			sql.NullString{Valid: true, String: `{"document":{"id":"` + recordID + `","healtheventstatus":{"nodequarantined":"UnQuarantined"}}}`},
+			changedAt,
+		)
+	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
+		WithArgs(tableName, int64(452)).
+		WillReturnRows(rows)
+
+	err = watcher.handleNotification(ctx, &pq.Notification{
+		Extra: `{"id":452,"table":"health_events","operation":"UPDATE"}`,
+	})
+	require.NoError(t, err)
+
+	select {
+	case event := <-watcher.events:
+		assert.Equal(t, []byte("452"), event.ResumeToken)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected out-of-order changelog row to be delivered")
+	}
+
+	assert.Equal(t, int64(453), watcher.lastEventID, "bookmark must not move backwards")
+	assert.True(t, watcher.hasRecentlySeenEventID(452), "recovered event should be tracked as seen")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestOutOfOrderNotifyBelowBookmarkSkipsRecentlySeenEvent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	watcher := &PostgreSQLChangeStreamWatcher{
+		db:             db,
+		clientName:     "node-drainer",
+		tableName:      "health_events",
+		events:         make(chan datastore.EventWithToken, 1),
+		stopCh:         make(chan struct{}),
+		lastEventID:    453,
+		recentEventIDs: map[int64]time.Time{452: time.Now(), 453: time.Now()},
+		recentEventSeq: []int64{452, 453},
+	}
+
+	err = watcher.handleNotification(context.Background(), &pq.Notification{
+		Extra: `{"id":452,"table":"health_events","operation":"UPDATE"}`,
+	})
+	require.NoError(t, err)
+
+	select {
+	case <-watcher.events:
+		t.Fatal("recently seen event should not be delivered again")
+	case <-time.After(100 * time.Millisecond):
+		// Expected.
+	}
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
