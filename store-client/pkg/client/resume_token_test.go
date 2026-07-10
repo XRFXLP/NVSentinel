@@ -19,6 +19,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -93,13 +94,17 @@ func (m *mockResumeTokenDBClient) Close(context.Context) error {
 }
 
 type mockResumeControlStore struct {
-	mode       string
-	getErr     error
-	setErr     error
-	setCalls   int
-	setClient  string
-	setMode    string
-	lastClient string
+	mode         string
+	getErr       error
+	setModeErr   error
+	setCalls     int
+	setClient    string
+	setMode      string
+	lastClient   string
+	cutoff       time.Time
+	cutoffErr    error
+	setCutoffErr error
+	setCutoff    time.Time
 }
 
 func (m *mockResumeControlStore) GetMode(_ context.Context, clientName string) (string, error) {
@@ -113,13 +118,24 @@ func (m *mockResumeControlStore) SetMode(_ context.Context, clientName, mode str
 	m.setClient = clientName
 	m.setMode = mode
 
-	return m.setErr
+	return m.setModeErr
+}
+
+func (m *mockResumeControlStore) GetColdStartCutoff(_ context.Context, _ string) (time.Time, error) {
+	return m.cutoff, m.cutoffErr
+}
+
+func (m *mockResumeControlStore) SetColdStartCutoff(_ context.Context, _ string, cutoff time.Time) error {
+	m.setCutoff = cutoff
+
+	return m.setCutoffErr
 }
 
 func TestResetResumeTokenOnStartWithStore_ResumeNoop(t *testing.T) {
 	dbClient := &mockResumeTokenDBClient{}
-	store := &mockResumeControlStore{mode: ResumeControlModeResume}
-	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
+	cutoff := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
+	store := &mockResumeControlStore{mode: ResumeControlModeResume, cutoff: cutoff}
+	decision, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
 		ClientName:      "node-drainer",
 		TokenDatabase:   "HealthEventsDatabase",
 		TokenCollection: "ResumeTokens",
@@ -132,6 +148,14 @@ func TestResetResumeTokenOnStartWithStore_ResumeNoop(t *testing.T) {
 		t.Fatalf("DeleteResumeToken called %d times, want 0", dbClient.deleteCalls)
 	}
 
+	if decision.StartFresh {
+		t.Fatal("StartFresh = true, want false")
+	}
+
+	if !decision.ColdStartCutoff.Equal(cutoff) {
+		t.Fatalf("ColdStartCutoff = %v, want %v", decision.ColdStartCutoff, cutoff)
+	}
+
 	if store.setCalls != 0 {
 		t.Fatalf("SetMode called %d times, want 0", store.setCalls)
 	}
@@ -139,7 +163,7 @@ func TestResetResumeTokenOnStartWithStore_ResumeNoop(t *testing.T) {
 
 func TestResetResumeTokenOnStartIfConfigured_SkipsEventExporter(t *testing.T) {
 	dbClient := &mockResumeTokenDBClient{}
-	err := ResetResumeTokenOnStartIfConfigured(context.Background(), dbClient, TokenConfig{
+	decision, err := ResetResumeTokenOnStartIfConfigured(context.Background(), dbClient, TokenConfig{
 		ClientName:      "event-exporter",
 		TokenDatabase:   "HealthEventsDatabase",
 		TokenCollection: "ResumeTokens",
@@ -150,6 +174,10 @@ func TestResetResumeTokenOnStartIfConfigured_SkipsEventExporter(t *testing.T) {
 
 	if dbClient.deleteCalls != 0 {
 		t.Fatalf("DeleteResumeToken called %d times, want 0", dbClient.deleteCalls)
+	}
+
+	if decision.StartFresh {
+		t.Fatal("StartFresh = true, want false")
 	}
 }
 
@@ -162,7 +190,7 @@ func TestResetResumeTokenOnStartWithStore_CreateDeletesTokenAndResetsMode(t *tes
 	dbClient := &mockResumeTokenDBClient{}
 	store := &mockResumeControlStore{mode: ResumeControlModeCreate}
 
-	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, tokenConfig, store)
+	decision, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, tokenConfig, store)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -173,6 +201,18 @@ func TestResetResumeTokenOnStartWithStore_CreateDeletesTokenAndResetsMode(t *tes
 
 	if dbClient.tokenConfig != tokenConfig {
 		t.Fatalf("DeleteResumeToken got token config %+v, want %+v", dbClient.tokenConfig, tokenConfig)
+	}
+
+	if !decision.StartFresh {
+		t.Fatal("StartFresh = false, want true")
+	}
+
+	if decision.ColdStartCutoff.IsZero() {
+		t.Fatal("ColdStartCutoff is zero, want CREATE cutoff")
+	}
+
+	if !store.setCutoff.Equal(decision.ColdStartCutoff) {
+		t.Fatalf("SetColdStartCutoff got %v, want %v", store.setCutoff, decision.ColdStartCutoff)
 	}
 
 	if store.setCalls != 1 {
@@ -190,7 +230,7 @@ func TestResetResumeTokenOnStartWithStore_ReadError(t *testing.T) {
 	dbClient := &mockResumeTokenDBClient{}
 	store := &mockResumeControlStore{getErr: readErr}
 
-	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
+	_, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
 		ClientName: "node-drainer",
 	}, store)
 	if err == nil {
@@ -215,7 +255,7 @@ func TestResetResumeTokenOnStartWithStore_DeleteError(t *testing.T) {
 	dbClient := &mockResumeTokenDBClient{deleteErr: deleteErr}
 	store := &mockResumeControlStore{mode: ResumeControlModeCreate}
 
-	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
+	_, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
 		ClientName: "node-drainer",
 	}, store)
 	if err == nil {
@@ -242,9 +282,9 @@ func TestResetResumeTokenOnStartWithStore_DeleteError(t *testing.T) {
 func TestResetResumeTokenOnStartWithStore_ResetModeError(t *testing.T) {
 	setErr := errors.New("set failed")
 	dbClient := &mockResumeTokenDBClient{}
-	store := &mockResumeControlStore{mode: ResumeControlModeCreate, setErr: setErr}
+	store := &mockResumeControlStore{mode: ResumeControlModeCreate, setModeErr: setErr}
 
-	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
+	_, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
 		ClientName: "node-drainer",
 	}, store)
 	if err == nil {
@@ -264,11 +304,36 @@ func TestResetResumeTokenOnStartWithStore_ResetModeError(t *testing.T) {
 	}
 }
 
+func TestResetResumeTokenOnStartWithStore_SetCutoffError(t *testing.T) {
+	setErr := errors.New("set cutoff failed")
+	dbClient := &mockResumeTokenDBClient{}
+	store := &mockResumeControlStore{mode: ResumeControlModeCreate, setCutoffErr: setErr}
+
+	_, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
+		ClientName: "node-drainer",
+	}, store)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !errors.Is(err, setErr) {
+		t.Fatalf("errors.Is(err, setErr) = false, err=%v", err)
+	}
+
+	if !strings.Contains(err.Error(), "failed to set cold-start cutoff") {
+		t.Fatalf("error %q missing cutoff context", err)
+	}
+
+	if dbClient.deleteCalls != 1 {
+		t.Fatalf("DeleteResumeToken called %d times, want 1", dbClient.deleteCalls)
+	}
+}
+
 func TestResetResumeTokenOnStartWithStore_InvalidMode(t *testing.T) {
 	dbClient := &mockResumeTokenDBClient{}
 	store := &mockResumeControlStore{mode: "MAYBE"}
 
-	err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
+	_, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, TokenConfig{
 		ClientName: "node-drainer",
 	}, store)
 	if err == nil {
@@ -370,5 +435,32 @@ func TestKubernetesResumeControlStore_SetModePreservesExistingKeys(t *testing.T)
 
 	if got := cm.Data["node-drainer"]; got != ResumeControlModeResume {
 		t.Fatalf("node-drainer mode = %q, want %q", got, ResumeControlModeResume)
+	}
+}
+
+func TestKubernetesResumeControlStore_ColdStartCutoffRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "resume-control", Namespace: "nvsentinel"},
+		Data:       map[string]string{"node-drainer": ResumeControlModeResume},
+	})
+	store := &kubernetesResumeControlStore{
+		client:    clientset,
+		name:      "resume-control",
+		namespace: "nvsentinel",
+	}
+	cutoff := time.Date(2026, 7, 10, 10, 0, 0, 123, time.UTC)
+
+	if err := store.SetColdStartCutoff(ctx, "node-drainer", cutoff); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := store.GetColdStartCutoff(ctx, "node-drainer")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !got.Equal(cutoff) {
+		t.Fatalf("cutoff = %v, want %v", got, cutoff)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -36,9 +37,40 @@ const (
 	ResumeControlModeCreate    = "CREATE"
 )
 
+type ResumeControlDecision struct {
+	StartFresh      bool
+	ColdStartCutoff time.Time
+}
+
+type ChangeStreamWatcherWithResumeControl interface {
+	ChangeStreamWatcher
+	ResumeControlDecision() ResumeControlDecision
+}
+
+type resumeControlChangeStreamWatcher struct {
+	ChangeStreamWatcher
+	decision ResumeControlDecision
+}
+
+func NewChangeStreamWatcherWithResumeControl(
+	watcher ChangeStreamWatcher,
+	decision ResumeControlDecision,
+) ChangeStreamWatcher {
+	return &resumeControlChangeStreamWatcher{
+		ChangeStreamWatcher: watcher,
+		decision:            decision,
+	}
+}
+
+func (w *resumeControlChangeStreamWatcher) ResumeControlDecision() ResumeControlDecision {
+	return w.decision
+}
+
 type resumeControlStore interface {
 	GetMode(ctx context.Context, clientName string) (string, error)
 	SetMode(ctx context.Context, clientName, mode string) error
+	GetColdStartCutoff(ctx context.Context, clientName string) (time.Time, error)
+	SetColdStartCutoff(ctx context.Context, clientName string, cutoff time.Time) error
 }
 
 // ResetResumeTokenOnStartIfConfigured deletes a component's change stream
@@ -47,14 +79,14 @@ func ResetResumeTokenOnStartIfConfigured(
 	ctx context.Context,
 	dbClient DatabaseClient,
 	tokenConfig TokenConfig,
-) error {
+) (ResumeControlDecision, error) {
 	if tokenConfig.ClientName == "event-exporter" {
-		return nil
+		return ResumeControlDecision{}, nil
 	}
 
 	store, err := newKubernetesResumeControlStore()
 	if err != nil {
-		return fmt.Errorf("failed to initialize change stream resume control: %w", err)
+		return ResumeControlDecision{}, fmt.Errorf("failed to initialize change stream resume control: %w", err)
 	}
 
 	return resetResumeTokenOnStartWithStore(ctx, dbClient, tokenConfig, store)
@@ -65,19 +97,27 @@ func resetResumeTokenOnStartWithStore(
 	dbClient DatabaseClient,
 	tokenConfig TokenConfig,
 	store resumeControlStore,
-) error {
+) (ResumeControlDecision, error) {
 	mode, err := store.GetMode(ctx, tokenConfig.ClientName)
 	if err != nil {
-		return fmt.Errorf("failed to read change stream resume control for %s: %w", tokenConfig.ClientName, err)
+		return ResumeControlDecision{}, fmt.Errorf(
+			"failed to read change stream resume control for %s: %w", tokenConfig.ClientName, err)
+	}
+
+	cutoff, err := store.GetColdStartCutoff(ctx, tokenConfig.ClientName)
+	if err != nil {
+		return ResumeControlDecision{}, fmt.Errorf(
+			"failed to read cold-start cutoff for %s: %w", tokenConfig.ClientName, err)
 	}
 
 	mode = strings.ToUpper(strings.TrimSpace(mode))
 	if mode == "" || mode == ResumeControlModeResume {
-		return nil
+		return ResumeControlDecision{ColdStartCutoff: cutoff}, nil
 	}
 
 	if mode != ResumeControlModeCreate {
-		return fmt.Errorf("invalid change stream resume control mode %q for %s", mode, tokenConfig.ClientName)
+		return ResumeControlDecision{}, fmt.Errorf(
+			"invalid change stream resume control mode %q for %s", mode, tokenConfig.ClientName)
 	}
 
 	slog.InfoContext(ctx, "Deleting change stream resume token on startup",
@@ -86,15 +126,21 @@ func resetResumeTokenOnStartWithStore(
 		"tokenCollection", tokenConfig.TokenCollection)
 
 	if err := dbClient.DeleteResumeToken(ctx, tokenConfig); err != nil {
-		return fmt.Errorf("failed to delete change stream resume token: %w", err)
+		return ResumeControlDecision{}, fmt.Errorf("failed to delete change stream resume token: %w", err)
+	}
+
+	cutoff = time.Now().UTC()
+	if err := store.SetColdStartCutoff(ctx, tokenConfig.ClientName, cutoff); err != nil {
+		return ResumeControlDecision{}, fmt.Errorf("failed to set cold-start cutoff for %s: %w",
+			tokenConfig.ClientName, err)
 	}
 
 	if err := store.SetMode(ctx, tokenConfig.ClientName, ResumeControlModeResume); err != nil {
-		return fmt.Errorf("failed to reset change stream resume control for %s to %s: %w",
+		return ResumeControlDecision{}, fmt.Errorf("failed to reset change stream resume control for %s to %s: %w",
 			tokenConfig.ClientName, ResumeControlModeResume, err)
 	}
 
-	return nil
+	return ResumeControlDecision{StartFresh: true, ColdStartCutoff: cutoff}, nil
 }
 
 type kubernetesResumeControlStore struct {
@@ -180,6 +226,42 @@ func (s *kubernetesResumeControlStore) GetMode(ctx context.Context, clientName s
 }
 
 func (s *kubernetesResumeControlStore) SetMode(ctx context.Context, clientName, mode string) error {
+	return s.setValue(ctx, clientName, mode)
+}
+
+func (s *kubernetesResumeControlStore) GetColdStartCutoff(ctx context.Context, clientName string) (time.Time, error) {
+	key := coldStartCutoffKey(clientName)
+	cm, err := s.client.CoreV1().ConfigMaps(s.namespace).Get(ctx, s.name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return time.Time{}, nil
+	}
+
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to get resume control config map %s in namespace %s: %w",
+			s.name, s.namespace, err)
+	}
+
+	if cm.Data == nil || strings.TrimSpace(cm.Data[key]) == "" {
+		return time.Time{}, nil
+	}
+
+	cutoff, err := time.Parse(time.RFC3339Nano, cm.Data[key])
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid cold-start cutoff %q for %s: %w", cm.Data[key], clientName, err)
+	}
+
+	return cutoff, nil
+}
+
+func (s *kubernetesResumeControlStore) SetColdStartCutoff(ctx context.Context, clientName string, cutoff time.Time) error {
+	return s.setValue(ctx, coldStartCutoffKey(clientName), cutoff.UTC().Format(time.RFC3339Nano))
+}
+
+func coldStartCutoffKey(clientName string) string {
+	return clientName + ".coldStartAfter"
+}
+
+func (s *kubernetesResumeControlStore) setValue(ctx context.Context, key, value string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		cm, err := s.client.CoreV1().ConfigMaps(s.namespace).Get(ctx, s.name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
@@ -187,7 +269,7 @@ func (s *kubernetesResumeControlStore) SetMode(ctx context.Context, clientName, 
 				ObjectMeta: metav1.ObjectMeta{Name: s.name, Namespace: s.namespace},
 				Data:       map[string]string{},
 			}
-			cm.Data[clientName] = mode
+			cm.Data[key] = value
 
 			_, createErr := s.client.CoreV1().ConfigMaps(s.namespace).Create(ctx, cm, metav1.CreateOptions{})
 			if apierrors.IsAlreadyExists(createErr) {
@@ -205,7 +287,7 @@ func (s *kubernetesResumeControlStore) SetMode(ctx context.Context, clientName, 
 			cm.Data = map[string]string{}
 		}
 
-		cm.Data[clientName] = mode
+		cm.Data[key] = value
 
 		_, err = s.client.CoreV1().ConfigMaps(s.namespace).Update(ctx, cm, metav1.UpdateOptions{})
 

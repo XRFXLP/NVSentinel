@@ -1538,17 +1538,25 @@ func (a *PostgreSQLChangeStreamAdapter) Close(ctx context.Context) error {
 // and provides the Unwrap() method without creating interface conflicts.
 // This wrapper implements datastore.ChangeStreamWatcher and can be unwrapped to client.ChangeStreamWatcher.
 type PostgreSQLChangeStreamWatcherWithUnwrap struct {
-	watcher *PostgreSQLChangeStreamWatcher
-	adapter *PostgreSQLChangeStreamAdapter
+	watcher  *PostgreSQLChangeStreamWatcher
+	adapter  *PostgreSQLChangeStreamAdapter
+	decision client.ResumeControlDecision
 }
 
 // NewPostgreSQLChangeStreamWatcherWithUnwrap creates a wrapper that supports unwrapping
 func NewPostgreSQLChangeStreamWatcherWithUnwrap(
 	watcher *PostgreSQLChangeStreamWatcher,
+	decision ...client.ResumeControlDecision,
 ) *PostgreSQLChangeStreamWatcherWithUnwrap {
+	resumeControlDecision := client.ResumeControlDecision{}
+	if len(decision) > 0 {
+		resumeControlDecision = decision[0]
+	}
+
 	return &PostgreSQLChangeStreamWatcherWithUnwrap{
-		watcher: watcher,
-		adapter: NewPostgreSQLChangeStreamAdapter(watcher),
+		watcher:  watcher,
+		adapter:  NewPostgreSQLChangeStreamAdapter(watcher),
+		decision: resumeControlDecision,
 	}
 }
 
@@ -1576,4 +1584,8 @@ func (w *PostgreSQLChangeStreamWatcherWithUnwrap) Close(ctx context.Context) err
 // This allows services to unwrap the PostgreSQL watcher to the legacy interface
 func (w *PostgreSQLChangeStreamWatcherWithUnwrap) Unwrap() client.ChangeStreamWatcher {
 	return w.adapter
+}
+
+func (w *PostgreSQLChangeStreamWatcherWithUnwrap) ResumeControlDecision() client.ResumeControlDecision {
+	return w.decision
 }
