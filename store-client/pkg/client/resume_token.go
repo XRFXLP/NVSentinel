@@ -105,7 +105,7 @@ func resetResumeTokenOnStartWithStore(
 ) (ResumeControlDecision, error) {
 	mode, cutoff, err := readResumeControl(ctx, tokenConfig.ClientName, store)
 	if err != nil {
-		return ResumeControlDecision{}, err
+		return ResumeControlDecision{}, fmt.Errorf("failed to read resume-control state: %w", err)
 	}
 
 	if mode == "" || mode == ResumeControlModeResume {
@@ -114,7 +114,7 @@ func resetResumeTokenOnStartWithStore(
 
 	cutoff, err = prepareCreateResumeControl(ctx, tokenConfig.ClientName, mode, cutoff, store)
 	if err != nil {
-		return ResumeControlDecision{}, err
+		return ResumeControlDecision{}, fmt.Errorf("failed to prepare resume-control CREATE: %w", err)
 	}
 
 	return deleteResumeTokenAndResume(ctx, dbClient, tokenConfig, store, cutoff)
@@ -132,7 +132,7 @@ func readResumeControl(
 
 	cutoff, err := readColdStartCutoff(ctx, clientName, store)
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, fmt.Errorf("failed to read resume-control cold-start cutoff: %w", err)
 	}
 
 	return strings.ToUpper(strings.TrimSpace(mode)), cutoff, nil
@@ -206,7 +206,7 @@ type kubernetesResumeControlStore struct {
 func newKubernetesResumeControlStore() (*kubernetesResumeControlStore, error) {
 	namespace, err := resumeControlNamespace()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to resolve resume-control namespace: %w", err)
 	}
 
 	restConfig, err := rest.InClusterConfig()
@@ -348,7 +348,7 @@ func (s *kubernetesResumeControlStore) setValue(ctx context.Context, key, value 
 }
 
 func (s *kubernetesResumeControlStore) setValues(ctx context.Context, values map[string]string) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		cm, err := s.client.CoreV1().ConfigMaps(s.namespace).Get(ctx, s.name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			cm = &corev1.ConfigMap{
@@ -383,4 +383,10 @@ func (s *kubernetesResumeControlStore) setValues(ctx context.Context, values map
 
 		return err
 	})
+	if err != nil {
+		return fmt.Errorf("failed to update resume control config map %s in namespace %s: %w",
+			s.name, s.namespace, err)
+	}
+
+	return nil
 }
