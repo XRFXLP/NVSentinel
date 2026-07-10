@@ -243,6 +243,7 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 	// Update resume position without moving the bookmark backwards for
 	// out-of-order changelog rows that committed after a later ID.
 	w.mu.Lock()
+
 	if processedEventID > w.lastEventID {
 		w.lastEventID = processedEventID
 		w.lastTimestamp = timestamp
@@ -250,6 +251,7 @@ func (w *PostgreSQLChangeStreamWatcher) MarkProcessed(ctx context.Context, token
 		eventID = w.lastEventID
 		timestamp = w.lastTimestamp
 	}
+
 	w.mu.Unlock()
 
 	if err := w.saveResumePosition(ctx, timestamp, eventID); err != nil {
@@ -1117,10 +1119,12 @@ func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWit
 
 	w.mu.Lock()
 	w.recordRecentEventIDLocked(eventID, time.Now())
+
 	if eventID > w.lastEventID {
 		w.lastEventID = eventID
 		w.lastTimestamp = eventTimestamp
 	}
+
 	w.mu.Unlock()
 
 	slog.Debug("Advanced position before filtering", "client", w.clientName, "eventID", eventID)
