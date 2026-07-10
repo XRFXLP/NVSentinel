@@ -103,39 +103,80 @@ func resetResumeTokenOnStartWithStore(
 	tokenConfig TokenConfig,
 	store resumeControlStore,
 ) (ResumeControlDecision, error) {
-	mode, err := store.GetMode(ctx, tokenConfig.ClientName)
+	mode, cutoff, err := readResumeControl(ctx, tokenConfig.ClientName, store)
 	if err != nil {
-		return ResumeControlDecision{}, fmt.Errorf(
-			"failed to read change stream resume control for %s: %w", tokenConfig.ClientName, err)
+		return ResumeControlDecision{}, err
 	}
 
-	cutoff, err := store.GetColdStartCutoff(ctx, tokenConfig.ClientName)
-	if err != nil {
-		return ResumeControlDecision{}, fmt.Errorf(
-			"failed to read cold-start cutoff for %s: %w", tokenConfig.ClientName, err)
-	}
-
-	mode = strings.ToUpper(strings.TrimSpace(mode))
 	if mode == "" || mode == ResumeControlModeResume {
 		return ResumeControlDecision{ColdStartCutoff: cutoff}, nil
 	}
 
+	cutoff, err = prepareCreateResumeControl(ctx, tokenConfig.ClientName, mode, cutoff, store)
+	if err != nil {
+		return ResumeControlDecision{}, err
+	}
+
+	return deleteResumeTokenAndResume(ctx, dbClient, tokenConfig, store, cutoff)
+}
+
+func readResumeControl(
+	ctx context.Context,
+	clientName string,
+	store resumeControlStore,
+) (string, time.Time, error) {
+	mode, err := store.GetMode(ctx, clientName)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("failed to read change stream resume control for %s: %w", clientName, err)
+	}
+
+	cutoff, err := readColdStartCutoff(ctx, clientName, store)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+
+	return strings.ToUpper(strings.TrimSpace(mode)), cutoff, nil
+}
+
+func readColdStartCutoff(ctx context.Context, clientName string, store resumeControlStore) (time.Time, error) {
+	cutoff, err := store.GetColdStartCutoff(ctx, clientName)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to read cold-start cutoff for %s: %w", clientName, err)
+	}
+
+	return cutoff, nil
+}
+
+func prepareCreateResumeControl(
+	ctx context.Context,
+	clientName string,
+	mode string,
+	cutoff time.Time,
+	store resumeControlStore,
+) (time.Time, error) {
 	if mode != ResumeControlModeCreate && mode != resumeControlModeCreating {
-		return ResumeControlDecision{}, fmt.Errorf(
-			"invalid change stream resume control mode %q for %s", mode, tokenConfig.ClientName)
+		return time.Time{}, fmt.Errorf("invalid change stream resume control mode %q for %s", mode, clientName)
 	}
 
 	if mode == ResumeControlModeCreate {
 		cutoff = time.Now().UTC()
-		if err := store.BeginCreate(ctx, tokenConfig.ClientName, cutoff); err != nil {
-			return ResumeControlDecision{}, fmt.Errorf("failed to begin resume-control CREATE for %s: %w",
-				tokenConfig.ClientName, err)
+		if err := store.BeginCreate(ctx, clientName, cutoff); err != nil {
+			return time.Time{}, fmt.Errorf("failed to begin resume-control CREATE for %s: %w", clientName, err)
 		}
 	} else if cutoff.IsZero() {
-		return ResumeControlDecision{}, fmt.Errorf(
-			"missing cold-start cutoff for in-progress resume-control CREATE for %s", tokenConfig.ClientName)
+		return time.Time{}, fmt.Errorf("missing cold-start cutoff for in-progress resume-control CREATE for %s", clientName)
 	}
 
+	return cutoff, nil
+}
+
+func deleteResumeTokenAndResume(
+	ctx context.Context,
+	dbClient DatabaseClient,
+	tokenConfig TokenConfig,
+	store resumeControlStore,
+	cutoff time.Time,
+) (ResumeControlDecision, error) {
 	slog.InfoContext(ctx, "Deleting change stream resume token on startup",
 		"clientName", tokenConfig.ClientName,
 		"tokenDatabase", tokenConfig.TokenDatabase,
