@@ -144,9 +144,11 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 		return nil, err
 	}
 
-	resumeControlDecision, err := client.ResetResumeTokenOnStartIfConfigured(ctx, p.GetDatabaseClient(), client.TokenConfig{
-		ClientName: clientName,
-	})
+	resumeControlDecision, err := client.ResetResumeTokenOnStartIfConfigured(
+		ctx,
+		p.GetDatabaseClient(),
+		client.TokenConfig{ClientName: clientName},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to reset change stream resume token on startup: %w", err)
 	}

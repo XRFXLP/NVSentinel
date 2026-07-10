@@ -50,9 +50,11 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 		return nil, fmt.Errorf("CollectionName (table name) is required for PostgreSQL watcher")
 	}
 
-	resumeControlDecision, err := client.ResetResumeTokenOnStartIfConfigured(ctx, pgStore.GetDatabaseClient(), client.TokenConfig{
-		ClientName: clientName,
-	})
+	resumeControlDecision, err := client.ResetResumeTokenOnStartIfConfigured(
+		ctx,
+		pgStore.GetDatabaseClient(),
+		client.TokenConfig{ClientName: clientName},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to reset change stream resume token on startup: %w", err)
 	}

@@ -231,6 +231,7 @@ func (s *kubernetesResumeControlStore) SetMode(ctx context.Context, clientName, 
 
 func (s *kubernetesResumeControlStore) GetColdStartCutoff(ctx context.Context, clientName string) (time.Time, error) {
 	key := coldStartCutoffKey(clientName)
+
 	cm, err := s.client.CoreV1().ConfigMaps(s.namespace).Get(ctx, s.name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return time.Time{}, nil
@@ -253,7 +254,11 @@ func (s *kubernetesResumeControlStore) GetColdStartCutoff(ctx context.Context, c
 	return cutoff, nil
 }
 
-func (s *kubernetesResumeControlStore) SetColdStartCutoff(ctx context.Context, clientName string, cutoff time.Time) error {
+func (s *kubernetesResumeControlStore) SetColdStartCutoff(
+	ctx context.Context,
+	clientName string,
+	cutoff time.Time,
+) error {
 	return s.setValue(ctx, coldStartCutoffKey(clientName), cutoff.UTC().Format(time.RFC3339Nano))
 }
 
