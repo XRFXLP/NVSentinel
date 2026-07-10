@@ -137,6 +137,22 @@ func TestResetResumeTokenOnStartWithStore_ResumeNoop(t *testing.T) {
 	}
 }
 
+func TestResetResumeTokenOnStartIfConfigured_SkipsEventExporter(t *testing.T) {
+	dbClient := &mockResumeTokenDBClient{}
+	err := ResetResumeTokenOnStartIfConfigured(context.Background(), dbClient, TokenConfig{
+		ClientName:      "event-exporter",
+		TokenDatabase:   "HealthEventsDatabase",
+		TokenCollection: "ResumeTokens",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if dbClient.deleteCalls != 0 {
+		t.Fatalf("DeleteResumeToken called %d times, want 0", dbClient.deleteCalls)
+	}
+}
+
 func TestResetResumeTokenOnStartWithStore_CreateDeletesTokenAndResetsMode(t *testing.T) {
 	tokenConfig := TokenConfig{
 		ClientName:      "node-drainer",

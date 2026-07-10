@@ -50,19 +50,6 @@ kubectl create secret generic event-exporter-oidc-secret \
   -n nvsentinel
 ```
 
-### Change Stream Resume Token
-
-To make event-exporter start from the current stream head, set its key in the shared resume-control ConfigMap to `CREATE` and restart the deployment. Event-exporter deletes only its own resume token and resets the key back to `RESUME` during startup. When `exporter.backfill.enabled` is `true`, deleting the token also makes the exporter treat startup like a first deployment for backfill detection.
-
-```bash
-kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
-  kubectl -n nvsentinel create configmap resume-control
-kubectl -n nvsentinel patch configmap resume-control \
-  --type merge \
-  -p '{"data":{"event-exporter":"CREATE"}}'
-kubectl -n nvsentinel rollout restart deployment/event-exporter
-```
-
 ## Metadata Configuration
 
 Custom metadata fields included in all exported CloudEvents.

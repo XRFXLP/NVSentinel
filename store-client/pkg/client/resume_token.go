@@ -48,6 +48,10 @@ func ResetResumeTokenOnStartIfConfigured(
 	dbClient DatabaseClient,
 	tokenConfig TokenConfig,
 ) error {
+	if tokenConfig.ClientName == "event-exporter" {
+		return nil
+	}
+
 	store, err := newKubernetesResumeControlStore()
 	if err != nil {
 		return fmt.Errorf("failed to initialize change stream resume control: %w", err)

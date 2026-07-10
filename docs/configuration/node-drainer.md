@@ -44,15 +44,19 @@ node-drainer:
 
 ### Change Stream Resume Token
 
-To make node-drainer skip accumulated events and start from the current stream head, set its key in the shared resume-control ConfigMap to `CREATE` and restart the deployment. Node-drainer deletes only its own resume token and resets the key back to `RESUME` during startup.
+To make node-drainer skip accumulated events and start from the current stream head, scale it to zero, set its key in the shared resume-control ConfigMap to `CREATE`, then restore its replicas. Node-drainer deletes only its own resume token and resets the key back to `RESUME` during startup.
 
 ```bash
+REPLICAS=$(kubectl -n nvsentinel get deployment node-drainer -o jsonpath='{.spec.replicas}')
+kubectl -n nvsentinel scale deployment/node-drainer --replicas=0
+kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
 kubectl -n nvsentinel get configmap resume-control >/dev/null 2>&1 || \
   kubectl -n nvsentinel create configmap resume-control
 kubectl -n nvsentinel patch configmap resume-control \
   --type merge \
   -p '{"data":{"node-drainer":"CREATE"}}'
-kubectl -n nvsentinel rollout restart deployment/node-drainer
+kubectl -n nvsentinel scale deployment/node-drainer --replicas="${REPLICAS:-1}"
+kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
 ```
 
 ### Partial Drain
