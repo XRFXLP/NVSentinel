@@ -79,7 +79,9 @@ func InitializeAll(
 
 	slog.Info("Successfully initialized client")
 
-	ds, watcherInstance, healthEventStore, datastoreConfig, resumeControlDecision, err := initDatastoreAndWatcher(ctx, pipeline)
+	ds, watcherInstance, healthEventStore, datastoreConfig, resumeControlDecision, err := initDatastoreAndWatcher(
+		ctx, pipeline,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -185,9 +187,11 @@ func initDatastoreAndWatcher(
 	}
 
 	var resumeControlDecision client.ResumeControlDecision
+
 	type resumeControlDecisionProvider interface {
 		ResumeControlDecision() client.ResumeControlDecision
 	}
+
 	if provider, ok := watcherInstance.(resumeControlDecisionProvider); ok {
 		resumeControlDecision = provider.ResumeControlDecision()
 	}
