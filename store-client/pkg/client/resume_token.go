@@ -159,11 +159,14 @@ func prepareCreateResumeControl(
 	}
 
 	if mode == ResumeControlModeCreate {
-		cutoff = time.Now().UTC()
+		if supportsColdStartCutoff(clientName) {
+			cutoff = time.Now().UTC()
+		}
+
 		if err := store.BeginCreate(ctx, clientName, cutoff); err != nil {
 			return time.Time{}, fmt.Errorf("failed to begin resume-control CREATE for %s: %w", clientName, err)
 		}
-	} else if cutoff.IsZero() {
+	} else if supportsColdStartCutoff(clientName) && cutoff.IsZero() {
 		return time.Time{}, fmt.Errorf("missing cold-start cutoff for in-progress resume-control CREATE for %s", clientName)
 	}
 
@@ -317,14 +320,27 @@ func (s *kubernetesResumeControlStore) SetColdStartCutoff(
 }
 
 func (s *kubernetesResumeControlStore) BeginCreate(ctx context.Context, clientName string, cutoff time.Time) error {
-	return s.setValues(ctx, map[string]string{
-		clientName:                     resumeControlModeCreating,
-		coldStartCutoffKey(clientName): cutoff.UTC().Format(time.RFC3339Nano),
-	})
+	values := map[string]string{
+		clientName: resumeControlModeCreating,
+	}
+	if !cutoff.IsZero() {
+		values[coldStartCutoffKey(clientName)] = cutoff.UTC().Format(time.RFC3339Nano)
+	}
+
+	return s.setValues(ctx, values)
 }
 
 func coldStartCutoffKey(clientName string) string {
 	return clientName + ".coldStartAfter"
+}
+
+func supportsColdStartCutoff(clientName string) bool {
+	switch clientName {
+	case "node-drainer", "fault-remediation":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *kubernetesResumeControlStore) setValue(ctx context.Context, key, value string) error {

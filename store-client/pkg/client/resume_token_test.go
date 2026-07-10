@@ -244,6 +244,37 @@ func TestResetResumeTokenOnStartWithStore_CreateDeletesTokenAndResetsMode(t *tes
 	}
 }
 
+func TestResetResumeTokenOnStartWithStore_CreateWithoutColdStartCutoffSupport(t *testing.T) {
+	tokenConfig := TokenConfig{
+		ClientName:      "fault-quarantine",
+		TokenDatabase:   "HealthEventsDatabase",
+		TokenCollection: "ResumeTokens",
+	}
+	dbClient := &mockResumeTokenDBClient{}
+	store := &mockResumeControlStore{mode: ResumeControlModeCreate}
+
+	decision, err := resetResumeTokenOnStartWithStore(context.Background(), dbClient, tokenConfig, store)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if dbClient.deleteCalls != 1 {
+		t.Fatalf("DeleteResumeToken called %d times, want 1", dbClient.deleteCalls)
+	}
+
+	if !decision.StartFresh {
+		t.Fatal("StartFresh = false, want true")
+	}
+
+	if !decision.ColdStartCutoff.IsZero() {
+		t.Fatalf("ColdStartCutoff = %v, want zero", decision.ColdStartCutoff)
+	}
+
+	if !store.setCutoff.IsZero() {
+		t.Fatalf("SetColdStartCutoff got %v, want zero", store.setCutoff)
+	}
+}
+
 func TestResetResumeTokenOnStartWithStore_ReadError(t *testing.T) {
 	readErr := errors.New("read failed")
 	dbClient := &mockResumeTokenDBClient{}
@@ -555,5 +586,35 @@ func TestKubernetesResumeControlStore_BeginCreateSetsPhaseAndCutoff(t *testing.T
 
 	if got := cm.Data[coldStartCutoffKey("node-drainer")]; got != cutoff.Format(time.RFC3339Nano) {
 		t.Fatalf("cutoff = %q, want %q", got, cutoff.Format(time.RFC3339Nano))
+	}
+}
+
+func TestKubernetesResumeControlStore_BeginCreateOmitsZeroCutoff(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "resume-control", Namespace: "nvsentinel"},
+		Data:       map[string]string{"fault-quarantine": ResumeControlModeCreate},
+	})
+	store := &kubernetesResumeControlStore{
+		client:    clientset,
+		name:      "resume-control",
+		namespace: "nvsentinel",
+	}
+
+	if err := store.BeginCreate(ctx, "fault-quarantine", time.Time{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cm, err := clientset.CoreV1().ConfigMaps("nvsentinel").Get(ctx, "resume-control", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("expected ConfigMap to exist: %v", err)
+	}
+
+	if got := cm.Data["fault-quarantine"]; got != resumeControlModeCreating {
+		t.Fatalf("fault-quarantine mode = %q, want %q", got, resumeControlModeCreating)
+	}
+
+	if _, ok := cm.Data[coldStartCutoffKey("fault-quarantine")]; ok {
+		t.Fatal("fault-quarantine cutoff key was written for module without cold-start cutoff support")
 	}
 }
