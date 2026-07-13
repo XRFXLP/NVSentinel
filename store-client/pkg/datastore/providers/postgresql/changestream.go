@@ -514,8 +514,11 @@ func (w *PostgreSQLChangeStreamWatcher) handleNotification(ctx context.Context, 
 		return nil
 	}
 
-	// Fetch any events we might have missed plus this one
-	// This handles the case where we got a notification but missed some events
+	if err := w.fetchChangeByID(ctx, payload.ID); err != nil {
+		return fmt.Errorf("failed to fetch notified changelog event %d: %w", payload.ID, err)
+	}
+
+	// Fetch any additional events we might have missed after this one.
 	if err := w.fetchNewChanges(ctx); err != nil {
 		return fmt.Errorf("failed to fetch changes after NOTIFY: %w", err)
 	}
