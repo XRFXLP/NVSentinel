@@ -67,7 +67,8 @@ func (ni *NodeInformer) GetInformer() cache.SharedIndexInformer {
 	return ni.informer
 }
 
-// NewNodeInformer creates a new NodeInformer that watches GPU nodes.
+// NewNodeInformer creates a new NodeInformer that watches GPU nodes only
+// (those labeled nvidia.com/gpu.present=true).
 func NewNodeInformer(clientset kubernetes.Interface,
 	resyncPeriod time.Duration) (*NodeInformer, error) {
 	ni := &NodeInformer{
@@ -159,7 +160,9 @@ func quarantineAnnotationIndexFunc(obj interface{}) ([]string, error) {
 	return []string{}, nil
 }
 
-// GetNodeCounts returns the current counts of total nodes and quarantined nodes.
+// GetNodeCounts returns the count of GPU nodes and the set of quarantined nodes.
+// The informer only caches nodes labeled nvidia.com/gpu.present=true, so the total
+// reflects the GPU-only population that the circuit breaker denominator should use.
 func (ni *NodeInformer) GetNodeCounts() (totalNodes int, quarantinedNodesMap map[string]bool, err error) {
 	if !ni.HasSynced() {
 		return 0, nil, fmt.Errorf("node informer cache not synced yet")
