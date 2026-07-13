@@ -36,8 +36,11 @@ import (
 const (
 	quarantineAnnotationIndexName = "quarantineAnnotation"
 
-	// GPUNodeLabel identifies nodes with GPUs relevant to NVSentinel.
+	// GPUNodeLabel is the default label key used to identify GPU nodes.
 	GPUNodeLabel = "nvidia.com/gpu.present"
+
+	// GPUNodeLabelValue is the default label value that marks a node as GPU-capable.
+	GPUNodeLabelValue = "true"
 )
 
 // NodeInformer watches specific nodes and provides counts.
@@ -67,15 +70,16 @@ func (ni *NodeInformer) GetInformer() cache.SharedIndexInformer {
 	return ni.informer
 }
 
-// NewNodeInformer creates a new NodeInformer that watches GPU nodes only
-// (those labeled nvidia.com/gpu.present=true).
+// NewNodeInformer creates a new NodeInformer that watches only nodes where
+// gpuNodeLabelKey=gpuNodeLabelValue. Use GPUNodeLabel / GPUNodeLabelValue for
+// the defaults, or supply site-specific values for non-standard environments.
 func NewNodeInformer(clientset kubernetes.Interface,
-	resyncPeriod time.Duration) (*NodeInformer, error) {
+	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string) (*NodeInformer, error) {
 	ni := &NodeInformer{
 		clientset: clientset,
 	}
 
-	gpuNodeSelector := labels.Set{GPUNodeLabel: "true"}.AsSelector()
+	gpuNodeSelector := labels.Set{gpuNodeLabelKey: gpuNodeLabelValue}.AsSelector()
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(
 		clientset,
 		resyncPeriod,

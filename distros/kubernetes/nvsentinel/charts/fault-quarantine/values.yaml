@@ -50,10 +50,16 @@ labelPrefix: "k8saas.nvidia.com/"
 # The circuit breaker prevents quarantining too many GPU nodes in the cluster at once
 # If the percentage threshold is exceeded, the circuit breaker trips and new quarantine actions are blocked
 # The circuit breaker state is stored in a ConfigMap and persists across restarts
+# Label selector (key=value) identifying GPU nodes. Only matching nodes are watched
+# by the NodeInformer and counted by the circuit breaker. Override when your cluster
+# uses a non-standard label or value.
+gpuNodeLabel: "nvidia.com/gpu.present=true"
+
 circuitBreaker:
   # Enable/disable circuit breaker protection (passed as command-line arg to the deployment)
   enabled: true
-  # Maximum percentage of nvidia.com/gpu.present=true nodes that can be quarantined before circuit breaker trips
+  # Maximum percentage of GPU nodes (identified by gpuNodeLabel) that can be quarantined
+  # before the circuit breaker trips.
   # Example: 50 means if 50% or more GPU nodes are cordoned, no new quarantines will be allowed
   percentage: 50
   # Time window for the sliding window circuit breaker

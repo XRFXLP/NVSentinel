@@ -180,7 +180,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 			}()
 
-			nodeInformer, err := informer.NewNodeInformer(testClient, 0)
+			nodeInformer, err := informer.NewNodeInformer(testClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
 			if err != nil {
 				t.Fatalf("Failed to create NodeInformer: %v", err)
 			}

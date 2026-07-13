@@ -77,7 +77,7 @@ func setupTestClient(t *testing.T) *FaultQuarantineClient {
 		DryRunMode: false,
 	}
 
-	nodeInformer, err := NewNodeInformer(testClient, 0)
+	nodeInformer, err := NewNodeInformer(testClient, 0, GPUNodeLabel, GPUNodeLabelValue)
 	if err != nil {
 		t.Fatalf("Failed to create NodeInformer: %v", err)
 	}
