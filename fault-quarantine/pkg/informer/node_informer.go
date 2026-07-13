@@ -22,7 +22,6 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -43,12 +42,14 @@ const (
 	GPUNodeLabelValue = "true"
 )
 
-// NodeInformer watches specific nodes and provides counts.
+// NodeInformer watches all nodes and provides counts.
 type NodeInformer struct {
-	clientset      kubernetes.Interface
-	informer       cache.SharedIndexInformer
-	lister         corelisters.NodeLister
-	informerSynced cache.InformerSynced
+	clientset         kubernetes.Interface
+	informer          cache.SharedIndexInformer
+	lister            corelisters.NodeLister
+	informerSynced    cache.InformerSynced
+	gpuNodeLabelKey   string
+	gpuNodeLabelValue string
 
 	// onQuarantinedNodeDeleted is called when a quarantined node with annotations is deleted
 	onQuarantinedNodeDeleted func(nodeName string)
@@ -70,23 +71,20 @@ func (ni *NodeInformer) GetInformer() cache.SharedIndexInformer {
 	return ni.informer
 }
 
-// NewNodeInformer creates a new NodeInformer that watches only nodes where
-// gpuNodeLabelKey=gpuNodeLabelValue. Use GPUNodeLabel / GPUNodeLabelValue for
-// the defaults, or supply site-specific values for non-standard environments.
+// NewNodeInformer creates a new NodeInformer that watches all nodes.
+// gpuNodeLabelKey and gpuNodeLabelValue identify which nodes are GPU nodes for the
+// purpose of the circuit breaker denominator in GetNodeCounts(); they do not filter
+// the informer itself, so FQ can still look up and recover any node regardless of
+// whether its GPU label is currently present.
 func NewNodeInformer(clientset kubernetes.Interface,
 	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string) (*NodeInformer, error) {
 	ni := &NodeInformer{
-		clientset: clientset,
+		clientset:         clientset,
+		gpuNodeLabelKey:   gpuNodeLabelKey,
+		gpuNodeLabelValue: gpuNodeLabelValue,
 	}
 
-	gpuNodeSelector := labels.Set{gpuNodeLabelKey: gpuNodeLabelValue}.AsSelector()
-	informerFactory := informers.NewSharedInformerFactoryWithOptions(
-		clientset,
-		resyncPeriod,
-		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
-			options.LabelSelector = gpuNodeSelector.String()
-		}),
-	)
+	informerFactory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
 
 	nodeInformerObj := informerFactory.Core().V1().Nodes()
 	ni.informer = nodeInformerObj.Informer()
@@ -109,7 +107,8 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		return nil, fmt.Errorf("failed to add event handler: %w", err)
 	}
 
-	slog.Info("NodeInformer created, watching GPU nodes", "selector", gpuNodeSelector.String())
+	slog.Info("NodeInformer created, watching all nodes",
+		"gpuNodeLabelKey", gpuNodeLabelKey, "gpuNodeLabelValue", gpuNodeLabelValue)
 
 	return ni, nil
 }
@@ -165,15 +164,23 @@ func quarantineAnnotationIndexFunc(obj interface{}) ([]string, error) {
 }
 
 // GetNodeCounts returns the count of GPU nodes and the set of quarantined nodes.
-// The informer only caches nodes labeled nvidia.com/gpu.present=true, so the total
-// reflects the GPU-only population that the circuit breaker denominator should use.
+// Only nodes where gpuNodeLabelKey=gpuNodeLabelValue are counted in the total so that
+// the circuit breaker denominator reflects the GPU population, not every node in the
+// cluster. The informer itself watches all nodes so that FQ can still look up and
+// recover a quarantined node even if its GPU label is temporarily absent.
 func (ni *NodeInformer) GetNodeCounts() (totalNodes int, quarantinedNodesMap map[string]bool, err error) {
 	if !ni.HasSynced() {
 		return 0, nil, fmt.Errorf("node informer cache not synced yet")
 	}
 
-	allObjs := ni.informer.GetIndexer().List()
-	total := len(allObjs)
+	gpuSelector := labels.Set{ni.gpuNodeLabelKey: ni.gpuNodeLabelValue}.AsSelector()
+
+	gpuNodes, err := ni.lister.List(gpuSelector)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to list GPU nodes: %w", err)
+	}
+
+	total := len(gpuNodes)
 
 	quarantinedObjs, err := ni.informer.GetIndexer().ByIndex(quarantineAnnotationIndexName, "quarantined")
 	if err != nil {
