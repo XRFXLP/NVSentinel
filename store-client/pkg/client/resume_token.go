@@ -70,6 +70,19 @@ func (w *resumeControlChangeStreamWatcher) ResumeControlDecision() ResumeControl
 	return w.decision
 }
 
+// GetUnprocessedEventCount forwards backlog metrics to the wrapped watcher when supported.
+func (w *resumeControlChangeStreamWatcher) GetUnprocessedEventCount(
+	ctx context.Context,
+	lastProcessedID string,
+) (int64, error) {
+	metricsWatcher, ok := w.ChangeStreamWatcher.(ChangeStreamMetrics)
+	if !ok {
+		return 0, fmt.Errorf("wrapped change stream watcher does not support metrics")
+	}
+
+	return metricsWatcher.GetUnprocessedEventCount(ctx, lastProcessedID)
+}
+
 type resumeControlStore interface {
 	GetMode(ctx context.Context, clientName string) (string, error)
 	SetMode(ctx context.Context, clientName, mode string) error

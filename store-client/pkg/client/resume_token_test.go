@@ -93,6 +93,37 @@ func (m *mockResumeTokenDBClient) Close(context.Context) error {
 	return nil
 }
 
+type mockChangeStreamWatcher struct{}
+
+func (m *mockChangeStreamWatcher) Start(context.Context) {}
+
+func (m *mockChangeStreamWatcher) Events() <-chan Event {
+	return nil
+}
+
+func (m *mockChangeStreamWatcher) MarkProcessed(context.Context, []byte) error {
+	return nil
+}
+
+func (m *mockChangeStreamWatcher) Close(context.Context) error {
+	return nil
+}
+
+type mockMetricsChangeStreamWatcher struct {
+	mockChangeStreamWatcher
+	count           int64
+	lastProcessedID string
+}
+
+func (m *mockMetricsChangeStreamWatcher) GetUnprocessedEventCount(
+	_ context.Context,
+	lastProcessedID string,
+) (int64, error) {
+	m.lastProcessedID = lastProcessedID
+
+	return m.count, nil
+}
+
 type mockResumeControlStore struct {
 	mode         string
 	getErr       error
@@ -144,6 +175,29 @@ func (m *mockResumeControlStore) BeginCreate(_ context.Context, clientName strin
 	m.cutoff = cutoff
 
 	return nil
+}
+
+func TestResumeControlChangeStreamWatcher_ForwardsUnprocessedEventCount(t *testing.T) {
+	wrapped := &mockMetricsChangeStreamWatcher{count: 42}
+	watcher := NewChangeStreamWatcherWithResumeControl(wrapped, ResumeControlDecision{})
+
+	metricsWatcher, ok := watcher.(ChangeStreamMetrics)
+	if !ok {
+		t.Fatal("wrapped watcher does not implement ChangeStreamMetrics")
+	}
+
+	count, err := metricsWatcher.GetUnprocessedEventCount(context.Background(), "abc123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if count != 42 {
+		t.Fatalf("count = %d, want 42", count)
+	}
+
+	if wrapped.lastProcessedID != "abc123" {
+		t.Fatalf("lastProcessedID = %q, want abc123", wrapped.lastProcessedID)
+	}
 }
 
 func TestResetResumeTokenOnStartWithStore_ResumeNoop(t *testing.T) {
