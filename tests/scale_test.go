@@ -85,11 +85,15 @@ func TestScaleHealthEvents(t *testing.T) {
 		t.Logf("Found %d KWOK nodes, %d GPU nodes in cluster", len(kwokNodes), totalGPUNodes)
 
 		cbThresholdPercentage := 40
-		nodesToCordon := min(int(math.Ceil(float64(totalGPUNodes)*float64(cbThresholdPercentage+3)/100.0)), len(kwokNodes))
+		cbThreshold := int(math.Ceil(float64(totalGPUNodes) * float64(cbThresholdPercentage) / 100.0))
+		nodesToCordon := min(cbThreshold+1, len(kwokNodes))
+		require.Greater(t, len(kwokNodes), cbThreshold,
+			"need at least %d KWOK nodes to exceed the %d%% CB threshold (%d nodes), got %d",
+			cbThreshold+1, cbThresholdPercentage, cbThreshold, len(kwokNodes))
 
 		healthCheckNodes := kwokNodes[:nodesToCordon]
-		t.Logf("Selected %d KWOK nodes to cordon (43%% of %d GPU nodes, exceeds 40%% CB threshold)",
-			len(healthCheckNodes), totalGPUNodes)
+		t.Logf("Selected %d KWOK nodes to cordon (%d above %d%% CB threshold of %d GPU nodes)",
+			len(healthCheckNodes), nodesToCordon, cbThresholdPercentage, totalGPUNodes)
 
 		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
 		ctx = context.WithValue(ctx, keyNodes, kwokNodes)
@@ -141,6 +145,7 @@ func TestScaleHealthEvents(t *testing.T) {
 		require.NoError(t, err)
 
 		totalGPUNodes := len(gpuNodesList.Items)
+		require.Greater(t, totalGPUNodes, 0, "no GPU nodes (nvidia.com/gpu.present=true) found; circuit breaker denominator would be zero")
 
 		cbThreshold := int(math.Ceil(float64(totalGPUNodes) * 0.40))
 

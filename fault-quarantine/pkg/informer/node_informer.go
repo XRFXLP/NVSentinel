@@ -36,8 +36,8 @@ import (
 const (
 	quarantineAnnotationIndexName = "quarantineAnnotation"
 
-	// GpuNodeLabel identifies nodes with GPUs relevant to NVSentinel.
-	GpuNodeLabel = "nvidia.com/gpu.present"
+	// GPUNodeLabel identifies nodes with GPUs relevant to NVSentinel.
+	GPUNodeLabel = "nvidia.com/gpu.present"
 )
 
 // NodeInformer watches specific nodes and provides counts.
@@ -74,7 +74,7 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		clientset: clientset,
 	}
 
-	gpuNodeSelector := labels.Set{GpuNodeLabel: "true"}.AsSelector()
+	gpuNodeSelector := labels.Set{GPUNodeLabel: "true"}.AsSelector()
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(
 		clientset,
 		resyncPeriod,

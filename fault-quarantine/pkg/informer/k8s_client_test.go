@@ -111,7 +111,7 @@ func createTestNode(ctx context.Context, t *testing.T, name string, annotations 
 	if labels == nil {
 		labels = make(map[string]string)
 	}
-	labels[GpuNodeLabel] = "true"
+	labels[GPUNodeLabel] = "true"
 
 	node := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
