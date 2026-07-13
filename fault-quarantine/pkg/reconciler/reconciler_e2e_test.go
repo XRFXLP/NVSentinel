@@ -174,6 +174,7 @@ func createE2ETestNode(ctx context.Context, t *testing.T, name string, annotatio
 	if labels == nil {
 		labels = make(map[string]string)
 	}
+	labels[informer.GpuNodeLabel] = "true"
 
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -4197,7 +4198,10 @@ func TestE2E_ConcurrentUnhealthyEvents_WithDelayedInformer(t *testing.T) {
 
 	nodeName := "concurrent-unhealthy-" + generateShortTestID()
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{informer.GpuNodeLabel: "true"},
+		},
 		Spec:       corev1.NodeSpec{Unschedulable: false},
 		Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
 	}
@@ -4467,7 +4471,10 @@ func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
 
 	nodeName := "concurrent-recovery-" + generateShortTestID()
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{informer.GpuNodeLabel: "true"},
+		},
 		Spec:       corev1.NodeSpec{Unschedulable: false},
 		Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
 	}

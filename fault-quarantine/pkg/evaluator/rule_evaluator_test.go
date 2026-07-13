@@ -69,6 +69,7 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 	if labels == nil {
 		labels = make(map[string]string)
 	}
+	labels[informer.GpuNodeLabel] = "true"
 
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{

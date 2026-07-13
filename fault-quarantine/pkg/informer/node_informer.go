@@ -22,6 +22,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -34,6 +35,9 @@ import (
 
 const (
 	quarantineAnnotationIndexName = "quarantineAnnotation"
+
+	// GpuNodeLabel identifies nodes with GPUs relevant to NVSentinel.
+	GpuNodeLabel = "nvidia.com/gpu.present"
 )
 
 // NodeInformer watches specific nodes and provides counts.
@@ -63,14 +67,21 @@ func (ni *NodeInformer) GetInformer() cache.SharedIndexInformer {
 	return ni.informer
 }
 
-// NewNodeInformer creates a new NodeInformer that watches all nodes.
+// NewNodeInformer creates a new NodeInformer that watches GPU nodes.
 func NewNodeInformer(clientset kubernetes.Interface,
 	resyncPeriod time.Duration) (*NodeInformer, error) {
 	ni := &NodeInformer{
 		clientset: clientset,
 	}
 
-	informerFactory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
+	gpuNodeSelector := labels.Set{GpuNodeLabel: "true"}.AsSelector()
+	informerFactory := informers.NewSharedInformerFactoryWithOptions(
+		clientset,
+		resyncPeriod,
+		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
+			options.LabelSelector = gpuNodeSelector.String()
+		}),
+	)
 
 	nodeInformerObj := informerFactory.Core().V1().Nodes()
 	ni.informer = nodeInformerObj.Informer()
@@ -93,7 +104,7 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		return nil, fmt.Errorf("failed to add event handler: %w", err)
 	}
 
-	slog.Info("NodeInformer created, watching all nodes")
+	slog.Info("NodeInformer created, watching GPU nodes", "selector", gpuNodeSelector.String())
 
 	return ni, nil
 }
