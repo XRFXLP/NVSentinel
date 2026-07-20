@@ -137,13 +137,15 @@ These are present and measurable right now, independent of event rate.
 
 Every node runs a `platform-connector` pod. When that pod starts, it opens a MongoDB client — and that client immediately dials all three replica set members, opening 2 monitoring connections to each. These stay open permanently, whether or not any health events are flowing.
 
-The first InsertMany opens one more connection to the primary. That connection never closes, because `maxConnIdleTime` defaults to zero. Over days of operation, as the pod handles more health events, more connections accumulate — up to 100 by default (`maxPoolSize=100`).
+The first InsertMany opens one application connection to the primary. The pool grows with concurrent demand, up to `maxPoolSize=100`, and retains its high-water mark because `maxConnIdleTime` defaults to zero.
 
-Each pod therefore starts at about 7 connections and can grow toward 106 over time.
+Across the replica set, each pod therefore has a floor of approximately 7 connections: 3 to the primary (2 monitoring + 1 application) and 2 to each secondary. The pod-wide maximum is approximately 106, while the primary-specific maximum is approximately 102.
 
-The primary receives all of these (monitor + app). The secondaries receive only the 2 monitor connections each. With N pods in the cluster, the primary sees between 3N and 102N connections depending on how long the cluster has been running.
+With N platform-connectors, the primary therefore sees between 3N and 102N connections. The secondaries normally see approximately 2N each unless reads are routed to them.
 
-This eventually reaches MongoDB's memory and connection limits. At the document's ≈1 MB-per-connection assumption, a member with ≈1–1.5 GB free after the WiredTiger cache can hold approximately 1,000–1,500 connections. That estimate places the memory wall at **≈500–750 nodes** at the 7-connection floor. MongoDB also defaults to a hard cap of 65,536 incoming connections per member, but memory is expected to bind first under these resource limits.
+For capacity planning, the document uses an approximate 1 MiB of server memory per connection; actual cost varies by TLS state, workload, buffers, and MongoDB version. Dividing a 1–1.5 GiB connection-memory budget by the primary's 3-connection-per-pod floor gives a **≈333–500-node** range. At the 102-connection primary maximum, MongoDB's default 65,536 incoming-connection cap is reached at approximately 642 pods; at the 3-connection floor it is reached at approximately 21,845 pods.
+
+**Representative measurement (2026-07-20):** a 403-node cluster with 403 ready platform-connectors showed 1,273 connections on the primary and 846/848 on the secondaries, closely matching the 3N/2N baseline. The MongoDB pods used 1,770 MiB on the primary and 1,511/1,529 MiB on the secondaries, with approximately 400 MiB of WiredTiger cache in each 2 GiB-limited pod. This measurement supports using the 333–500-node range as a conservative warning band for the shipped resource limits, but it does not isolate an exact per-connection byte cost.
 
 Tuning `maxPoolSize` down to 2–5 pushes both walls out proportionally. Adding `maxConnIdleTime=60s` stops the slow drift toward the ceiling.
 
@@ -212,7 +214,7 @@ Raising QPS/burst moves the fault-quarantine/node-drainer ceiling, but those set
 
 The default PodMonitor scrapes every pod that NVSentinel deploys—all five DaemonSets plus the central modules. At 364 nodes, that is already approximately 1,820 scrape targets every 30 seconds. The number grows linearly with N and requires explicit capacity testing for the chosen Prometheus deployment.
 
-The fix is not to remove per-node scraping — metrics like `syslog_health_monitor_xid_errors` are critical and must be retained. The fix is to change the collection topology: deploy node-local Prometheus agents (e.g. Prometheus Agent mode or a Grafana Alloy DaemonSet) that scrape the pods on their own node and remote-write to central Prometheus. This keeps the per-node metrics while reducing the central Prometheus scrape fan-out from 5N targets to a small number of remote-write streams.
+The fix is not to remove per-node scraping—metrics such as `syslog_health_monitor_xid_errors` are critical and must be retained. Deploying a node-local Prometheus agent (for example, Prometheus Agent mode or a Grafana Alloy DaemonSet) creates approximately N agents and N remote-write streams. It reduces central scrape-target fan-out from approximately 5N per-node pods to N local collectors, but remote-write ingress still scales with N. Add an aggregation/gateway layer only if the central backend requires a small fixed number of ingress streams.
 
 **Fix:** Add a node-local scraping agent DaemonSet. Update PodMonitor to cover only the central singleton pods.
 
@@ -280,10 +282,13 @@ TTL is the principal retention knob controlling steady-state size. The shipped 3
 
 **Fix:**
 
-1. Resize PVCs from 8 Gi to ≥50 Gi. This gives real headroom for burst.
-2. If seven days meets operational retention requirements, reduce TTL from 30 days to 7 days. This lowers steady-state storage by approximately 4×.
-3. Add a PVC utilization alert at 70%.
-4. Co-configure TTL and PVC size in `values.yaml` so they stay in sync — the current defaults are mismatched.
+1. Calculate retained documents as `E = average health-event rate × TTL`.
+2. Measure compressed data bytes/document and index bytes/document from `HealthEvents.stats()` at representative steady state.
+3. Size each replica-set member for `E × (compressed data bytes + index bytes)`, then add explicit oplog allocation, WiredTiger/filesystem overhead, and headroom for the largest supported burst and delayed TTL cleanup.
+4. Provision that capacity on every replica-set member; a three-member replica set stores three full copies, so total provisioned cluster storage is approximately three times the per-member PVC.
+5. Reduce TTL only where the resulting retention meets operational requirements, and alert before PVC or oplog headroom is exhausted.
+
+**Benchmark example (2026-07-20, not a universal prescription):** on a 403-node cluster with a 30-day TTL and approximately 8.9 health events/s over the measured hour, `HealthEvents` contained 22.35 million documents. Average uncompressed BSON size was 1,933 bytes/document; compressed collection storage averaged approximately 416 bytes/document and indexes approximately 149 bytes/document. Collection storage was 9.29 GB, indexes were 3.33 GB, the configured oplog was 2.49 GB, and each member had a 50 Gi PVC with approximately 13 GiB used. This workload has substantial headroom at 50 Gi; another workload must repeat the calculation with its own event size, index set, write rate, retention, and burst target.
 
 **File:** `charts/mongodb-store/templates/configmap.yaml:51` (TTL), `charts/mongodb-store/values.yaml` (PVC size)
 
@@ -319,15 +324,22 @@ Every condition-relevant health event causes platform-connector to fetch the ful
 
 Five modules consume the MongoDB change stream: fault-quarantine, node-drainer, fault-remediation, health-events-analyzer, and event-exporter. Fault-quarantine, node-drainer, and health-events-analyzer process their main stream serially; fault-remediation defaults to one concurrent reconcile. Event-exporter has a configurable worker pool (`charts/event-exporter/values.yaml:82`), but ordered token advancement still waits behind the earliest unfinished publish. The serial consumers persist a majority-concern resume token after each health event, waiting for replica-set acknowledgment before advancing.
 
-At low event rates this is fine. Under storm conditions, the consumers fall behind. The oplog — MongoDB's replication log, which the change stream reads from — has a fixed retention window. On an 8 Gi PVC that window is only ≈70–165 seconds. Once a consumer's lag exceeds the window, its position in the oplog is gone. The library responds by deleting the consumer's resume token and restarting the stream from the current moment, silently skipping everything it missed.
+At low event rates this is fine. Under storm conditions, consumers can fall behind the MongoDB oplog. An 8 Gi PVC limits how much oplog can be allocated, but PVC size alone does not determine retention. Retention is the configured/actual oplog size divided by the rate at which MongoDB generates oplog bytes from health-event inserts, workflow status updates, resume-token writes, TTL deletes, and unrelated database activity. The chart does not currently set an explicit oplog size.
+
+**Representative steady-state measurement (2026-07-20):** `rs.printReplicationInfo()` on a 403-node cluster reported a 2,493.6 MB oplog and a 106,549-second (29.6-hour) window. The measured HealthEvents insert rate was approximately 8.9/s, but the retention window also reflects all other oplog-generating writes. The cluster used 50 Gi PVCs; this result must not be applied to the shipped 8 Gi PVC.
+
+No representative current-release fault-storm `rs.printReplicationInfo()` capture is available, so this document does not assert a numerical storm retention window. A valid storm measurement must record the actual/configured oplog size and first/last oplog timestamps before, during, and after the test, together with event rate, fatal/non-fatal mix, status-update rate, resume-token write rate, storm duration, and PVC size.
+
+Once consumer lag exceeds the measured oplog window, its resume point is gone. The library responds by deleting the stale token and reopening the stream; module-specific cold-start/recovery behavior then determines whether missed work is recovered.
 
 At that point the consumer is not slow. It is blind.
 
 **Fix:**
 
 1. Keep per-event resume-token persistence because it is part of the processing correctness boundary.
-2. Size the oplog for the worst expected consumer lag and alert on token age before history is lost.
-3. Treat `ChangeStreamHistoryLost` recovery as a module-specific design problem. Do not introduce generic replay/backfill until quarantine, drain, and remediation handlers prove idempotent behavior under duplicates.
+2. Measure oplog consumption under representative steady-state and fault-storm workloads, then size the oplog for the worst expected consumer lag.
+3. Alert on consumer token age versus the measured oplog window.
+4. Treat `ChangeStreamHistoryLost` recovery as a module-specific design problem. Do not introduce generic replay/backfill until quarantine, drain, and remediation handlers prove idempotent behavior under duplicates.
 
 **File:** `store-client/pkg/datastore/providers/mongodb/watcher/watch_store.go:340-386,478-529`
 
