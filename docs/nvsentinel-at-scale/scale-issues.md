@@ -440,44 +440,39 @@ The target is a brokered, partitioned pipeline. Node-level producers publish onc
 
 ```mermaid
 graph TD
-    subgraph producers["Per-node producers"]
-        direction TB
-        HM["Health monitors ×N"]
-        PC["Platform-connectors ×N\nevent-bus connector"]
-        HM -->|gRPC| PC
-    end
+    HM["Per-node health monitors ×N"]
+    PC["Platform-connectors ×N\nevent-bus connector"]
+    HE[("Durable health-events topic")]
+    FQ["fault-quarantine\nconsumer group ×K"]
+    WT[("Durable workflow-transitions topic\nquarantine · drain · remediation · cancellation")]
+    ND["node-drainer\nconsumer group ×K"]
+    FR["fault-remediation\nconsumer group ×K"]
+    HEA["health-events-analyzer\nconsumer group ×K"]
+    EE["event-exporter\nconsumer group ×K"]
+    EXT["external event sink"]
+    PERSIST["Materialize health + workflow transitions"]
+    SW["state writers ×K"]
+    DB[("MongoDB / PostgreSQL\nstate + history")]
+    OBSWRITE["Write node conditions + Kubernetes Events"]
+    CW["Kubernetes observation writers ×K"]
+    K8S["Kubernetes API / etcd"]
 
-    subgraph pipeline["Durable event pipeline"]
-        direction TB
-        HE[("health-events topic")]
-        FQ["fault-quarantine\nconsumer group ×K"]
-        WT[("workflow-transitions topic\nquarantine · drain · remediation · cancellation")]
-        ND["node-drainer\nconsumer group ×K"]
-        FR["fault-remediation\nconsumer group ×K"]
-        HEA["health-events-analyzer\nconsumer group ×K"]
-        EE["event-exporter\nconsumer group ×K"]
-        EXT["external event sink"]
-        HE -->|"consume"| FQ
-        FQ -->|"publish quarantine/scope/cancellation"| WT
-        WT -->|"consume quarantine transitions"| ND
-        ND -.->|"publish drain progress/completion"| WT
-        WT -->|"consume drain transitions"| FR
-        FR -.->|"publish remediation progress/completion"| WT
-        HE -.-> HEA
-        HE -.-> EE --> EXT
-    end
-
-    subgraph materialized["Materialized state and Kubernetes observations"]
-        direction TB
-        PERSIST["persist health + workflow transitions"] --> SW["state writers ×K"] --> DB[("MongoDB / PostgreSQL\nstate + history")]
-        OBSWRITE["write node conditions + Kubernetes Events"] --> CW["Kubernetes observation writers ×K"] --> K8S["Kubernetes API / etcd"]
-    end
-
+    HM -->|"gRPC"| PC
     PC -->|"publish"| HE
+    HE -->|"consume"| FQ
+    FQ -->|"publish quarantine/scope/cancellation"| WT
+    WT -->|"consume quarantine transitions"| ND
+    ND -.->|"publish drain progress/completion"| WT
+    WT -->|"consume drain transitions"| FR
+    FR -.->|"publish remediation progress/completion"| WT
+    HE -.-> HEA
+    HE -.-> EE --> EXT
     HE -.-> PERSIST
     WT -.-> PERSIST
+    PERSIST --> SW --> DB
     HE -.-> OBSWRITE
     WT -.-> OBSWRITE
+    OBSWRITE --> CW --> K8S
     K8S -.->|"Node informer"| FQ
 
     style PC fill:#c0392b,color:#fff,stroke:#922b21
