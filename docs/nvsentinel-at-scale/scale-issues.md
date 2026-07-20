@@ -6,7 +6,7 @@ Each node runs health monitors and a platform-connector. Together they send heal
 
 At small scale, the flow looks simple: a monitor reports a problem, platform-connector records it, and the fault-handling modules react. Growth changes that flow in three ways. **First,** every new node adds another writer. **Second,** the central modules remain a small fixed group while the amount of cluster state they must hold or search keeps growing. **Third,** one reported fault does not remain one operation: it becomes database writes, Kubernetes updates, rule queries, logs, metrics, and more stream records. During a fleet-wide incident, more nodes speak at once, every report creates secondary work, and the same listeners must catch up.
 
-Local fixes should remove avoidable scans, retries, queue growth, and missing indexes while capacity-planning the required metric cardinality. At larger scale, the remaining structural constraint is a growing number of node-level writers feeding fixed shared resources and fixed-capacity listeners. The final section describes the architecture needed after the local amplification loops are removed.
+Before changing the architecture, improve the individual components: remove repeated full-list scans, bound in-memory queues, retry only temporary failures, add database indexes for existing queries, and size the metrics backend for the required per-node and per-XID series. At larger scale, the remaining structural constraint is a growing number of node-level writers feeding fixed shared resources and fixed-capacity listeners. The final section describes the architecture needed after these component-level inefficiencies are removed.
 
 ---
 
@@ -19,56 +19,56 @@ The items are ordered by how they can be delivered. Component optimizations and 
 ### Existing Helm values
 
 
-| ID  | Action                                                                                     | Scale driver |
-| --- | ------------------------------------------------------------------------------------------ | ------------ |
-| H1  | Resize MongoDB PVCs using the Bitnami subchart `persistence.size` value                    | E = R × TTL  |
-| H2  | Set `namespace` on every kubernetes-object-monitor (KOM) Pod or Kubernetes Event policy    | P            |
+| ID  | Action                                                                                         | Scale driver |
+| --- | ---------------------------------------------------------------------------------------------- | ------------ |
+| H1  | Resize MongoDB PVCs using the Bitnami subchart `persistence.size` value                        | E = R × TTL  |
+| H2  | Set `namespace` on every kubernetes-object-monitor (KOM) Pod or Kubernetes Event policy        | P            |
 | H3  | Enable deduplication for known noisy checks and define the suppression window and include list | R            |
+| H4  | Increase the PodMonitor scrape interval within the acceptable metric/alert detection delay     | N × samples  |
 
 
 ### Chart changes
 
 
-| ID  | Action                                                                                                              | Scale driver                  |
-| --- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| C1  | Expose HealthEvents TTL as a Helm value; reduce the default from 30 days where operationally acceptable             | E = R × TTL                   |
-| C2  | Add PVC-utilization and oplog-window alerts                                                                         | E, R                          |
-| C3  | Expose WiredTiger cache and explicit oplog sizing                                                                   | E, R                          |
-| C4  | Add secondary MongoDB indexes for the existing status, agent, and cold-start filters; do not change query semantics | E × query rate                |
-| C5  | Collect per-node metrics locally and provision sharded remote storage for the required node/XID series              | N × scrape targets and series |
-| C6  | Replace percentage-based multi-DaemonSet rollout waves with staggered absolute budgets                              | N                             |
+| ID  | Action                                                                                                              | Scale driver   |
+| --- | ------------------------------------------------------------------------------------------------------------------- | -------------- |
+| C1  | Expose HealthEvents TTL as a Helm value; reduce the default from 30 days where operationally acceptable             | E = R × TTL    |
+| C2  | Add PVC-utilization and oplog-window alerts                                                                         | E, R           |
+| C3  | Expose WiredTiger cache and explicit oplog sizing                                                                   | E, R           |
+| C4  | Add secondary MongoDB indexes for the existing status, agent, and cold-start filters; do not change query semantics | E × query rate |
+| C5  | Replace percentage-based multi-DaemonSet rollout waves with staggered absolute budgets                              | N              |
 
 
 ### Component code changes
 
 
-| ID  | Action                                                                                                                | Scale driver               |
-| --- | --------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| K1  | Configure MongoDB `maxPoolSize`, `minPoolSize`, and `maxConnIdleTime` in store-client                                 | N                          |
-| K2  | Add per-component QPS/burst configuration for fault-quarantine and node-drainer                                       | faulted nodes              |
-| K3  | Replace GET + full-node `UpdateStatus` with PATCH and no-op suppression                                               | R                          |
-| K4  | Replace the per-health-event Kubernetes Event LIST-and-write with `EventRecorder`                                     | R × matching Event history |
-| K5  | Bound connector queues, retry `RESOURCE_EXHAUSTED`, and requeue transient Kubernetes failures                         | R                          |
-| K6  | Replace analyzer per-event, per-rule queries with incremental windows and relevant-rule dispatch                     | R × rules, E               |
-| K7  | Replace labeler peer/ResourceSlice scans with indexes and incremental counters                                        | N², ResourceSlices         |
-| K8  | Replace janitor admission LISTs and preflight namespace LISTs with indexed lookups                                    | remediation CRs, P         |
-| K9  | Budget and coalesce metadata-collector pod annotation PATCHes                                                         | N × pod churn              |
-| K10 | Keep one canonical full-payload log per health event, correlate later stages by event ID, and reuse GPU-monitor gRPC connections | R, N                  |
-| K11 | Define PostgreSQL changelog retention and optimize watermark storage without weakening per-event processing semantics | E, R                       |
-| K12 | Tune kubernetes-object-monitor resync/concurrency and replace startup LIST + per-node reads with one cache-backed load | N, P                       |
+| ID  | Action                                                                                                                           | Scale driver               |
+| --- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| K1  | Configure MongoDB `maxPoolSize`, `minPoolSize`, and `maxConnIdleTime` in store-client                                            | N                          |
+| K2  | Add per-component QPS/burst configuration for fault-quarantine and node-drainer                                                  | faulted nodes              |
+| K3  | Replace GET + full-node `UpdateStatus` with PATCH and no-op suppression                                                          | R                          |
+| K4  | Replace the per-health-event Kubernetes Event LIST-and-write with `EventRecorder`                                                | R × matching Event history |
+| K5  | Bound connector queues, retry `RESOURCE_EXHAUSTED`, and requeue transient Kubernetes failures                                    | R                          |
+| K6  | Replace analyzer per-event, per-rule queries with incremental windows and relevant-rule dispatch                                 | R × rules, E               |
+| K7  | Replace labeler peer/ResourceSlice scans with indexes and incremental counters                                                   | N², ResourceSlices         |
+| K8  | Replace janitor admission LISTs and preflight namespace LISTs with indexed lookups                                               | remediation CRs, P         |
+| K9  | Budget and coalesce metadata-collector pod annotation PATCHes                                                                    | N × pod churn              |
+| K10 | Keep one canonical full-payload log per health event, correlate later stages by event ID, and reuse GPU-monitor gRPC connections | R, N                       |
+| K11 | Define PostgreSQL changelog retention and optimize watermark storage without weakening per-event processing semantics            | E, R                       |
+| K12 | Tune kubernetes-object-monitor resync/concurrency and replace startup LIST + per-node reads with one cache-backed load           | N, P                       |
 
 
 ### Architecture changes
 
 
-| ID  | Action                                                                                                                    | Scale driver removed                   |
-| --- | ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| A1  | Make a durable, partitioned event bus the primary ingestion path; persist events and state through scalable state writers | O(N) datastore clients                 |
-| A2  | Add Kubernetes observation writers for node conditions and Kubernetes Event objects, with a fleet-wide write budget       | O(R) uncoordinated API writers         |
-| A3  | Run each fault-handling stage as a partitioned consumer group keyed by node                                               | Fixed singleton throughput             |
-| A4  | Define durable per-event workflow sessions, node-level cancellation cutoffs, equivalence groups, and idempotent transitions | Long-running workflow/replay safety    |
-| A5  | Preserve Kubernetes observation inputs, the fleet circuit breaker, janitor node locks, and cold-start reconciliation        | Cross-partition/global coordination    |
-| A6  | Port existing smoke, cancellation, cold-start, partial-drain, janitor, circuit-breaker, and exporter tests to broker-native injection | Migration confidence             |
+| ID  | Action                                                                                                                                | Scale driver removed                |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| A1  | Make a durable, partitioned event bus the primary ingestion path; persist events and state through scalable state writers             | O(N) datastore clients              |
+| A2  | Add Kubernetes observation writers for node conditions and Kubernetes Event objects, with a fleet-wide write budget                   | O(R) uncoordinated API writers      |
+| A3  | Run each fault-handling stage as a partitioned consumer group keyed by node                                                           | Fixed singleton throughput          |
+| A4  | Define durable per-event workflow sessions, node-level cancellation cutoffs, equivalence groups, and idempotent transitions           | Long-running workflow/replay safety |
+| A5  | Preserve Kubernetes observation inputs, the fleet circuit breaker, janitor node locks, and cold-start reconciliation                  | Cross-partition/global coordination |
+| A6  | Port existing smoke, cancellation, cold-start, partial-drain, janitor, circuit-breaker, and exporter tests to broker-native injection | Migration confidence                |
 
 
 **Suggested sequence:** apply H-items first, deliver C-items that improve capacity and observability, remove the largest local amplification loops (K3–K9), then introduce A-items using the same load tests as acceptance criteria.
@@ -143,7 +143,7 @@ Across the replica set, each pod therefore has a floor of approximately 7 connec
 
 With N platform-connectors, the primary therefore sees between 3N and 102N connections. The secondaries normally see approximately 2N each unless reads are routed to them.
 
-For capacity planning, the document uses an approximate 1 MiB of server memory per connection; actual cost varies by TLS state, workload, buffers, and MongoDB version. Dividing a 1–1.5 GiB connection-memory budget by the primary's 3-connection-per-pod floor gives a **≈333–500-node** range. At the 102-connection primary maximum, MongoDB's default 65,536 incoming-connection cap is reached at approximately 642 pods; at the 3-connection floor it is reached at approximately 21,845 pods.
+For a conservative estimate, the document uses approximately 1 MiB of server memory per connection; actual cost varies by TLS state, workload, buffers, and MongoDB version. Dividing a 1–1.5 GiB connection-memory budget by the primary's 3-connection-per-pod floor gives a **≈333–500-node** range. At the 102-connection primary maximum, MongoDB's default 65,536 incoming-connection cap is reached at approximately 642 pods; at the 3-connection floor it is reached at approximately 21,845 pods.
 
 **Representative measurement (2026-07-20):** a 403-node cluster with 403 ready platform-connectors showed 1,273 connections on the primary and 846/848 on the secondaries, closely matching the 3N/2N baseline. The MongoDB pods used 1,770 MiB on the primary and 1,511/1,529 MiB on the secondaries, with approximately 400 MiB of WiredTiger cache in each 2 GiB-limited pod. This measurement supports using the 333–500-node range as a conservative warning band for the shipped resource limits, but it does not isolate an exact per-connection byte cost.
 
@@ -214,9 +214,9 @@ Raising QPS/burst moves the fault-quarantine/node-drainer ceiling, but those set
 
 The default PodMonitor scrapes every pod that NVSentinel deploys—all five DaemonSets plus the central modules. At 364 nodes, that is already approximately 1,820 scrape targets every 30 seconds. The number grows linearly with N and requires explicit capacity testing for the chosen Prometheus deployment.
 
-The fix is not to remove per-node scraping—metrics such as `syslog_health_monitor_xid_errors` are critical and must be retained. Deploying a node-local Prometheus agent (for example, Prometheus Agent mode or a Grafana Alloy DaemonSet) creates approximately N agents and N remote-write streams. It reduces central scrape-target fan-out from approximately 5N per-node pods to N local collectors, but remote-write ingress still scales with N. Add an aggregation/gateway layer only if the central backend requires a small fixed number of ingress streams.
+The fix is not to remove per-node scraping—metrics such as `syslog_health_monitor_xid_errors` are critical and must be retained. The practical first control is the existing PodMonitor interval: increasing it reduces scrape requests and samples per second in direct proportion, at the cost of slower metric and alert detection. Choose the interval from the required detection latency and validate Prometheus capacity at that setting.
 
-**Fix:** Add a node-local scraping agent DaemonSet. Update PodMonitor to cover only the central singleton pods.
+**Fix:** Increase `podMonitor.interval` where the added detection delay is acceptable, tune retention, and alert on scrape failures, ingestion rate, memory, and active-series capacity. Introduce collection gateways or sharded remote storage only after measurements show that interval/retention tuning is insufficient.
 
 **File:** `distros/kubernetes/nvsentinel/templates/podMonitor.yaml`
 
@@ -264,7 +264,7 @@ Scrape-target count is only half of the monitoring cost. Several central modules
 
 At fleet scale, Prometheus therefore stores tens or hundreds of thousands of mostly idle series even after the scrape topology is improved. Node-local agents reduce central scraping fan-out but do not remove these series.
 
-**Capacity plan:** retain node and XID labels because they provide required diagnostic detail. Treat the catalog size as a predictable series budget (`nodes × known XID codes`), then size or shard the metrics backend accordingly. Use node-local collection, scalable remote storage, shorter raw-series retention where acceptable, and recording rules for common fleet-wide dashboards while preserving raw per-node series for drill-down. Alert when active-series count approaches the provisioned limit.
+**How to size it:** retain node and XID labels because they provide required diagnostic detail. Estimate the number of series as `nodes × known XID codes`, then choose Prometheus memory and retention that can hold them. A longer scrape interval reduces sample ingestion and network traffic but does not reduce active-series count. Use recording rules for common fleet-wide dashboards while preserving raw per-node series for drill-down, and introduce sharding only after measurements require it.
 
 **Files:** `syslog-health-monitor/main.go:290-303`, `syslog-health-monitor/pkg/xid/metrics/metrics.go:70-92`, `fault-quarantine/pkg/metrics/metrics.go:51-86`
 
