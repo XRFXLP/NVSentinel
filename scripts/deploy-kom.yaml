@@ -1,0 +1,207 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubernetes-object-monitor
+  namespace: nvsentinel
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubernetes-object-monitor
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch, patch, update]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-object-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubernetes-object-monitor
+subjects:
+  - kind: ServiceAccount
+    name: kubernetes-object-monitor
+    namespace: nvsentinel
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-object-monitor
+  namespace: nvsentinel
+data:
+  config.toml: |
+    [[policies]]
+      name = "OsmoReportedBadNode"
+      enabled = true
+
+      [policies.resource]
+        group = ""
+        version = "v1"
+        kind = "Node"
+
+      [policies.predicate]
+        expression = '''
+          resource.status.conditions.exists(c,
+            c.type.startsWith('us-west-2-aws.osmo.nvidia.com/')
+            && !(c.type in [
+              'us-west-2-aws.osmo.nvidia.com/GpuIncorrectMode',
+              'us-west-2-aws.osmo.nvidia.com/GpuIncorrectProduct',
+              'us-west-2-aws.osmo.nvidia.com/GpuLessThanTotal',
+              'us-west-2-aws.osmo.nvidia.com/NicsLessThanTotal',
+              'us-west-2-aws.osmo.nvidia.com/ServiceConnectionTestFailure'
+            ])
+            && c.type != 'us-west-2-aws.osmo.nvidia.com/LFSMountFailure'
+            && c.status == "True")
+        '''
+
+      [policies.healthEvent]
+        componentClass = "Node"
+        isFatal = true
+        message = "OSMO has reported this node as unusable"
+        recommendedAction = "CONTACT_SUPPORT"
+        errorCode = ["OSMO_REPORTED_BAD_NODE"]
+
+    [[policies]]
+      name = "OsmoLFSMountFailure"
+      enabled = true
+
+      [policies.resource]
+        group = ""
+        version = "v1"
+        kind = "Node"
+
+      [policies.predicate]
+        expression = '''
+          resource.status.conditions.exists(c,
+            c.type == 'us-west-2-aws.osmo.nvidia.com/LFSMountFailure'
+            && c.status == "True"
+            && has(c.lastHeartbeatTime)
+            && resource.status.conditions.exists(r,
+                 r.type == "Ready" && r.status == "True"
+                 && timestamp(c.lastHeartbeatTime) > timestamp(r.lastTransitionTime) + duration("1800s")))
+        '''
+
+      [policies.healthEvent]
+        componentClass = "Node"
+        isFatal = true
+        message = "OSMO reported persistent LFS mount failure"
+        recommendedAction = "RESTART_VM"
+        errorCode = ["OSMO_LFS_MOUNT_FAILURE"]
+
+    [[policies]]
+      name = "PodStuckAfterDeletion"
+      enabled = true
+
+      [policies.resource]
+        group = ""
+        version = "v1"
+        kind = "Pod"
+        namespace = "nvsentinel-scale"
+
+      [policies.predicate]
+        expression = '''
+          has(resource.metadata.deletionTimestamp)
+          && has(resource.metadata.deletionGracePeriodSeconds)
+          && has(resource.spec.nodeName) && resource.spec.nodeName != ""
+          && resource.status.phase == "Running"
+        '''
+
+      [policies.nodeAssociation]
+        expression = "has(resource.spec.nodeName) ? resource.spec.nodeName : \"\""
+
+      [policies.healthEvent]
+        componentClass = "Node"
+        isFatal = true
+        message = "Pod is stuck past its deletion grace period and has not terminated"
+        recommendedAction = "RESTART_VM"
+        errorCode = ["POD_STUCK_AFTER_DELETION"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubernetes-object-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: kubernetes-object-monitor
+    app.kubernetes.io/instance: nvsentinel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubernetes-object-monitor
+      app.kubernetes.io/instance: nvsentinel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubernetes-object-monitor
+        app.kubernetes.io/instance: nvsentinel
+    spec:
+      serviceAccountName: kubernetes-object-monitor
+      imagePullSecrets:
+        - name: nvidia-ngcuser-pull-secret
+      nodeSelector:
+        nodeGroup: monitoring
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: kubernetes-object-monitor
+          image: nvcr.io/nv-ngc-devops/nvidia-nvsentinel-kubernetes-object-monitor:v1.14.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --policy-config-path=/config/config.toml
+            - --platform-connector-socket=unix:///var/run/nodeHealthEvents.sock
+            - --metrics-bind-address=:2112
+            - --health-probe-bind-address=:8081
+            - --max-concurrent-reconciles=1
+            - --resync-period=5m
+            - --processing-strategy=EXECUTE_REMEDIATION
+          env:
+            - name: LOG_LEVEL
+              value: info
+          ports:
+            - containerPort: 2112
+              name: metrics
+            - containerPort: 8081
+              name: health
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - mountPath: /config
+              name: config
+              readOnly: true
+            - mountPath: /var/run
+              name: socket
+      volumes:
+        - name: config
+          configMap:
+            name: kubernetes-object-monitor
+        - name: socket
+          hostPath:
+            path: /var/run/nvsentinel
+            type: DirectoryOrCreate
