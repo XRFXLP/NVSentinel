@@ -24,7 +24,6 @@ The items are ordered by how they can be delivered. Component optimizations and 
 | H1  | Resize MongoDB PVCs using the Bitnami subchart `persistence.size` value                        | E = R × TTL  |
 | H2  | Set `namespace` on every kubernetes-object-monitor (KOM) Pod or Kubernetes Event policy        | P            |
 | H3  | Enable deduplication for known noisy checks and define the suppression window and include list | R            |
-| H4  | Increase the PodMonitor scrape interval within the acceptable metric/alert detection delay     | N × samples  |
 
 
 ### Chart changes
@@ -207,18 +206,6 @@ Raising QPS/burst moves the fault-quarantine/node-drainer ceiling, but those set
 **Fix:** Add per-component QPS/burst configuration, size it from an explicit fleet write budget, increase fault-remediation concurrency only after proving idempotency, and switch node mutations to PATCH.
 
 **File:** `fault-quarantine/pkg/informer/k8s_client.go:61-68`
-
----
-
-### Prometheus scrape targets
-
-The default PodMonitor scrapes every pod that NVSentinel deploys—all five DaemonSets plus the central modules. At 364 nodes, that is already approximately 1,820 scrape targets every 30 seconds. The number grows linearly with N and requires explicit capacity testing for the chosen Prometheus deployment.
-
-The fix is not to remove per-node scraping—metrics such as `syslog_health_monitor_xid_errors` are critical and must be retained. The practical first control is the existing PodMonitor interval: increasing it reduces scrape requests and samples per second in direct proportion, at the cost of slower metric and alert detection. Choose the interval from the required detection latency and validate Prometheus capacity at that setting.
-
-**Fix:** Increase `podMonitor.interval` where the added detection delay is acceptable, tune retention, and alert on scrape failures, ingestion rate, memory, and active-series capacity. Introduce collection gateways or sharded remote storage only after measurements show that interval/retention tuning is insufficient.
-
-**File:** `distros/kubernetes/nvsentinel/templates/podMonitor.yaml`
 
 ---
 
@@ -510,6 +497,8 @@ The diagram shows one node-keyed `workflow-transitions` topic shared by the work
 **Event bus ingestion:** Add an eventbus abstraction so platform-connector can publish health events directly, keyed by node name. Kafka can be the first implementation, with Pulsar or NATS behind the same `EventPublisher` / `EventConsumer` contracts. Disable direct datastore and Kubernetes writes at the edge. The existing gRPC sink can help bridge migration, but it is not the durable broker itself.
 
 **Workflow identity and transition contract:** Use one `workflow-transitions` topic for quarantine, drain, remediation, recovery, and cancellation transitions. Node name is the Kafka partition key, but durable state is keyed more narrowly by `(node, healthEventId, impacted entity/session)`, because several faults and partial drains can coexist on one node. Records must preserve processing strategy, recommended action, impacted entities, overrides, configuration snapshot, session start/end, and a monotonic workflow sequence.
+
+For example, fault-quarantine consumes `HealthEventReceived`, applies the Kubernetes cordon, and then appends `QuarantineApplied` to `workflow-transitions`. That new record carries the original health-event ID and fault scope. Node-drainer consumes `QuarantineApplied`; it does not wait for the original health-event record to be mutated. State writers separately update the MongoDB/PostgreSQL materialized view. If cordoning fails, FQ retries or publishes `QuarantineFailed` rather than publishing `QuarantineApplied`.
 
 **Quarantine scope and cancellation:** The transition model represents `Quarantined`, `AlreadyQuarantined`/scope update, `UnQuarantined`, `Cancelled`, and no-op. A node-level recovery carries a session cutoff: workflows created at or before the recovery are cancelled and newer faults remain active. Manual uncordon/untaint and node deletion arrive through the Kubernetes Node informer, making fault-quarantine a dual-input reconciler. Node observations are routed or filtered to the same partition owner as health events so only one fault-quarantine instance reconciles a node.
 
