@@ -80,6 +80,7 @@ The items are ordered by how they can be delivered. Component optimizations and 
 > **Note:** This document uses MongoDB for the main pipeline examples. MongoDB is disabled by default in the shipped chart (`values.yaml:180`); PostgreSQL is also supported and has a separate scale section below. Kubernetes API, informer, queue, and observability findings apply to both backends.
 
 ```mermaid
+%%{init: {"flowchart": {"curve": "stepAfter"}} }%%
 flowchart TD
     subgraph node["Per-node layer  ×N nodes"]
         direction LR
@@ -439,6 +440,7 @@ All three problems share the same root cause: the system scales its costs with N
 The target is a brokered, partitioned pipeline. Node-level producers publish once. Each broker-facing fault-handling stage consumes assigned node partitions, persists progress as a new state-transition event, and commits its position. The database stores current state and history; it no longer transports work between modules.
 
 ```mermaid
+%%{init: {"flowchart": {"curve": "stepAfter"}} }%%
 graph TD
     HM["Per-node health monitors ×N"]
     PC["Platform-connectors ×N\nevent-bus connector"]
