@@ -24,6 +24,8 @@ The items are ordered by how they can be delivered. Component optimizations and 
 | H1  | Resize MongoDB PVCs using the Bitnami subchart `persistence.size` value                        | E = R × TTL  |
 | H2  | Set `namespace` on every kubernetes-object-monitor (KOM) Pod or Kubernetes Event policy        | P            |
 | H3  | Enable deduplication for known noisy checks and define the suppression window and include list | R            |
+| H4  | Set Janitor `ttl.defaultTTL` so retained completed CRs stay within the webhook's LIST budget    | remediation CRs |
+| H5  | Tune KOM `resyncPeriod` and `maxConcurrentReconciles` from measured object count and CEL cost   | N, P         |
 
 
 ### Chart changes
@@ -50,11 +52,12 @@ The items are ordered by how they can be delivered. Component optimizations and 
 | K5  | Bound connector queues, retry `RESOURCE_EXHAUSTED`, and requeue transient Kubernetes failures                                    | R                          |
 | K6  | Replace analyzer per-event, per-rule queries with incremental windows and relevant-rule dispatch                                 | R × rules, E               |
 | K7  | Replace labeler peer/ResourceSlice scans with indexes and incremental counters                                                   | N², ResourceSlices         |
-| K8  | Replace janitor admission LISTs and preflight namespace LISTs with indexed lookups                                               | remediation CRs, P         |
+| K8  | Add a cache index for preflight gang membership                                                                                   | P                          |
 | K9  | Budget and coalesce metadata-collector pod annotation PATCHes                                                                    | N × pod churn              |
 | K10 | Keep one canonical full-payload log per health event, correlate later stages by event ID, and reuse GPU-monitor gRPC connections | R, N                       |
 | K11 | Define PostgreSQL changelog retention and optimize watermark storage without weakening per-event processing semantics            | E, R                       |
-| K12 | Tune kubernetes-object-monitor resync/concurrency and replace startup LIST + per-node reads with one cache-backed load           | N, P                       |
+| K12 | Replace KOM startup LIST + per-node reads with one cache-backed state load                                                      | N                          |
+| K13 | Minimize DaemonSet-owned and system-namespace Pods before storing them in node-drainer's informer cache                         | P                          |
 
 
 ### Architecture changes
@@ -71,6 +74,20 @@ The items are ordered by how they can be delivered. Component optimizations and 
 
 
 **Suggested sequence:** apply H-items first, deliver C-items that improve capacity and observability, remove the largest local amplification loops (K3–K9), then introduce A-items using the same load tests as acceptance criteria.
+
+---
+
+## Validation Model
+
+The findings require three complementary test planes:
+
+- **KWOK control-plane simulation:** large populations of Node and Pod objects validate API server/etcd load, informer memory, admission, scheduling, eviction, and central-controller behavior. KWOK pods do not execute containers, so this plane does not validate platform-connector processes, datastore connections, per-pod metrics, or node-level CPU/memory.
+- **Real per-instance microbenchmarks:** platform-connector, monitors, and each central module run on real CPU nodes to establish throughput, latency, queue, CPU, and memory limits for one executable instance.
+- **Logical connector-pool tests:** real processes on the CPU nodes emulate many node identities and independent client/rate-limit state to validate aggregate datastore and Kubernetes load. Reports distinguish logical clients from physical pods and do not claim simulated per-pod resource overhead.
+
+Every event-rate result states its healthy/fatal/non-fatal mix, processing strategy, payload size, distribution across nodes (uniform versus hot-node), duration, and warmup. A 50k-node KWOK run is a stress test of the shared Kubernetes control plane, not a claim that Kubernetes or NVSentinel supports a 50k-node production cluster.
+
+Architecture changes add a parity lane to this model: run the same smoke, manual recovery, drain cancellation, restart, partial drain, circuit breaker, janitor lock, and exporter resume scenarios through the existing and proposed paths, then compare Kubernetes actions, database state, and exported events.
 
 ---
 
@@ -184,26 +201,32 @@ KOM uses unstructured objects for policy resources and also creates a typed Node
 
 **Fix for KOM:** Any policy that watches Pods or Kubernetes Events must set `namespace` in `[policies.resource]`. If multiple namespaces are needed, split into multiple policies. The informer will then be scoped to only those namespaces.
 
-**The global Pod informer is intentional for the current design.** AllowCompletion and DeleteAfterTimeout repeatedly inspect pod phase, readiness, deletion timestamps, grace periods, ownership, resource requests, and device annotations. Replacing the cache with a LIST on each workqueue retry would move the cost to the API server and amplify it during mass drains. Kubernetes also cannot dynamically scope one shared informer to an arbitrary changing set of drain nodes.
+KOM's `resyncPeriod` and `maxConcurrentReconciles` are already Helm-configurable. Tune them from measured object count and CEL evaluation cost. The startup LIST followed by per-node reads is a separate code path covered by K12.
 
-No cache-removal action is recommended here. The O(P) memory cost should be treated as a capacity requirement unless node-drainer itself is partitioned. A future low-risk optimization could use an informer transform to remove Pod fields proven unused, but that requires memory profiling and complete behavior tests and does not remove O(P) growth.
+Node-drainer uses a cluster-wide typed Pod informer indexed by node and by namespace/node. AllowCompletion and DeleteAfterTimeout repeatedly read pod phase, readiness, deletion timestamps, grace periods, ownership, resource requests, and device annotations. Its baseline memory therefore grows with the total pod population, O(P).
+
+Node-drainer already excludes DaemonSet-owned Pods and configured system namespaces from drain decisions, but those Pods are filtered after entering the cache. A `SetTransform` handler can replace excluded Pods with minimal objects containing only cache identity metadata and no node index key. On the measured cluster, 2,331 of 2,539 Pods (~92%) were DaemonSet-owned or in configured system namespaces, so this can materially reduce node-drainer heap.
+
+Using the current Pod JSON as a size proxy, the complete set occupied 24.68 MiB serialized. Replacing ignored Pods with identity-only placeholders reduced the projected stored representation to 4.72 MiB—an 80.9% reduction for the Pod cache input. Actual process RSS reduction requires a Go heap benchmark because informer/index overhead and node/event caches remain.
+
+This is a client-side memory optimization: the API server still sends the cluster-wide Pod LIST/watch stream. Kubernetes has no server-side selector for owner kind or regex namespace exclusion. Server-side filtering would require a reliable workload label or a fixed set of included namespaces.
 
 **Files:**
 
 - KOM policy config: `[policies.resource].namespace` field
-- `node-drainer/pkg/informers/informers.go:63-68`
+- `node-drainer/pkg/informers/informers.go:63-74,332-392`
 
 ---
 
 ### Remediation throughput ceiling
 
-When a fault storm hits, fault-quarantine, node-drainer, and fault-remediation all need to cordon, drain, and remediate affected nodes. Each cordon is two API calls — a GET followed by a full UPDATE. Fault-quarantine and node-drainer inherit the client-go default of 5 QPS / 10 burst; fault-remediation defaults to one concurrent reconcile.
+When a fault storm hits, fault-quarantine, node-drainer, and fault-remediation all need to cordon, drain, and remediate affected nodes. Fault-quarantine currently performs a GET followed by a full UPDATE so it can merge cordon state, taints, labels, and annotations. Fault-quarantine and node-drainer inherit the client-go default of 5 QPS / 10 burst; fault-remediation defaults to one concurrent reconcile.
 
 That gives a sustained cordon rate of ≈2.5 nodes/s. At that rate, cordoning 1,000 faulted nodes takes ≈7 minutes. Cordoning 10,000 takes over an hour. The storm does not wait.
 
-Raising QPS/burst moves the fault-quarantine/node-drainer ceiling, but those settings are not currently exposed as Helm values. Switching from full UPDATE to PATCH reduces request volume and conflict retries.
+Raising QPS/burst moves the fault-quarantine/node-drainer ceiling, but those settings are not currently exposed as Helm values. The happy path can read current state from the Node informer and send one PATCH containing only FQ-owned fields. Use an SSA field manager or patch precondition for those fields; on ownership conflict or stale cache, re-read and retry. Manual/pre-existing cordon detection remains a state-reconciliation decision.
 
-**Fix:** Add per-component QPS/burst configuration, size it from an explicit fleet write budget, increase fault-remediation concurrency only after proving idempotency, and switch node mutations to PATCH.
+**Fix:** Add per-component QPS/burst configuration, size it from an explicit fleet write budget, increase fault-remediation concurrency only after proving idempotency, and replace GET+UPDATE with informer-backed, ownership-aware PATCH operations plus conflict fallback.
 
 **File:** `fault-quarantine/pkg/informer/k8s_client.go:61-68`
 
@@ -233,15 +256,15 @@ Large job waves can synchronize these collectors and produce a burst of pod PATC
 
 ---
 
-### Admission and discovery LIST amplification
+### Janitor CR retention and preflight cache scans
 
-Janitor's validating webhook lists all remediation CRs of a kind before accepting a new RebootNode, TerminateNode, or GPUReset. If C CRs are retained, each admission request performs O(C) work; creating C new CRs can therefore approach O(C²) aggregate scanning. Because the webhook fails closed, a slow LIST blocks remediation.
+Janitor's validating webhook lists remediation CRs of a kind before accepting a new RebootNode, TerminateNode, or GPUReset. Janitor's TTL reconcilers bound completed history by deleting CRs after `ttl.defaultTTL` (14 days by default). The retained count is approximately active CRs plus completion rate multiplied by TTL. Active in-progress CRs remain until completion.
 
-Preflight has a related problem: gang coordination can watch all pods cluster-wide, then list every pod in a namespace when discovering peers. Large training namespaces multiply this work by the number of gang-pod updates.
+Preflight registers a cluster-wide Pod informer. Peer discovery reads from that cache and scans the gang namespace for each gang-pod IP update. Its cost is informer memory, watch processing, and repeated in-memory scans—not repeated API-server LISTs. The informer remains cluster-wide because preflight-enabled namespaces are selected dynamically through namespace labels.
 
-**Fix:** Replace admission LISTs with indexed lookups or maintained active-state indexes. Scope preflight's cache to enabled namespaces and index gang membership rather than listing whole namespaces.
+**Fix:** Set Janitor's TTL from the expected CR completion rate and monitor retained CR count plus webhook LIST latency. Add workload/gang indexes to preflight's Pod cache so peer discovery returns only matching peers.
 
-**Files:** `janitor/pkg/webhook/v1alpha1/janitor_webhook.go:160-219`, `preflight/pkg/controller/gang_controller.go:62-65`, `preflight/pkg/gang/discoverer/kubernetes.go:208-210`
+**Files:** `janitor/pkg/webhook/v1alpha1/janitor_webhook.go:160-219`, `charts/janitor/values.yaml:183-196`, `preflight/pkg/controller/gang_controller.go:62-65`, `preflight/pkg/gang/discoverer/kubernetes.go:208-210`
 
 ---
 
@@ -270,12 +293,30 @@ TTL is the principal retention knob controlling steady-state size. The shipped 3
 **Fix:**
 
 1. Calculate retained documents as `E = average health-event rate × TTL`.
-2. Measure compressed data bytes/document and index bytes/document from `HealthEvents.stats()` at representative steady state.
+2. Measure live compressed data bytes/document and index bytes/document from `HealthEvents.stats()` at representative steady state. Subtract WiredTiger bytes available for reuse from allocated `storageSize`; TTL-deleted space remains allocated and otherwise inflates the estimate.
 3. Size each replica-set member for `E × (compressed data bytes + index bytes)`, then add explicit oplog allocation, WiredTiger/filesystem overhead, and headroom for the largest supported burst and delayed TTL cleanup.
 4. Provision that capacity on every replica-set member; a three-member replica set stores three full copies, so total provisioned cluster storage is approximately three times the per-member PVC.
 5. Reduce TTL only where the resulting retention meets operational requirements, and alert before PVC or oplog headroom is exhausted.
 
-**Benchmark example (2026-07-20, not a universal prescription):** on a 403-node cluster with a 30-day TTL and approximately 8.9 health events/s over the measured hour, `HealthEvents` contained 22.35 million documents. Average uncompressed BSON size was 1,933 bytes/document; compressed collection storage averaged approximately 416 bytes/document and indexes approximately 149 bytes/document. Collection storage was 9.29 GB, indexes were 3.33 GB, the configured oplog was 2.49 GB, and each member had a 50 Gi PVC with approximately 13 GiB used. This workload has substantial headroom at 50 Gi; another workload must repeat the calculation with its own event size, index set, write rate, retention, and burst target.
+MongoDB stores HealthEvents as BSON; WiredTiger applies Snappy block compression on disk. Two measured clusters showed similar live storage footprints:
+
+- 1,933-byte average BSON → 416 bytes compressed data + 149 bytes indexes = 565 bytes/document
+- 1,816-byte average BSON → 305 bytes compressed data + 248 bytes indexes = 553 bytes/document
+
+The first cluster retained 22.35 million documents at approximately 8.9 health events/s with a 30-day TTL. Collection storage was 9.29 GB, indexes were 3.33 GB, the oplog was 2.49 GB, and each 50 Gi PVC used approximately 13 GiB.
+
+Storage grows linearly with E. Use 1 KiB per retained document as a rough starting allowance for compressed data, indexes, and growth headroom, then add the explicit oplog and round up:
+
+- E = 10 million documents → 16 Gi PVC per member
+- E = 25 million documents → 32 Gi PVC per member
+- E = 50 million documents → 64 Gi PVC per member
+- E = 100 million documents → 128 Gi PVC per member
+
+For E = 10 million, the breakdown is approximately 9.54 GiB for the 1 KiB/document planning allowance plus a 2.5 GiB oplog, or 12.04 GiB before rounding. A 16 Gi PVC leaves approximately 4 GiB for MongoDB internal files, fragmentation/reusable space, delayed TTL cleanup, and short bursts.
+
+Do not convert the rounded PVC tier into a fixed per-node storage multiplier. Document storage scales with node event rate, but oplog size depends on write amplification and the required resume window, while internal space and storage-tier rounding are deployment-level allowances. At 0.1 health events/s/node and 30-day retention, the document allowance is approximately 253 MiB/node; oplog and free-space requirements are calculated separately.
+
+Production sizing uses the measured live collection and index bytes/document for that workload.
 
 **File:** `charts/mongodb-store/templates/configmap.yaml:51` (TTL), `charts/mongodb-store/values.yaml` (PVC size)
 
@@ -299,9 +340,9 @@ These are invisible at low health event rates. They activate when a correlated f
 
 ### etcd write saturation
 
-Every condition-relevant health event causes platform-connector to fetch the full node object and write it back with an updated status — a GET followed by a full PUT, not a PATCH. The write includes an unconditional `LastHeartbeatTime` bump even when nothing else changed. Each platform-connector only handles its own node, so per-node load is proportional to that node's health event rate. The etcd pressure is the aggregate across all N nodes: at a cluster-wide rate of 2,000 health events/s, that is 2,000 × 20 KB = 40 MB/s of writes to etcd, which is 1.3–4× etcd's sustainable write throughput of 10–30 MB/s on typical control-plane hardware.
+Every condition-relevant health event causes platform-connector to fetch the full node object and write it back with an updated status—a GET followed by a full PUT. The write includes an unconditional `LastHeartbeatTime` bump even when nothing else changed. Each platform-connector only handles its own node, so per-node load is proportional to that node's health-event rate. The etcd pressure is the aggregate across all N nodes: at 2,000 condition writes/s and a 20 KB Node object, etcd receives roughly 40 MB/s of revised objects.
 
-**Fix:** Replace the GET + full PUT with a PATCH of only the changed condition fields. Skip the write entirely when Status, Reason, and Message are unchanged.
+**Fix:** Read current state from the node-local/informer path, PATCH only changed condition fields, and skip unchanged Status/Reason/Message. PATCH removes the client-side GET and reduces request payload/conflicts, but the API server still persists a complete revised Node object to etcd. No-op suppression and per-node coalescing are what reduce etcd write volume.
 
 **File:** `platform-connectors/pkg/connectors/kubernetes/process_node_events.go:84,93`
 
@@ -494,24 +535,14 @@ The diagram shows one node-keyed `workflow-transitions` topic shared by the work
 
 ### What needs to be built
 
-**Event bus ingestion:** Add an eventbus abstraction so platform-connector can publish health events directly, keyed by node name. Kafka can be the first implementation, with Pulsar or NATS behind the same `EventPublisher` / `EventConsumer` contracts. Disable direct datastore and Kubernetes writes at the edge. The existing gRPC sink can help bridge migration, but it is not the durable broker itself.
+**Event-bus connector and topics:** Add `EventPublisher` / `EventConsumer` abstractions, with Kafka as the first implementation. In event-bus mode, platform-connector publishes once to `health-events`, keyed by node name, and disables its local store and Kubernetes connectors. Kafka stores `health-events` and `workflow-transitions` as replicated logs for a configured replay window.
 
-**Workflow identity and transition contract:** Use one `workflow-transitions` topic for quarantine, drain, remediation, recovery, and cancellation transitions. Node name is the Kafka partition key, but durable state is keyed more narrowly by `(node, healthEventId, impacted entity/session)`, because several faults and partial drains can coexist on one node. Records must preserve processing strategy, recommended action, impacted entities, overrides, configuration snapshot, session start/end, and a monotonic workflow sequence.
+**Workflow consumer adapters and durable sessions:** Replace the MongoDB/PostgreSQL change-stream adapters in fault-quarantine, node-drainer, and fault-remediation with partitioned event consumers. The workflow contract carries `(node, healthEventId, impacted entity/session)`, processing strategy, recommended action, entities, overrides, session boundaries, and sequence. It preserves quarantine scope updates, `UnQuarantined` versus `Cancelled`, partial drains, long-running eviction phases, remediation equivalence groups, the fleet circuit breaker, and janitor's node Lease lock.
 
-For example, fault-quarantine consumes `HealthEventReceived`, applies the Kubernetes cordon, and then appends `QuarantineApplied` to `workflow-transitions`. That new record carries the original health-event ID and fault scope. Node-drainer consumes `QuarantineApplied`; it does not wait for the original health-event record to be mutated. State writers separately update the MongoDB/PostgreSQL materialized view. If cordoning fails, FQ retries or publishes `QuarantineFailed` rather than publishing `QuarantineApplied`.
+**State and Kubernetes writers:** State writers materialize every health/workflow transition into MongoDB or PostgreSQL and retain the cold-start fields used today. Kubernetes observation writers replace platform-connector's node-condition and Kubernetes Event paths with coalesced `PATCH nodes/status` calls and `EventRecorder`. Fault-handling modules continue to own cordon, eviction, and remediation-CR actions.
 
-**Quarantine scope and cancellation:** The transition model represents `Quarantined`, `AlreadyQuarantined`/scope update, `UnQuarantined`, `Cancelled`, and no-op. A node-level recovery carries a session cutoff: workflows created at or before the recovery are cancelled and newer faults remain active. Manual uncordon/untaint and node deletion arrive through the Kubernetes Node informer, making fault-quarantine a dual-input reconciler. Node observations are routed or filtered to the same partition owner as health events so only one fault-quarantine instance reconciles a node.
+**Independent consumer adapters:** Event-exporter and health-events-analyzer consume `health-events` through their own consumer groups, preserving exporter replay and analyzer feedback-loop prevention. ExternalRemediationRequest and CSP maintenance workflows remain independent paths.
 
-**Durable long-running sessions:** AllowCompletion, DeleteAfterTimeout, Immediate, partial drain, and custom DrainRequest CR workflows use persistent state machines. Each meaningful phase (`WaitingForPods`, deadline pending, force-delete started, completed, cancelled, failed) is durable. A consumer commits after persisting its next phase and schedules later reevaluation without blocking partition consumption. Cancellation removes pending timers/retries; irreversible actions are recorded with their actual outcome.
+### Migration approach
 
-**Global coordination:** Keep the fleet circuit breaker, fault-quarantine cursor CREATE/RESUME policy, remediation equivalence/superseding groups, and janitor's per-node Lease lock as shared coordination state. `UnQuarantined` and `Cancelled` remain different remediation outcomes.
-
-**Materialized state and cold start:** State writers consume `health-events` and `workflow-transitions` idempotently and maintain MongoDB/PostgreSQL status fields and history. Module startup reconciles broker positions with materialized DB state and live Kubernetes annotations/CR status, retaining stale-session tombstoning, unresolved-work queries, completion markers, and missing-node handling.
-
-**Kubernetes observation writers:** Consume health-event observations and replace both Kubernetes write paths currently owned by platform-connector. Condition changes are coalesced per node/check and written through no-op-suppressed `PATCH nodes/status` calls. Non-fatal warnings are published through `EventRecorder`, which correlates repeated Kubernetes Event objects without the current LIST-before-write behavior. Apply one fleet-wide budget with higher priority for condition state and lower priority/load shedding for best-effort Kubernetes Events.
-
-**Independent consumers:** Event-exporter retains independent replay guarantees. Health-events-analyzer consumes health events in parallel and marks derived events so they do not re-enter its own analysis loop. ExternalRemediationRequest and CSP maintenance workflows remain explicit side paths.
-
-**Topic storage and retention:** Kafka stores `health-events` and `workflow-transitions` as replicated durable logs for a configured replay window. MongoDB/PostgreSQL remains the queryable materialized view and may retain longer history. Consumer positions, workflow sequence numbers, and stable transition IDs must make duplicate delivery harmless without suppressing a legitimate second remediation cycle.
-
-**Migration plan:** Put the event-bus path behind a feature flag. Run the same fault scenarios once through the existing change-stream path and once through the event bus, then compare node cordons/taints/labels, pod evictions, remediation CRs, database statuses, and exported events. Every health event keeps one stable ID, and only one path is allowed to trigger actions during rollout, preventing duplicate cordons, drains, or remediation. Switch production traffic after the existing smoke, manual recovery, drain-cancellation, restart, partial-drain, circuit-breaker, janitor-lock, and exporter-resume scenarios produce the same outcomes.
+Put the event-bus path behind a feature flag, keep one stable health-event ID across both paths, and allow only one path to trigger actions during rollout. Switch production traffic after the parity lane in the Validation Model passes.
