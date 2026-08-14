@@ -1,0 +1,66 @@
+{
+  "component": "kom",
+  "version": "v1.15.0",
+  "started_at": 1784889323.5643113,
+  "finished_at": null,
+  "duration_s": null,
+  "cluster_info": {},
+  "object_sizes": {
+    "node_bytes": 32346,
+    "node_conditions": 10,
+    "node_images": 47,
+    "pod_bytes": 9335,
+    "pod_namespace": "gpu-operator"
+  },
+  "runs": [
+    {
+      "scenario": "churn_10pods_s",
+      "component": "kom",
+      "warmup_s": 30,
+      "measurement_s": 120,
+      "n_repetitions": 3,
+      "stats": {
+        "heap_alloc_mb": {
+          "median": 2206.3,
+          "min": 2167.8,
+          "max": 2300.3,
+          "n": 3
+        },
+        "cpu_pct": {
+          "median": 5.4,
+          "min": 5.1,
+          "max": 10.8,
+          "n": 3
+        },
+        "queue_depth": {
+          "median": 42514.0,
+          "min": 4144.0,
+          "max": 82818.3,
+          "n": 3
+        },
+        "queue_wait_p99_ms": {
+          "median": 991000.0,
+          "min": 247418.7,
+          "max": 991000.0,
+          "n": 3
+        },
+        "processing_p99_ms": {
+          "median": 15.5,
+          "min": 15.5,
+          "max": 15.5,
+          "n": 3
+        },
+        "reconcile_rps": {
+          "median": 226.0,
+          "min": 160.4,
+          "max": 265.6,
+          "n": 3
+        }
+      },
+      "limit_recommendation_mi": 5515,
+      "metadata": {
+        "target_rate_pods_s": 10
+      }
+    }
+  ]
+}

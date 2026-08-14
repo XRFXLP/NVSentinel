@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fq-injector
+  namespace: nvsentinel
+  labels:
+    app: fq-injector
+spec:
+  restartPolicy: Never
+  tolerations:
+  - key: dedicated
+    value: system-workload
+    effect: NoSchedule
+    operator: Equal
+  - key: dedicated
+    value: system-workload
+    effect: NoExecute
+    operator: Equal
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: type
+            operator: NotIn
+            values: [kwok]
+  initContainers:
+  - name: combine-certs
+    image: busybox
+    command: ["sh", "-c", "cat /raw/tls.crt /raw/tls.key > /certs/creds.pem && cp /raw/ca.crt /certs/ca.crt"]
+    volumeMounts:
+    - name: mongo-certs-raw
+      mountPath: /raw
+      readOnly: true
+    - name: mongo-certs
+      mountPath: /certs
+  containers:
+  - name: injector
+    image: python:3.12-slim
+    command: ["sh", "-c", "pip install pymongo -q && sleep infinity"]
+    env:
+    - name: MONGO_URI
+      value: "mongodb://mongodb-0.mongodb-headless.nvsentinel.svc.cluster.local:27017/HealthEventsDatabase?directConnection=true&authMechanism=MONGODB-X509&authSource=$external&tls=true&tlsCAFile=/etc/ssl/client-certs/ca.crt&tlsCertificateKeyFile=/etc/ssl/client-certs/creds.pem&tlsAllowInvalidHostnames=true"
+    volumeMounts:
+    - name: mongo-certs
+      mountPath: /etc/ssl/client-certs
+      readOnly: true
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+  volumes:
+  - name: mongo-certs-raw
+    secret:
+      secretName: mongo-app-client-cert-secret
+      items:
+      - key: ca.crt
+        path: ca.crt
+      - key: tls.crt
+        path: tls.crt
+      - key: tls.key
+        path: tls.key
+  - name: mongo-certs
+    emptyDir: {}

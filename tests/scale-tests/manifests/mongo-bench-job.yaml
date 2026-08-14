@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongo-bench
+  namespace: nvsentinel
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      tolerations:
+      - key: dedicated
+        operator: Equal
+        value: system-workload
+        effect: NoSchedule
+      - key: dedicated
+        operator: Equal
+        value: system-workload
+        effect: NoExecute
+      containers:
+      - name: mongo-bench
+        image: docker.io/xrfxlp/mongo-bench:latest
+        env:
+        - name: MONGO_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: internal-mongodb-users
+              key: MONGODB_DATABASE_ADMIN_PASSWORD
+        - name: MONGO_ADMIN_USER
+          valueFrom:
+            secretKeyRef:
+              name: internal-mongodb-users
+              key: MONGODB_DATABASE_ADMIN_USER
+        command:
+        - /mongo-bench
+        args:
+        - -uri
+        - "mongodb://$(MONGO_ADMIN_USER):$(MONGO_ADMIN_PASSWORD)@mongodb-rs0.nvsentinel.svc.cluster.local:27017/admin?authSource=admin&replicaSet=rs0&tls=true&tlsInsecure=true"
+        - -cert
+        - /etc/ssl/mongo-client/tls.crt
+        - -key
+        - /etc/ssl/mongo-client/tls.key
+        - -mode
+        - write
+        - -rate
+        - "500"
+        - -duration
+        - "3m"
+        volumeMounts:
+        - name: mongo-client-cert
+          mountPath: /etc/ssl/mongo-client
+      volumes:
+      - name: mongo-client-cert
+        secret:
+          secretName: mongo-app-client-cert-secret

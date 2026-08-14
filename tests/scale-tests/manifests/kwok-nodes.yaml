@@ -1,0 +1,24 @@
+---
+# 100 KWOK simulated nodes — GPU worker profile (96 CPU, 1 Ti RAM).
+# Generated as a single List so kubectl apply is one call.
+apiVersion: v1
+kind: List
+items:
+{{ range $i := until 100 }}
+- apiVersion: v1
+  kind: Node
+  metadata:
+    name: kwok-node-{{ printf "%03d" $i }}
+    labels:
+      type: kwok
+      benchmark: "true"
+      node.kubernetes.io/instance-type: "gpu-worker"
+      kubernetes.io/os: linux
+      kubernetes.io/arch: amd64
+      kwok.x-k8s.io/node: fake
+  spec:
+    taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+{{ end }}

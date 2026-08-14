@@ -44,14 +44,14 @@ multiCluster:
   # DNSSuffix: svc.clusterset.local
 updateStrategy: SmartUpdate
 upgradeOptions:
-  versionServiceEndpoint: https://check.percona.com
+  versionServiceEndpoint: ""
   apply: disabled
   schedule: "0 2 * * *"
   setFCV: false
 
 image:
   repository: percona/percona-server-mongodb
-  tag: 8.0.12-4
+  tag: 7.0.39-21
 
 imagePullPolicy: Always
 # imagePullSecrets: []

@@ -1,0 +1,241 @@
+# Connector-pool: logical platform-connector fleet for API load benchmarking.
+#
+# Each pod runs one platform-connector (k8s connector only) + one event-generator sidecar
+# sharing a UDS socket via emptyDir. Each pod represents a unique KWOK node.
+#
+# Usage:
+#   REPLICAS=100   → 100 logical connectors
+#   REPLICAS=1000  → 1,000 logical connectors
+#   NODE_BASE=kwok-node-090000  → node names start at kwok-node-090000
+#   EVENT_RATE=10  → 10 events/s per connector
+#
+# Deploy:
+#   kubectl apply -f connector-pool-config.yaml
+#   kubectl apply -f connector-pool.yaml
+#   kubectl scale statefulset connector-pool --replicas=100
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: connector-pool
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: connector-pool-config
+  namespace: connector-pool
+data:
+  config.json: |
+    {
+      "enableK8sPlatformConnector": "true",
+      "K8sConnectorQps": 5.0,
+      "K8sConnectorBurst": 10,
+      "MaxNodeConditionMessageLength": 1024,
+      "CompactedHealthEventMsgLen": 72,
+      "enableMongoDBStorePlatformConnector": "false",
+      "enablePostgresDBStorePlatformConnector": "false",
+      "enableGRPCSinkConnector": "false",
+      "GRPCSinkTarget": "",
+      "pipeline": [
+        {"config": "/etc/config/metadata.toml", "enabled": true, "name": "MetadataAugmentor"},
+        {"config": "/etc/config/overrides.toml", "enabled": false, "name": "OverrideTransformer"}
+      ]
+    }
+
+  metadata.toml: |
+    cacheSize = 50
+    cacheTTL = "3600s"
+    allowedLabels = []
+
+  overrides.toml: |
+    enabled = false
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: connector-pool
+  namespace: connector-pool
+
+---
+# Same RBAC as platform-connectors: get/update node status + get/list/create/update events
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: connector-pool
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["nodes/status"]
+  verbs: ["get", "update", "patch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "list", "create", "update", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: connector-pool
+subjects:
+- kind: ServiceAccount
+  name: connector-pool
+  namespace: connector-pool
+roleRef:
+  kind: ClusterRole
+  name: connector-pool
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: connector-pool
+  namespace: connector-pool
+spec:
+  serviceName: connector-pool
+  podManagementPolicy: Parallel
+  # Set replicas to control how many logical connectors to run:
+  # 100 → light load, 1000 → medium, up to ~5000 across 6 nodes
+  replicas: 100
+  selector:
+    matchLabels:
+      app: connector-pool
+  template:
+    metadata:
+      labels:
+        app: connector-pool
+    spec:
+      serviceAccountName: connector-pool
+
+      tolerations:
+      - key: dedicated
+        value: system-workload
+        effect: NoSchedule
+        operator: Equal
+      - key: dedicated
+        value: system-workload
+        effect: NoExecute
+        operator: Equal
+
+      # Pin to real worker nodes (not KWOK nodes)
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: type
+                operator: DoesNotExist  # KWOK nodes have type=kwok
+
+      # Spread across real nodes for better API server distribution
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: connector-pool
+
+      # Use host network so connectors use node IP for API calls
+      # (makes API server attribution easier via audit logs)
+      hostNetwork: false
+
+      initContainers:
+      # Derive node name from StatefulSet ordinal:
+      # connector-pool-0 → kwok-node-090000
+      # connector-pool-99 → kwok-node-090099
+      - name: set-node-name
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          POD_NAME=$(cat /etc/podinfo/name)
+          ORDINAL=${POD_NAME##*-}
+          # Format: kwok-node-XXXXXX starting from 090495 (first KWOK node in cluster)
+          BASE=90495
+          NODE_NUM=$((BASE + ORDINAL))
+          NODE_NAME=$(printf "kwok-node-%06d" $NODE_NUM)
+          echo -n "$NODE_NAME" > /shared/node_name
+          echo "Assigned node: $NODE_NAME"
+        volumeMounts:
+        - name: podinfo
+          mountPath: /etc/podinfo
+        - name: shared
+          mountPath: /shared
+
+      containers:
+      # ── platform-connector ──────────────────────────────────────────────────
+      - name: platform-connector
+        image: ghcr.io/nvidia/nvsentinel/platform-connectors:v1.16.0
+        args:
+        - --socket=/var/run/connector/nvsentinel.sock
+        - --config=/etc/config/config.json
+        - --metrics-port=2112
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        ports:
+        - name: metrics
+          containerPort: 2112
+          protocol: TCP
+        volumeMounts:
+        - name: socket-dir
+          mountPath: /var/run/connector
+        - name: config
+          mountPath: /etc/config
+
+      # ── event-generator sidecar ─────────────────────────────────────────────
+      # Build the event-generator image first:
+      #   cd tests/scale-tests/event-generator
+      #   docker build -t docker.io/xrfxlp/event-generator:latest .
+      #   docker push docker.io/xrfxlp/event-generator:latest
+      - name: event-generator
+        image: docker.io/xrfxlp/event-generator:latest
+        env:
+        - name: EVENT_RATE
+          value: "1"  # events/s per connector; override per scenario
+        command:
+        - sh
+        - -c
+        - |
+          # Wait for platform-connector socket to appear
+          until [ -S /var/run/connector/nvsentinel.sock ]; do sleep 0.5; done
+          NODE_NAME=$(cat /shared/node_name)
+          export NODE_NAME
+          exec /root/event-generator --socket=/var/run/connector/nvsentinel.sock
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+        volumeMounts:
+        - name: socket-dir
+          mountPath: /var/run/connector
+        - name: shared
+          mountPath: /shared
+
+      volumes:
+      - name: socket-dir
+        emptyDir: {}
+      - name: shared
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: connector-pool-config
+      - name: podinfo
+        downwardAPI:
+          items:
+          - path: name
+            fieldRef:
+              fieldPath: metadata.name

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -183,6 +184,13 @@ func setupCtrlRuntimeManagement(ctx context.Context) error {
 
 func createManager() (ctrl.Manager, error) {
 	cfg := ctrl.GetConfigOrDie()
+	if qps := os.Getenv("KUBE_API_QPS"); qps != "" {
+		if v, err := strconv.ParseFloat(qps, 32); err == nil {
+			cfg.QPS = float32(v)
+			cfg.Burst = int(v * 2)
+			slog.Info("Kubernetes client rate limits overridden", "qps", cfg.QPS, "burst", cfg.Burst)
+		}
+	}
 	cfg.Wrap(func(rt http.RoundTripper) http.RoundTripper {
 		return auditlogger.NewAuditingRoundTripper(rt)
 	})

@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fq-event-injector
+  namespace: nvsentinel
+  labels:
+    app: fq-event-injector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fq-event-injector
+  template:
+    metadata:
+      labels:
+        app: fq-event-injector
+    spec:
+      tolerations:
+      - key: dedicated
+        value: system-workload
+        effect: NoSchedule
+        operator: Equal
+      - key: dedicated
+        value: system-workload
+        effect: NoExecute
+        operator: Equal
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: type
+                operator: NotIn
+                values: [kwok]
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: fq-event-injector
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: injector
+        image: busybox
+        command: ["sh", "-c", "sleep infinity"]
+        volumeMounts:
+        - name: nvsentinel-socket
+          mountPath: /var/run
+        resources:
+          requests:
+            cpu: 500m
+            memory: 256Mi
+          limits:
+            cpu: "2"
+            memory: 512Mi
+      volumes:
+      - name: nvsentinel-socket
+        hostPath:
+          path: /var/run/nvsentinel
+          type: Directory

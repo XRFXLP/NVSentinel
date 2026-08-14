@@ -77,6 +77,14 @@ var (
 		},
 	)
 
+	// Queue Depth
+	QueueDepth = promauto.With(crmetrics.Registry).NewGauge(
+		prometheus.GaugeOpts{
+			Name: "fault_remediation_queue_depth",
+			Help: "Current number of events pending in the reconciler work queue.",
+		},
+	)
+
 	// Log Collection Job Metrics
 	LogCollectorJobs = promauto.With(crmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{

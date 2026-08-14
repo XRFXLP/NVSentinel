@@ -1,0 +1,88 @@
+{
+  "component": "kom",
+  "version": "v1.15.0",
+  "started_at": 1784883831.138013,
+  "finished_at": null,
+  "duration_s": null,
+  "cluster_info": {},
+  "object_sizes": {
+    "node_bytes": 32345,
+    "node_conditions": 10,
+    "node_images": 47,
+    "pod_bytes": 9335,
+    "pod_namespace": "gpu-operator"
+  },
+  "runs": [
+    {
+      "scenario": "memory",
+      "component": "kom",
+      "warmup_s": 0,
+      "measurement_s": 0,
+      "n_repetitions": 1,
+      "stats": {
+        "heap_alloc_mb": {
+          "median": 75.4,
+          "min": 75.4,
+          "max": 75.4,
+          "n": 1
+        },
+        "heap_objects": {
+          "median": 556771,
+          "min": 556771,
+          "max": 556771,
+          "n": 1
+        },
+        "cpu_pct": {
+          "median": 3.9,
+          "min": 3.9,
+          "max": 3.9,
+          "n": 1
+        },
+        "goroutines": {
+          "median": 53,
+          "min": 53,
+          "max": 53,
+          "n": 1
+        },
+        "queue_depth": {
+          "median": 0,
+          "min": 0,
+          "max": 0,
+          "n": 1
+        },
+        "queue_wait_p50_ms": {
+          "median": 550000.0,
+          "min": 550000.0,
+          "max": 550000.0,
+          "n": 1
+        },
+        "queue_wait_p99_ms": {
+          "median": 991000.0,
+          "min": 991000.0,
+          "max": 991000.0,
+          "n": 1
+        },
+        "processing_p50_ms": {
+          "median": 2.8,
+          "min": 2.8,
+          "max": 2.8,
+          "n": 1
+        },
+        "processing_p99_ms": {
+          "median": 19.5,
+          "min": 19.5,
+          "max": 19.5,
+          "n": 1
+        },
+        "reconcile_rps": {
+          "median": 264.6,
+          "min": 264.6,
+          "max": 264.6,
+          "n": 1
+        }
+      },
+      "limit_recommendation_mi": 2048,
+      "metadata": {}
+    }
+  ]
+}

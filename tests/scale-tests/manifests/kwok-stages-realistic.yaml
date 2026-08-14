@@ -1,0 +1,535 @@
+# Realistic KWOK stages modelled on actual cluster node and pod objects.
+#
+# Node: 13 conditions (kubelet + skyhook + network + GPU health monitor),
+# 50 images with 3 sha256-tagged names each, real capacity/allocatable
+# (32 CPU / 128 GiB), cri-o runtime, runtimeHandlers, volumesAttached —
+# matching ~31 KB total object size observed on real cluster nodes.
+#
+# Pod: 5 conditions (PodReadyToStartContainers included), containerStatus
+# with lastState.terminated, volumeMounts, hostIPs — matching ~7 KB total
+# object size observed on real cluster pods.
+---
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: node-initialize
+  namespace: kube-system
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Node
+  selector:
+    matchExpressions:
+      - key: kwok.x-k8s.io/node
+        operator: Exists
+  weight: 1
+  delay:
+    durationMilliseconds: 500
+  next:
+    statusTemplate: |
+      conditions:
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet is posting ready status"
+        reason: KubeletReady
+        status: "True"
+        type: Ready
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet has sufficient memory available"
+        reason: KubeletHasSufficientMemory
+        status: "False"
+        type: MemoryPressure
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet has no disk pressure"
+        reason: KubeletHasNoDiskPressure
+        status: "False"
+        type: DiskPressure
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet has sufficient PID available"
+        reason: KubeletHasSufficientPID
+        status: "False"
+        type: PIDPressure
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "Flannel is running on this node"
+        reason: FlannelIsUp
+        status: "False"
+        type: NetworkUnavailable
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "Skyhook disable-module Ready"
+        reason: Complete
+        status: "False"
+        type: "skyhook.nvidia.com/disable-module/NotReady"
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "Package Erroring or Unknown for disable-module"
+        reason: Not Erroring
+        status: "False"
+        type: "skyhook.nvidia.com/disable-module/Erroring"
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "Skyhook cluster-wide Ready"
+        reason: Complete
+        status: "False"
+        type: "skyhook.nvidia.com/cluster-wide/NotReady"
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "Package Erroring or Unknown for cluster-wide"
+        reason: Not Erroring
+        status: "False"
+        type: "skyhook.nvidia.com/cluster-wide/Erroring"
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: InfiniBandErrorCheckIsHealthy
+        status: "False"
+        type: InfiniBandErrorCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: EthernetErrorCheckIsHealthy
+        status: "False"
+        type: EthernetErrorCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: DemoEndpointReachabilityIsHealthy
+        status: "False"
+        type: DemoEndpointReachability
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuDcgmConnectivityFailureIsHealthy
+        status: "False"
+        type: GpuDcgmConnectivityFailure
+      addresses:
+      - address: {{ .ObjectMeta.Name }}
+        type: Hostname
+      - address: "10.0.10.1"
+        type: InternalIP
+      allocatable:
+        cpu: "32"
+        ephemeral-storage: "467040311342"
+        hugepages-1Gi: "0"
+        hugepages-2Mi: "0"
+        memory: "131790124Ki"
+        pods: "110"
+      capacity:
+        cpu: "32"
+        ephemeral-storage: "506771172Ki"
+        hugepages-1Gi: "0"
+        hugepages-2Mi: "0"
+        memory: "131892524Ki"
+        pods: "110"
+      daemonEndpoints:
+        kubeletEndpoint:
+          Port: 10250
+      nodeInfo:
+        architecture: amd64
+        bootID: "479000c7-8a1d-4f2a-8310-94a8334180aa"
+        containerRuntimeVersion: "cri-o://1.31.3"
+        kernelVersion: "6.8.0-1026-oracle"
+        kubeProxyVersion: "v1.31.1"
+        kubeletVersion: "v1.31.1"
+        machineID: "29cb34fa8047412ab73a770263cf680c"
+        operatingSystem: linux
+        osImage: "Ubuntu 24.04.2 LTS"
+        systemUUID: "29cb34fa-8047-412a-b73a-770263cf680c"
+      runtimeHandlers:
+      - features:
+          recursiveReadOnlyMounts: true
+          userNamespaces: true
+        name: runc
+      - features:
+          recursiveReadOnlyMounts: true
+          userNamespaces: true
+        name: ""
+      volumesAttached:
+      - devicePath: /dev/sdb
+        name: kubernetes.io/csi/disk.csi.azure.com^bench-vol-1
+      - devicePath: /dev/sdc
+        name: kubernetes.io/csi/disk.csi.azure.com^bench-vol-2
+      volumesInUse:
+      - kubernetes.io/csi/disk.csi.azure.com^bench-vol-1
+      - kubernetes.io/csi/disk.csi.azure.com^bench-vol-2
+      images:
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor@sha256:9b09120c04e7b5086fafa60a0d485ced02a9ee39733c91f339703546fd164f9a"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor@sha256:ab3f66a41b0719f47503791b9fee54456e224cf163d56fe1beb25be2753e42ca"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor:main-dcgm-3.x"
+        sizeBytes: 2115320709
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor@sha256:72f6dc1ca8ac660f4924d1f51c90d62a09b21bf1d9ada0382c31a5ff1132845e"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor@sha256:f233589815bc5fd9236248cd2f59d189cf85d75b4f6da8fba9118ba08a4e6f9b"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor:main-dcgm-4.x"
+        sizeBytes: 1741526185
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor@sha256:1a09826192285422bc29481706fd7cfbec881b1eb6672f5c7e84afa7699b2171"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor@sha256:b243943c2b966748769ff1909e9b845404c10f6f4babde97729a0dc11347befb"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor:main"
+        sizeBytes: 1649482812
+      - names:
+        - "nvcr.io/nv-ngc-devops/fluent-bit@sha256:408379caf2afce86fc58c3170f307e7b40012a43f8fcc01c55ba0c32c10575f4"
+        - "nvcr.io/nv-ngc-devops/fluent-bit@sha256:cc280af06a6699cb290f281980cbcdd68c67c1ec2d95a5d023b5bb31653d0bd6"
+        - "nvcr.io/nv-ngc-devops/fluent-bit:3.2.10-lgpage-debug"
+        sizeBytes: 1564773917
+      - names:
+        - "docker.io/percona/percona-server-mongodb@sha256:a9a0459ea192a5e30248bb14fb4f215d2aae35e98752ab6a1eaca69a41d87aa7"
+        - "docker.io/percona/percona-server-mongodb@sha256:ab8793879409788b5a19f7e332a3700520e8eeaf4b068ec8cc7d1b680f097307"
+        - "docker.io/percona/percona-server-mongodb:8.0.12-4"
+        sizeBytes: 843207883
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors@sha256:1e09ef0b14ea347c41f7474f6ebd82b4f915913d4004411a6668886e7121e9a4"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors@sha256:3998c0474111173d18bd276574caebc4905d00c876748aeb774ad4e4caff5aee"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors:0.0.0-main"
+        sizeBytes: 96968672
+      - names:
+        - "docker.io/dsharma24101992/nvsentinel-platform-connectors@sha256:59e110e082fe7152cbcf06c76bf099c15fd30d15eae84078f993bfe90d049ce1"
+        - "docker.io/dsharma24101992/nvsentinel-platform-connectors:uat-split-202606301504-180d755e-amd64"
+        sizeBytes: 88190274
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors@sha256:a4f33d8224bc9359a0e90d8b12a5c58bef98214ac3cc736e09e6f5ebc914aa41"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors@sha256:a9daf3fef4846341b18411c6ac7554ad6936f012e5acd7dc5e006ce9ffdfedf5"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors:main"
+        sizeBytes: 87685599
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors@sha256:da31927308af6fffa298127da433c553543baee747e1b7b9d8ceaea1f5dda87c"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors@sha256:fe173a06a45dd2b87feb8bdda2ca98ca2e11cd5b0ebf86dc77a6f3502d25cc09"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors:1.117.0"
+        sizeBytes: 87625695
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors@sha256:63bdcb904f37a262529f2c83790b198de10bfc235ec5aaa72157d962af9f3cc8"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors@sha256:daaf7b78ec7885ca026e7f9e50f08ddd025adeda3374f4c8915ca66af0297cdd"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors:1.126.0"
+        sizeBytes: 87625695
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-kubernetes-object-monitor@sha256:aa01b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-kubernetes-object-monitor:v1.15.0"
+        sizeBytes: 98000000
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine@sha256:bb01b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine:v1.15.0"
+        sizeBytes: 125000000
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-fault-remediation@sha256:cc01b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-fault-remediation:v1.15.0"
+        sizeBytes: 118000000
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-node-drainer@sha256:dd01b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-node-drainer:v1.15.0"
+        sizeBytes: 105000000
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-labeler@sha256:ee01b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-labeler:v1.15.0"
+        sizeBytes: 88000000
+      - names:
+        - "nvcr.io/nv-ngc-devops/nvsentinel-janitor@sha256:ff01b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0"
+        - "nvcr.io/nv-ngc-devops/nvsentinel-janitor:v1.15.0"
+        sizeBytes: 95000000
+      - names:
+        - "registry.k8s.io/pause:3.9"
+        sizeBytes: 750000
+      - names:
+        - "registry.k8s.io/kube-proxy:v1.31.1"
+        - "registry.k8s.io/kube-proxy@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1"
+        sizeBytes: 85000000
+      - names:
+        - "registry.k8s.io/coredns/coredns:v1.11.1"
+        - "registry.k8s.io/coredns/coredns@sha256:def456abc123def456abc123def456abc123def456abc123def456abc123def4"
+        sizeBytes: 61000000
+      - names:
+        - "quay.io/prometheus/node-exporter:v1.7.0"
+        - "quay.io/prometheus/node-exporter@sha256:aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+        sizeBytes: 22000000
+      - names:
+        - "quay.io/prometheus/prometheus:v2.49.1"
+        - "quay.io/prometheus/prometheus@sha256:1122334455667788991122334455667788991122334455667788991122334455"
+        sizeBytes: 245000000
+      - names:
+        - "nvcr.io/nvidia/cloud-native/gpu-operator-validator:v23.9.2"
+        - "nvcr.io/nvidia/cloud-native/gpu-operator-validator@sha256:2233445566778899002233445566778899002233445566778899002233445566"
+        sizeBytes: 320000000
+      - names:
+        - "nvcr.io/nvidia/cloud-native/dcgm-exporter:3.3.5-3.4.0-ubuntu22.04"
+        - "nvcr.io/nvidia/cloud-native/dcgm-exporter@sha256:3344556677889900113344556677889900113344556677889900113344556677"
+        sizeBytes: 1100000000
+      - names:
+        - "nvcr.io/nvidia/k8s-device-plugin:v0.14.5"
+        - "nvcr.io/nvidia/k8s-device-plugin@sha256:4455667788990011224455667788990011224455667788990011224455667788"
+        sizeBytes: 385000000
+      - names:
+        - "nvcr.io/nvidia/cuda:12.4.1-base-ubuntu22.04"
+        - "nvcr.io/nvidia/cuda@sha256:5566778899001122335566778899001122335566778899001122335566778899"
+        sizeBytes: 285000000
+      - names:
+        - "nvcr.io/nvidia/cuda:12.3.2-devel-ubuntu22.04"
+        - "nvcr.io/nvidia/cuda@sha256:6677889900112233446677889900112233446677889900112233446677889900"
+        sizeBytes: 6800000000
+      - names:
+        - "nvcr.io/nvidia/pytorch:24.01-py3"
+        - "nvcr.io/nvidia/pytorch@sha256:7788990011223344557788990011223344557788990011223344557788990011"
+        sizeBytes: 18500000000
+      - names:
+        - "nvcr.io/nvidia/pytorch:23.12-py3"
+        - "nvcr.io/nvidia/pytorch@sha256:8899001122334455668899001122334455668899001122334455668899001122"
+        sizeBytes: 17900000000
+      - names:
+        - "nvcr.io/nvidia/tensorflow:24.01-tf2-py3"
+        - "nvcr.io/nvidia/tensorflow@sha256:9900112233445566779900112233445566779900112233445566779900112233"
+        sizeBytes: 16200000000
+      - names:
+        - "nvcr.io/nvidia/tritonserver:24.01-py3"
+        - "nvcr.io/nvidia/tritonserver@sha256:0011223344556677880011223344556677880011223344556677880011223344"
+        sizeBytes: 14700000000
+      - names:
+        - "nvcr.io/nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04"
+        - "nvcr.io/nvidia/cuda@sha256:1122334455667788991122334455667788991122334455667788991122334455"
+        sizeBytes: 7100000000
+      - names:
+        - "nvcr.io/nvidia/cuda:12.4.1-devel-ubuntu22.04"
+        - "nvcr.io/nvidia/cuda@sha256:2233445566778899002233445566778899002233445566778899002233445566"
+        sizeBytes: 7200000000
+      - names:
+        - "nvcr.io/nvidia/cuda:12.1.1-devel-ubuntu22.04"
+        - "nvcr.io/nvidia/cuda@sha256:3344556677889900113344556677889900113344556677889900113344556677"
+        sizeBytes: 6450000000
+      - names:
+        - "nvcr.io/nvidia/driver:545.23.08-ubuntu22.04"
+        - "nvcr.io/nvidia/driver@sha256:4455667788990011224455667788990011224455667788990011224455667788"
+        sizeBytes: 1200000000
+      - names:
+        - "nvcr.io/nvidia/driver:535.129.03-ubuntu22.04"
+        - "nvcr.io/nvidia/driver@sha256:5566778899001122335566778899001122335566778899001122335566778899"
+        sizeBytes: 1180000000
+      - names:
+        - "nvcr.io/nvidia/k8s/container-toolkit:v1.14.6-ubuntu22.04"
+        - "nvcr.io/nvidia/k8s/container-toolkit@sha256:6677889900112233446677889900112233446677889900112233446677889900"
+        sizeBytes: 520000000
+      - names:
+        - "nvcr.io/nvidia/cloud-native/k8s-driver-manager:v0.6.8"
+        - "nvcr.io/nvidia/cloud-native/k8s-driver-manager@sha256:7788990011223344557788990011223344557788990011223344557788990011"
+        sizeBytes: 415000000
+      - names:
+        - "quay.io/calico/node:v3.27.0"
+        - "quay.io/calico/node@sha256:8899001122334455668899001122334455668899001122334455668899001122"
+        sizeBytes: 330000000
+      - names:
+        - "registry.k8s.io/ingress-nginx/controller:v1.9.5"
+        - "registry.k8s.io/ingress-nginx/controller@sha256:9900112233445566779900112233445566779900112233445566779900112233"
+        sizeBytes: 327000000
+      - names:
+        - "docker.io/grafana/grafana:10.3.1"
+        - "docker.io/grafana/grafana@sha256:0011223344556677880011223344556677880011223344556677880011223344"
+        sizeBytes: 407000000
+      - names:
+        - "quay.io/calico/cni:v3.27.0"
+        - "quay.io/calico/cni@sha256:1122334455667788991122334455667788991122334455667788991122334455"
+        sizeBytes: 208000000
+      - names:
+        - "docker.io/library/nginx:1.25.3"
+        - "docker.io/library/nginx@sha256:2233445566778899002233445566778899002233445566778899002233445566"
+        sizeBytes: 192000000
+      - names:
+        - "docker.io/library/python:3.11-slim"
+        - "docker.io/library/python@sha256:3344556677889900113344556677889900113344556677889900113344556677"
+        sizeBytes: 149000000
+      - names:
+        - "registry.k8s.io/etcd:3.5.11-0"
+        - "registry.k8s.io/etcd@sha256:4455667788990011224455667788990011224455667788990011224455667788"
+        sizeBytes: 148000000
+      - names:
+        - "registry.k8s.io/kube-apiserver:v1.29.0"
+        - "registry.k8s.io/kube-apiserver@sha256:5566778899001122335566778899001122335566778899001122335566778899"
+        sizeBytes: 121000000
+      - names:
+        - "registry.k8s.io/kube-controller-manager:v1.29.0"
+        - "registry.k8s.io/kube-controller-manager@sha256:6677889900112233446677889900112233446677889900112233446677889900"
+        sizeBytes: 117000000
+      - names:
+        - "registry.k8s.io/metrics-server/metrics-server:v0.7.0"
+        - "registry.k8s.io/metrics-server/metrics-server@sha256:7788990011223344557788990011223344557788990011223344557788990011"
+        sizeBytes: 68000000
+      - names:
+        - "quay.io/prometheus/alertmanager:v0.26.0"
+        - "quay.io/prometheus/alertmanager@sha256:8899001122334455668899001122334455668899001122334455668899001122"
+        sizeBytes: 58000000
+      - names:
+        - "registry.k8s.io/kube-scheduler:v1.29.0"
+        - "registry.k8s.io/kube-scheduler@sha256:9900112233445566779900112233445566779900112233445566779900112233"
+        sizeBytes: 58000000
+      - names:
+        - "registry.k8s.io/sig-storage/csi-provisioner:v4.0.0"
+        - "registry.k8s.io/sig-storage/csi-provisioner@sha256:0011223344556677880011223344556677880011223344556677880011223344"
+        sizeBytes: 62000000
+      - names:
+        - "quay.io/jetstack/cert-manager-controller:v1.14.1"
+        - "quay.io/jetstack/cert-manager-controller@sha256:1122334455667788991122334455667788991122334455667788991122334455"
+        sizeBytes: 76000000
+      - names:
+        - "ghcr.io/prometheus-operator/prometheus-operator:v0.71.2"
+        - "ghcr.io/prometheus-operator/prometheus-operator@sha256:2233445566778899002233445566778899002233445566778899002233445566"
+        sizeBytes: 74000000
+      - names:
+        - "docker.io/library/ubuntu:22.04"
+        - "docker.io/library/ubuntu@sha256:3344556677889900113344556677889900113344556677889900113344556677"
+        sizeBytes: 77000000
+      - names:
+        - "docker.io/library/redis:7.2.4-alpine"
+        - "docker.io/library/redis@sha256:4455667788990011224455667788990011224455667788990011224455667788"
+        sizeBytes: 41000000
+      - names:
+        - "docker.io/library/busybox:1.36.1"
+        - "docker.io/library/busybox@sha256:5566778899001122335566778899001122335566778899001122335566778899"
+        sizeBytes: 4200000
+      phase: Running
+---
+# Heartbeat stage — refreshes Ready condition every 30s ± 5s to match real kubelet cadence.
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: node-heartbeat
+  namespace: kube-system
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Node
+  selector:
+    matchExpressions:
+      - key: kwok.x-k8s.io/node
+        operator: Exists
+  weight: 2
+  delay:
+    durationMilliseconds: 30000
+    jitterDurationMilliseconds: 5000
+  next:
+    statusTemplate: |
+      conditions:
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet is posting ready status"
+        reason: KubeletReady
+        status: "True"
+        type: Ready
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet has sufficient memory available"
+        reason: KubeletHasSufficientMemory
+        status: "False"
+        type: MemoryPressure
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet has no disk pressure"
+        reason: KubeletHasNoDiskPressure
+        status: "False"
+        type: DiskPressure
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet has sufficient PID available"
+        reason: KubeletHasSufficientPID
+        status: "False"
+        type: PIDPressure
+---
+# Pod stage: transitions to Running with a realistic 5-condition status,
+# full containerStatus (lastState, volumeMounts, imageID with sha256),
+# hostIPs array, and qosClass — matching ~7 KB total object size.
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-running
+  namespace: kube-system
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+      - key: kwok.x-k8s.io/node
+        operator: DoesNotExist
+  weight: 1
+  delay:
+    durationMilliseconds: 300
+    jitterDurationMilliseconds: 200
+  next:
+    statusTemplate: |
+      conditions:
+      - lastProbeTime: null
+        lastTransitionTime: {{ Now | Quote }}
+        status: "True"
+        type: PodReadyToStartContainers
+      - lastProbeTime: null
+        lastTransitionTime: {{ Now | Quote }}
+        status: "True"
+        type: Initialized
+      - lastProbeTime: null
+        lastTransitionTime: {{ Now | Quote }}
+        status: "True"
+        type: Ready
+      - lastProbeTime: null
+        lastTransitionTime: {{ Now | Quote }}
+        status: "True"
+        type: ContainersReady
+      - lastProbeTime: null
+        lastTransitionTime: {{ Now | Quote }}
+        status: "True"
+        type: PodScheduled
+      containerStatuses:
+      {{ range .Spec.Containers }}
+      - containerID: "cri-o://{{ .Name }}aabbccddeeff0011223344556677889900aabbccddeeff0011223344556677"
+        image: {{ .Image | Quote }}
+        imageID: "{{ .Image }}@sha256:aabbccddeeff0011223344556677889900aabbccddeeff0011223344556677889900"
+        lastState:
+          terminated:
+            containerID: "cri-o://{{ .Name }}00ffeeddccbbaa9988776655443322110000ffeeddccbbaa9988776655443322"
+            exitCode: 0
+            finishedAt: {{ Now | Quote }}
+            reason: Completed
+            startedAt: {{ Now | Quote }}
+        name: {{ .Name | Quote }}
+        ready: true
+        restartCount: 0
+        started: true
+        state:
+          running:
+            startedAt: {{ Now | Quote }}
+        volumeMounts:
+        - mountPath: /var/run
+          name: var-run-vol
+        - mountPath: /etc/config
+          name: config
+          readOnly: true
+      {{ end }}
+      hostIP: "10.0.10.194"
+      hostIPs:
+      - ip: "10.0.10.194"
+      phase: Running
+      podIP: "10.244.1.1"
+      podIPs:
+      - ip: "10.244.1.1"
+      qosClass: Burstable
+      startTime: {{ Now | Quote }}
+---
+# Pod deletion stage: removes pods once deletionTimestamp is set.
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-delete
+  namespace: kube-system
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+      - key: kwok.x-k8s.io/node
+        operator: DoesNotExist
+      - key: metadata.deletionTimestamp
+        operator: Exists
+  weight: 1
+  delay:
+    durationMilliseconds: 100
+  next:
+    delete: true

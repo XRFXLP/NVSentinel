@@ -15,32 +15,57 @@
 package devicecounts
 
 import (
+	"log/slog"
+
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
+const NodeResourceSliceIndex = "nodeResourceSlice"
+
 // ResourceSlicesForNode returns node-local ResourceSlices whose spec.nodeName matches the node.
+// Uses the NodeResourceSliceIndex for O(slices_per_node) lookup; falls back to full scan if the
+// index is unavailable (e.g. store does not implement cache.Indexer).
 func ResourceSlicesForNode(store cache.Store, node *corev1.Node) []*resourcev1.ResourceSlice {
 	if store == nil {
 		return nil
 	}
 
-	// The DRA ResourceSlices consumed by device-count classes are node-local and
-	// identify their node through spec.nodeName.
-	resourceSlices := []*resourcev1.ResourceSlice{}
+	if indexer, ok := store.(cache.Indexer); ok {
+		objs, err := indexer.ByIndex(NodeResourceSliceIndex, node.Name)
+		if err == nil {
+			slices := make([]*resourcev1.ResourceSlice, 0, len(objs))
+			for _, obj := range objs {
+				if rs, ok := obj.(*resourcev1.ResourceSlice); ok {
+					slices = append(slices, rs)
+				}
+			}
+			slog.Debug("ResourceSlicesForNode via index",
+				"node", node.Name,
+				"found", len(slices),
+			)
+			return slices
+		}
+	}
 
-	for _, obj := range store.List() {
+	// Fallback: full scan (O(S) — used only if index is missing)
+	all := store.List()
+	resourceSlices := []*resourcev1.ResourceSlice{}
+	for _, obj := range all {
 		resourceSlice, ok := obj.(*resourcev1.ResourceSlice)
 		if !ok {
 			continue
 		}
-
 		if resourceSliceBelongsToNode(resourceSlice, node.Name) {
 			resourceSlices = append(resourceSlices, resourceSlice)
 		}
 	}
-
+	slog.Debug("ResourceSlicesForNode via scan",
+		"node", node.Name,
+		"found", len(resourceSlices),
+		"scanned", len(all),
+	)
 	return resourceSlices
 }
 

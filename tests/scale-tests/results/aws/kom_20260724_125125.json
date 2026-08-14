@@ -1,0 +1,585 @@
+{
+  "component": "kom",
+  "version": "v1.15.0",
+  "started_at": 1784876131.1874812,
+  "finished_at": null,
+  "duration_s": null,
+  "cluster_info": {},
+  "object_sizes": {
+    "node_bytes": 32343,
+    "node_conditions": 10,
+    "node_images": 47,
+    "pod_bytes": 9107,
+    "pod_namespace": "gpu-operator"
+  },
+  "runs": [
+    {
+      "scenario": "memory",
+      "component": "kom",
+      "warmup_s": 0,
+      "measurement_s": 0,
+      "n_repetitions": 8,
+      "stats": {
+        "heap_alloc_mb": {
+          "median": 111.9,
+          "min": 19.1,
+          "max": 451.0,
+          "n": 3
+        },
+        "heap_objects": {
+          "median": 1634884,
+          "min": 240899,
+          "max": 6950938,
+          "n": 3
+        },
+        "cpu_pct": {
+          "median": 6.9,
+          "min": 2.7,
+          "max": 7.3,
+          "n": 3
+        },
+        "goroutines": {
+          "median": 54,
+          "min": 54,
+          "max": 55,
+          "n": 3
+        },
+        "queue_depth": {
+          "median": 0.0,
+          "min": 0,
+          "max": 9,
+          "n": 8
+        },
+        "queue_wait_p50_ms": {
+          "median": 18906.3,
+          "min": 0.0,
+          "max": 78385.2,
+          "n": 3
+        },
+        "queue_wait_p99_ms": {
+          "median": 98378.1,
+          "min": 85.2,
+          "max": 975762.3,
+          "n": 3
+        },
+        "processing_p50_ms": {
+          "median": 8.2,
+          "min": 8.0,
+          "max": 14.4,
+          "n": 3
+        },
+        "processing_p99_ms": {
+          "median": 47.0,
+          "min": 45.6,
+          "max": 145.9,
+          "n": 3
+        },
+        "reconcile_rps": {
+          "median": 45.0,
+          "min": 24.8,
+          "max": 86.3,
+          "n": 3
+        }
+      },
+      "limit_recommendation_mi": 2048,
+      "metadata": {}
+    },
+    {
+      "scenario": "memory",
+      "component": "kom",
+      "warmup_s": 0,
+      "measurement_s": 0,
+      "n_repetitions": 8,
+      "stats": {
+        "heap_alloc_mb": {
+          "median": 111.9,
+          "min": 19.1,
+          "max": 451.0,
+          "n": 3
+        },
+        "heap_objects": {
+          "median": 1634884,
+          "min": 240899,
+          "max": 6950938,
+          "n": 3
+        },
+        "cpu_pct": {
+          "median": 6.9,
+          "min": 2.7,
+          "max": 7.3,
+          "n": 3
+        },
+        "goroutines": {
+          "median": 54,
+          "min": 54,
+          "max": 55,
+          "n": 3
+        },
+        "queue_depth": {
+          "median": 0.0,
+          "min": 0,
+          "max": 9,
+          "n": 8
+        },
+        "queue_wait_p50_ms": {
+          "median": 18906.3,
+          "min": 0.0,
+          "max": 78385.2,
+          "n": 3
+        },
+        "queue_wait_p99_ms": {
+          "median": 98378.1,
+          "min": 85.2,
+          "max": 975762.3,
+          "n": 3
+        },
+        "processing_p50_ms": {
+          "median": 8.2,
+          "min": 8.0,
+          "max": 14.4,
+          "n": 3
+        },
+        "processing_p99_ms": {
+          "median": 47.0,
+          "min": 45.6,
+          "max": 145.9,
+          "n": 3
+        },
+        "reconcile_rps": {
+          "median": 45.0,
+          "min": 24.8,
+          "max": 86.3,
+          "n": 3
+        }
+      },
+      "limit_recommendation_mi": 2048,
+      "metadata": {}
+    },
+    {
+      "scenario": "memory",
+      "component": "kom",
+      "warmup_s": 0,
+      "measurement_s": 0,
+      "n_repetitions": 8,
+      "stats": {
+        "heap_alloc_mb": {
+          "median": 111.9,
+          "min": 19.1,
+          "max": 451.0,
+          "n": 3
+        },
+        "heap_objects": {
+          "median": 1634884,
+          "min": 240899,
+          "max": 6950938,
+          "n": 3
+        },
+        "cpu_pct": {
+          "median": 6.9,
+          "min": 2.7,
+          "max": 7.3,
+          "n": 3
+        },
+        "goroutines": {
+          "median": 54,
+          "min": 54,
+          "max": 55,
+          "n": 3
+        },
+        "queue_depth": {
+          "median": 0.0,
+          "min": 0,
+          "max": 9,
+          "n": 8
+        },
+        "queue_wait_p50_ms": {
+          "median": 18906.3,
+          "min": 0.0,
+          "max": 78385.2,
+          "n": 3
+        },
+        "queue_wait_p99_ms": {
+          "median": 98378.1,
+          "min": 85.2,
+          "max": 975762.3,
+          "n": 3
+        },
+        "processing_p50_ms": {
+          "median": 8.2,
+          "min": 8.0,
+          "max": 14.4,
+          "n": 3
+        },
+        "processing_p99_ms": {
+          "median": 47.0,
+          "min": 45.6,
+          "max": 145.9,
+          "n": 3
+        },
+        "reconcile_rps": {
+          "median": 45.0,
+          "min": 24.8,
+          "max": 86.3,
+          "n": 3
+        }
+      },
+      "limit_recommendation_mi": 2048,
+      "metadata": {}
+    },
+    {
+      "scenario": "memory",
+      "component": "kom",
+      "warmup_s": 0,
+      "measurement_s": 0,
+      "n_repetitions": 8,
+      "stats": {
+        "heap_alloc_mb": {
+          "median": 111.9,
+          "min": 19.1,
+          "max": 451.0,
+          "n": 3
+        },
+        "heap_objects": {
+          "median": 1634884,
+          "min": 240899,
+          "max": 6950938,
+          "n": 3
+        },
+        "cpu_pct": {
+          "median": 6.9,
+          "min": 2.7,
+          "max": 7.3,
+          "n": 3
+        },
+        "goroutines": {
+          "median": 54,
+          "min": 54,
+          "max": 55,
+          "n": 3
+        },
+        "queue_depth": {
+          "median": 0.0,
+          "min": 0,
+          "max": 9,
+          "n": 8
+        },
+        "queue_wait_p50_ms": {
+          "median": 18906.3,
+          "min": 0.0,
+          "max": 78385.2,
+          "n": 3
+        },
+        "queue_wait_p99_ms": {
+          "median": 98378.1,
+          "min": 85.2,
+          "max": 975762.3,
+          "n": 3
+        },
+        "processing_p50_ms": {
+          "median": 8.2,
+          "min": 8.0,
+          "max": 14.4,
+          "n": 3
+        },
+        "processing_p99_ms": {
+          "median": 47.0,
+          "min": 45.6,
+          "max": 145.9,
+          "n": 3
+        },
+        "reconcile_rps": {
+          "median": 45.0,
+          "min": 24.8,
+          "max": 86.3,
+          "n": 3
+        }
+      },
+      "limit_recommendation_mi": 2048,
+      "metadata": {}
+    },
+    {
+      "scenario": "memory",
+      "component": "kom",
+      "warmup_s": 0,
+      "measurement_s": 0,
+      "n_repetitions": 8,
+      "stats": {
+        "heap_alloc_mb": {
+          "median": 111.9,
+          "min": 19.1,
+          "max": 451.0,
+          "n": 3
+        },
+        "heap_objects": {
+          "median": 1634884,
+          "min": 240899,
+          "max": 6950938,
+          "n": 3
+        },
+        "cpu_pct": {
+          "median": 6.9,
+          "min": 2.7,
+          "max": 7.3,
+          "n": 3
+        },
+        "goroutines": {
+          "median": 54,
+          "min": 54,
+          "max": 55,
+          "n": 3
+        },
+        "queue_depth": {
+          "median": 0.0,
+          "min": 0,
+          "max": 9,
+          "n": 8
+        },
+        "queue_wait_p50_ms": {
+          "median": 18906.3,
+          "min": 0.0,
+          "max": 78385.2,
+          "n": 3
+        },
+        "queue_wait_p99_ms": {
+          "median": 98378.1,
+          "min": 85.2,
+          "max": 975762.3,
+          "n": 3
+        },
+        "processing_p50_ms": {
+          "median": 8.2,
+          "min": 8.0,
+          "max": 14.4,
+          "n": 3
+        },
+        "processing_p99_ms": {
+          "median": 47.0,
+          "min": 45.6,
+          "max": 145.9,
+          "n": 3
+        },
+        "reconcile_rps": {
+          "median": 45.0,
+          "min": 24.8,
+          "max": 86.3,
+          "n": 3
+        }
+      },
+      "limit_recommendation_mi": 2048,
+      "metadata": {}
+    },
+    {
+      "scenario": "memory",
+      "component": "kom",
+      "warmup_s": 0,
+      "measurement_s": 0,
+      "n_repetitions": 8,
+      "stats": {
+        "heap_alloc_mb": {
+          "median": 111.9,
+          "min": 19.1,
+          "max": 451.0,
+          "n": 3
+        },
+        "heap_objects": {
+          "median": 1634884,
+          "min": 240899,
+          "max": 6950938,
+          "n": 3
+        },
+        "cpu_pct": {
+          "median": 6.9,
+          "min": 2.7,
+          "max": 7.3,
+          "n": 3
+        },
+        "goroutines": {
+          "median": 54,
+          "min": 54,
+          "max": 55,
+          "n": 3
+        },
+        "queue_depth": {
+          "median": 0.0,
+          "min": 0,
+          "max": 9,
+          "n": 8
+        },
+        "queue_wait_p50_ms": {
+          "median": 18906.3,
+          "min": 0.0,
+          "max": 78385.2,
+          "n": 3
+        },
+        "queue_wait_p99_ms": {
+          "median": 98378.1,
+          "min": 85.2,
+          "max": 975762.3,
+          "n": 3
+        },
+        "processing_p50_ms": {
+          "median": 8.2,
+          "min": 8.0,
+          "max": 14.4,
+          "n": 3
+        },
+        "processing_p99_ms": {
+          "median": 47.0,
+          "min": 45.6,
+          "max": 145.9,
+          "n": 3
+        },
+        "reconcile_rps": {
+          "median": 45.0,
+          "min": 24.8,
+          "max": 86.3,
+          "n": 3
+        }
+      },
+      "limit_recommendation_mi": 2048,
+      "metadata": {}
+    },
+    {
+      "scenario": "memory",
+      "component": "kom",
+      "warmup_s": 0,
+      "measurement_s": 0,
+      "n_repetitions": 8,
+      "stats": {
+        "heap_alloc_mb": {
+          "median": 111.9,
+          "min": 19.1,
+          "max": 451.0,
+          "n": 3
+        },
+        "heap_objects": {
+          "median": 1634884,
+          "min": 240899,
+          "max": 6950938,
+          "n": 3
+        },
+        "cpu_pct": {
+          "median": 6.9,
+          "min": 2.7,
+          "max": 7.3,
+          "n": 3
+        },
+        "goroutines": {
+          "median": 54,
+          "min": 54,
+          "max": 55,
+          "n": 3
+        },
+        "queue_depth": {
+          "median": 0.0,
+          "min": 0,
+          "max": 9,
+          "n": 8
+        },
+        "queue_wait_p50_ms": {
+          "median": 18906.3,
+          "min": 0.0,
+          "max": 78385.2,
+          "n": 3
+        },
+        "queue_wait_p99_ms": {
+          "median": 98378.1,
+          "min": 85.2,
+          "max": 975762.3,
+          "n": 3
+        },
+        "processing_p50_ms": {
+          "median": 8.2,
+          "min": 8.0,
+          "max": 14.4,
+          "n": 3
+        },
+        "processing_p99_ms": {
+          "median": 47.0,
+          "min": 45.6,
+          "max": 145.9,
+          "n": 3
+        },
+        "reconcile_rps": {
+          "median": 45.0,
+          "min": 24.8,
+          "max": 86.3,
+          "n": 3
+        }
+      },
+      "limit_recommendation_mi": 2048,
+      "metadata": {}
+    },
+    {
+      "scenario": "memory",
+      "component": "kom",
+      "warmup_s": 0,
+      "measurement_s": 0,
+      "n_repetitions": 8,
+      "stats": {
+        "heap_alloc_mb": {
+          "median": 111.9,
+          "min": 19.1,
+          "max": 451.0,
+          "n": 3
+        },
+        "heap_objects": {
+          "median": 1634884,
+          "min": 240899,
+          "max": 6950938,
+          "n": 3
+        },
+        "cpu_pct": {
+          "median": 6.9,
+          "min": 2.7,
+          "max": 7.3,
+          "n": 3
+        },
+        "goroutines": {
+          "median": 54,
+          "min": 54,
+          "max": 55,
+          "n": 3
+        },
+        "queue_depth": {
+          "median": 0.0,
+          "min": 0,
+          "max": 9,
+          "n": 8
+        },
+        "queue_wait_p50_ms": {
+          "median": 18906.3,
+          "min": 0.0,
+          "max": 78385.2,
+          "n": 3
+        },
+        "queue_wait_p99_ms": {
+          "median": 98378.1,
+          "min": 85.2,
+          "max": 975762.3,
+          "n": 3
+        },
+        "processing_p50_ms": {
+          "median": 8.2,
+          "min": 8.0,
+          "max": 14.4,
+          "n": 3
+        },
+        "processing_p99_ms": {
+          "median": 47.0,
+          "min": 45.6,
+          "max": 145.9,
+          "n": 3
+        },
+        "reconcile_rps": {
+          "median": 45.0,
+          "min": 24.8,
+          "max": 86.3,
+          "n": 3
+        }
+      },
+      "limit_recommendation_mi": 2048,
+      "metadata": {}
+    }
+  ]
+}

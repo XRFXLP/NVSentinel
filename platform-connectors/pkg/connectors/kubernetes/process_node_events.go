@@ -463,7 +463,7 @@ func messageMatchesAnyErrorCode(msg string, errorCodes []string) bool {
 }
 
 func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, nodeName string) error {
-	ctx, span := tracing.StartSpan(ctx, "platform_connector.k8s.update_node_event")
+	_, span := tracing.StartSpan(ctx, "platform_connector.k8s.update_node_event")
 	defer span.End()
 
 	span.SetAttributes(
@@ -471,65 +471,18 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 		attribute.String("platform_connector.k8s.event_type", string(event.Type)),
 	)
 
-	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
-		return apierrors.IsConflict(err) || isTemporaryError(err)
-	}, func() error {
-		// Fetch all events for the node
-		events, err := r.clientset.CoreV1().Events(DefaultNamespace).List(ctx, metav1.ListOptions{
-			FieldSelector: fmt.Sprintf("involvedObject.name=%s", nodeName),
-		})
-		if err != nil {
-			return fmt.Errorf("failed to list events for node %s: %w", nodeName, err)
-		}
-
-		// Check if any event matches the new event
-
-		for _, existingEvent := range events.Items {
-			if existingEvent.Type == event.Type && existingEvent.Reason == event.Reason &&
-				existingEvent.Message == event.Message {
-				// Matching event found, update it
-				existingEvent.Count++
-				existingEvent.LastTimestamp = event.LastTimestamp
-
-				_, err = r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, &existingEvent, metav1.UpdateOptions{})
-				if err != nil {
-					nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusFailed).Inc()
-					span.AddEvent("platform_connector.k8s.node_event_update_failed", trace.WithAttributes(
-						attribute.String("platform_connector.k8s.error.type", "node_event_update_failed"),
-						attribute.String("platform_connector.k8s.error.message", err.Error()),
-					))
-
-					return fmt.Errorf("failed to update event for node %s: %w", nodeName, err)
-				}
-
-				nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusSuccess).Inc()
-
-				return nil
-			}
-		}
-
-		// No matching event found, create a new event with count 1
-		event.Count = 1
-
-		_, err = r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
-		if err != nil {
-			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusFailed).Inc()
-			return fmt.Errorf("failed to create event for node %s: %w", nodeName, err)
-		}
-
-		nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusSuccess).Inc()
-
-		return nil
-	})
-	if err != nil {
-		tracing.RecordError(span, err)
-		span.SetAttributes(
-			attribute.String("platform_connector.k8s.error.type", "write_node_event_failed"),
-			attribute.String("platform_connector.k8s.error.message", err.Error()),
-		)
+	nodeRef := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      nodeName,
+			UID:       types.UID(nodeName),
+			Namespace: DefaultNamespace,
+		},
 	}
 
-	return err
+	r.eventRecorder.Event(nodeRef, corev1.EventTypeWarning, event.Reason, event.Message)
+	nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusSuccess).Inc()
+
+	return nil
 }
 
 func (r *K8sConnector) updateHealthEventReason(checkName string, isHealthy bool) string {

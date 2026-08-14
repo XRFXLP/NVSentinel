@@ -138,6 +138,62 @@ func main() {
 	}
 }
 
+// flappyChecks defines the check names that cycle healthy↔unhealthy.
+// Each unique check name maps to a separate node condition, so N checks = N condition changes per flip.
+var flappyChecks = []struct {
+	checkName      string
+	componentClass string
+	errorCode      string
+}{
+	{"GpuXidError", "GPU", "79"},
+	{"GpuMemoryError", "GPU", "74"},
+	{"GpuNvlinkWatch", "GPU", "12"},
+	{"GpuPowerError", "GPU", "48"},
+	{"NVSwitchHealth", "NVSwitch", ""},
+	{"GpuThermalError", "GPU", "94"},
+	{"GpuDriverError", "GPU", "61"},
+	{"GpuEccError", "GPU", "63"},
+}
+
+func generateFlappyEvent(nodeName string, counter int) *pb.HealthEvent {
+	// Cycle through check names and alternate healthy/unhealthy
+	// Even counter = unhealthy, odd counter = healthy for this check
+	check := flappyChecks[counter%len(flappyChecks)]
+	isHealthy := (counter/len(flappyChecks))%2 == 1
+
+	if isHealthy {
+		return &pb.HealthEvent{
+			Version:            1,
+			Agent:              "event-generator",
+			ComponentClass:     check.componentClass,
+			CheckName:          check.checkName,
+			IsFatal:            false,
+			IsHealthy:          true,
+			Message:            check.checkName + " recovered",
+			RecommendedAction:  pb.RecommendedAction_NONE,
+			NodeName:           nodeName,
+			GeneratedTimestamp: timestamppb.Now(),
+		}
+	}
+	errCodes := []string{}
+	if check.errorCode != "" {
+		errCodes = []string{check.errorCode}
+	}
+	return &pb.HealthEvent{
+		Version:            1,
+		Agent:              "event-generator",
+		ComponentClass:     check.componentClass,
+		CheckName:          check.checkName,
+		IsFatal:            false, // non-fatal to avoid FQ cordoning
+		IsHealthy:          false,
+		Message:            check.checkName + " degraded",
+		RecommendedAction:  pb.RecommendedAction_NONE,
+		ErrorCode:          errCodes,
+		NodeName:           nodeName,
+		GeneratedTimestamp: timestamppb.Now(),
+	}
+}
+
 func continuousEventLoop(ctx context.Context, client pb.PlatformConnectorClient, nodeName string, eventsPerSecond float64) {
 	// Calculate interval between events
 	intervalNs := int64(float64(time.Second) / eventsPerSecond)
@@ -145,6 +201,10 @@ func continuousEventLoop(ctx context.Context, client pb.PlatformConnectorClient,
 
 	rand.Seed(time.Now().UnixNano())
 
+	flappyMode := os.Getenv("FLAPPY_MODE") == "true"
+	if flappyMode {
+		log.Printf("🔀 FLAPPY_MODE enabled: alternating healthy↔unhealthy across %d check names", len(flappyChecks))
+	}
 	log.Printf("Continuous mode: Generating events every %v", interval)
 
 	ticker := time.NewTicker(interval)
@@ -161,28 +221,24 @@ func continuousEventLoop(ctx context.Context, client pb.PlatformConnectorClient,
 			log.Printf("Continuous event loop stopped")
 			return
 		case <-ticker.C:
-			// Generate event with weighted random selection
-			// Event Distribution:
-			//   64% (80/125) - Healthy GPU
-			//   24% (30/125) - System Info
-			//   8%  (10/125) - Fatal GPU Error (XID 79) - TRIGGERS CORDONING
-			//   4%  (5/125)  - NVSwitch Warning
-
-			eventType := rand.Intn(125)
 			var event *pb.HealthEvent
 
-			if eventType < 80 {
-				// 64%: Healthy GPU event
-				event = generateHealthyGpuEvent(nodeName)
-			} else if eventType < 110 {
-				// 24%: System info event
-				event = generateSystemInfoEvent(nodeName)
-			} else if eventType < 120 {
-				// 8%: Fatal GPU error (triggers cordoning)
-				event = generateFatalGpuXidEvent(nodeName)
+			if flappyMode {
+				// Flappy mode: cycle through checks, alternating healthy/unhealthy
+				// Every event triggers a real condition CHANGE → UpdateStatus fires every time
+				event = generateFlappyEvent(nodeName, eventCount)
 			} else {
-				// 4%: NVSwitch warning
-				event = generateNVSwitchWarningEvent(nodeName)
+				// Original weighted random distribution
+				eventType := rand.Intn(125)
+				if eventType < 80 {
+					event = generateHealthyGpuEvent(nodeName)
+				} else if eventType < 110 {
+					event = generateSystemInfoEvent(nodeName)
+				} else if eventType < 120 {
+					event = generateFatalGpuXidEvent(nodeName)
+				} else {
+					event = generateNVSwitchWarningEvent(nodeName)
+				}
 			}
 
 			success := sendHealthEvent(ctx, client, event)

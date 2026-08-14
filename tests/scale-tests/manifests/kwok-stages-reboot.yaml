@@ -1,0 +1,121 @@
+# KWOK lifecycle stages for Janitor reboot simulation.
+#
+# These stages provide realistic node lifecycle simulation (node goes NotReady
+# during reboot) but are OPTIONAL. The kwok CSP provider uses a timestamp
+# encoded in the requestID to determine reboot completion, independent of
+# these stages. Apply for full end-to-end realism; skip for pure throughput
+# benchmarking.
+#
+# Stage sequence:
+#   1. node-reboot-start:    when kwok.x-k8s.io/reboot=requested is set →
+#                            sets NodeReady=False after 1s (simulates node down)
+#   2. node-reboot-complete: when NodeReady=False AND label still set →
+#                            sets NodeReady=True after 30s (simulates boot complete)
+#
+# Note: the provider removes the kwok.x-k8s.io/reboot label after ~35s via a
+# background goroutine, preventing the stage loop from re-triggering.
+#
+# Apply:  kubectl apply -f kwok-stages-reboot.yaml
+# Remove: kubectl delete -f kwok-stages-reboot.yaml
+---
+# Stage 1: Node goes NotReady when reboot is requested.
+# Matches: node has kwok.x-k8s.io/reboot=requested AND is currently Ready.
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: node-reboot-start
+  namespace: kube-system
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Node
+  selector:
+    matchExpressions:
+      - key: kwok.x-k8s.io/node
+        operator: Exists
+      - key: kwok.x-k8s.io/reboot
+        operator: In
+        values:
+          - requested
+  weight: 100
+  delay:
+    durationMilliseconds: 1000
+  next:
+    statusTemplate: |
+      conditions:
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "KWOK simulated reboot in progress — node offline"
+        reason: NodeRebooting
+        status: "False"
+        type: Ready
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet stopped posting status"
+        reason: NodeRebooting
+        status: "Unknown"
+        type: MemoryPressure
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet stopped posting status"
+        reason: NodeRebooting
+        status: "Unknown"
+        type: DiskPressure
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet stopped posting status"
+        reason: NodeRebooting
+        status: "Unknown"
+        type: PIDPressure
+---
+# Stage 2: Node returns to Ready after simulated reboot duration.
+# Matches: node has kwok.x-k8s.io/reboot=requested AND Ready=False.
+# The provider removes the label at ~35s, preventing this stage from
+# re-triggering after Stage 1 fires again.
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: node-reboot-complete
+  namespace: kube-system
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Node
+  selector:
+    matchExpressions:
+      - key: kwok.x-k8s.io/node
+        operator: Exists
+      - key: kwok.x-k8s.io/reboot
+        operator: In
+        values:
+          - requested
+  weight: 90
+  delay:
+    durationMilliseconds: 30000
+  next:
+    statusTemplate: |
+      conditions:
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "KWOK simulated reboot complete — kubelet ready"
+        reason: KubeletReady
+        status: "True"
+        type: Ready
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet has sufficient memory available"
+        reason: KubeletHasSufficientMemory
+        status: "False"
+        type: MemoryPressure
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet has no disk pressure"
+        reason: KubeletHasNoDiskPressure
+        status: "False"
+        type: DiskPressure
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "kubelet has sufficient PID available"
+        reason: KubeletHasSufficientPID
+        status: "False"
+        type: PIDPressure

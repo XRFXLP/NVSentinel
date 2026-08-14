@@ -153,21 +153,21 @@ These are present and measurable right now, independent of event rate.
 
 Every node runs a `platform-connector` pod. When that pod starts, it opens a MongoDB client — and that client immediately dials all three replica set members, opening 2 monitoring connections to each. These stay open permanently, whether or not any health events are flowing.
 
-The first InsertMany opens one application connection to the primary. The pool grows with concurrent demand, up to `maxPoolSize=100`, and retains its high-water mark because `maxConnIdleTime` defaults to zero.
+The first InsertMany opens one application connection to the primary. The pool can grow with concurrent demand up to `maxPoolSize=100`, and would retain its high-water mark because `maxConnIdleTime` defaults to zero.
 
-Across the replica set, each pod therefore has a floor of approximately 7 connections: 3 to the primary (2 monitoring + 1 application) and 2 to each secondary. The pod-wide maximum is approximately 106, while the primary-specific maximum is approximately 102.
+Across the replica set, each pod has a floor of approximately 7 connections: 3 to the primary (2 monitoring + 1 application) and 2 to each secondary. The theoretical pod-wide maximum is approximately 106 (primary: 102), assuming the pool fills.
 
-With N platform-connectors, the primary therefore sees between 3N and 102N connections. The secondaries normally see approximately 2N each unless reads are routed to them.
+**Current architecture: the ceiling is not a present problem.** `platform-connectors/main.go:178` starts a single goroutine for the store connector (`go storeConnector.FetchAndProcessHealthMetric(ctx)`). This goroutine processes events sequentially — one `InsertMany` at a time. The connection pool only grows when concurrent operations demand it; with a single caller, the pool stays at 1 data connection regardless of `maxPoolSize`. In practice, each pod holds exactly **3 connections to the primary** (2 monitoring + 1 data) and **2 to each secondary**, matching the floor at all event rates.
 
-For a conservative estimate, the document uses approximately 1 MiB of server memory per connection; actual cost varies by TLS state, workload, buffers, and MongoDB version. Dividing a 1–1.5 GiB connection-memory budget by the primary's 3-connection-per-pod floor gives a **≈333–500-node** range. At the 102-connection primary maximum, MongoDB's default 65,536 incoming-connection cap is reached at approximately 642 pods; at the 3-connection floor it is reached at approximately 21,845 pods.
+**Measured (2026-07-20, 403 connectors):** 1,273 connections on primary = 3.16/pod, confirming the floor. **Microbenchmark (2026-08-04, 1,000 connectors, default maxPoolSize=100):** 3,055 total connections = 3.055/pod — pool never grew beyond 1 data connection regardless of event rate. See `tests/scale-tests/MONGO_BENCHMARK.md` MB-MG-2 for the full sweep.
 
-**Representative measurement (2026-07-20):** a 403-node cluster with 403 ready platform-connectors showed 1,273 connections on the primary and 846/848 on the secondaries, closely matching the 3N/2N baseline. The MongoDB pods used 1,770 MiB on the primary and 1,511/1,529 MiB on the secondaries, with approximately 400 MiB of WiredTiger cache in each 2 GiB-limited pod. This measurement supports using the 333–500-node range as a conservative warning band for the shipped resource limits, but it does not isolate an exact per-connection byte cost.
+With N platform-connectors at the floor, the primary sees **3N connections** and each secondary sees **2N**. The 102N ceiling applies only if a future code change introduces concurrent database calls.
 
-Tuning `maxPoolSize` down to 2–5 pushes both walls out proportionally. Adding `maxConnIdleTime=60s` stops the slow drift toward the ceiling.
+**Memory per connection (microbenchmark, 2026-08-04):** `mem_MB = 239 + 0.266 × connections` (R²=0.99999, confirmed to 150,345 connections). At the 3N floor: `239 + 0.266 × 3N` per member. At N=1000: ≈1,037MB — within the 2Gi limit. The Bitnami deployment sets `maxIncomingConnections ≈ 838,860`; the MongoDB 65,536 default cap does not apply.
 
-**Current code:** store-client does not set `maxPoolSize` or `maxConnIdleTime`; the MongoDB Go driver defaults still apply unless an operator supplies pool options through the connection URI.
+**The ceiling becomes a future concern if:** concurrent processing is introduced (e.g., parallel `InsertMany` goroutines, higher `maxConcurrentReconciles`, or a batch-parallel write path). At that point, `maxPoolSize` and `maxConnIdleTime` become relevant.
 
-**Fix:** Set `maxPoolSize=2–5` and `maxConnIdleTime=60s` in store-client.
+**Fix (defensive, not currently needed):** Set `maxPoolSize=2–5` and `maxConnIdleTime=60s` in store-client to cap any future pool growth and prevent idle connection accumulation if the processing model changes.
 
 **File:** `store-client/pkg/datastore/providers/mongodb/watcher/watch_store.go:729-759`
 

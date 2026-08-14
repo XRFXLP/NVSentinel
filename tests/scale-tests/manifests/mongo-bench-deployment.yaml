@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo-bench-conn
+  namespace: nvsentinel
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: mongo-bench-conn
+  template:
+    metadata:
+      labels:
+        app: mongo-bench-conn
+    spec:
+      tolerations:
+      - key: dedicated
+        operator: Equal
+        value: system-workload
+        effect: NoSchedule
+      - key: dedicated
+        operator: Equal
+        value: system-workload
+        effect: NoExecute
+      containers:
+      - name: mongo-bench
+        image: docker.io/xrfxlp/mongo-bench:latest
+        env:
+        - name: MONGO_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: internal-mongodb-users
+              key: MONGODB_DATABASE_ADMIN_PASSWORD
+        - name: MONGO_ADMIN_USER
+          valueFrom:
+            secretKeyRef:
+              name: internal-mongodb-users
+              key: MONGODB_DATABASE_ADMIN_USER
+        command:
+        - /mongo-bench
+        args:
+        - -uri
+        - "mongodb://$(MONGO_ADMIN_USER):$(MONGO_ADMIN_PASSWORD)@mongodb-rs0.nvsentinel.svc.cluster.local:27017/admin?authSource=admin&replicaSet=rs0&tls=true&tlsInsecure=true"
+        - -cert
+        - /etc/ssl/mongo-client/tls.crt
+        - -key
+        - /etc/ssl/mongo-client/tls.key
+        - -mode
+        - connections
+        - -n
+        - "500"
+        - -hold
+        - "2h"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: mongo-client-cert
+          mountPath: /etc/ssl/mongo-client
+      volumes:
+      - name: mongo-client-cert
+        secret:
+          secretName: mongo-app-client-cert-secret

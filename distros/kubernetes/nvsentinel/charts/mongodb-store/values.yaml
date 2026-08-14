@@ -47,8 +47,17 @@ scramAppUser:
 # Common Job configuration (applies to both Bitnami and Percona)
 # If not set, falls back to mongodb.jobTolerations and mongodb.nodeSelector for backward compatibility
 job:
-  nodeSelector: {}
-  tolerations: []
+  nodeSelector:
+    topology.kubernetes.io/zone: us-east-1b
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: system-workload
+      effect: NoSchedule
+    - key: dedicated
+      operator: Equal
+      value: system-workload
+      effect: NoExecute
 
 # =============================================================================
 # Bitnami MongoDB Configuration (used when usePerconaOperator=false)
@@ -264,12 +273,25 @@ mongodb:
 # Percona MongoDB Operator Configuration (used when usePerconaOperator=true)
 # =============================================================================
 psmdb-operator:
-  nodeSelector: {}
-  tolerations: []
+  nodeSelector:
+    topology.kubernetes.io/zone: us-east-1b
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: system-workload
+      effect: NoSchedule
+    - key: dedicated
+      operator: Equal
+      value: system-workload
+      effect: NoExecute
 
 psmdb-db:
   nameOverride: mongodb
   fullnameOverride: mongodb
+  image:
+    tag: "7.0.39-21"
+  unsafeFlags:
+    tls: true
   replsets:
     rs0:
       name: rs0
@@ -296,8 +318,17 @@ psmdb-db:
           resources:
             requests:
               storage: "8Gi"
-      nodeSelector: {}
-      tolerations: []
+      nodeSelector:
+        topology.kubernetes.io/zone: us-east-1b
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: system-workload
+          effect: NoSchedule
+        - key: dedicated
+          operator: Equal
+          value: system-workload
+          effect: NoExecute
       podDisruptionBudget:
         maxUnavailable: 1
       sidecars:
@@ -341,7 +372,11 @@ psmdb-db:
     enabled: false
   
   tls:
-    mode: requireTLS
+    mode: allowTLS
+    issuerConf:
+      name: mongodb-psmdb-issuer
+      kind: Issuer
+      group: cert-manager.io
 
   secrets:
     keyFile: mongodb-keyfile

@@ -20,7 +20,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +35,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/source"
@@ -129,6 +132,8 @@ func (r *FaultRemediationReconciler) Reconcile(
 	start := time.Now()
 
 	slog.InfoContext(ctx, "Reconciling Event")
+
+	defer metrics.QueueDepth.Dec()
 
 	defer func() {
 		metrics.EventHandlingDuration.Observe(time.Since(start).Seconds())
@@ -1820,11 +1825,21 @@ func (r *FaultRemediationReconciler) SetupWithManager(ctx context.Context, mgr c
 			q workqueue.TypedRateLimitingInterface[*datastore.EventWithToken],
 		) {
 			q.Add(e.Object)
+			metrics.QueueDepth.Inc()
 		},
+	}
+
+	maxConcurrent := 1
+	if v := os.Getenv("MAX_CONCURRENT_RECONCILES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxConcurrent = n
+			slog.Info("maxConcurrentReconciles overridden", "value", maxConcurrent)
+		}
 	}
 
 	err := builder.TypedControllerManagedBy[*datastore.EventWithToken](mgr).
 		Named("fault-remediation-controller").
+		WithOptions(controller.TypedOptions[*datastore.EventWithToken]{MaxConcurrentReconciles: maxConcurrent}).
 		WatchesRawSource(source.TypedChannel(typedCh, enqueueHandler)).
 		WatchesRawSource(source.TypedChannel(r.coldStartCh, enqueueHandler)).
 		Complete(r)

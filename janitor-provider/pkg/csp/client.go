@@ -26,6 +26,7 @@ import (
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/gcp"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/generic"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/kind"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/kwok"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/nebius"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/oci"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
@@ -33,6 +34,7 @@ import (
 
 const (
 	ProviderKind    Provider = "kind"
+	ProviderKwok    Provider = "kwok"
 	ProviderAWS     Provider = "aws"
 	ProviderGCP     Provider = "gcp"
 	ProviderAzure   Provider = "azure"
@@ -75,6 +77,8 @@ func NewWithProvider(ctx context.Context, provider Provider) (model.CSPClient, e
 	switch provider {
 	case ProviderKind:
 		return kind.NewClient(ctx)
+	case ProviderKwok:
+		return kwok.NewClient(ctx)
 	case ProviderAWS:
 		return aws.NewClientFromEnv(ctx)
 	case ProviderGCP:
@@ -108,6 +112,8 @@ func GetProviderFromString(providerStr string) (Provider, error) {
 	switch strings.ToLower(providerStr) {
 	case "kind":
 		return ProviderKind, nil
+	case "kwok":
+		return ProviderKwok, nil
 	case "aws":
 		return ProviderAWS, nil
 	case "gcp":

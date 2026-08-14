@@ -257,8 +257,18 @@ func createNodeInformer(clientset kubernetes.Interface, resyncPeriod time.Durati
 	return factory.Core().V1().Nodes().Informer()
 }
 
+const NodeResourceSliceIndex = "nodeResourceSlice"
+
 func createResourceSliceInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
-	return resourceinformers.NewResourceSliceInformer(clientset, resyncPeriod, cache.Indexers{})
+	return resourceinformers.NewResourceSliceInformer(clientset, resyncPeriod, cache.Indexers{
+		NodeResourceSliceIndex: func(obj interface{}) ([]string, error) {
+			rs, ok := obj.(*resourcev1.ResourceSlice)
+			if !ok || rs.Spec.NodeName == nil || *rs.Spec.NodeName == "" {
+				return nil, nil
+			}
+			return []string{*rs.Spec.NodeName}, nil
+		},
+	})
 }
 
 func (l *Labeler) getEventHandlers() cache.ResourceEventHandlerFuncs {
