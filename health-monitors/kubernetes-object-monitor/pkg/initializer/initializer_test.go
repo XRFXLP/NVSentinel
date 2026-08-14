@@ -25,7 +25,7 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 )
 
-func TestBuildManagerOptionsSetsCacheSyncTimeout(t *testing.T) {
+func TestBuildManagerOptions_CacheSyncTimeout_PreservesConfiguredValue(t *testing.T) {
 	timeout := 10 * time.Minute
 
 	opts := buildManagerOptions(Params{CacheSyncTimeout: timeout}, cache.Options{})
