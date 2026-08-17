@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -38,6 +39,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 )
 
@@ -59,7 +61,7 @@ type Informers struct {
 }
 
 func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
-	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool) (*Informers, error) {
+	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string) (*Informers, error) {
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(
 		clientset,
 		resyncPeriod,
@@ -67,7 +69,16 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 
 	podInformer := informerFactory.Core().V1().Pods().Informer()
 
-	err := podInformer.GetIndexer().AddIndexers(
+	systemNamespacesRegex, err := compileExcludePattern(systemNamespaces)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile system namespaces regex: %w", err)
+	}
+
+	if err := podInformer.SetTransform(excludedPodTransform(systemNamespacesRegex)); err != nil {
+		return nil, fmt.Errorf("failed to set pod informer transform: %w", err)
+	}
+
+	err = podInformer.GetIndexer().AddIndexers(
 		cache.Indexers{
 			NodeIndex:          NodeIndexFunc,
 			NamespaceNodeIndex: NamespaceNodeIndexFunc,
@@ -93,6 +104,9 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	}
 
 	nodeInformer := informerFactory.Core().V1().Nodes().Informer()
+	if err := nodeInformer.SetTransform(nodeTransform); err != nil {
+		return nil, fmt.Errorf("failed to set node informer transform: %w", err)
+	}
 
 	dryRunMode := []string{}
 	if dryRun {
@@ -109,6 +123,75 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		dryRunMode:             dryRunMode,
 		namespace:              metav1.NamespaceDefault,
 	}, nil
+}
+
+func excludedPodTransform(systemNamespacesRegex *regexp.Regexp) cache.TransformFunc {
+	return func(obj any) (any, error) {
+		pod, ok := obj.(*v1.Pod)
+		if !ok {
+			return obj, nil
+		}
+
+		isSystemNamespace := systemNamespacesRegex != nil && systemNamespacesRegex.MatchString(pod.Namespace)
+		if !isSystemNamespace && !isDaemonSetOwned(pod.OwnerReferences) {
+			return pod, nil
+		}
+
+		return &v1.Pod{
+			ObjectMeta: identityObjectMeta(
+				pod.Name,
+				pod.Namespace,
+				pod.UID,
+				pod.ResourceVersion,
+				nil,
+			),
+		}, nil
+	}
+}
+
+func nodeTransform(obj any) (any, error) {
+	node, ok := obj.(*v1.Node)
+	if !ok {
+		return obj, nil
+	}
+
+	var annotations map[string]string
+	if quarantineHealthEvent, exists := node.Annotations[common.QuarantineHealthEventAnnotationKey]; exists {
+		annotations = map[string]string{
+			common.QuarantineHealthEventAnnotationKey: quarantineHealthEvent,
+		}
+	}
+
+	return &v1.Node{
+		ObjectMeta: identityObjectMeta(
+			node.Name,
+			"",
+			node.UID,
+			node.ResourceVersion,
+			annotations,
+		),
+	}, nil
+}
+
+func identityObjectMeta(name, namespace string, uid types.UID, resourceVersion string,
+	annotations map[string]string) metav1.ObjectMeta {
+	return metav1.ObjectMeta{
+		Name:            name,
+		Namespace:       namespace,
+		UID:             uid,
+		ResourceVersion: resourceVersion,
+		Annotations:     annotations,
+	}
+}
+
+func isDaemonSetOwned(ownerReferences []metav1.OwnerReference) bool {
+	for _, owner := range ownerReferences {
+		if owner.Kind == "DaemonSet" {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (i *Informers) HasSynced() bool {
@@ -383,15 +466,13 @@ func (i *Informers) filterPodsWithGPURequests(pods []*v1.Pod) []*v1.Pod {
 }
 
 func (i *Informers) isDaemonSetPod(pod *v1.Pod) bool {
-	for _, owner := range pod.OwnerReferences {
-		if owner.Kind == "DaemonSet" {
-			slog.Info("Ignoring DaemonSet pod in namespace on node during eviction check",
-				"pod", pod.Name,
-				"namespace", pod.Namespace,
-				"node", pod.Spec.NodeName)
+	if isDaemonSetOwned(pod.OwnerReferences) {
+		slog.Info("Ignoring DaemonSet pod in namespace on node during eviction check",
+			"pod", pod.Name,
+			"namespace", pod.Namespace,
+			"node", pod.Spec.NodeName)
 
-			return true
-		}
+		return true
 	}
 
 	return false
@@ -798,6 +879,10 @@ func (i *Informers) GetNamespacesMatchingPattern(ctx context.Context,
 }
 
 func (i *Informers) compileExcludePattern(excludePattern string) (*regexp.Regexp, error) {
+	return compileExcludePattern(excludePattern)
+}
+
+func compileExcludePattern(excludePattern string) (*regexp.Regexp, error) {
 	if excludePattern == "" {
 		return nil, nil
 	}
