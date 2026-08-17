@@ -186,17 +186,17 @@ func drainEligiblePodCacheObject(pod *v1.Pod) *v1.Pod {
 		Spec: v1.PodSpec{
 			NodeName:                      pod.Spec.NodeName,
 			TerminationGracePeriodSeconds: terminationGracePeriodSeconds,
-			Containers:                    cacheContainers(pod.Spec.Containers),
-			InitContainers:                cacheContainers(pod.Spec.InitContainers),
+			Containers:                    trimContainers(pod.Spec.Containers),
+			InitContainers:                trimContainers(pod.Spec.InitContainers),
 		},
 		Status: v1.PodStatus{
 			Phase:      pod.Status.Phase,
-			Conditions: cachePodReadyConditions(pod.Status.Conditions),
+			Conditions: trimPodReadyConditions(pod.Status.Conditions),
 		},
 	}
 }
 
-func cacheContainers(containers []v1.Container) []v1.Container {
+func trimContainers(containers []v1.Container) []v1.Container {
 	cached := make([]v1.Container, len(containers))
 	for idx, container := range containers {
 		limits := make(v1.ResourceList, len(container.Resources.Limits))
@@ -210,7 +210,7 @@ func cacheContainers(containers []v1.Container) []v1.Container {
 	return cached
 }
 
-func cachePodReadyConditions(conditions []v1.PodCondition) []v1.PodCondition {
+func trimPodReadyConditions(conditions []v1.PodCondition) []v1.PodCondition {
 	var cached []v1.PodCondition
 	for _, condition := range conditions {
 		if condition.Type != v1.PodReady {
