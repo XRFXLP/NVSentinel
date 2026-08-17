@@ -123,10 +123,9 @@ func stripNodeStatus(obj interface{}) (interface{}, error) {
 		return nil, fmt.Errorf("expected node object, got %T", obj)
 	}
 
-	cachedNode := node.DeepCopy()
-	cachedNode.Status = v1.NodeStatus{}
+	node.Status = v1.NodeStatus{}
 
-	return cachedNode, nil
+	return node, nil
 }
 
 // Run starts the informer and waits for cache sync.

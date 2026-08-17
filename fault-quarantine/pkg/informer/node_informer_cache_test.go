@@ -29,6 +29,8 @@ import (
 
 func TestStripNodeStatus(t *testing.T) {
 	input := testFullNode()
+	wantMetadata := input.ObjectMeta.DeepCopy()
+	wantSpec := input.Spec.DeepCopy()
 
 	transformed, err := stripNodeStatus(input)
 	if err != nil {
@@ -40,19 +42,17 @@ func TestStripNodeStatus(t *testing.T) {
 		t.Fatalf("stripNodeStatus() returned %T", transformed)
 	}
 
-	if !reflect.DeepEqual(node.ObjectMeta, input.ObjectMeta) {
-		t.Fatalf("cached node metadata changed:\n got: %#v\nwant: %#v", node.ObjectMeta, input.ObjectMeta)
+	if node != input {
+		t.Fatal("stripNodeStatus() returned a copy instead of mutating in place")
 	}
-	if !reflect.DeepEqual(node.Spec, input.Spec) {
-		t.Fatalf("cached node spec changed:\n got: %#v\nwant: %#v", node.Spec, input.Spec)
+	if !reflect.DeepEqual(node.ObjectMeta, *wantMetadata) {
+		t.Fatalf("cached node metadata changed:\n got: %#v\nwant: %#v", node.ObjectMeta, *wantMetadata)
+	}
+	if !reflect.DeepEqual(node.Spec, *wantSpec) {
+		t.Fatalf("cached node spec changed:\n got: %#v\nwant: %#v", node.Spec, *wantSpec)
 	}
 	if !reflect.DeepEqual(node.Status, v1.NodeStatus{}) {
 		t.Fatalf("cached node retained status: %#v", node.Status)
-	}
-
-	node.Labels["label"] = "changed"
-	if input.Labels["label"] != "value" {
-		t.Fatal("transform reused the source labels map")
 	}
 }
 
@@ -85,14 +85,14 @@ func TestNewNodeInformerStripsStatus(t *testing.T) {
 
 func BenchmarkStripNodeStatus(b *testing.B) {
 	fullNode := testFullNode()
-	transformed, err := stripNodeStatus(fullNode)
-	if err != nil {
-		b.Fatalf("stripNodeStatus() error = %v", err)
-	}
-
 	fullJSON, err := json.Marshal(fullNode)
 	if err != nil {
 		b.Fatalf("json.Marshal(full node) error = %v", err)
+	}
+
+	transformed, err := stripNodeStatus(fullNode)
+	if err != nil {
+		b.Fatalf("stripNodeStatus() error = %v", err)
 	}
 	slimJSON, err := json.Marshal(transformed)
 	if err != nil {
