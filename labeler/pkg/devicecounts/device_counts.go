@@ -169,6 +169,7 @@ func (m *Manager) NodeFieldRequirements() NodeFieldRequirements {
 			}
 
 			seen[key] = struct{}{}
+
 			requirements.Paths = append(requirements.Paths, path)
 		}
 	}
@@ -345,6 +346,7 @@ func nodeFieldsReferencedBy(compiledAST *celast.AST) (NodeFieldRequirements, boo
 			current = parent
 			parent, hasParent = current.Parent()
 		}
+
 		if len(path) == 0 {
 			// A bare node identifier means the expression passed the whole Node
 			// somewhere or used a dynamic top-level key such as node[key].
@@ -357,6 +359,7 @@ func nodeFieldsReferencedBy(compiledAST *celast.AST) (NodeFieldRequirements, boo
 		}
 
 		seen[key] = struct{}{}
+
 		requirements.Paths = append(requirements.Paths, path)
 	}
 

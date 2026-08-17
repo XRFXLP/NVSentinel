@@ -74,6 +74,7 @@ func (projection *nodeCacheProjection) retainPath(path []string) error {
 		if !exists {
 			return fmt.Errorf("unsupported Node field path %q", strings.Join(path, "."))
 		}
+
 		projection.typeMetaFields[fieldIndex] = struct{}{}
 	case "metadata":
 		return projection.retainSectionPath(
@@ -129,6 +130,7 @@ func (projection *nodeCacheProjection) retainSectionPath(
 	}
 
 	fields[fieldIndex] = struct{}{}
+
 	return nil
 }
 
@@ -207,6 +209,7 @@ func copyProjectedFields(destination any, source any, fieldIndexes map[int]struc
 	// informer path small and avoiding repeated JSON-tag scans.
 	destinationValue := reflect.ValueOf(destination).Elem()
 	sourceValue := reflect.ValueOf(source)
+
 	for fieldIndex := range fieldIndexes {
 		destinationValue.Field(fieldIndex).Set(sourceValue.Field(fieldIndex))
 	}
