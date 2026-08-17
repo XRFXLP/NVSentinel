@@ -134,7 +134,7 @@ func excludedPodTransform(systemNamespacesRegex *regexp.Regexp) cache.TransformF
 
 		isSystemNamespace := systemNamespacesRegex != nil && systemNamespacesRegex.MatchString(pod.Namespace)
 		if !isSystemNamespace && !isDaemonSetOwned(pod.OwnerReferences) {
-			return pod, nil
+			return drainEligiblePodCacheObject(pod), nil
 		}
 
 		return &v1.Pod{
@@ -147,6 +147,84 @@ func excludedPodTransform(systemNamespacesRegex *regexp.Regexp) cache.TransformF
 			),
 		}, nil
 	}
+}
+
+// drainEligiblePodCacheObject retains only fields used by pod indexes and drain decisions.
+// Keep this contract in sync with the cached Pod reads in this package.
+func drainEligiblePodCacheObject(pod *v1.Pod) *v1.Pod {
+	var annotations map[string]string
+	if devices, exists := pod.Annotations[model.PodDeviceAnnotationName]; exists {
+		annotations = map[string]string{model.PodDeviceAnnotationName: devices}
+	}
+
+	ownerReferences := make([]metav1.OwnerReference, len(pod.OwnerReferences))
+	for idx, owner := range pod.OwnerReferences {
+		ownerReferences[idx] = metav1.OwnerReference{Kind: owner.Kind}
+	}
+
+	var deletionTimestamp *metav1.Time
+	if pod.DeletionTimestamp != nil {
+		deletionTimestamp = pod.DeletionTimestamp.DeepCopy()
+	}
+
+	var terminationGracePeriodSeconds *int64
+	if pod.Spec.TerminationGracePeriodSeconds != nil {
+		terminationGracePeriodSeconds = ptr.To(*pod.Spec.TerminationGracePeriodSeconds)
+	}
+
+	return &v1.Pod{
+		TypeMeta: pod.TypeMeta,
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              pod.Name,
+			Namespace:         pod.Namespace,
+			UID:               pod.UID,
+			ResourceVersion:   pod.ResourceVersion,
+			Annotations:       annotations,
+			OwnerReferences:   ownerReferences,
+			DeletionTimestamp: deletionTimestamp,
+		},
+		Spec: v1.PodSpec{
+			NodeName:                      pod.Spec.NodeName,
+			TerminationGracePeriodSeconds: terminationGracePeriodSeconds,
+			Containers:                    cacheContainers(pod.Spec.Containers),
+			InitContainers:                cacheContainers(pod.Spec.InitContainers),
+		},
+		Status: v1.PodStatus{
+			Phase:      pod.Status.Phase,
+			Conditions: cachePodReadyConditions(pod.Status.Conditions),
+		},
+	}
+}
+
+func cacheContainers(containers []v1.Container) []v1.Container {
+	cached := make([]v1.Container, len(containers))
+	for idx, container := range containers {
+		limits := make(v1.ResourceList, len(container.Resources.Limits))
+		for resourceName, quantity := range container.Resources.Limits {
+			limits[resourceName] = quantity.DeepCopy()
+		}
+
+		cached[idx].Resources.Limits = limits
+	}
+
+	return cached
+}
+
+func cachePodReadyConditions(conditions []v1.PodCondition) []v1.PodCondition {
+	var cached []v1.PodCondition
+	for _, condition := range conditions {
+		if condition.Type != v1.PodReady {
+			continue
+		}
+
+		cached = append(cached, v1.PodCondition{
+			Type:               condition.Type,
+			Status:             condition.Status,
+			LastTransitionTime: condition.LastTransitionTime,
+		})
+	}
+
+	return cached
 }
 
 func nodeTransform(obj any) (any, error) {
