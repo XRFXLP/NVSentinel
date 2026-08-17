@@ -61,12 +61,8 @@ const (
 )
 
 var (
-	dcgm4Regex            = regexp.MustCompile(`.*dcgm:4\..*`)
-	dcgm3Regex            = regexp.MustCompile(`.*dcgm:3\..*`)
-	nodeCELReferenceRegex = regexp.MustCompile(`\bnode\b`)
-	slimNodeCELFieldRegex = regexp.MustCompile(
-		`\bnode\.metadata\.(?:name|uid|resourceVersion|labels|annotations)\b`,
-	)
+	dcgm4Regex = regexp.MustCompile(`.*dcgm:4\..*`)
+	dcgm3Regex = regexp.MustCompile(`.*dcgm:3\..*`)
 )
 
 // Labeler manages node labeling based on pod information
@@ -116,10 +112,15 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("create expected device count manager: %w", err)
 	}
 
+	nodeProjection, err := newNodeCacheProjection(deviceCounts.NodeFieldRequirements())
+	if err != nil {
+		return nil, fmt.Errorf("create node cache projection: %w", err)
+	}
+
 	nodeInformer, err := createNodeInformer(
 		clientset,
 		resyncPeriod,
-		canUseSlimNodeCache(expectedDeviceCounts),
+		nodeProjection,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create node informer: %w", err)
@@ -253,6 +254,8 @@ func createIndexedPodInformer(clientset kubernetes.Interface, resyncPeriod time.
 	return informer, nil
 }
 
+// transformPodForCache retains only fields used for pod indexing, readiness,
+// delete-event identity, and DCGM image version detection.
 func transformPodForCache(obj any) (any, error) {
 	pod, ok := obj.(*v1.Pod)
 	if !ok {
@@ -308,66 +311,21 @@ func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
 	}
 }
 
+// createNodeInformer applies the startup-compiled field projection before
+// Nodes enter the shared informer cache.
 func createNodeInformer(
 	clientset kubernetes.Interface,
 	resyncPeriod time.Duration,
-	useSlimCache bool,
+	projection nodeCacheProjection,
 ) (cache.SharedIndexInformer, error) {
 	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
 	informer := factory.Core().V1().Nodes().Informer()
 
-	if useSlimCache {
-		if err := informer.SetTransform(transformNodeForCache); err != nil {
-			return nil, fmt.Errorf("failed to set node transform: %w", err)
-		}
+	if err := informer.SetTransform(projection.transform); err != nil {
+		return nil, fmt.Errorf("failed to set node transform: %w", err)
 	}
 
 	return informer, nil
-}
-
-func transformNodeForCache(obj any) (any, error) {
-	node, ok := obj.(*v1.Node)
-	if !ok {
-		return nil, fmt.Errorf("node transform: expected Node object, got %T", obj)
-	}
-
-	node.TypeMeta = metav1.TypeMeta{}
-	node.ObjectMeta = metav1.ObjectMeta{
-		Name:            node.Name,
-		UID:             node.UID,
-		ResourceVersion: node.ResourceVersion,
-		Labels:          node.Labels,
-		Annotations:     node.Annotations,
-	}
-	node.Spec = v1.NodeSpec{}
-	node.Status = v1.NodeStatus{}
-
-	return node, nil
-}
-
-// canUseSlimNodeCache is deliberately conservative. Device-count CEL can
-// inspect the dynamic Node object, so retain full Nodes unless every enabled
-// expression only references metadata fields kept by transformNodeForCache.
-func canUseSlimNodeCache(config devicecounts.Config) bool {
-	if !config.Enabled {
-		return true
-	}
-
-	for _, class := range config.Classes {
-		if !class.Enabled {
-			continue
-		}
-
-		expressionWithoutSupportedFields := slimNodeCELFieldRegex.ReplaceAllString(
-			class.CurrentExpression,
-			"",
-		)
-		if nodeCELReferenceRegex.MatchString(expressionWithoutSupportedFields) {
-			return false
-		}
-	}
-
-	return true
 }
 
 func createResourceSliceInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {

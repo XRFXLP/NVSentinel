@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/google/cel-go/cel"
+	celast "github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
@@ -70,7 +71,14 @@ type Manager struct {
 
 type compiledClass struct {
 	ClassConfig
-	program cel.Program
+	program               cel.Program
+	nodeFieldRequirements NodeFieldRequirements
+}
+
+// NodeFieldRequirements describes the Node fields read by enabled CEL expressions.
+// Paths contain JSON field names relative to the Node object.
+type NodeFieldRequirements struct {
+	Paths [][]string
 }
 
 // LoadConfig loads expected device-count TOML configuration from a file.
@@ -142,6 +150,30 @@ func (m *Manager) RequiresResourceSlices() bool {
 // ClassCount returns the number of compiled device-count classes.
 func (m *Manager) ClassCount() int {
 	return len(m.classes)
+}
+
+// NodeFieldRequirements returns the union of Node fields read by enabled classes.
+func (m *Manager) NodeFieldRequirements() NodeFieldRequirements {
+	if !m.Enabled() {
+		return NodeFieldRequirements{}
+	}
+
+	requirements := NodeFieldRequirements{}
+	seen := map[string]struct{}{}
+
+	for _, class := range m.classes {
+		for _, path := range class.nodeFieldRequirements.Paths {
+			key := strings.Join(path, "\x00")
+			if _, exists := seen[key]; exists {
+				continue
+			}
+
+			seen[key] = struct{}{}
+			requirements.Paths = append(requirements.Paths, path)
+		}
+	}
+
+	return requirements
 }
 
 // ReconcileNodeLabelsInPlace evaluates all enabled device-count classes for a node.
@@ -271,10 +303,64 @@ func compileDeviceCountClass(
 			index, classConfig.Name, err)
 	}
 
+	nodeFieldRequirements, hasDynamicNodeAccess := nodeFieldsReferencedBy(ast.NativeRep())
+	if hasDynamicNodeAccess {
+		return compiledClass{}, false, fmt.Errorf(
+			"expectedDeviceCounts.classes[%d] (%s): currentExpression must access node through static fields",
+			index, classConfig.Name,
+		)
+	}
+
 	return compiledClass{
-		ClassConfig: classConfig,
-		program:     program,
+		ClassConfig:           classConfig,
+		program:               program,
+		nodeFieldRequirements: nodeFieldRequirements,
 	}, true, nil
+}
+
+// nodeFieldsReferencedBy extracts statically selected Node paths from a
+// compiled CEL expression. The boolean result reports unsupported whole-Node
+// or dynamic top-level access.
+func nodeFieldsReferencedBy(compiledAST *celast.AST) (NodeFieldRequirements, bool) {
+	requirements := NodeFieldRequirements{}
+	seen := map[string]struct{}{}
+
+	// The navigable AST lets us walk upward from each "node" identifier.
+	// For example, node.status.allocatable produces:
+	// node -> status -> allocatable.
+	root := celast.NavigateAST(compiledAST)
+	for _, expr := range celast.MatchDescendants(root, celast.KindMatcher(celast.IdentKind)) {
+		if expr.AsIdent() != "node" {
+			continue
+		}
+
+		path := []string{}
+		current := expr
+		parent, hasParent := current.Parent()
+		// Follow only dot selections whose operand is the expression below it.
+		// Calls and index operations end the statically identifiable path.
+		for hasParent && parent.Kind() == celast.SelectKind &&
+			parent.AsSelect().Operand().ID() == current.ID() {
+			path = append(path, parent.AsSelect().FieldName())
+			current = parent
+			parent, hasParent = current.Parent()
+		}
+		if len(path) == 0 {
+			// A bare node identifier means the expression passed the whole Node
+			// somewhere or used a dynamic top-level key such as node[key].
+			return NodeFieldRequirements{}, true
+		}
+
+		key := strings.Join(path, "\x00")
+		if _, exists := seen[key]; exists {
+			continue
+		}
+
+		seen[key] = struct{}{}
+		requirements.Paths = append(requirements.Paths, path)
+	}
+
+	return requirements, false
 }
 
 func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {

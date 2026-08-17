@@ -1066,6 +1066,7 @@ func TestLabelerInformerTransforms(t *testing.T) {
 			},
 			Annotations: map[string]string{
 				DCGMBootstrapCompletedAnnotation: "true",
+				"drop":                           "annotation",
 			},
 		},
 		Spec: corev1.NodeSpec{ProviderID: "drop-provider"},
@@ -1168,78 +1169,27 @@ func TestLabelerInformerTransforms(t *testing.T) {
 			UID:             node.UID,
 			ResourceVersion: node.ResourceVersion,
 			Labels:          node.Labels,
-			Annotations:     node.Annotations,
+			Annotations: map[string]string{
+				DCGMBootstrapCompletedAnnotation: "true",
+			},
 		},
 	}, cachedNode)
 }
 
-func TestCanUseSlimNodeCache(t *testing.T) {
-	tests := []struct {
-		name       string
-		config     devicecounts.Config
-		expectSlim bool
-	}{
-		{
-			name:       "default disabled configuration",
-			config:     devicecounts.Config{},
-			expectSlim: true,
-		},
-		{
-			name:       "label-only expression",
-			config:     testDeviceCountConfig(),
-			expectSlim: true,
-		},
-		{
-			name:       "ResourceSlice-only expression",
-			config:     testResourceSliceDeviceCountConfig(),
-			expectSlim: true,
-		},
-		{
-			name: "allocatable expression",
-			config: deviceCountConfigWithExpression(
-				"int(node.status.allocatable['nvidia.com/gpu'])",
-			),
-			expectSlim: false,
-		},
-		{
-			name: "capacity expression",
-			config: deviceCountConfigWithExpression(
-				"int(node.status.capacity['nvidia.com/gpu'])",
-			),
-			expectSlim: false,
-		},
-		{
-			name: "unsupported metadata expression",
-			config: deviceCountConfigWithExpression(
-				"node.metadata.creationTimestamp == null ? 0 : 1",
-			),
-			expectSlim: false,
-		},
-		{
-			name: "unsupported expression on disabled class",
-			config: func() devicecounts.Config {
-				config := deviceCountConfigWithExpression("int(node.status.capacity['nvidia.com/gpu'])")
-				config.Classes[0].Enabled = false
-				return config
-			}(),
-			expectSlim: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expectSlim, canUseSlimNodeCache(tt.config))
-		})
-	}
-}
-
-func TestNodeInformerRetainsFullNodeForUnsupportedDeviceCountCEL(t *testing.T) {
+func TestNodeInformerProjectsDeviceCountCELFields(t *testing.T) {
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
 		Status: corev1.NodeStatus{
 			Allocatable: corev1.ResourceList{
 				corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("8"),
 			},
+			Capacity: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("8"),
+			},
+			Conditions: []corev1.NodeCondition{{
+				Type:   corev1.NodeReady,
+				Status: corev1.ConditionTrue,
+			}},
 		},
 	}
 	config := deviceCountConfigWithExpression(
@@ -1268,6 +1218,28 @@ func TestNodeInformerRetainsFullNodeForUnsupportedDeviceCountCEL(t *testing.T) {
 	cachedNode, err := labeler.getNodeFromCache(node.Name)
 	require.NoError(t, err)
 	assert.Equal(t, node.Status.Allocatable, cachedNode.Status.Allocatable)
+	assert.Nil(t, cachedNode.Status.Capacity)
+	assert.Nil(t, cachedNode.Status.Conditions)
+}
+
+func TestNewLabelerRejectsDynamicDeviceCountNodeAccess(t *testing.T) {
+	config := deviceCountConfigWithExpression(
+		"int(node['status']['allocatable']['nvidia.com/gpu'])",
+	)
+
+	_, err := NewLabeler(
+		fake.NewSimpleClientset(),
+		time.Minute,
+		"nvidia-dcgm",
+		"nvidia-driver-daemonset",
+		"nvidia-driver-installer",
+		"",
+		false,
+		false,
+		config,
+		false,
+	)
+	require.ErrorContains(t, err, "must access node through static fields")
 }
 
 func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
