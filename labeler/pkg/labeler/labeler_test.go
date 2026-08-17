@@ -28,8 +28,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -1052,6 +1054,222 @@ func TestNewLabeler_InvalidLabelSelectors_ReturnsError(t *testing.T) {
 	})
 }
 
+func TestLabelerInformerTransforms(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "node-a",
+			UID:             types.UID("node-uid"),
+			ResourceVersion: "node-rv",
+			Labels: map[string]string{
+				managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
+				"retain":                "label",
+			},
+			Annotations: map[string]string{
+				DCGMBootstrapCompletedAnnotation: "true",
+			},
+		},
+		Spec: corev1.NodeSpec{ProviderID: "drop-provider"},
+		Status: corev1.NodeStatus{
+			Capacity: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("8"),
+			},
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "dcgm-pod",
+			Namespace:       "gpu-operator",
+			UID:             types.UID("pod-uid"),
+			ResourceVersion: "pod-rv",
+			Labels:          map[string]string{"app": "nvidia-dcgm"},
+			Annotations:     map[string]string{"drop": "annotation"},
+		},
+		Spec: corev1.PodSpec{
+			NodeName:           node.Name,
+			ServiceAccountName: "drop-service-account",
+			Containers: []corev1.Container{{
+				Name:    "dcgm",
+				Image:   "nvcr.io/nvidia/dcgm:4.1.0",
+				Command: []string{"drop-command"},
+			}},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{
+				Type:   corev1.PodReady,
+				Status: corev1.ConditionTrue,
+			}},
+		},
+	}
+
+	labeler, err := NewLabeler(
+		fake.NewSimpleClientset(node, pod),
+		time.Minute,
+		"nvidia-dcgm",
+		"nvidia-driver-daemonset",
+		"nvidia-driver-installer",
+		"",
+		false,
+		false,
+		devicecounts.Config{},
+		false,
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go labeler.podInformer.Run(ctx.Done())
+	go labeler.nodeInformer.Run(ctx.Done())
+	require.True(t, cache.WaitForCacheSync(
+		ctx.Done(),
+		labeler.podInformer.HasSynced,
+		labeler.nodeInformer.HasSynced,
+	))
+
+	pods, err := labeler.podInformer.GetIndexer().ByIndex(NodeDCGMIndex, node.Name)
+	require.NoError(t, err)
+	require.Len(t, pods, 1)
+
+	cachedPod, ok := pods[0].(*corev1.Pod)
+	require.True(t, ok)
+	assert.Equal(t, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            pod.Name,
+			Namespace:       pod.Namespace,
+			UID:             pod.UID,
+			ResourceVersion: pod.ResourceVersion,
+			Labels:          pod.Labels,
+		},
+		Spec: corev1.PodSpec{
+			NodeName: pod.Spec.NodeName,
+			Containers: []corev1.Container{{
+				Image: pod.Spec.Containers[0].Image,
+			}},
+		},
+		Status: corev1.PodStatus{
+			Conditions: []corev1.PodCondition{{
+				Type:   corev1.PodReady,
+				Status: corev1.ConditionTrue,
+			}},
+		},
+	}, cachedPod)
+	isReady, _ := isTargetPod(cachedPod, true, nil)
+	assert.True(t, isReady)
+
+	dcgmVersion, err := labeler.getDCGMVersionForNode(node.Name, nil)
+	require.NoError(t, err)
+	assert.Equal(t, dcgmVersion4, dcgmVersion)
+
+	cachedNode, err := labeler.getNodeFromCache(node.Name)
+	require.NoError(t, err)
+	assert.Equal(t, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            node.Name,
+			UID:             node.UID,
+			ResourceVersion: node.ResourceVersion,
+			Labels:          node.Labels,
+			Annotations:     node.Annotations,
+		},
+	}, cachedNode)
+}
+
+func TestCanUseSlimNodeCache(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     devicecounts.Config
+		expectSlim bool
+	}{
+		{
+			name:       "default disabled configuration",
+			config:     devicecounts.Config{},
+			expectSlim: true,
+		},
+		{
+			name:       "label-only expression",
+			config:     testDeviceCountConfig(),
+			expectSlim: true,
+		},
+		{
+			name:       "ResourceSlice-only expression",
+			config:     testResourceSliceDeviceCountConfig(),
+			expectSlim: true,
+		},
+		{
+			name: "allocatable expression",
+			config: deviceCountConfigWithExpression(
+				"int(node.status.allocatable['nvidia.com/gpu'])",
+			),
+			expectSlim: false,
+		},
+		{
+			name: "capacity expression",
+			config: deviceCountConfigWithExpression(
+				"int(node.status.capacity['nvidia.com/gpu'])",
+			),
+			expectSlim: false,
+		},
+		{
+			name: "unsupported metadata expression",
+			config: deviceCountConfigWithExpression(
+				"node.metadata.creationTimestamp == null ? 0 : 1",
+			),
+			expectSlim: false,
+		},
+		{
+			name: "unsupported expression on disabled class",
+			config: func() devicecounts.Config {
+				config := deviceCountConfigWithExpression("int(node.status.capacity['nvidia.com/gpu'])")
+				config.Classes[0].Enabled = false
+				return config
+			}(),
+			expectSlim: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expectSlim, canUseSlimNodeCache(tt.config))
+		})
+	}
+}
+
+func TestNodeInformerRetainsFullNodeForUnsupportedDeviceCountCEL(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("8"),
+			},
+		},
+	}
+	config := deviceCountConfigWithExpression(
+		"int(node.status.allocatable['nvidia.com/gpu'])",
+	)
+
+	labeler, err := NewLabeler(
+		fake.NewSimpleClientset(node),
+		time.Minute,
+		"nvidia-dcgm",
+		"nvidia-driver-daemonset",
+		"nvidia-driver-installer",
+		"",
+		false,
+		false,
+		config,
+		false,
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go labeler.nodeInformer.Run(ctx.Done())
+	require.True(t, cache.WaitForCacheSync(ctx.Done(), labeler.nodeInformer.HasSynced))
+
+	cachedNode, err := labeler.getNodeFromCache(node.Name)
+	require.NoError(t, err)
+	assert.Equal(t, node.Status.Allocatable, cachedNode.Status.Allocatable)
+}
+
 func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 
@@ -1215,6 +1433,13 @@ func testDeviceCountConfig() devicecounts.Config {
 func testResourceSliceDeviceCountConfig() devicecounts.Config {
 	config := testDeviceCountConfig()
 	config.Classes[0].CurrentExpression = "resourceSlices.size()"
+
+	return config
+}
+
+func deviceCountConfigWithExpression(expression string) devicecounts.Config {
+	config := testDeviceCountConfig()
+	config.Classes[0].CurrentExpression = expression
 
 	return config
 }
@@ -1961,10 +2186,10 @@ func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "opted-out-node",
 				Labels: map[string]string{
-					managed.ManagedLabelKey:  managed.ManagedLabelValueFalse,
-					DCGMVersionLabel:         "3.x",
-					DriverInstalledLabel:     "true",
-					KataEnabledLabel:         "true",
+					managed.ManagedLabelKey: managed.ManagedLabelValueFalse,
+					DCGMVersionLabel:        "3.x",
+					DriverInstalledLabel:    "true",
+					KataEnabledLabel:        "true",
 				},
 			},
 		}

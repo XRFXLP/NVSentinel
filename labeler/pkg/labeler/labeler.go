@@ -61,8 +61,12 @@ const (
 )
 
 var (
-	dcgm4Regex = regexp.MustCompile(`.*dcgm:4\..*`)
-	dcgm3Regex = regexp.MustCompile(`.*dcgm:3\..*`)
+	dcgm4Regex            = regexp.MustCompile(`.*dcgm:4\..*`)
+	dcgm3Regex            = regexp.MustCompile(`.*dcgm:3\..*`)
+	nodeCELReferenceRegex = regexp.MustCompile(`\bnode\b`)
+	slimNodeCELFieldRegex = regexp.MustCompile(
+		`\bnode\.metadata\.(?:name|uid|resourceVersion|labels|annotations)\b`,
+	)
 )
 
 // Labeler manages node labeling based on pod information
@@ -107,11 +111,18 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("create GKE installer informer: %w", err)
 	}
 
-	nodeInformer := createNodeInformer(clientset, resyncPeriod)
-
 	deviceCounts, err := devicecounts.NewManager(expectedDeviceCounts)
 	if err != nil {
 		return nil, fmt.Errorf("create expected device count manager: %w", err)
+	}
+
+	nodeInformer, err := createNodeInformer(
+		clientset,
+		resyncPeriod,
+		canUseSlimNodeCache(expectedDeviceCounts),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create node informer: %w", err)
 	}
 
 	informersSynced := []cache.InformerSynced{
@@ -231,11 +242,51 @@ func createIndexedPodInformer(clientset kubernetes.Interface, resyncPeriod time.
 
 	informer := factory.Core().V1().Pods().Informer()
 
+	if err := informer.SetTransform(transformPodForCache); err != nil {
+		return nil, fmt.Errorf("failed to set pod transform: %w", err)
+	}
+
 	if err := informer.GetIndexer().AddIndexers(indexers); err != nil {
 		return nil, fmt.Errorf("failed to add indexers: %w", err)
 	}
 
 	return informer, nil
+}
+
+func transformPodForCache(obj any) (any, error) {
+	pod, ok := obj.(*v1.Pod)
+	if !ok {
+		return nil, fmt.Errorf("pod transform: expected Pod object, got %T", obj)
+	}
+
+	containers := make([]v1.Container, len(pod.Spec.Containers))
+	for i, container := range pod.Spec.Containers {
+		containers[i] = v1.Container{Image: container.Image}
+	}
+
+	conditions := make([]v1.PodCondition, len(pod.Status.Conditions))
+	for i, condition := range pod.Status.Conditions {
+		conditions[i] = v1.PodCondition{
+			Type:   condition.Type,
+			Status: condition.Status,
+		}
+	}
+
+	pod.TypeMeta = metav1.TypeMeta{}
+	pod.ObjectMeta = metav1.ObjectMeta{
+		Name:            pod.Name,
+		Namespace:       pod.Namespace,
+		UID:             pod.UID,
+		ResourceVersion: pod.ResourceVersion,
+		Labels:          pod.Labels,
+	}
+	pod.Spec = v1.PodSpec{
+		NodeName:   pod.Spec.NodeName,
+		Containers: containers,
+	}
+	pod.Status = v1.PodStatus{Conditions: conditions}
+
+	return pod, nil
 }
 
 func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
@@ -257,9 +308,66 @@ func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
 	}
 }
 
-func createNodeInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
+func createNodeInformer(
+	clientset kubernetes.Interface,
+	resyncPeriod time.Duration,
+	useSlimCache bool,
+) (cache.SharedIndexInformer, error) {
 	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
-	return factory.Core().V1().Nodes().Informer()
+	informer := factory.Core().V1().Nodes().Informer()
+
+	if useSlimCache {
+		if err := informer.SetTransform(transformNodeForCache); err != nil {
+			return nil, fmt.Errorf("failed to set node transform: %w", err)
+		}
+	}
+
+	return informer, nil
+}
+
+func transformNodeForCache(obj any) (any, error) {
+	node, ok := obj.(*v1.Node)
+	if !ok {
+		return nil, fmt.Errorf("node transform: expected Node object, got %T", obj)
+	}
+
+	node.TypeMeta = metav1.TypeMeta{}
+	node.ObjectMeta = metav1.ObjectMeta{
+		Name:            node.Name,
+		UID:             node.UID,
+		ResourceVersion: node.ResourceVersion,
+		Labels:          node.Labels,
+		Annotations:     node.Annotations,
+	}
+	node.Spec = v1.NodeSpec{}
+	node.Status = v1.NodeStatus{}
+
+	return node, nil
+}
+
+// canUseSlimNodeCache is deliberately conservative. Device-count CEL can
+// inspect the dynamic Node object, so retain full Nodes unless every enabled
+// expression only references metadata fields kept by transformNodeForCache.
+func canUseSlimNodeCache(config devicecounts.Config) bool {
+	if !config.Enabled {
+		return true
+	}
+
+	for _, class := range config.Classes {
+		if !class.Enabled {
+			continue
+		}
+
+		expressionWithoutSupportedFields := slimNodeCELFieldRegex.ReplaceAllString(
+			class.CurrentExpression,
+			"",
+		)
+		if nodeCELReferenceRegex.MatchString(expressionWithoutSupportedFields) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func createResourceSliceInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
