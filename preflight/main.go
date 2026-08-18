@@ -118,7 +118,10 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(preflightv1alpha1.AddToScheme(scheme))
 
-	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{Scheme: scheme})
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
+		Scheme: scheme,
+		Cache:  controller.ManagerCacheOptions(),
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create controller manager: %w", err)
 	}
