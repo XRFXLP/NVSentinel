@@ -17,7 +17,6 @@ package controller
 import (
 	"fmt"
 
-	gangtypes "github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -46,6 +45,8 @@ func transformPodForCache(obj any) (any, error) {
 	case *corev1.Pod:
 		return transformTypedPod(pod), nil
 	case *unstructured.Unstructured:
+		// Kubernetes 1.35 Pods are read as unstructured objects so their
+		// spec.workloadRef field survives decoding by the Kubernetes 1.36 client.
 		return transformUnstructuredPod(pod), nil
 	default:
 		return nil, fmt.Errorf("expected Pod cache object, got %T", obj)
@@ -54,11 +55,8 @@ func transformPodForCache(obj any) (any, error) {
 
 func transformTypedPod(pod *corev1.Pod) *corev1.Pod {
 	objectMeta := pod.ObjectMeta
-	nodeName := pod.Spec.NodeName
-	volumes := gangConfigVolumesForCache(pod.Spec.Volumes)
-	schedulingGroup := schedulingGroupForCache(pod.Spec.SchedulingGroup)
-	phase := pod.Status.Phase
-	podIP := pod.Status.PodIP
+	spec := pod.Spec
+	status := pod.Status
 
 	pod.TypeMeta = metav1.TypeMeta{}
 	pod.ObjectMeta = metav1.ObjectMeta{
@@ -71,53 +69,16 @@ func transformTypedPod(pod *corev1.Pod) *corev1.Pod {
 		Labels:            objectMeta.Labels,
 	}
 	pod.Spec = corev1.PodSpec{
-		NodeName:        nodeName,
-		Volumes:         volumes,
-		SchedulingGroup: schedulingGroup,
+		NodeName:        spec.NodeName,
+		Volumes:         spec.Volumes,
+		SchedulingGroup: spec.SchedulingGroup,
 	}
 	pod.Status = corev1.PodStatus{
-		Phase: phase,
-		PodIP: podIP,
+		Phase: status.Phase,
+		PodIP: status.PodIP,
 	}
 
 	return pod
-}
-
-// gangConfigVolumesForCache keeps only the injected gang ConfigMap reference.
-// Other volume sources are not used by gang reconciliation or discovery.
-func gangConfigVolumesForCache(volumes []corev1.Volume) []corev1.Volume {
-	var cachedVolumes []corev1.Volume
-
-	for _, volume := range volumes {
-		if volume.Name != gangtypes.GangConfigVolumeName {
-			continue
-		}
-
-		cachedVolume := corev1.Volume{Name: volume.Name}
-		if volume.ConfigMap != nil {
-			cachedVolume.ConfigMap = &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{
-					Name: volume.ConfigMap.Name,
-				},
-			}
-		}
-
-		cachedVolumes = append(cachedVolumes, cachedVolume)
-	}
-
-	return cachedVolumes
-}
-
-// schedulingGroupForCache keeps the PodGroup name used by native Kubernetes
-// gang discovery.
-func schedulingGroupForCache(group *corev1.PodSchedulingGroup) *corev1.PodSchedulingGroup {
-	if group == nil || group.PodGroupName == nil {
-		return nil
-	}
-
-	podGroupName := *group.PodGroupName
-
-	return &corev1.PodSchedulingGroup{PodGroupName: &podGroupName}
 }
 
 func transformUnstructuredPod(pod *unstructured.Unstructured) *unstructured.Unstructured {
@@ -132,8 +93,8 @@ func transformUnstructuredPod(pod *unstructured.Unstructured) *unstructured.Unst
 	transformed.SetLabels(pod.GetLabels())
 
 	copyNestedField(pod, transformed, "spec", "nodeName")
-	copyUnstructuredGangConfigVolume(pod, transformed)
-	copyUnstructuredSchedulingGroup(pod, transformed)
+	copyNestedField(pod, transformed, "spec", "volumes")
+	copyNestedField(pod, transformed, "spec", "schedulingGroup")
 	// Kubernetes 1.35 workloadRef is unstructured because the field was
 	// replaced by schedulingGroup in the Kubernetes 1.36 Go API.
 	copyNestedField(pod, transformed, "spec", "workloadRef")
@@ -143,44 +104,6 @@ func transformUnstructuredPod(pod *unstructured.Unstructured) *unstructured.Unst
 	pod.Object = transformed.Object
 
 	return pod
-}
-
-// copyUnstructuredGangConfigVolume applies the typed volume projection to the
-// unstructured Pods used by Kubernetes 1.35 workloadRef discovery.
-func copyUnstructuredGangConfigVolume(from, to *unstructured.Unstructured) {
-	volumes, found, err := unstructured.NestedSlice(from.Object, "spec", "volumes")
-	if err != nil || !found {
-		return
-	}
-
-	for _, value := range volumes {
-		volume, ok := value.(map[string]any)
-		if !ok || volume["name"] != gangtypes.GangConfigVolumeName {
-			continue
-		}
-
-		cachedVolume := map[string]any{"name": gangtypes.GangConfigVolumeName}
-		if configMapName, exists, _ := unstructured.NestedString(volume, "configMap", "name"); exists {
-			cachedVolume["configMap"] = map[string]any{"name": configMapName}
-		}
-
-		_ = unstructured.SetNestedSlice(to.Object, []any{cachedVolume}, "spec", "volumes")
-
-		return
-	}
-}
-
-// copyUnstructuredSchedulingGroup keeps only the PodGroup name when an
-// unstructured Pod is read through the manager cache.
-func copyUnstructuredSchedulingGroup(from, to *unstructured.Unstructured) {
-	podGroupName, found, err := unstructured.NestedString(
-		from.Object, "spec", "schedulingGroup", "podGroupName")
-	if err != nil || !found {
-		return
-	}
-
-	_ = unstructured.SetNestedField(
-		to.Object, podGroupName, "spec", "schedulingGroup", "podGroupName")
 }
 
 // copyNestedField copies one field without retaining its surrounding object.

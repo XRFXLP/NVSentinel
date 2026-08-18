@@ -116,14 +116,18 @@ func TestTransformPodForCacheRetainsRequiredFields(t *testing.T) {
 		},
 		Spec: corev1.PodSpec{
 			NodeName: "node-a",
-			Volumes: []corev1.Volume{{
-				Name: gangtypes.GangConfigVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "gang-config"},
+			Volumes: []corev1.Volume{
+				{
+					Name: gangtypes.GangConfigVolumeName,
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "gang-config"},
+							Optional:             &optional,
+						},
 					},
 				},
-			}},
+				{Name: "unused"},
+			},
 			SchedulingGroup: &corev1.PodSchedulingGroup{PodGroupName: &podGroup},
 		},
 		Status: corev1.PodStatus{
@@ -175,12 +179,16 @@ func TestTransformPodForCache_UnstructuredPod_RetainsRequiredFields(t *testing.T
 	volumes, found, err := unstructured.NestedSlice(got.Object, "spec", "volumes")
 	require.NoError(t, err)
 	require.True(t, found)
-	assert.Equal(t, []any{map[string]any{
-		"name": gangtypes.GangConfigVolumeName,
-		"configMap": map[string]any{
-			"name": "gang-config",
+	assert.Equal(t, []any{
+		map[string]any{
+			"name": gangtypes.GangConfigVolumeName,
+			"configMap": map[string]any{
+				"name":     "gang-config",
+				"optional": true,
+			},
 		},
-	}}, volumes)
+		map[string]any{"name": "unused"},
+	}, volumes)
 
 	assert.Equal(t, "training", mustNestedString(t, got, "spec", "schedulingGroup", "podGroupName"))
 	assert.Equal(t, "workload", mustNestedString(t, got, "spec", "workloadRef", "name"))

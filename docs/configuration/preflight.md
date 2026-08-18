@@ -467,9 +467,9 @@ would miss Pods after a new namespace configuration is created.
 
 To keep the cluster-wide cache small, Preflight stores only Pod identity and
 deletion metadata, annotations and labels used by configurable discoverers, the
-gang ConfigMap volume, node and scheduling-group references, and Pod IP and
-phase. Containers, init containers, unrelated volumes, conditions, managed
-fields, and other unused Pod data are discarded before caching.
+volumes, node and scheduling-group references, and Pod IP and phase. Containers,
+init containers, conditions, managed fields, and other unused Pod data are
+discarded before caching.
 
 ## Gang coordination
 
