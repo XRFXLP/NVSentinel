@@ -1242,7 +1242,7 @@ func TestNewLabelerRejectsDynamicDeviceCountNodeAccess(t *testing.T) {
 	require.ErrorContains(t, err, "must access node through static fields")
 }
 
-func TestNewNodeCacheProjectionAcceptsNodeNamedCELIterator(t *testing.T) {
+func TestNewNodeCacheProjection_NodeNamedCELIterator_Accepted(t *testing.T) {
 	config := deviceCountConfigWithExpression(
 		"resourceSlices.map(node, node.spec.devices.size()).size()",
 	)
