@@ -112,15 +112,10 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("create expected device count manager: %w", err)
 	}
 
-	nodeProjection, err := newNodeCacheProjection(deviceCounts.RequiredNodeFields())
-	if err != nil {
-		return nil, fmt.Errorf("create node cache projection: %w", err)
-	}
-
 	nodeInformer, err := createNodeInformer(
 		clientset,
 		resyncPeriod,
-		nodeProjection,
+		deviceCounts.Enabled(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create node informer: %w", err)
@@ -292,6 +287,47 @@ func transformPodForCache(obj any) (any, error) {
 	return pod, nil
 }
 
+// transformNodeForCache returns a fixed Node projection for the Labeler.
+//
+// Identity, labels, and the DCGM bootstrap annotation are always retained.
+// When expected device counts are enabled, capacity and allocatable resources
+// are also retained for current-count CEL expressions. All other Node fields
+// are discarded before the object enters the informer cache.
+func transformNodeForCache(deviceCountsEnabled bool) cache.TransformFunc {
+	return func(obj any) (any, error) {
+		node, ok := obj.(*v1.Node)
+		if !ok {
+			return nil, fmt.Errorf("node transform: expected Node object, got %T", obj)
+		}
+
+		objectMeta := node.ObjectMeta
+		status := node.Status
+
+		var annotations map[string]string
+		if value, exists := objectMeta.Annotations[DCGMBootstrapCompletedAnnotation]; exists {
+			annotations = map[string]string{DCGMBootstrapCompletedAnnotation: value}
+		}
+
+		node.TypeMeta = metav1.TypeMeta{}
+		node.ObjectMeta = metav1.ObjectMeta{
+			Name:            objectMeta.Name,
+			UID:             objectMeta.UID,
+			ResourceVersion: objectMeta.ResourceVersion,
+			Labels:          objectMeta.Labels,
+			Annotations:     annotations,
+		}
+		node.Spec = v1.NodeSpec{}
+		node.Status = v1.NodeStatus{}
+
+		if deviceCountsEnabled {
+			node.Status.Allocatable = status.Allocatable
+			node.Status.Capacity = status.Capacity
+		}
+
+		return node, nil
+	}
+}
+
 func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
 	return func(obj any) ([]string, error) {
 		pod, ok := obj.(*v1.Pod)
@@ -311,17 +347,17 @@ func podNodeIndexerByLabel(labelKey, labelValue string) cache.IndexFunc {
 	}
 }
 
-// createNodeInformer applies the startup-compiled field projection before
-// Nodes enter the shared informer cache.
+// createNodeInformer applies the Labeler's fixed field projection before Nodes
+// enter the shared informer cache.
 func createNodeInformer(
 	clientset kubernetes.Interface,
 	resyncPeriod time.Duration,
-	projection nodeCacheProjection,
+	deviceCountsEnabled bool,
 ) (cache.SharedIndexInformer, error) {
 	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
 	informer := factory.Core().V1().Nodes().Informer()
 
-	if err := informer.SetTransform(projection.transformNodeForCache); err != nil {
+	if err := informer.SetTransform(transformNodeForCache(deviceCountsEnabled)); err != nil {
 		return nil, fmt.Errorf("failed to set node transform: %w", err)
 	}
 

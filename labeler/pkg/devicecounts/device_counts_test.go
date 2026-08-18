@@ -16,7 +16,6 @@ package devicecounts
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -222,93 +221,6 @@ func TestManagerRequiresResourceSlices(t *testing.T) {
 
 		require.True(t, manager.RequiresResourceSlices())
 	})
-}
-
-func TestManagerRequiredNodeFields(t *testing.T) {
-	tests := []struct {
-		name          string
-		expressions   []string
-		expected      []NodeFieldPath
-		expectedError string
-	}{
-		{
-			name: "static Node paths across classes",
-			expressions: []string{
-				"int(node.metadata.labels['nvidia.com/gpu.count'])",
-				"int(node.status.allocatable['nvidia.com/mlnxnics'])",
-				"int(node.status.capacity['nvidia.com/gpu'])",
-			},
-			expected: []NodeFieldPath{
-				{"metadata", "labels"},
-				{"status", "allocatable"},
-				{"status", "capacity"},
-			},
-		},
-		{
-			name:        "ResourceSlice-only expression",
-			expressions: []string{"resourceSlices.size()"},
-		},
-		{
-			name: "comprehension iterator shadows global Node",
-			expressions: []string{
-				"resourceSlices.map(node, node.spec.devices.size()).size()",
-			},
-		},
-		{
-			name: "global Node remains visible outside shadowing comprehension",
-			expressions: []string{
-				"int(node.metadata.labels['nvidia.com/gpu.count']) + " +
-					"resourceSlices.map(node, node.spec.devices.size()).size()",
-			},
-			expected: []NodeFieldPath{{"metadata", "labels"}},
-		},
-		{
-			name:          "bare Node access",
-			expressions:   []string{"int(node)"},
-			expectedError: "must access node through static fields",
-		},
-		{
-			name: "dynamic Node access",
-			expressions: []string{
-				"int(node['status']['allocatable']['nvidia.com/gpu'])",
-			},
-			expectedError: "must access node through static fields",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			classes := make([]ClassConfig, len(tt.expressions))
-			for i, expression := range tt.expressions {
-				name := fmt.Sprintf("class-%d", i)
-				classes[i] = ClassConfig{
-					Name:    name,
-					Enabled: true,
-					Labels: Labels{
-						Current:  "test.nvsentinel/" + name + "-current",
-						Expected: "test.nvsentinel/" + name + "-expected",
-					},
-					CurrentExpression: expression,
-				}
-			}
-
-			manager, err := NewManager(Config{
-				Enabled: true,
-				Classes: classes,
-			})
-			if tt.expectedError != "" {
-				require.ErrorContains(t, err, tt.expectedError)
-				require.Nil(t, manager)
-				return
-			}
-
-			require.NoError(t, err)
-			require.NotNil(t, manager)
-			requirements := manager.RequiredNodeFields()
-
-			require.ElementsMatch(t, tt.expected, requirements.Paths)
-		})
-	}
 }
 
 func newTestManager(t *testing.T, config Config) *Manager {

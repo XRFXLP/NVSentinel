@@ -23,7 +23,6 @@ import (
 	"strings"
 
 	"github.com/google/cel-go/cel"
-	celast "github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
@@ -71,24 +70,7 @@ type Manager struct {
 
 type compiledClass struct {
 	ClassConfig
-	program               cel.Program
-	nodeFieldRequirements NodeFieldRequirements
-}
-
-// NodeFieldPath is a sequence of Kubernetes JSON field names relative to a
-// Node. For example, {"status", "allocatable"} identifies
-// node.status.allocatable.
-type NodeFieldPath []string
-
-// NodeFieldRequirements describes the Node fields read by enabled CEL
-// expressions. For example:
-//
-//	int(node.status.allocatable["nvidia.com/gpu"])
-//
-// produces the path {"status", "allocatable"}. Requirements from all enabled
-// device-count classes are combined by Manager.RequiredNodeFields.
-type NodeFieldRequirements struct {
-	Paths []NodeFieldPath
+	program cel.Program
 }
 
 // LoadConfig loads expected device-count TOML configuration from a file.
@@ -160,31 +142,6 @@ func (m *Manager) RequiresResourceSlices() bool {
 // ClassCount returns the number of compiled device-count classes.
 func (m *Manager) ClassCount() int {
 	return len(m.classes)
-}
-
-// RequiredNodeFields returns the union of Node fields read by enabled classes.
-func (m *Manager) RequiredNodeFields() NodeFieldRequirements {
-	if !m.Enabled() {
-		return NodeFieldRequirements{}
-	}
-
-	requirements := NodeFieldRequirements{}
-	seen := map[string]struct{}{}
-
-	for _, class := range m.classes {
-		for _, path := range class.nodeFieldRequirements.Paths {
-			key := nodeFieldPathKey(path)
-			if _, exists := seen[key]; exists {
-				continue
-			}
-
-			seen[key] = struct{}{}
-
-			requirements.Paths = append(requirements.Paths, path)
-		}
-	}
-
-	return requirements
 }
 
 // ReconcileNodeLabelsInPlace evaluates all enabled device-count classes for a node.
@@ -314,118 +271,10 @@ func compileDeviceCountClass(
 			index, classConfig.Name, err)
 	}
 
-	nodeFieldRequirements, hasUnsupportedNodeAccess := extractNodeFieldRequirements(ast.NativeRep())
-	if hasUnsupportedNodeAccess {
-		return compiledClass{}, false, fmt.Errorf(
-			"expectedDeviceCounts.classes[%d] (%s): currentExpression must access node through static fields",
-			index, classConfig.Name,
-		)
-	}
-
 	return compiledClass{
-		ClassConfig:           classConfig,
-		program:               program,
-		nodeFieldRequirements: nodeFieldRequirements,
+		ClassConfig: classConfig,
+		program:     program,
 	}, true, nil
-}
-
-// extractNodeFieldRequirements extracts statically selected Node paths from a
-// compiled CEL expression. The boolean result reports unsupported whole-Node
-// or dynamic top-level access.
-func extractNodeFieldRequirements(compiledAST *celast.AST) (NodeFieldRequirements, bool) {
-	requirements := NodeFieldRequirements{}
-	seen := map[string]struct{}{}
-
-	// The navigable AST lets us walk upward from each "node" identifier.
-	// For example, node.status.allocatable produces:
-	// node -> status -> allocatable.
-	root := celast.NavigateAST(compiledAST)
-	for _, expr := range celast.MatchDescendants(root, celast.KindMatcher(celast.IdentKind)) {
-		if expr.AsIdent() != "node" {
-			continue
-		}
-
-		if isComprehensionLocal(expr, "node") {
-			continue
-		}
-
-		path := NodeFieldPath{}
-		current := expr
-		parent, hasParent := current.Parent()
-		// Follow only dot selections whose operand is the expression below it.
-		// Calls and index operations end the statically identifiable path.
-		for hasParent && parent.Kind() == celast.SelectKind &&
-			parent.AsSelect().Operand().ID() == current.ID() {
-			path = append(path, parent.AsSelect().FieldName())
-			current = parent
-			parent, hasParent = current.Parent()
-		}
-
-		if len(path) == 0 {
-			// A bare node identifier means the expression passed the whole Node
-			// somewhere or used a dynamic top-level key such as node[key].
-			return NodeFieldRequirements{}, true
-		}
-
-		key := nodeFieldPathKey(path)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-
-		seen[key] = struct{}{}
-
-		requirements.Paths = append(requirements.Paths, path)
-	}
-
-	return requirements, false
-}
-
-// nodeFieldPathKey returns an unambiguous key for deduplicating field paths.
-// Kubernetes JSON field names cannot contain a NUL byte.
-func nodeFieldPathKey(path NodeFieldPath) string {
-	return strings.Join(path, "\x00")
-}
-
-// isComprehensionLocal reports whether an identifier resolves to an iterator
-// or accumulator introduced by a surrounding CEL comprehension. CEL macros
-// such as map and filter compile into comprehensions, and their local variables
-// may legally shadow the global "node" variable.
-func isComprehensionLocal(expr celast.NavigableExpr, name string) bool {
-	child := expr
-	parent, hasParent := child.Parent()
-
-	for hasParent {
-		if parent.Kind() == celast.ComprehensionKind {
-			if comprehensionBindsName(parent.AsComprehension(), child.ID(), name) {
-				return true
-			}
-		}
-
-		child = parent
-		parent, hasParent = child.Parent()
-	}
-
-	return false
-}
-
-// comprehensionBindsName applies CEL's comprehension scopes: iterator
-// variables are visible in the loop condition and step, while the accumulator
-// is also visible in the result expression.
-func comprehensionBindsName(comprehension celast.ComprehensionExpr, expressionID int64, name string) bool {
-	inLoop := expressionID == comprehension.LoopCondition().ID() ||
-		expressionID == comprehension.LoopStep().ID()
-
-	inResult := expressionID == comprehension.Result().ID()
-	if !inLoop && !inResult {
-		return false
-	}
-
-	if comprehension.AccuVar() == name {
-		return true
-	}
-
-	return inLoop && (comprehension.IterVar() == name ||
-		comprehension.HasIterVar2() && comprehension.IterVar2() == name)
 }
 
 func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {

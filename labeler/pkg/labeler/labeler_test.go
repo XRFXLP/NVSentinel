@@ -1176,9 +1176,14 @@ func TestLabelerInformerTransforms(t *testing.T) {
 	}, cachedNode)
 }
 
-func TestNodeInformerProjectsDeviceCountCELFields(t *testing.T) {
+func TestNodeInformer_DeviceCountsEnabled_RetainsSupportedFields(t *testing.T) {
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "node-a",
+			Labels:      map[string]string{"nvidia.com/gpu.count": "8"},
+			Annotations: map[string]string{"drop": "annotation"},
+		},
+		Spec: corev1.NodeSpec{ProviderID: "drop-provider"},
 		Status: corev1.NodeStatus{
 			Allocatable: corev1.ResourceList{
 				corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("8"),
@@ -1217,40 +1222,12 @@ func TestNodeInformerProjectsDeviceCountCELFields(t *testing.T) {
 
 	cachedNode, err := labeler.getNodeFromCache(node.Name)
 	require.NoError(t, err)
+	assert.Equal(t, node.Labels["nvidia.com/gpu.count"], cachedNode.Labels["nvidia.com/gpu.count"])
 	assert.Equal(t, node.Status.Allocatable, cachedNode.Status.Allocatable)
-	assert.Nil(t, cachedNode.Status.Capacity)
+	assert.Equal(t, node.Status.Capacity, cachedNode.Status.Capacity)
+	assert.Empty(t, cachedNode.Annotations)
+	assert.Empty(t, cachedNode.Spec)
 	assert.Nil(t, cachedNode.Status.Conditions)
-}
-
-func TestNewLabelerRejectsDynamicDeviceCountNodeAccess(t *testing.T) {
-	config := deviceCountConfigWithExpression(
-		"int(node['status']['allocatable']['nvidia.com/gpu'])",
-	)
-
-	_, err := NewLabeler(
-		fake.NewSimpleClientset(),
-		time.Minute,
-		"nvidia-dcgm",
-		"nvidia-driver-daemonset",
-		"nvidia-driver-installer",
-		"",
-		false,
-		false,
-		config,
-		false,
-	)
-	require.ErrorContains(t, err, "must access node through static fields")
-}
-
-func TestNewNodeCacheProjection_NodeNamedCELIterator_Accepted(t *testing.T) {
-	config := deviceCountConfigWithExpression(
-		"resourceSlices.map(node, node.spec.devices.size()).size()",
-	)
-	manager, err := devicecounts.NewManager(config)
-	require.NoError(t, err)
-
-	_, err = newNodeCacheProjection(manager.RequiredNodeFields())
-	require.NoError(t, err)
 }
 
 func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
