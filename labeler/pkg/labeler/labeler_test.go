@@ -168,6 +168,82 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			expectedDriverLabel: "true",
 		},
 		{
+			name: "ready NVIDIADriver CRD pod adds driver label",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "crd-driver-pod",
+					Labels: map[string]string{
+						"app":                "nvidia-gpu-driver-ubuntu22.04-7d9f5c",
+						driverComponentLabel: driverComponentValue,
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "test-node",
+					Containers: []corev1.Container{
+						{
+							Name:  "dcgm",
+							Image: "nvcr.io/nvidia/driver:550.x",
+						},
+					},
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					Conditions: []corev1.PodCondition{
+						{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			existingPods: []*corev1.Pod{},
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-node",
+					Labels: map[string]string{},
+				},
+			},
+			expectedDCGMLabel:   "",
+			expectedDriverLabel: "true",
+		},
+		{
+			name: "NVIDIADriver CRD pod deletion removes driver label",
+			pod:  nil,
+			existingPods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "crd-driver-pod",
+						Labels: map[string]string{
+							"app":                "nvidia-gpu-driver-ubuntu22.04-7d9f5c",
+							driverComponentLabel: driverComponentValue,
+						},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-node",
+						Containers: []corev1.Container{
+							{
+								Name:  "dcgm",
+								Image: "nvcr.io/nvidia/driver:550.x",
+							},
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+						},
+					},
+				},
+			},
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node",
+					Labels: map[string]string{
+						DriverInstalledLabel: "true",
+					},
+				},
+			},
+			expectedDCGMLabel:   "",
+			expectedDriverLabel: "",
+		},
+		{
 			name: "ready GKE driver installer pod adds driver label",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1316,7 +1392,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.Nil(t, labeler.resourceSliceInformer)
-		require.Len(t, labeler.informersSynced, 3)
+		require.Len(t, labeler.informersSynced, 4)
 	})
 
 	t.Run("node-only enabled config does not create ResourceSlice informer", func(t *testing.T) {
@@ -1334,7 +1410,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.Nil(t, labeler.resourceSliceInformer)
-		require.Len(t, labeler.informersSynced, 3)
+		require.Len(t, labeler.informersSynced, 4)
 	})
 
 	t.Run("ResourceSlice expression creates ResourceSlice informer", func(t *testing.T) {
@@ -1352,7 +1428,7 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.NotNil(t, labeler.resourceSliceInformer)
-		require.Len(t, labeler.informersSynced, 4)
+		require.Len(t, labeler.informersSynced, 5)
 	})
 }
 
