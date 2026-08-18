@@ -1352,6 +1352,7 @@ func startTransformTestLabeler(
 	labeler.ctx = ctx
 
 	go labeler.podInformer.Run(ctx.Done())
+	go labeler.crdDriverInformer.Run(ctx.Done())
 	go labeler.gkeInstallerInformer.Run(ctx.Done())
 	go labeler.nodeInformer.Run(ctx.Done())
 	if labeler.resourceSliceInformer != nil {
