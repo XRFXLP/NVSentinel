@@ -40,7 +40,8 @@ func TestManagerCacheOptionsKeepsPodCacheClusterWide(t *testing.T) {
 	options := ManagerCacheOptions()
 	podOptions := podCacheOptions(t, options)
 
-	assert.Nil(t, podOptions.Namespaces)
+	assert.NotNil(t, podOptions.Namespaces)
+	assert.Empty(t, podOptions.Namespaces)
 	require.NotNil(t, podOptions.Transform)
 }
 
@@ -53,7 +54,7 @@ func TestManagerCacheOptionsSupportsDynamicPreflightConfigNamespaces(t *testing.
 	reconcile(t, reconciler, pfc.Namespace, pfc.Name)
 
 	assert.Equal(t, "volcano", resolver.For(pfc.Namespace).Name())
-	assert.Nil(t, podCacheOptions(t, options).Namespaces,
+	assert.Empty(t, podCacheOptions(t, options).Namespaces,
 		"the Pod cache must remain cluster-wide when namespace overrides change")
 }
 
@@ -116,18 +117,14 @@ func TestTransformPodForCacheRetainsRequiredFields(t *testing.T) {
 		},
 		Spec: corev1.PodSpec{
 			NodeName: "node-a",
-			Volumes: []corev1.Volume{
-				{
-					Name: gangtypes.GangConfigVolumeName,
-					VolumeSource: corev1.VolumeSource{
-						ConfigMap: &corev1.ConfigMapVolumeSource{
-							LocalObjectReference: corev1.LocalObjectReference{Name: "gang-config"},
-							Optional:             &optional,
-						},
+			Volumes: []corev1.Volume{{
+				Name: gangtypes.GangConfigVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "gang-config"},
 					},
 				},
-				{Name: "unused"},
-			},
+			}},
 			SchedulingGroup: &corev1.PodSchedulingGroup{PodGroupName: &podGroup},
 		},
 		Status: corev1.PodStatus{
@@ -179,16 +176,12 @@ func TestTransformPodForCache_UnstructuredPod_RetainsRequiredFields(t *testing.T
 	volumes, found, err := unstructured.NestedSlice(got.Object, "spec", "volumes")
 	require.NoError(t, err)
 	require.True(t, found)
-	assert.Equal(t, []any{
-		map[string]any{
-			"name": gangtypes.GangConfigVolumeName,
-			"configMap": map[string]any{
-				"name":     "gang-config",
-				"optional": true,
-			},
+	assert.Equal(t, []any{map[string]any{
+		"name": gangtypes.GangConfigVolumeName,
+		"configMap": map[string]any{
+			"name": "gang-config",
 		},
-		map[string]any{"name": "unused"},
-	}, volumes)
+	}}, volumes)
 
 	assert.Equal(t, "training", mustNestedString(t, got, "spec", "schedulingGroup", "podGroupName"))
 	assert.Equal(t, "workload", mustNestedString(t, got, "spec", "workloadRef", "name"))

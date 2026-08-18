@@ -17,6 +17,7 @@ package controller
 import (
 	"fmt"
 
+	gangtypes "github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -31,10 +32,10 @@ func ManagerCacheOptions() cache.Options {
 	return cache.Options{
 		ByObject: map[client.Object]cache.ByObject{
 			&corev1.Pod{}: {
-				// Namespaces is intentionally not set. PreflightConfig resources
-				// can add namespace-specific discoverers after the manager starts,
-				// while controller-runtime cache namespace scope is immutable.
-				Transform: transformPodForCache,
+				// An empty map explicitly keeps this cache cluster-wide instead
+				// of inheriting any future DefaultNamespaces configuration.
+				Namespaces: map[string]cache.Config{},
+				Transform:  transformPodForCache,
 			},
 		},
 	}
@@ -70,7 +71,7 @@ func transformTypedPod(pod *corev1.Pod) *corev1.Pod {
 	}
 	pod.Spec = corev1.PodSpec{
 		NodeName:        spec.NodeName,
-		Volumes:         spec.Volumes,
+		Volumes:         gangConfigVolumesForCache(spec.Volumes),
 		SchedulingGroup: spec.SchedulingGroup,
 	}
 	pod.Status = corev1.PodStatus{
@@ -79,6 +80,27 @@ func transformTypedPod(pod *corev1.Pod) *corev1.Pod {
 	}
 
 	return pod
+}
+
+// gangConfigVolumesForCache keeps the injected gang volume identity and the
+// ConfigMap name used by reconciliation.
+func gangConfigVolumesForCache(volumes []corev1.Volume) []corev1.Volume {
+	for _, volume := range volumes {
+		if volume.Name != gangtypes.GangConfigVolumeName {
+			continue
+		}
+
+		cached := corev1.Volume{Name: volume.Name}
+		if volume.ConfigMap != nil {
+			cached.ConfigMap = &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: volume.ConfigMap.Name},
+			}
+		}
+
+		return []corev1.Volume{cached}
+	}
+
+	return nil
 }
 
 func transformUnstructuredPod(pod *unstructured.Unstructured) *unstructured.Unstructured {
@@ -93,7 +115,7 @@ func transformUnstructuredPod(pod *unstructured.Unstructured) *unstructured.Unst
 	transformed.SetLabels(pod.GetLabels())
 
 	copyNestedField(pod, transformed, "spec", "nodeName")
-	copyNestedField(pod, transformed, "spec", "volumes")
+	copyUnstructuredGangConfigVolume(pod, transformed)
 	copyNestedField(pod, transformed, "spec", "schedulingGroup")
 	// Kubernetes 1.35 workloadRef is unstructured because the field was
 	// replaced by schedulingGroup in the Kubernetes 1.36 Go API.
@@ -104,6 +126,29 @@ func transformUnstructuredPod(pod *unstructured.Unstructured) *unstructured.Unst
 	pod.Object = transformed.Object
 
 	return pod
+}
+
+func copyUnstructuredGangConfigVolume(from, to *unstructured.Unstructured) {
+	volumes, found, err := unstructured.NestedSlice(from.Object, "spec", "volumes")
+	if err != nil || !found {
+		return
+	}
+
+	for _, value := range volumes {
+		volume, ok := value.(map[string]any)
+		if !ok || volume["name"] != gangtypes.GangConfigVolumeName {
+			continue
+		}
+
+		cached := map[string]any{"name": gangtypes.GangConfigVolumeName}
+		if name, exists, _ := unstructured.NestedString(volume, "configMap", "name"); exists {
+			cached["configMap"] = map[string]any{"name": name}
+		}
+
+		_ = unstructured.SetNestedSlice(to.Object, []any{cached}, "spec", "volumes")
+
+		return
+	}
 }
 
 // copyNestedField copies one field without retaining its surrounding object.
