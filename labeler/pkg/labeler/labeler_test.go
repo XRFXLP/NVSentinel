@@ -1249,7 +1249,7 @@ func TestNewNodeCacheProjection_NodeNamedCELIterator_Accepted(t *testing.T) {
 	manager, err := devicecounts.NewManager(config)
 	require.NoError(t, err)
 
-	_, err = newNodeCacheProjection(manager.NodeFieldRequirements())
+	_, err = newNodeCacheProjection(manager.RequiredNodeFields())
 	require.NoError(t, err)
 }
 

@@ -112,7 +112,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("create expected device count manager: %w", err)
 	}
 
-	nodeProjection, err := newNodeCacheProjection(deviceCounts.NodeFieldRequirements())
+	nodeProjection, err := newNodeCacheProjection(deviceCounts.RequiredNodeFields())
 	if err != nil {
 		return nil, fmt.Errorf("create node cache projection: %w", err)
 	}
@@ -321,7 +321,7 @@ func createNodeInformer(
 	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
 	informer := factory.Core().V1().Nodes().Informer()
 
-	if err := informer.SetTransform(projection.transform); err != nil {
+	if err := informer.SetTransform(projection.transformNodeForCache); err != nil {
 		return nil, fmt.Errorf("failed to set node transform: %w", err)
 	}
 

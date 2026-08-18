@@ -224,11 +224,11 @@ func TestManagerRequiresResourceSlices(t *testing.T) {
 	})
 }
 
-func TestManagerNodeFieldRequirements(t *testing.T) {
+func TestManagerRequiredNodeFields(t *testing.T) {
 	tests := []struct {
 		name          string
 		expressions   []string
-		expected      [][]string
+		expected      []NodeFieldPath
 		expectedError string
 	}{
 		{
@@ -238,7 +238,7 @@ func TestManagerNodeFieldRequirements(t *testing.T) {
 				"int(node.status.allocatable['nvidia.com/mlnxnics'])",
 				"int(node.status.capacity['nvidia.com/gpu'])",
 			},
-			expected: [][]string{
+			expected: []NodeFieldPath{
 				{"metadata", "labels"},
 				{"status", "allocatable"},
 				{"status", "capacity"},
@@ -260,7 +260,7 @@ func TestManagerNodeFieldRequirements(t *testing.T) {
 				"int(node.metadata.labels['nvidia.com/gpu.count']) + " +
 					"resourceSlices.map(node, node.spec.devices.size()).size()",
 			},
-			expected: [][]string{{"metadata", "labels"}},
+			expected: []NodeFieldPath{{"metadata", "labels"}},
 		},
 		{
 			name:          "bare Node access",
@@ -304,7 +304,7 @@ func TestManagerNodeFieldRequirements(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, manager)
-			requirements := manager.NodeFieldRequirements()
+			requirements := manager.RequiredNodeFields()
 
 			require.ElementsMatch(t, tt.expected, requirements.Paths)
 		})

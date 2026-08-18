@@ -75,10 +75,20 @@ type compiledClass struct {
 	nodeFieldRequirements NodeFieldRequirements
 }
 
-// NodeFieldRequirements describes the Node fields read by enabled CEL expressions.
-// Paths contain JSON field names relative to the Node object.
+// NodeFieldPath is a sequence of Kubernetes JSON field names relative to a
+// Node. For example, {"status", "allocatable"} identifies
+// node.status.allocatable.
+type NodeFieldPath []string
+
+// NodeFieldRequirements describes the Node fields read by enabled CEL
+// expressions. For example:
+//
+//	int(node.status.allocatable["nvidia.com/gpu"])
+//
+// produces the path {"status", "allocatable"}. Requirements from all enabled
+// device-count classes are combined by Manager.RequiredNodeFields.
 type NodeFieldRequirements struct {
-	Paths [][]string
+	Paths []NodeFieldPath
 }
 
 // LoadConfig loads expected device-count TOML configuration from a file.
@@ -152,8 +162,8 @@ func (m *Manager) ClassCount() int {
 	return len(m.classes)
 }
 
-// NodeFieldRequirements returns the union of Node fields read by enabled classes.
-func (m *Manager) NodeFieldRequirements() NodeFieldRequirements {
+// RequiredNodeFields returns the union of Node fields read by enabled classes.
+func (m *Manager) RequiredNodeFields() NodeFieldRequirements {
 	if !m.Enabled() {
 		return NodeFieldRequirements{}
 	}
@@ -163,7 +173,7 @@ func (m *Manager) NodeFieldRequirements() NodeFieldRequirements {
 
 	for _, class := range m.classes {
 		for _, path := range class.nodeFieldRequirements.Paths {
-			key := strings.Join(path, "\x00")
+			key := nodeFieldPathKey(path)
 			if _, exists := seen[key]; exists {
 				continue
 			}
@@ -304,8 +314,8 @@ func compileDeviceCountClass(
 			index, classConfig.Name, err)
 	}
 
-	nodeFieldRequirements, hasDynamicNodeAccess := nodeFieldsReferencedBy(ast.NativeRep())
-	if hasDynamicNodeAccess {
+	nodeFieldRequirements, hasUnsupportedNodeAccess := extractNodeFieldRequirements(ast.NativeRep())
+	if hasUnsupportedNodeAccess {
 		return compiledClass{}, false, fmt.Errorf(
 			"expectedDeviceCounts.classes[%d] (%s): currentExpression must access node through static fields",
 			index, classConfig.Name,
@@ -319,10 +329,10 @@ func compileDeviceCountClass(
 	}, true, nil
 }
 
-// nodeFieldsReferencedBy extracts statically selected Node paths from a
+// extractNodeFieldRequirements extracts statically selected Node paths from a
 // compiled CEL expression. The boolean result reports unsupported whole-Node
 // or dynamic top-level access.
-func nodeFieldsReferencedBy(compiledAST *celast.AST) (NodeFieldRequirements, bool) {
+func extractNodeFieldRequirements(compiledAST *celast.AST) (NodeFieldRequirements, bool) {
 	requirements := NodeFieldRequirements{}
 	seen := map[string]struct{}{}
 
@@ -335,11 +345,11 @@ func nodeFieldsReferencedBy(compiledAST *celast.AST) (NodeFieldRequirements, boo
 			continue
 		}
 
-		if isComprehensionBinding(expr, "node") {
+		if isComprehensionLocal(expr, "node") {
 			continue
 		}
 
-		path := []string{}
+		path := NodeFieldPath{}
 		current := expr
 		parent, hasParent := current.Parent()
 		// Follow only dot selections whose operand is the expression below it.
@@ -357,7 +367,7 @@ func nodeFieldsReferencedBy(compiledAST *celast.AST) (NodeFieldRequirements, boo
 			return NodeFieldRequirements{}, true
 		}
 
-		key := strings.Join(path, "\x00")
+		key := nodeFieldPathKey(path)
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -370,11 +380,17 @@ func nodeFieldsReferencedBy(compiledAST *celast.AST) (NodeFieldRequirements, boo
 	return requirements, false
 }
 
-// isComprehensionBinding reports whether an identifier resolves to an iterator
+// nodeFieldPathKey returns an unambiguous key for deduplicating field paths.
+// Kubernetes JSON field names cannot contain a NUL byte.
+func nodeFieldPathKey(path NodeFieldPath) string {
+	return strings.Join(path, "\x00")
+}
+
+// isComprehensionLocal reports whether an identifier resolves to an iterator
 // or accumulator introduced by a surrounding CEL comprehension. CEL macros
 // such as map and filter compile into comprehensions, and their local variables
 // may legally shadow the global "node" variable.
-func isComprehensionBinding(expr celast.NavigableExpr, name string) bool {
+func isComprehensionLocal(expr celast.NavigableExpr, name string) bool {
 	child := expr
 	parent, hasParent := child.Parent()
 
@@ -395,11 +411,11 @@ func isComprehensionBinding(expr celast.NavigableExpr, name string) bool {
 // comprehensionBindsName applies CEL's comprehension scopes: iterator
 // variables are visible in the loop condition and step, while the accumulator
 // is also visible in the result expression.
-func comprehensionBindsName(comprehension celast.ComprehensionExpr, childID int64, name string) bool {
-	inLoop := childID == comprehension.LoopCondition().ID() ||
-		childID == comprehension.LoopStep().ID()
+func comprehensionBindsName(comprehension celast.ComprehensionExpr, expressionID int64, name string) bool {
+	inLoop := expressionID == comprehension.LoopCondition().ID() ||
+		expressionID == comprehension.LoopStep().ID()
 
-	inResult := childID == comprehension.Result().ID()
+	inResult := expressionID == comprehension.Result().ID()
 	if !inLoop && !inResult {
 		return false
 	}
