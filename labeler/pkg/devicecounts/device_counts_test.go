@@ -249,6 +249,20 @@ func TestManagerNodeFieldRequirements(t *testing.T) {
 			expressions: []string{"resourceSlices.size()"},
 		},
 		{
+			name: "comprehension iterator shadows global Node",
+			expressions: []string{
+				"resourceSlices.map(node, node.spec.devices.size()).size()",
+			},
+		},
+		{
+			name: "global Node remains visible outside shadowing comprehension",
+			expressions: []string{
+				"int(node.metadata.labels['nvidia.com/gpu.count']) + " +
+					"resourceSlices.map(node, node.spec.devices.size()).size()",
+			},
+			expected: [][]string{{"metadata", "labels"}},
+		},
+		{
 			name:          "bare Node access",
 			expressions:   []string{"int(node)"},
 			expectedError: "must access node through static fields",

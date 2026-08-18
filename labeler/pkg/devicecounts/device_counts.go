@@ -335,6 +335,10 @@ func nodeFieldsReferencedBy(compiledAST *celast.AST) (NodeFieldRequirements, boo
 			continue
 		}
 
+		if isComprehensionBinding(expr, "node") {
+			continue
+		}
+
 		path := []string{}
 		current := expr
 		parent, hasParent := current.Parent()
@@ -364,6 +368,48 @@ func nodeFieldsReferencedBy(compiledAST *celast.AST) (NodeFieldRequirements, boo
 	}
 
 	return requirements, false
+}
+
+// isComprehensionBinding reports whether an identifier resolves to an iterator
+// or accumulator introduced by a surrounding CEL comprehension. CEL macros
+// such as map and filter compile into comprehensions, and their local variables
+// may legally shadow the global "node" variable.
+func isComprehensionBinding(expr celast.NavigableExpr, name string) bool {
+	child := expr
+	parent, hasParent := child.Parent()
+
+	for hasParent {
+		if parent.Kind() == celast.ComprehensionKind {
+			if comprehensionBindsName(parent.AsComprehension(), child.ID(), name) {
+				return true
+			}
+		}
+
+		child = parent
+		parent, hasParent = child.Parent()
+	}
+
+	return false
+}
+
+// comprehensionBindsName applies CEL's comprehension scopes: iterator
+// variables are visible in the loop condition and step, while the accumulator
+// is also visible in the result expression.
+func comprehensionBindsName(comprehension celast.ComprehensionExpr, childID int64, name string) bool {
+	inLoop := childID == comprehension.LoopCondition().ID() ||
+		childID == comprehension.LoopStep().ID()
+
+	inResult := childID == comprehension.Result().ID()
+	if !inLoop && !inResult {
+		return false
+	}
+
+	if comprehension.AccuVar() == name {
+		return true
+	}
+
+	return inLoop && (comprehension.IterVar() == name ||
+		comprehension.HasIterVar2() && comprehension.IterVar2() == name)
 }
 
 func validateDeviceCountClassConfig(index int, classConfig ClassConfig) error {
