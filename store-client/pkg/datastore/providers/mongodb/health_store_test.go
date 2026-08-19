@@ -24,8 +24,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -391,6 +394,161 @@ func TestMongoHealthEventStore_FindHealthEventsByQueryBatched(t *testing.T) {
 
 		mockDB.AssertExpectations(t)
 	})
+}
+
+func TestMongoHealthEventStore_FindHealthEventIDsByQueryBatched(t *testing.T) {
+	ctx := context.Background()
+	mockDB := new(MockDatabaseClient)
+	mockCursor := new(MockCursor)
+	store := &MongoHealthEventStore{databaseClient: mockDB}
+	objectID := primitive.NewObjectID()
+	secondObjectID := primitive.NewObjectID()
+
+	projectionOptions := mock.MatchedBy(func(opts *client.FindOptions) bool {
+		return opts != nil &&
+			reflect.DeepEqual(opts.Projection, map[string]interface{}{"_id": 1})
+	})
+	mockDB.On("Find", ctx, mock.Anything, projectionOptions).Return(mockCursor, nil)
+	mockCursor.On("Close", ctx).Return(nil)
+	mockCursor.On("Next", ctx).Return(true).Twice()
+	mockCursor.On("Next", ctx).Return(false).Once()
+
+	call := 0
+	mockCursor.On("Decode", mock.AnythingOfType("*mongodb.projectedHealthEventID")).
+		Return(nil).
+		Run(func(args mock.Arguments) {
+			document := args.Get(0).(*projectedHealthEventID)
+			if call == 0 {
+				document.ID = objectID
+			} else {
+				document.ID = secondObjectID
+			}
+			call++
+		})
+	mockCursor.On("Err").Return(nil)
+
+	var batches [][]string
+	err := store.FindHealthEventIDsByQueryBatched(ctx, mockQueryBuilder{}, 1, func(ids []string) error {
+		assert.Equal(t, len(batches)+1, call, "each batch must be delivered before the next document is decoded")
+		batches = append(batches, ids)
+
+		return nil
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, [][]string{{objectID.Hex()}, {secondObjectID.Hex()}}, batches)
+	mockDB.AssertExpectations(t)
+	mockCursor.AssertExpectations(t)
+}
+
+func TestMongoHealthEventStore_FindHealthEventByID(t *testing.T) {
+	ctx := context.Background()
+	mockDB := new(MockDatabaseClient)
+	mockResult := new(MockSingleResult)
+	store := &MongoHealthEventStore{databaseClient: mockDB}
+	objectID := primitive.NewObjectID()
+
+	mockDB.On("FindOne", ctx, map[string]interface{}{"_id": objectID}, (*client.FindOneOptions)(nil)).
+		Return(mockResult, nil)
+	mockResult.On("Err").Return(nil)
+	mockResult.On("Decode", mock.AnythingOfType("*mongodb.typedHealthEventDocument")).
+		Return(nil).
+		Run(func(args mock.Arguments) {
+			document := args.Get(0).(*typedHealthEventDocument)
+			document.HealthEvent = &protos.HealthEvent{NodeName: "node-1"}
+			status := datastore.Quarantined
+			document.HealthEventStatus = &datastore.HealthEventStatus{NodeQuarantined: &status}
+		})
+
+	event, err := store.FindHealthEventByID(ctx, objectID.Hex())
+
+	require.NoError(t, err)
+	require.NotNil(t, event)
+	assert.Equal(t, "node-1", event.HealthEvent.NodeName)
+	assert.Equal(t, "Quarantined", event.HealthEventStatus.NodeQuarantined)
+	mockDB.AssertExpectations(t)
+	mockResult.AssertExpectations(t)
+}
+
+func TestMongoHealthEventStore_FindHealthEventByID_BSONCompatibility(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		faultRemediated    interface{}
+		expectedRemediated bool
+	}{
+		{
+			name:               "historical plain boolean",
+			faultRemediated:    false,
+			expectedRemediated: false,
+		},
+		{
+			name:               "wrapped boolean",
+			faultRemediated:    bson.D{{Key: "value", Value: true}},
+			expectedRemediated: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			mockDB := new(MockDatabaseClient)
+			mockResult := new(MockSingleResult)
+			store := &MongoHealthEventStore{databaseClient: mockDB}
+			objectID := primitive.NewObjectID()
+			createdAt := time.Unix(1_700_000_000, 0).UTC()
+
+			document, err := bson.Marshal(bson.D{
+				{Key: "createdAt", Value: createdAt},
+				{Key: "healthevent", Value: bson.D{
+					{Key: "id", Value: "event-1"},
+					{Key: "nodename", Value: "node-1"},
+					{Key: "recommendedaction", Value: int32(protos.RecommendedAction_RESTART_BM)},
+					{Key: "metadata", Value: bson.D{{Key: "traceId", Value: "trace-1"}}},
+					{Key: "entitiesimpacted", Value: bson.A{bson.D{
+						{Key: "entitytype", Value: "GPU"},
+						{Key: "entityvalue", Value: "0"},
+					}}},
+				}},
+				{Key: "healtheventstatus", Value: bson.D{
+					{Key: "nodequarantined", Value: "Quarantined"},
+					{Key: "userpodsevictionstatus", Value: bson.D{
+						{Key: "status", Value: "Succeeded"},
+						{Key: "message", Value: "drained"},
+					}},
+					{Key: "faultremediated", Value: test.faultRemediated},
+					{Key: "quarantinefinishtimestamp", Value: bson.D{
+						{Key: "seconds", Value: createdAt.Unix()},
+						{Key: "nanos", Value: int32(0)},
+					}},
+					{Key: "spanids", Value: bson.D{{Key: "node_drainer", Value: "span-1"}}},
+				}},
+			})
+			require.NoError(t, err)
+
+			mockDB.On("FindOne", ctx, map[string]interface{}{"_id": objectID}, (*client.FindOneOptions)(nil)).
+				Return(mockResult, nil)
+			mockResult.On("Err").Return(nil)
+			mockResult.On("Decode", mock.AnythingOfType("*mongodb.typedHealthEventDocument")).
+				Return(nil).
+				Run(func(args mock.Arguments) {
+					require.NoError(t, bson.Unmarshal(document, args.Get(0)))
+				})
+
+			event, err := store.FindHealthEventByID(ctx, objectID.Hex())
+
+			require.NoError(t, err)
+			require.NotNil(t, event)
+			assert.Equal(t, createdAt, event.CreatedAt)
+			assert.Equal(t, "node-1", event.HealthEvent.NodeName)
+			assert.Equal(t, protos.RecommendedAction_RESTART_BM, event.HealthEvent.RecommendedAction)
+			assert.Equal(t, "trace-1", event.HealthEvent.Metadata["traceId"])
+			require.Len(t, event.HealthEvent.EntitiesImpacted, 1)
+			assert.Equal(t, "GPU", event.HealthEvent.EntitiesImpacted[0].EntityType)
+			assert.Equal(t, "Succeeded", event.HealthEventStatus.UserPodsEvictionStatus.Status)
+			require.NotNil(t, event.HealthEventStatus.FaultRemediated)
+			assert.Equal(t, test.expectedRemediated, event.HealthEventStatus.FaultRemediated.Value)
+			assert.Equal(t, createdAt.Unix(), event.HealthEventStatus.QuarantineFinishTimestamp.Seconds)
+			assert.Equal(t, "span-1", event.HealthEventStatus.SpanIds["node_drainer"])
+		})
+	}
 }
 
 func TestNormalizeValue(t *testing.T) {

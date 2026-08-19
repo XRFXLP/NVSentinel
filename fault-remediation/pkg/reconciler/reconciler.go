@@ -90,10 +90,11 @@ type FaultRemediationReconciler struct {
 	ds                datastore.DataStore
 	Watcher           datastore.ChangeStreamWatcher
 	healthEventStore  datastore.HealthEventStore
+	coldStartReader   datastore.HealthEventColdStartReader
 	Config            ReconcilerConfig
 	annotationManager annotation.NodeAnnotationManagerInterface
 	dryRun            bool
-	coldStartCh       chan event.TypedGenericEvent[*datastore.EventWithToken]
+	coldStartCh       chan event.TypedGenericEvent[reconcileRequest]
 	eventSessions     sync.Map
 }
 
@@ -109,10 +110,13 @@ func NewFaultRemediationReconciler(
 	config ReconcilerConfig,
 	dryRun bool,
 ) *FaultRemediationReconciler {
+	coldStartReader, _ := healthEventStore.(datastore.HealthEventColdStartReader)
+
 	return &FaultRemediationReconciler{
 		ds:                ds,
 		Watcher:           watcher,
 		healthEventStore:  healthEventStore,
+		coldStartReader:   coldStartReader,
 		Config:            config,
 		annotationManager: config.RemediationClient.GetAnnotationManager(),
 		dryRun:            dryRun,
@@ -141,9 +145,25 @@ func (r *FaultRemediationReconciler) Reconcile(
 		return ctrl.Result{}, nil
 	}
 
+	return r.reconcileHealthEvent(ctx, &healthEventWithStatus, eventReference{
+		documentID:  healthEventWithStatus.ID,
+		resumeToken: event.ResumeToken,
+	})
+}
+
+func (r *FaultRemediationReconciler) reconcileHealthEvent(
+	ctx context.Context,
+	healthEventWithStatus *events.HealthEventDoc,
+	eventRef eventReference,
+) (result ctrl.Result, reconcileErr error) {
 	// Safety checks for nil pointers
-	if healthEventWithStatus.HealthEvent == nil {
+	if healthEventWithStatus == nil || healthEventWithStatus.HealthEvent == nil {
 		slog.WarnContext(ctx, "HealthEvent is nil, skipping processing")
+		return ctrl.Result{}, nil
+	}
+
+	if healthEventWithStatus.HealthEventStatus == nil {
+		slog.WarnContext(ctx, "HealthEventStatus is nil, skipping processing")
 		return ctrl.Result{}, nil
 	}
 
@@ -153,11 +173,11 @@ func (r *FaultRemediationReconciler) Reconcile(
 	sessionCtx, session := r.startOrReuseEventSession(ctx,
 		traceID,
 		parentSpanID,
-		healthEventWithStatus.ID,
+		eventRef.documentID,
 	)
 
 	defer func() {
-		r.completeEventSession(healthEventWithStatus.ID, session, result, reconcileErr)
+		r.completeEventSession(eventRef.documentID, session, result, reconcileErr)
 	}()
 
 	ctx, span := tracing.StartSpan(sessionCtx, "fault_remediation.reconcile")
@@ -166,14 +186,15 @@ func (r *FaultRemediationReconciler) Reconcile(
 
 	// Add health event attributes to span (nil-safe: span and optional status fields)
 	tracing.AddHealthEventStatusAttributes(
-		span, healthEventWithStatus.HealthEventStatus, healthEventWithStatus.ID)
+		span, healthEventWithStatus.HealthEventStatus, eventRef.documentID)
 	nodeQuarantined := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
 	if nodeQuarantined == string(model.UnQuarantined) || nodeQuarantined == string(model.Cancelled) {
-		return r.handleCancellationEvent(ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, *event, r.healthEventStore)
+		return r.handleCancellationEvent(
+			ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, eventRef, r.healthEventStore)
 	}
 
-	return r.handleRemediationEvent(ctx, &healthEventWithStatus, *event, r.Watcher, r.healthEventStore)
+	return r.handleRemediationEvent(ctx, healthEventWithStatus, eventRef, r.Watcher, r.healthEventStore)
 }
 
 func (r *FaultRemediationReconciler) startOrReuseEventSession(
@@ -462,7 +483,7 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 	nodeName string,
 	status model.Status,
 	watcherInstance datastore.ChangeStreamWatcher,
-	eventWithToken datastore.EventWithToken,
+	eventRef eventReference,
 	healthEventStore datastore.HealthEventStore,
 ) (ctrl.Result, error) {
 	ctx, span := tracing.StartSpan(ctx, "fault_remediation.cancellation_event")
@@ -477,7 +498,7 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 		if apierrors.IsNotFound(err) {
 			slog.WarnContext(ctx, "Node no longer exists, marking cancellation event as terminal", "node", nodeName)
 
-			return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, true)
+			return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventRef, watcherInstance, nodeName, true)
 		}
 
 		slog.ErrorContext(ctx, "Failed to get remediation state for node",
@@ -519,7 +540,7 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 		return ctrl.Result{}, err
 	}
 
-	if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, true); err != nil {
+	if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventRef.documentID, true); err != nil {
 		slog.ErrorContext(ctx, "Failed to write completion marker for cancellation event",
 			"node", nodeName,
 			"error", err)
@@ -528,7 +549,7 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 		return ctrl.Result{}, fmt.Errorf("failed to write completion marker for cancellation event: %w", err)
 	}
 
-	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
+	if err := safeMarkProcessed(ctx, watcherInstance, eventRef.resumeToken, nodeName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -564,7 +585,7 @@ func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
 	ctx context.Context,
 	nodeName string,
 	watcherInstance datastore.ChangeStreamWatcher,
-	eventWithToken datastore.EventWithToken,
+	eventRef eventReference,
 	healthEventStore datastore.HealthEventStore,
 ) (ctrl.Result, error) {
 	ctx, span := tracing.StartSpan(ctx, "fault_remediation.partial_recovery_event")
@@ -575,7 +596,7 @@ func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
 		if apierrors.IsNotFound(err) {
 			slog.WarnContext(ctx, "Node no longer exists, marking partial recovery event as terminal", "node", nodeName)
 
-			return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, true)
+			return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventRef, watcherInstance, nodeName, true)
 		}
 
 		tracing.RecordError(span, err)
@@ -598,13 +619,13 @@ func (r *FaultRemediationReconciler) handlePartialRecoveryEvent(
 		}
 	}
 
-	if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, true); err != nil {
+	if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventRef.documentID, true); err != nil {
 		tracing.RecordError(span, err)
 
 		return ctrl.Result{}, fmt.Errorf("failed to write completion marker for partial recovery event: %w", err)
 	}
 
-	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
+	if err := safeMarkProcessed(ctx, watcherInstance, eventRef.resumeToken, nodeName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -993,7 +1014,7 @@ func (r *FaultRemediationReconciler) eventResolvedInStore(
 func (r *FaultRemediationReconciler) handleRemediationEvent(
 	ctx context.Context,
 	healthEventWithStatus *events.HealthEventDoc,
-	eventWithToken datastore.EventWithToken,
+	eventRef eventReference,
 	watcherInstance datastore.ChangeStreamWatcher,
 	healthEventStore datastore.HealthEventStore,
 ) (ctrl.Result, error) {
@@ -1004,7 +1025,7 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	nodeName := healthEvent.NodeName
 
 	if isPartialRecoveryRemediationEvent(healthEventWithStatus.HealthEventWithStatus) {
-		return r.handlePartialRecoveryEvent(ctx, nodeName, watcherInstance, eventWithToken, healthEventStore)
+		return r.handlePartialRecoveryEvent(ctx, nodeName, watcherInstance, eventRef, healthEventStore)
 	}
 
 	groupConfig, err := common.GetGroupConfigForEvent(r.Config.RemediationClient.GetConfig().RemediationActions,
@@ -1016,7 +1037,7 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 			"error", err, "event", healthEventWithStatus.ID)
 	}
 
-	res, err, done := r.trySkipEvent(ctx, healthEventWithStatus, groupConfig, eventWithToken, watcherInstance,
+	res, err, done := r.trySkipEvent(ctx, healthEventWithStatus, groupConfig, eventRef, watcherInstance,
 		healthEventStore, nodeName)
 	if done {
 		span.SetAttributes(
@@ -1032,7 +1053,7 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	// events via closeStaleEquivalentEvents, or the quarantine session may have ended.
 	// Re-read the current status so a stale snapshot cannot start a remediation for a
 	// session that is already over.
-	res, err, done = r.trySkipResolvedEvent(ctx, healthEventStore, eventWithToken, watcherInstance,
+	res, err, done = r.trySkipResolvedEvent(ctx, healthEventStore, eventRef, watcherInstance,
 		healthEvent, healthEventWithStatus.ID)
 	if done {
 		return res, err
@@ -1044,7 +1065,7 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		if apierrors.IsNotFound(err) {
 			slog.WarnContext(ctx, "Node no longer exists, marking remediation event as stale", "node", nodeName)
 
-			return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventWithToken, watcherInstance, nodeName, false)
+			return r.markEventTerminalAndProcessed(ctx, healthEventStore, eventRef, watcherInstance, nodeName, false)
 		}
 
 		metrics.ProcessingErrors.WithLabelValues("cr_status_check_error", nodeName).Inc()
@@ -1060,11 +1081,11 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	}
 
 	if !decision.shouldCreate {
-		return r.handleEventCoveredByExistingCR(ctx, decision, eventWithToken, watcherInstance, healthEventStore,
+		return r.handleEventCoveredByExistingCR(ctx, decision, eventRef, watcherInstance, healthEventStore,
 			nodeName)
 	}
 
-	result, err := r.runLogCollectorAndRemediate(ctx, healthEvent, healthEventWithStatus, eventWithToken,
+	result, err := r.runLogCollectorAndRemediate(ctx, healthEvent, healthEventWithStatus, eventRef,
 		watcherInstance, healthEventStore, groupConfig, nodeName)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -1076,7 +1097,7 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 
 	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusCreated, nodeName).Inc()
 
-	return r.markProcessedOrError(ctx, watcherInstance, eventWithToken, nodeName)
+	return r.markProcessedOrError(ctx, watcherInstance, eventRef, nodeName)
 }
 
 // trySkipEvent returns (result, err, true) when the event should be skipped; otherwise (zero, nil, false).
@@ -1084,7 +1105,7 @@ func (r *FaultRemediationReconciler) trySkipEvent(
 	ctx context.Context,
 	healthEventWithStatus *events.HealthEventDoc,
 	groupConfig *common.EquivalenceGroupConfig,
-	eventWithToken datastore.EventWithToken,
+	eventRef eventReference,
 	watcherInstance datastore.ChangeStreamWatcher,
 	healthEventStore datastore.HealthEventStore,
 	nodeName string,
@@ -1102,12 +1123,12 @@ func (r *FaultRemediationReconciler) trySkipEvent(
 	defer skipSpan.End()
 
 	if shouldMarkSkippedEventUnsupported(healthEventWithStatus.HealthEventWithStatus, groupConfig) {
-		if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, false); err != nil {
+		if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventRef.documentID, false); err != nil {
 			return ctrl.Result{}, err, true
 		}
 	}
 
-	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
+	if err := safeMarkProcessed(ctx, watcherInstance, eventRef.resumeToken, nodeName); err != nil {
 		return ctrl.Result{}, err, true
 	}
 
@@ -1119,7 +1140,7 @@ func (r *FaultRemediationReconciler) trySkipEvent(
 func (r *FaultRemediationReconciler) trySkipResolvedEvent(
 	ctx context.Context,
 	healthEventStore datastore.HealthEventStore,
-	eventWithToken datastore.EventWithToken,
+	eventRef eventReference,
 	watcherInstance datastore.ChangeStreamWatcher,
 	healthEvent *protos.HealthEvent,
 	eventID string,
@@ -1155,7 +1176,7 @@ func (r *FaultRemediationReconciler) trySkipResolvedEvent(
 
 	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusSkipped, nodeName).Inc()
 
-	result, err := r.markProcessedOrError(ctx, watcherInstance, eventWithToken, nodeName)
+	result, err := r.markProcessedOrError(ctx, watcherInstance, eventRef, nodeName)
 
 	return result, err, true
 }
@@ -1165,7 +1186,7 @@ func (r *FaultRemediationReconciler) trySkipResolvedEvent(
 func (r *FaultRemediationReconciler) handleEventCoveredByExistingCR(
 	ctx context.Context,
 	decision existingCRDecision,
-	eventWithToken datastore.EventWithToken,
+	eventRef eventReference,
 	watcherInstance datastore.ChangeStreamWatcher,
 	healthEventStore datastore.HealthEventStore,
 	nodeName string,
@@ -1174,7 +1195,7 @@ func (r *FaultRemediationReconciler) handleEventCoveredByExistingCR(
 		return r.handleExistingCRInProgress(ctx, nodeName, decision.crName)
 	}
 
-	return r.handleExistingCRSkip(ctx, eventWithToken, watcherInstance, healthEventStore, nodeName, decision.crName,
+	return r.handleExistingCRSkip(ctx, eventRef, watcherInstance, healthEventStore, nodeName, decision.crName,
 		decision.remediated)
 }
 
@@ -1345,7 +1366,7 @@ func unresolvedRemediationReadyEventsCondition(nodeName string) query.Condition 
 // completed CR covers the event, marks the event processed, and returns.
 func (r *FaultRemediationReconciler) handleExistingCRSkip(
 	ctx context.Context,
-	eventWithToken datastore.EventWithToken,
+	eventRef eventReference,
 	watcherInstance datastore.ChangeStreamWatcher,
 	healthEventStore datastore.HealthEventStore,
 	nodeName, existingCR string,
@@ -1364,12 +1385,12 @@ func (r *FaultRemediationReconciler) handleExistingCRSkip(
 	metrics.EventsProcessed.WithLabelValues(metrics.CRStatusSkipped, nodeName).Inc()
 
 	if existingCRRemediated {
-		if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, true); err != nil {
+		if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventRef.documentID, true); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
-	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
+	if err := safeMarkProcessed(ctx, watcherInstance, eventRef.resumeToken, nodeName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -1419,7 +1440,7 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 	ctx context.Context,
 	healthEvent *protos.HealthEvent,
 	healthEventWithStatus *events.HealthEventDoc,
-	eventWithToken datastore.EventWithToken,
+	eventRef eventReference,
 	_ datastore.ChangeStreamWatcher,
 	healthEventStore datastore.HealthEventStore,
 	groupConfig *common.EquivalenceGroupConfig,
@@ -1447,7 +1468,9 @@ func (r *FaultRemediationReconciler) runLogCollectorAndRemediate(
 		tracing.RecordError(span, performRemediationErr)
 	}
 
-	if err = r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, nodeRemediatedStatus); err != nil {
+	if err = r.updateNodeRemediatedStatus(
+		ctx, healthEventStore, eventRef.documentID, nodeRemediatedStatus,
+	); err != nil {
 		metrics.ProcessingErrors.WithLabelValues("update_status_error", nodeName).Inc()
 		slog.ErrorContext(ctx, "Error updating remediation status for node", "error", err)
 		tracing.RecordError(span, err)
@@ -1499,10 +1522,10 @@ func safeMarkProcessed(ctx context.Context, w datastore.ChangeStreamWatcher, tok
 func (r *FaultRemediationReconciler) markProcessedOrError(
 	ctx context.Context,
 	watcherInstance datastore.ChangeStreamWatcher,
-	eventWithToken datastore.EventWithToken,
+	eventRef eventReference,
 	nodeName string,
 ) (ctrl.Result, error) {
-	if err := safeMarkProcessed(ctx, watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
+	if err := safeMarkProcessed(ctx, watcherInstance, eventRef.resumeToken, nodeName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -1514,22 +1537,22 @@ func (r *FaultRemediationReconciler) markProcessedOrError(
 func (r *FaultRemediationReconciler) markEventTerminalAndProcessed(
 	ctx context.Context,
 	healthEventStore datastore.HealthEventStore,
-	eventWithToken datastore.EventWithToken,
+	eventRef eventReference,
 	watcherInstance datastore.ChangeStreamWatcher,
 	nodeName string,
 	remediated bool,
 ) (ctrl.Result, error) {
-	if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, remediated); err != nil {
+	if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventRef.documentID, remediated); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	return r.markProcessedOrError(ctx, watcherInstance, eventWithToken, nodeName)
+	return r.markProcessedOrError(ctx, watcherInstance, eventRef, nodeName)
 }
 
 func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
 	ctx context.Context,
 	healthEventStore datastore.HealthEventStore,
-	eventWithToken datastore.EventWithToken,
+	documentID string,
 	nodeRemediatedStatus bool,
 ) error {
 	ctx, statusSpan := tracing.StartSpan(ctx, "fault_remediation.remediation_status_updated")
@@ -1539,15 +1562,8 @@ func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
 		attribute.Bool("fault_remediation.status", nodeRemediatedStatus),
 	)
 
-	documentID, err := utils.ExtractDocumentID(eventWithToken.Event)
-	if err != nil {
-		tracing.RecordError(statusSpan, err)
-		statusSpan.SetAttributes(
-			attribute.String("fault_remediation.error.type", "extract_document_id_error"),
-			attribute.String("fault_remediation.error.message", err.Error()),
-		)
-
-		return err
+	if documentID == "" {
+		return errors.New("cannot update remediation status without a document ID")
 	}
 
 	// Create status object for the update
@@ -1564,7 +1580,7 @@ func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
 	// Use the healthEventStore to update the status with retries
 	slog.InfoContext(ctx, "Updating health event with ID", "id", documentID)
 
-	err = healthEventStore.UpdateHealthEventStatus(ctx, documentID, status)
+	err := healthEventStore.UpdateHealthEventStatus(ctx, documentID, status)
 	if err != nil {
 		tracing.RecordError(statusSpan, err)
 		statusSpan.SetAttributes(
@@ -1811,23 +1827,23 @@ func (r *FaultRemediationReconciler) SetupWithManager(ctx context.Context, mgr c
 
 	typedCh, watcherDone := AdaptEvents(ctx, r.Watcher.Events())
 
-	r.coldStartCh = make(chan event.TypedGenericEvent[*datastore.EventWithToken], coldStartBatchSize)
+	r.coldStartCh = make(chan event.TypedGenericEvent[reconcileRequest], coldStartBatchSize)
 
-	enqueueHandler := handler.TypedFuncs[*datastore.EventWithToken, *datastore.EventWithToken]{
+	enqueueHandler := handler.TypedFuncs[reconcileRequest, reconcileRequest]{
 		GenericFunc: func(
 			ctx context.Context,
-			e event.TypedGenericEvent[*datastore.EventWithToken],
-			q workqueue.TypedRateLimitingInterface[*datastore.EventWithToken],
+			e event.TypedGenericEvent[reconcileRequest],
+			q workqueue.TypedRateLimitingInterface[reconcileRequest],
 		) {
 			q.Add(e.Object)
 		},
 	}
 
-	err := builder.TypedControllerManagedBy[*datastore.EventWithToken](mgr).
+	err := builder.TypedControllerManagedBy[reconcileRequest](mgr).
 		Named("fault-remediation-controller").
 		WatchesRawSource(source.TypedChannel(typedCh, enqueueHandler)).
 		WatchesRawSource(source.TypedChannel(r.coldStartCh, enqueueHandler)).
-		Complete(r)
+		Complete(&controllerReconciler{reconciler: r})
 
 	return watcherDone, err
 }
@@ -1863,19 +1879,23 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 
 	q := query.New().Build(condition)
 
+	if r.coldStartReader == nil {
+		slog.Error("Cold start query failed: health event store does not support ID-only queries")
+		return
+	}
+
 	enqueued := 0
 
-	err := r.healthEventStore.FindHealthEventsByQueryBatched(ctx, q, coldStartBatchSize,
-		func(batch []datastore.HealthEventWithStatus) error {
-			for _, he := range batch {
-				if len(he.RawEvent) == 0 {
-					continue
-				}
-
-				evt := datastore.EventWithToken{Event: he.RawEvent}
+	err := r.coldStartReader.FindHealthEventIDsByQueryBatched(
+		ctx,
+		q,
+		coldStartBatchSize,
+		func(documentIDs []string) error {
+			for _, documentID := range documentIDs {
+				request := reconcileRequest{documentID: documentID}
 
 				select {
-				case r.coldStartCh <- event.TypedGenericEvent[*datastore.EventWithToken]{Object: &evt}:
+				case r.coldStartCh <- event.TypedGenericEvent[reconcileRequest]{Object: request}:
 					enqueued++
 				case <-ctx.Done():
 					return ctx.Err()
@@ -1883,7 +1903,8 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 			}
 
 			return nil
-		})
+		},
+	)
 	if err != nil {
 		slog.Error("Cold start query failed", "error", err)
 		return
@@ -1900,8 +1921,8 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 func AdaptEvents(
 	ctx context.Context,
 	in <-chan datastore.EventWithToken,
-) (<-chan event.TypedGenericEvent[*datastore.EventWithToken], <-chan struct{}) {
-	out := make(chan event.TypedGenericEvent[*datastore.EventWithToken])
+) (<-chan event.TypedGenericEvent[reconcileRequest], <-chan struct{}) {
+	out := make(chan event.TypedGenericEvent[reconcileRequest])
 	done := make(chan struct{})
 
 	go func() {
@@ -1918,7 +1939,9 @@ func AdaptEvents(
 				}
 
 				eventOut := e
-				out <- event.TypedGenericEvent[*datastore.EventWithToken]{Object: &eventOut}
+				request := reconcileRequest{event: &eventOut}
+
+				out <- event.TypedGenericEvent[reconcileRequest]{Object: request}
 			}
 		}
 	}()

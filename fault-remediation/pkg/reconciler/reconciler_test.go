@@ -24,12 +24,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
@@ -43,6 +45,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/events"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
 // MockK8sClient is a mock implementation of K8sClient interface
@@ -1022,7 +1025,8 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 				},
 			}
 
-			err := r.updateNodeRemediatedStatus(ctx, mockHealthStore, tt.eventToken, tt.nodeRemediated)
+			eventRef := eventReferenceForTest(t, tt.eventToken)
+			err := r.updateNodeRemediatedStatus(ctx, mockHealthStore, eventRef.documentID, tt.nodeRemediated)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -1292,7 +1296,8 @@ func TestInProgressCREventRequeuedUntilTerminal(t *testing.T) {
 			}
 
 			// While the CR is InProgress the event must be requeued and left untouched.
-			result, err := r.handleRemediationEvent(ctx, healthEventDoc, eventWithToken, mockWatcher, mockStore)
+			eventRef := eventReferenceForTest(t, eventWithToken)
+			result, err := r.handleRemediationEvent(ctx, healthEventDoc, eventRef, mockWatcher, mockStore)
 			assert.NoError(t, err)
 			assert.Equal(t, cfg.InProgressRequeueDelay, result.RequeueAfter,
 				"event behind an in-progress CR must be requeued")
@@ -1304,7 +1309,7 @@ func TestInProgressCREventRequeuedUntilTerminal(t *testing.T) {
 			// The CR reaches a terminal state; the requeued event must now be resolved.
 			crStates["maintenance-cr-1"] = tt.terminalState
 
-			result, err = r.handleRemediationEvent(ctx, healthEventDoc, eventWithToken, mockWatcher, mockStore)
+			result, err = r.handleRemediationEvent(ctx, healthEventDoc, eventRef, mockWatcher, mockStore)
 			assert.NoError(t, err)
 			assert.True(t, result.IsZero())
 			_, markProcessedCount, _, _ = mockWatcher.GetCallCounts()
@@ -1468,7 +1473,8 @@ func TestStaleEventSnapshotResolvedInStoreIsNotRemediated(t *testing.T) {
 				ResumeToken: []byte("resume-token"),
 			}
 
-			result, err := r.handleRemediationEvent(ctx, healthEventDoc, eventWithToken, mockWatcher, mockStore)
+			result, err := r.handleRemediationEvent(
+				ctx, healthEventDoc, eventReferenceForTest(t, eventWithToken), mockWatcher, mockStore)
 			assert.NoError(t, err)
 			assert.True(t, result.IsZero())
 			_, markProcessedCount, _, _ := mockWatcher.GetCallCounts()
@@ -1655,7 +1661,8 @@ func TestUnsupportedActionSkipMarksEventTerminal(t *testing.T) {
 		ResumeToken: []byte("resume-token"),
 	}
 
-	_, err, done := r.trySkipEvent(ctx, healthEventDoc, nil, eventWithToken, mockWatcher, mockStore, nodeName)
+	_, err, done := r.trySkipEvent(
+		ctx, healthEventDoc, nil, eventReferenceForTest(t, eventWithToken), mockWatcher, mockStore, nodeName)
 	assert.True(t, done)
 	assert.NoError(t, err)
 	assert.True(t, updated)
@@ -1715,7 +1722,7 @@ func TestTrySkipEvent_UnsupportedReplayWithoutLiveQuarantine_MarksTerminalWithou
 	}
 
 	_, err, done := r.trySkipEvent(
-		ctx, healthEventDoc, nil, eventWithToken, mockWatcher, mockStore, nodeName)
+		ctx, healthEventDoc, nil, eventReferenceForTest(t, eventWithToken), mockWatcher, mockStore, nodeName)
 
 	assert.True(t, done)
 	assert.NoError(t, err)
@@ -1816,7 +1823,7 @@ func TestTrySkipEvent_UnsupportedReplayDuringNewQuarantine_MarksTerminalWithoutS
 	}
 
 	_, err, done := r.trySkipEvent(
-		ctx, healthEventDoc, nil, eventWithToken, mockWatcher, mockStore, nodeName)
+		ctx, healthEventDoc, nil, eventReferenceForTest(t, eventWithToken), mockWatcher, mockStore, nodeName)
 
 	assert.True(t, done)
 	assert.NoError(t, err)
@@ -1879,7 +1886,7 @@ func TestTrySkipEvent_LiveNodeReadFails_ReturnsErrorWithoutFinalizingEvent(t *te
 	}
 
 	_, err, done := r.trySkipEvent(
-		ctx, healthEventDoc, nil, eventWithToken, mockWatcher, mockStore, nodeName)
+		ctx, healthEventDoc, nil, eventReferenceForTest(t, eventWithToken), mockWatcher, mockStore, nodeName)
 
 	assert.True(t, done)
 	assert.ErrorIs(t, err, liveReadErr)
@@ -1976,8 +1983,8 @@ func TestHandleCancellationEvent_StateLabelOwnership_ClearsOnlyFaultRemediationL
 				ResumeToken: []byte("resume-token"),
 			}
 
-			result, err := r.handleCancellationEvent(
-				ctx, nodeName, model.UnQuarantined, mockWatcher, eventWithToken, mockStore)
+			result, err := r.handleCancellationEvent(ctx, nodeName, model.UnQuarantined, mockWatcher,
+				eventReferenceForTest(t, eventWithToken), mockStore)
 
 			assert.NoError(t, err)
 			assert.True(t, result.IsZero())
@@ -2056,7 +2063,8 @@ func TestPartialRecoveryRecomputesLabelToRemediationSucceeded(t *testing.T) {
 		ResumeToken: []byte("resume-token"),
 	}
 
-	result, err := r.handlePartialRecoveryEvent(ctx, nodeName, mockWatcher, eventWithToken, mockStore)
+	result, err := r.handlePartialRecoveryEvent(
+		ctx, nodeName, mockWatcher, eventReferenceForTest(t, eventWithToken), mockStore)
 
 	assert.NoError(t, err)
 	assert.True(t, result.IsZero())
@@ -2125,7 +2133,8 @@ func TestPartialRecoveryKeepsRemediationFailedWhenUnsupportedEventRemains(t *tes
 		ResumeToken: []byte("resume-token"),
 	}
 
-	result, err := r.handlePartialRecoveryEvent(ctx, nodeName, mockWatcher, eventWithToken, mockStore)
+	result, err := r.handlePartialRecoveryEvent(
+		ctx, nodeName, mockWatcher, eventReferenceForTest(t, eventWithToken), mockStore)
 
 	assert.NoError(t, err)
 	assert.True(t, result.IsZero())
@@ -2207,7 +2216,8 @@ func TestPartialRecoveryLeavesLabelWhenNoActiveCoveringCR(t *testing.T) {
 		ResumeToken: []byte("resume-token"),
 	}
 
-	result, err := r.handlePartialRecoveryEvent(ctx, nodeName, mockWatcher, eventWithToken, mockStore)
+	result, err := r.handlePartialRecoveryEvent(
+		ctx, nodeName, mockWatcher, eventReferenceForTest(t, eventWithToken), mockStore)
 
 	assert.NoError(t, err)
 	assert.True(t, result.IsZero())
@@ -2289,7 +2299,8 @@ func TestPartialRecoveryRecomputesSucceededWhenCoveringCRInProgress(t *testing.T
 		ResumeToken: []byte("resume-token"),
 	}
 
-	result, err := r.handlePartialRecoveryEvent(ctx, nodeName, mockWatcher, eventWithToken, mockStore)
+	result, err := r.handlePartialRecoveryEvent(
+		ctx, nodeName, mockWatcher, eventReferenceForTest(t, eventWithToken), mockStore)
 
 	assert.NoError(t, err)
 	assert.True(t, result.IsZero())
@@ -2360,7 +2371,8 @@ func TestPartialRecoveryDowngradesStaleRemediationSucceeded(t *testing.T) {
 		ResumeToken: []byte("resume-token"),
 	}
 
-	result, err := r.handlePartialRecoveryEvent(ctx, nodeName, mockWatcher, eventWithToken, mockStore)
+	result, err := r.handlePartialRecoveryEvent(
+		ctx, nodeName, mockWatcher, eventReferenceForTest(t, eventWithToken), mockStore)
 
 	assert.NoError(t, err)
 	assert.True(t, result.IsZero())
@@ -2424,7 +2436,8 @@ func TestPartialRecoverySkipsRecomputeWhenLabelNotTerminal(t *testing.T) {
 		ResumeToken: []byte("resume-token"),
 	}
 
-	result, err := r.handlePartialRecoveryEvent(ctx, nodeName, mockWatcher, eventWithToken, mockStore)
+	result, err := r.handlePartialRecoveryEvent(
+		ctx, nodeName, mockWatcher, eventReferenceForTest(t, eventWithToken), mockStore)
 
 	assert.NoError(t, err)
 	assert.True(t, result.IsZero())
@@ -2616,10 +2629,84 @@ func TestAdaptEvents_ForwardsEvents(t *testing.T) {
 	in <- testEvent
 
 	select {
-	case <-out:
-		// Event forwarded successfully
+	case forwarded := <-out:
+		assert.NotNil(t, forwarded.Object.event)
+		assert.Equal(t, testEvent, *forwarded.Object.event)
+		assert.Empty(t, forwarded.Object.documentID)
 	case <-time.After(2 * time.Second):
 		t.Fatal("event was not forwarded through AdaptEvents")
+	}
+}
+
+func TestControllerReconcilerRetriesOnlyTransientFetchFailures(t *testing.T) {
+	t.Run("missing document is terminal", func(t *testing.T) {
+		store := &MockHealthEventStore{
+			FindHealthEventByIDFn: func(context.Context, string) (*model.HealthEventWithStatus, error) {
+				return nil, nil
+			},
+		}
+		controller := controllerReconciler{
+			reconciler: &FaultRemediationReconciler{coldStartReader: store},
+		}
+
+		result, err := controller.Reconcile(context.Background(), reconcileRequest{
+			documentID: "deleted-event",
+		})
+
+		assert.NoError(t, err)
+		assert.True(t, result.IsZero())
+	})
+
+	t.Run("datastore failure is retryable", func(t *testing.T) {
+		store := &MockHealthEventStore{
+			FindHealthEventByIDFn: func(context.Context, string) (*model.HealthEventWithStatus, error) {
+				return nil, errors.New("temporary datastore failure")
+			},
+		}
+		controller := controllerReconciler{
+			reconciler: &FaultRemediationReconciler{coldStartReader: store},
+		}
+
+		_, err := controller.Reconcile(context.Background(), reconcileRequest{
+			documentID: "event-1",
+		})
+
+		assert.ErrorContains(t, err, "temporary datastore failure")
+	})
+}
+
+func TestHandleColdStartQueuesDocumentIDs(t *testing.T) {
+	store := &MockHealthEventStore{
+		FindHealthEventIDsByQueryBatchedFn: func(
+			_ context.Context,
+			_ datastore.QueryBuilder,
+			_ int,
+			fn func([]string) error,
+		) error {
+			return fn([]string{"event-1"})
+		},
+	}
+	r := &FaultRemediationReconciler{
+		coldStartReader: store,
+		coldStartCh:     make(chan event.TypedGenericEvent[reconcileRequest], 1),
+	}
+
+	r.HandleColdStart(context.Background())
+
+	queued := <-r.coldStartCh
+	assert.Equal(t, "event-1", queued.Object.documentID)
+	assert.Nil(t, queued.Object.event)
+}
+
+func eventReferenceForTest(t *testing.T, event datastore.EventWithToken) eventReference {
+	t.Helper()
+
+	documentID, err := utils.ExtractDocumentID(event.Event)
+	require.NoError(t, err)
+
+	return eventReference{
+		documentID:  documentID,
+		resumeToken: event.ResumeToken,
 	}
 }
 
@@ -2668,7 +2755,8 @@ func TestDeletedNodeRemediationEventMarkedTerminal(t *testing.T) {
 		ResumeToken: []byte("resume-token"),
 	}
 
-	result, err := r.handleRemediationEvent(ctx, healthEventDoc, eventWithToken, mockWatcher, mockStore)
+	result, err := r.handleRemediationEvent(
+		ctx, healthEventDoc, eventReferenceForTest(t, eventWithToken), mockWatcher, mockStore)
 	assert.NoError(t, err)
 	assert.True(t, result.IsZero())
 	assert.True(t, updated, "expected faultRemediated=false to be written")
@@ -2707,7 +2795,8 @@ func TestDeletedNodeCancellationEventMarkedTerminal(t *testing.T) {
 		ResumeToken: []byte("resume-token"),
 	}
 
-	result, err := r.handleCancellationEvent(ctx, nodeName, model.Cancelled, mockWatcher, eventWithToken, mockStore)
+	result, err := r.handleCancellationEvent(
+		ctx, nodeName, model.Cancelled, mockWatcher, eventReferenceForTest(t, eventWithToken), mockStore)
 	assert.NoError(t, err)
 	assert.True(t, result.IsZero())
 	assert.True(t, updated, "expected faultRemediated=true to be written")
