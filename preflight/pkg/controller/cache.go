@@ -16,6 +16,7 @@ package controller
 
 import (
 	"fmt"
+	"sync"
 
 	gangtypes "github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 	corev1 "k8s.io/api/core/v1"
@@ -25,32 +26,77 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// ActiveNamespaces is the thread-safe set of namespaces where preflight is
+// enabled. The NamespaceReconciler keeps it current; the pod cache transform
+// reads it to decide whether to retain full gang fields or return a minimal
+// stub for pods that the gang controller will never process.
+type ActiveNamespaces struct {
+	mu  sync.RWMutex
+	set map[string]struct{}
+}
+
+// NewActiveNamespaces returns an empty ActiveNamespaces.
+func NewActiveNamespaces() *ActiveNamespaces {
+	return &ActiveNamespaces{set: make(map[string]struct{})}
+}
+
+// Add marks ns as preflight-enabled.
+func (a *ActiveNamespaces) Add(ns string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.set[ns] = struct{}{}
+}
+
+// Remove marks ns as no longer preflight-enabled.
+func (a *ActiveNamespaces) Remove(ns string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.set, ns)
+}
+
+// Contains reports whether ns is currently preflight-enabled.
+func (a *ActiveNamespaces) Contains(ns string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	_, ok := a.set[ns]
+	return ok
+}
+
 // ManagerCacheOptions reduces the memory used by the manager's cluster-wide Pod
-// informer while retaining every field used by the gang controller and gang
-// discoverers.
-func ManagerCacheOptions() cache.Options {
+// informer. Pods in preflight-enabled namespaces are stripped to only the fields
+// used by the gang controller; pods in all other namespaces are reduced to a
+// minimal identity stub.
+func ManagerCacheOptions(active *ActiveNamespaces) cache.Options {
 	return cache.Options{
 		ByObject: map[client.Object]cache.ByObject{
 			&corev1.Pod{}: {
 				// An empty map explicitly keeps this cache cluster-wide instead
 				// of inheriting any future DefaultNamespaces configuration.
 				Namespaces: map[string]cache.Config{},
-				Transform:  transformPodForCache,
+				Transform:  podTransformForCache(active),
 			},
 		},
 	}
 }
 
-func transformPodForCache(obj any) (any, error) {
-	switch pod := obj.(type) {
-	case *corev1.Pod:
-		return transformTypedPod(pod), nil
-	case *unstructured.Unstructured:
-		// Kubernetes 1.35 Pods are read as unstructured objects so their
-		// spec.workloadRef field survives decoding by the Kubernetes 1.36 client.
-		return transformUnstructuredPod(pod), nil
-	default:
-		return nil, fmt.Errorf("expected Pod cache object, got %T", obj)
+func podTransformForCache(active *ActiveNamespaces) func(any) (any, error) {
+	return func(obj any) (any, error) {
+		switch pod := obj.(type) {
+		case *corev1.Pod:
+			if active.Contains(pod.Namespace) {
+				return transformTypedPod(pod), nil
+			}
+			return stubTypedPod(pod), nil
+		case *unstructured.Unstructured:
+			// Kubernetes 1.35 Pods are read as unstructured objects so their
+			// spec.workloadRef field survives decoding by the Kubernetes 1.36 client.
+			if active.Contains(pod.GetNamespace()) {
+				return transformUnstructuredPod(pod), nil
+			}
+			return stubUnstructuredPod(pod), nil
+		default:
+			return nil, fmt.Errorf("expected Pod cache object, got %T", obj)
+		}
 	}
 }
 
@@ -101,6 +147,33 @@ func gangConfigVolumesForCache(volumes []corev1.Volume) []corev1.Volume {
 	}
 
 	return nil
+}
+
+// stubTypedPod reduces a pod outside any preflight-enabled namespace to the
+// minimum identity fields needed by the informer to track the object.
+func stubTypedPod(pod *corev1.Pod) *corev1.Pod {
+	pod.ObjectMeta = metav1.ObjectMeta{
+		Name:            pod.ObjectMeta.Name,
+		Namespace:       pod.ObjectMeta.Namespace,
+		UID:             pod.ObjectMeta.UID,
+		ResourceVersion: pod.ObjectMeta.ResourceVersion,
+	}
+	pod.TypeMeta = metav1.TypeMeta{}
+	pod.Spec = corev1.PodSpec{}
+	pod.Status = corev1.PodStatus{}
+	return pod
+}
+
+// stubUnstructuredPod is the unstructured equivalent of stubTypedPod.
+func stubUnstructuredPod(pod *unstructured.Unstructured) *unstructured.Unstructured {
+	stub := &unstructured.Unstructured{}
+	stub.SetGroupVersionKind(pod.GroupVersionKind())
+	stub.SetName(pod.GetName())
+	stub.SetNamespace(pod.GetNamespace())
+	stub.SetUID(pod.GetUID())
+	stub.SetResourceVersion(pod.GetResourceVersion())
+	pod.Object = stub.Object
+	return pod
 }
 
 func transformUnstructuredPod(pod *unstructured.Unstructured) *unstructured.Unstructured {

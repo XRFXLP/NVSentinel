@@ -37,7 +37,7 @@ import (
 )
 
 func TestManagerCacheOptionsKeepsPodCacheClusterWide(t *testing.T) {
-	options := ManagerCacheOptions()
+	options := ManagerCacheOptions(NewActiveNamespaces())
 	podOptions := podCacheOptions(t, options)
 
 	assert.NotNil(t, podOptions.Namespaces)
@@ -46,7 +46,7 @@ func TestManagerCacheOptionsKeepsPodCacheClusterWide(t *testing.T) {
 }
 
 func TestManagerCacheOptionsSupportsDynamicPreflightConfigNamespaces(t *testing.T) {
-	options := ManagerCacheOptions()
+	options := ManagerCacheOptions(NewActiveNamespaces())
 	resolver := gang.NewResolver(&mockDiscoverer{}, nil)
 	pfc := volcanoPFC("added-after-startup", "default")
 	reconciler, _ := newReconcilerWith(t, resolver, pfc)
@@ -100,7 +100,7 @@ func TestTransformPodForCacheRetainsRequiredFields(t *testing.T) {
 		},
 	}
 
-	gotObject, err := transformPodForCache(original)
+	gotObject, err := activeNamespacesFor("team-a").transform(original)
 	require.NoError(t, err)
 	got := gotObject.(*corev1.Pod)
 
@@ -168,7 +168,7 @@ func TestTransformPodForCache_UnstructuredPod_RetainsRequiredFields(t *testing.T
 	require.NoError(t, unstructured.SetNestedField(
 		pod.Object, string(corev1.PodRunning), "status", "phase"))
 
-	transformed, err := transformPodForCache(pod)
+	transformed, err := activeNamespacesFor("team-a").transform(pod)
 	require.NoError(t, err)
 	got := transformed.(*unstructured.Unstructured)
 	assert.Same(t, pod, got)
@@ -282,7 +282,7 @@ func TestTransformedPodsSupportAllGangDiscoverers(t *testing.T) {
 			require.NoError(t, unstructured.SetNestedField(pod.Object, ip, "status", "podIP"))
 			require.NoError(t, unstructured.SetNestedField(
 				pod.Object, string(corev1.PodRunning), "status", "phase"))
-			transformed, err := transformPodForCache(pod)
+			transformed, err := activeNamespacesFor("team-a").transform(pod)
 			require.NoError(t, err)
 			pods = append(pods, transformed.(runtime.Object))
 		}
@@ -322,6 +322,51 @@ func TestTransformedPodsSupportAllGangDiscoverers(t *testing.T) {
 	})
 }
 
+func TestTransformPodForCache_InactiveNamespace_ReturnsStub(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "worker-0", Namespace: "other-ns",
+			UID: "pod-uid", ResourceVersion: "99",
+			Annotations: map[string]string{"big": "annotation"},
+			Labels:      map[string]string{"big": "label"},
+		},
+		Spec:   corev1.PodSpec{NodeName: "node-a", Containers: []corev1.Container{{Name: "large"}}},
+		Status: corev1.PodStatus{PodIP: "10.0.0.1", Phase: corev1.PodRunning},
+	}
+
+	// "other-ns" is not in the active set.
+	result, err := activeNamespacesFor("team-a").transform(pod)
+	require.NoError(t, err)
+	got := result.(*corev1.Pod)
+
+	assert.Same(t, pod, got)
+	assert.Equal(t, "worker-0", got.Name)
+	assert.Equal(t, "other-ns", got.Namespace)
+	assert.Equal(t, k8stypes.UID("pod-uid"), got.UID)
+	assert.Equal(t, "99", got.ResourceVersion)
+	assert.Empty(t, got.Annotations)
+	assert.Empty(t, got.Labels)
+	assert.Empty(t, got.Spec.NodeName)
+	assert.Empty(t, got.Spec.Containers)
+	assert.Empty(t, got.Status.PodIP)
+}
+
+func TestTransformPodForCache_NamespaceBecomesActive_FullTransformApplied(t *testing.T) {
+	active := NewActiveNamespaces()
+	pod := gangPodForCacheTest("worker-0", "team-b", "10.0.0.1")
+
+	// Before activation: stub
+	stub, err := active.transform(pod.DeepCopy())
+	require.NoError(t, err)
+	assert.Empty(t, stub.(*corev1.Pod).Status.PodIP)
+
+	// After activation: full transform
+	active.Add("team-b")
+	full, err := active.transform(pod.DeepCopy())
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1", full.(*corev1.Pod).Status.PodIP)
+}
+
 func podCacheOptions(t *testing.T, options cache.Options) cache.ByObject {
 	t.Helper()
 
@@ -336,10 +381,25 @@ func podCacheOptions(t *testing.T, options cache.Options) cache.ByObject {
 	return cache.ByObject{}
 }
 
+// activeNamespacesFor returns an ActiveNamespaces pre-populated with the given
+// namespace names, for use in tests.
+func activeNamespacesFor(namespaces ...string) *ActiveNamespaces {
+	a := NewActiveNamespaces()
+	for _, ns := range namespaces {
+		a.Add(ns)
+	}
+	return a
+}
+
+// transform is a test convenience that calls the pod transform for this active set.
+func (a *ActiveNamespaces) transform(obj any) (any, error) {
+	return podTransformForCache(a)(obj)
+}
+
 func mustTransformTypedPod(t *testing.T, pod *corev1.Pod) *corev1.Pod {
 	t.Helper()
 
-	transformed, err := transformPodForCache(pod)
+	transformed, err := activeNamespacesFor(pod.Namespace).transform(pod)
 	require.NoError(t, err)
 
 	return transformed.(*corev1.Pod)

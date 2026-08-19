@@ -399,7 +399,7 @@ func setupTestEnv(t *testing.T, ctx context.Context, discoverer gang.GangDiscove
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Metrics: metricsserver.Options{BindAddress: "0"}, // Disable metrics to avoid port conflicts
-		Cache:   ManagerCacheOptions(),
+		Cache:   ManagerCacheOptions(NewActiveNamespaces()),
 	})
 	require.NoError(t, err, "failed to create manager")
 
