@@ -57,7 +57,7 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, fmt.Errorf("failed to get namespace %s: %w", req.Name, err)
 	}
 
-	if ns.Labels[preflightNamespaceLabel] == "enabled" {
+	if ns.DeletionTimestamp == nil && ns.Labels[preflightNamespaceLabel] == "enabled" {
 		r.active.Add(ns.Name)
 	} else {
 		r.active.Remove(ns.Name)

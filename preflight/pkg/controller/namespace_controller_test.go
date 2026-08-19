@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	gangtypes "github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
@@ -24,64 +25,135 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 func TestNamespaceReconciler_Reconcile(t *testing.T) {
 	tests := []struct {
-		name          string
-		ns            *corev1.Namespace // nil = already deleted
-		initialActive []string
-		reconcileName string
-		wantActive    bool
+		name       string
+		nsName     string
+		setup      func(*testing.T, context.Context, kubernetes.Interface, *ActiveNamespaces)
+		wantActive bool
 	}{
 		{
-			name:          "labeled namespace is added",
-			ns:            preflightNamespace("team-a"),
-			reconcileName: "team-a",
-			wantActive:    true,
+			name:   "labeled namespace is added",
+			nsName: "team-a",
+			setup: func(t *testing.T, ctx context.Context, kc kubernetes.Interface, _ *ActiveNamespaces) {
+				t.Helper()
+				_, err := kc.CoreV1().Namespaces().Create(ctx, preflightNamespace("team-a"), metav1.CreateOptions{})
+				require.NoError(t, err)
+			},
+			wantActive: true,
 		},
 		{
-			name:          "unlabeled namespace is ignored",
-			ns:            &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}},
-			reconcileName: "team-a",
-			wantActive:    false,
+			name:   "unlabeled namespace is not added",
+			nsName: "team-b",
+			setup: func(t *testing.T, ctx context.Context, kc kubernetes.Interface, _ *ActiveNamespaces) {
+				t.Helper()
+				_, err := kc.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+					ObjectMeta: metav1.ObjectMeta{Name: "team-b"},
+				}, metav1.CreateOptions{})
+				require.NoError(t, err)
+			},
+			wantActive: false,
 		},
 		{
-			name:          "label removal evicts from active set",
-			ns:            &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}},
-			initialActive: []string{"team-a"},
-			reconcileName: "team-a",
-			wantActive:    false,
+			name:   "label removal evicts from active set",
+			nsName: "team-c",
+			setup: func(t *testing.T, ctx context.Context, kc kubernetes.Interface, active *ActiveNamespaces) {
+				t.Helper()
+				ns, err := kc.CoreV1().Namespaces().Create(ctx, preflightNamespace("team-c"), metav1.CreateOptions{})
+				require.NoError(t, err)
+				require.Eventually(t, func() bool { return active.Contains("team-c") },
+					10*time.Second, 100*time.Millisecond, "namespace should become active after label")
+				ns.Labels = nil
+				_, err = kc.CoreV1().Namespaces().Update(ctx, ns, metav1.UpdateOptions{})
+				require.NoError(t, err)
+			},
+			wantActive: false,
 		},
 		{
-			name:          "deleted namespace is evicted from active set",
-			initialActive: []string{"team-a"},
-			reconcileName: "team-a",
-			wantActive:    false,
+			name:   "deleted namespace is evicted from active set",
+			nsName: "team-d",
+			setup: func(t *testing.T, ctx context.Context, kc kubernetes.Interface, active *ActiveNamespaces) {
+				t.Helper()
+				_, err := kc.CoreV1().Namespaces().Create(ctx, preflightNamespace("team-d"), metav1.CreateOptions{})
+				require.NoError(t, err)
+				require.Eventually(t, func() bool { return active.Contains("team-d") },
+					10*time.Second, 100*time.Millisecond, "namespace should become active after label")
+				err = kc.CoreV1().Namespaces().Delete(ctx, "team-d", metav1.DeleteOptions{})
+				require.NoError(t, err)
+			},
+			wantActive: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			active := NewActiveNamespaces()
-			for _, ns := range tt.initialActive {
-				active.Add(ns)
-			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-			var objs []client.Object
-			if tt.ns != nil {
-				objs = append(objs, tt.ns)
-			}
+			active, te := setupNSTestEnv(t, ctx)
+			defer te.teardown()
 
-			r, _ := newNSReconcilerWith(t, active, objs...)
-			reconcileNS(t, r, tt.reconcileName)
+			tt.setup(t, ctx, te.kubeClient, active)
 
-			assert.Equal(t, tt.wantActive, active.Contains(tt.reconcileName))
+			require.Eventually(t, func() bool {
+				return active.Contains(tt.nsName) == tt.wantActive
+			}, 10*time.Second, 100*time.Millisecond)
 		})
 	}
+}
+
+type nsTestEnv struct {
+	env        *envtest.Environment
+	kubeClient kubernetes.Interface
+	cancel     context.CancelFunc
+}
+
+func setupNSTestEnv(t *testing.T, ctx context.Context) (*ActiveNamespaces, *nsTestEnv) {
+	t.Helper()
+
+	env := &envtest.Environment{}
+	cfg, err := env.Start()
+	require.NoError(t, err, "failed to start envtest")
+
+	kubeClient, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	active := NewActiveNamespaces()
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Metrics: metricsserver.Options{BindAddress: "0"},
+		Cache:   ManagerCacheOptions(active),
+	})
+	require.NoError(t, err)
+
+	skipValidation := true
+	err = ctrl.NewControllerManagedBy(mgr).
+		For(&corev1.Namespace{}).
+		WithOptions(controller.Options{SkipNameValidation: &skipValidation}).
+		Complete(NewNamespaceReconciler(mgr.GetClient(), active))
+	require.NoError(t, err)
+
+	mgrCtx, mgrCancel := context.WithCancel(ctx)
+	go func() { _ = mgr.Start(mgrCtx) }()
+
+	require.Eventually(t, func() bool {
+		return mgr.GetCache().WaitForCacheSync(ctx)
+	}, 10*time.Second, 100*time.Millisecond, "cache did not sync")
+
+	return active, &nsTestEnv{env: env, kubeClient: kubeClient, cancel: mgrCancel}
+}
+
+func (te *nsTestEnv) teardown() {
+	te.cancel()
+	_ = te.env.Stop()
 }
 
 // TestNamespaceReconciler_PodTransformFollowsActiveSet verifies the end-to-end
