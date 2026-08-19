@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -54,9 +55,11 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.Get(ctx, req.NamespacedName, &ns); err != nil {
 		if errors.IsNotFound(err) {
 			r.active.Remove(req.Name)
+
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, err
+
+		return ctrl.Result{}, fmt.Errorf("failed to get namespace %s: %w", req.Name, err)
 	}
 
 	if ns.Labels[preflightNamespaceLabel] == "enabled" {

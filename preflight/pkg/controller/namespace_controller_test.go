@@ -132,6 +132,71 @@ func TestNamespaceReconciler_PodTransformFollowsActiveSet(t *testing.T) {
 	assert.Equal(t, "volcano", pfcResolver.For("team-a").Name())
 }
 
+func TestPreflightConfig_GangDiscoveryWorksAfterNamespaceActivation(t *testing.T) {
+	active := NewActiveNamespaces()
+	resolver := gang.NewResolver(&mockDiscoverer{}, nil)
+
+	nsReconciler, _ := newNSReconcilerWith(t, active, preflightNamespace("preflight-ns"))
+	pfcReconciler, _ := newReconcilerWith(t, resolver, volcanoPFC("preflight-ns", "default"))
+
+	// Namespace labeled → active set populated.
+	reconcileNS(t, nsReconciler, "preflight-ns")
+	require.True(t, active.Contains("preflight-ns"))
+
+	// PreflightConfig CR applied → volcano discoverer registered for the namespace.
+	reconcile(t, pfcReconciler, "preflight-ns", "default")
+	require.Equal(t, "volcano", resolver.For("preflight-ns").Name())
+
+	// A pod arrives with a gang annotation and heavy spec fields, as a real GPU
+	// training pod would look like before the cache transform runs.
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "worker-0",
+			Namespace: "preflight-ns",
+			Annotations: map[string]string{
+				"scheduling.k8s.io/group-name": "training",
+			},
+		},
+		Spec: corev1.PodSpec{
+			NodeName:   "node-a",
+			Containers: []corev1.Container{{Name: "cuda", Image: "nvcr.io/nvidia/cuda:latest"}},
+		},
+		Status: corev1.PodStatus{PodIP: "10.0.0.1", Phase: corev1.PodRunning},
+	}
+
+	// preflight-ns is active → full transform: gang annotation retained, heavy
+	// fields (containers, etc.) dropped.
+	cached, err := active.transform(pod)
+	require.NoError(t, err)
+	cachedPod := cached.(*corev1.Pod)
+
+	assert.Equal(t, "training", cachedPod.Annotations["scheduling.k8s.io/group-name"],
+		"full transform must retain gang annotation so discoverer can identify the gang")
+	assert.Empty(t, cachedPod.Spec.Containers,
+		"full transform must still drop heavy fields")
+
+	// The volcano discoverer registered by the PreflightConfig CR can discover
+	// the gang from the cached (pruned) pod — injection works despite pruning.
+	d := resolver.For("preflight-ns")
+	assert.True(t, d.CanHandle(cachedPod),
+		"discoverer must be able to handle a cached pod from a preflight-enabled namespace")
+	assert.NotEmpty(t, d.ExtractGangID(cachedPod))
+
+	// Negative case: a pod from a non-preflight namespace is stubbed (annotation
+	// dropped) → the discoverer cannot handle it.
+	otherPod := pod.DeepCopy()
+	otherPod.Namespace = "other-ns"
+
+	stubbed, err := active.transform(otherPod)
+	require.NoError(t, err)
+	stubPod := stubbed.(*corev1.Pod)
+
+	assert.Empty(t, stubPod.Annotations,
+		"stub transform must drop annotations from non-preflight namespaces")
+	assert.False(t, d.CanHandle(stubPod),
+		"discoverer must NOT handle a stubbed pod from a non-preflight namespace")
+}
+
 func preflightNamespace(name string) *corev1.Namespace {
 	return &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{

@@ -44,6 +44,7 @@ func NewActiveNamespaces() *ActiveNamespaces {
 func (a *ActiveNamespaces) Add(ns string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
 	a.set[ns] = struct{}{}
 }
 
@@ -51,6 +52,7 @@ func (a *ActiveNamespaces) Add(ns string) {
 func (a *ActiveNamespaces) Remove(ns string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
 	delete(a.set, ns)
 }
 
@@ -58,7 +60,9 @@ func (a *ActiveNamespaces) Remove(ns string) {
 func (a *ActiveNamespaces) Contains(ns string) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+
 	_, ok := a.set[ns]
+
 	return ok
 }
 
@@ -86,6 +90,7 @@ func podTransformForCache(active *ActiveNamespaces) func(any) (any, error) {
 			if active.Contains(pod.Namespace) {
 				return transformTypedPod(pod), nil
 			}
+
 			return stubTypedPod(pod), nil
 		case *unstructured.Unstructured:
 			// Kubernetes 1.35 Pods are read as unstructured objects so their
@@ -93,6 +98,7 @@ func podTransformForCache(active *ActiveNamespaces) func(any) (any, error) {
 			if active.Contains(pod.GetNamespace()) {
 				return transformUnstructuredPod(pod), nil
 			}
+
 			return stubUnstructuredPod(pod), nil
 		default:
 			return nil, fmt.Errorf("expected Pod cache object, got %T", obj)
@@ -153,14 +159,15 @@ func gangConfigVolumesForCache(volumes []corev1.Volume) []corev1.Volume {
 // minimum identity fields needed by the informer to track the object.
 func stubTypedPod(pod *corev1.Pod) *corev1.Pod {
 	pod.ObjectMeta = metav1.ObjectMeta{
-		Name:            pod.ObjectMeta.Name,
-		Namespace:       pod.ObjectMeta.Namespace,
-		UID:             pod.ObjectMeta.UID,
-		ResourceVersion: pod.ObjectMeta.ResourceVersion,
+		Name:            pod.Name,
+		Namespace:       pod.Namespace,
+		UID:             pod.UID,
+		ResourceVersion: pod.ResourceVersion,
 	}
 	pod.TypeMeta = metav1.TypeMeta{}
 	pod.Spec = corev1.PodSpec{}
 	pod.Status = corev1.PodStatus{}
+
 	return pod
 }
 
@@ -173,6 +180,7 @@ func stubUnstructuredPod(pod *unstructured.Unstructured) *unstructured.Unstructu
 	stub.SetUID(pod.GetUID())
 	stub.SetResourceVersion(pod.GetResourceVersion())
 	pod.Object = stub.Object
+
 	return pod
 }
 
