@@ -35,12 +35,10 @@ type ActiveNamespaces struct {
 	set map[string]struct{}
 }
 
-// NewActiveNamespaces returns an empty ActiveNamespaces.
 func NewActiveNamespaces() *ActiveNamespaces {
 	return &ActiveNamespaces{set: make(map[string]struct{})}
 }
 
-// Add marks ns as preflight-enabled.
 func (a *ActiveNamespaces) Add(ns string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -48,7 +46,6 @@ func (a *ActiveNamespaces) Add(ns string) {
 	a.set[ns] = struct{}{}
 }
 
-// Remove marks ns as no longer preflight-enabled.
 func (a *ActiveNamespaces) Remove(ns string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -56,7 +53,6 @@ func (a *ActiveNamespaces) Remove(ns string) {
 	delete(a.set, ns)
 }
 
-// Contains reports whether ns is currently preflight-enabled.
 func (a *ActiveNamespaces) Contains(ns string) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -171,7 +167,6 @@ func stubTypedPod(pod *corev1.Pod) *corev1.Pod {
 	return pod
 }
 
-// stubUnstructuredPod is the unstructured equivalent of stubTypedPod.
 func stubUnstructuredPod(pod *unstructured.Unstructured) *unstructured.Unstructured {
 	stub := &unstructured.Unstructured{}
 	stub.SetGroupVersionKind(pod.GroupVersionKind())

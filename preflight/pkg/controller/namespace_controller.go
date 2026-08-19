@@ -24,7 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// preflightNamespaceLabel is the label that marks a namespace as preflight-enabled.
 const preflightNamespaceLabel = "nvsentinel.nvidia.com/preflight"
 
 // NamespaceReconciler keeps ActiveNamespaces in sync with the set of namespaces
@@ -36,20 +35,16 @@ type NamespaceReconciler struct {
 	active *ActiveNamespaces
 }
 
-// NewNamespaceReconciler creates a reconciler for the given active namespace set.
 func NewNamespaceReconciler(c client.Client, active *ActiveNamespaces) *NamespaceReconciler {
 	return &NamespaceReconciler{Client: c, active: active}
 }
 
-// SetupWithManager registers the reconciler with the manager.
 func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Namespace{}).
 		Complete(r)
 }
 
-// Reconcile adds or removes the namespace from the active set based on whether
-// it carries the preflight-enabled label.
 func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var ns corev1.Namespace
 	if err := r.Get(ctx, req.NamespacedName, &ns); err != nil {

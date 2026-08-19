@@ -29,49 +29,59 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestNamespaceReconciler_AddsLabeledNamespace(t *testing.T) {
-	active := NewActiveNamespaces()
-	ns := preflightNamespace("team-a")
-	r, _ := newNSReconcilerWith(t, active, ns)
+func TestNamespaceReconciler_Reconcile(t *testing.T) {
+	tests := []struct {
+		name          string
+		ns            *corev1.Namespace // nil = already deleted
+		initialActive []string
+		reconcileName string
+		wantActive    bool
+	}{
+		{
+			name:          "labeled namespace is added",
+			ns:            preflightNamespace("team-a"),
+			reconcileName: "team-a",
+			wantActive:    true,
+		},
+		{
+			name:          "unlabeled namespace is ignored",
+			ns:            &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}},
+			reconcileName: "team-a",
+			wantActive:    false,
+		},
+		{
+			name:          "label removal evicts from active set",
+			ns:            &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}},
+			initialActive: []string{"team-a"},
+			reconcileName: "team-a",
+			wantActive:    false,
+		},
+		{
+			name:          "deleted namespace is evicted from active set",
+			initialActive: []string{"team-a"},
+			reconcileName: "team-a",
+			wantActive:    false,
+		},
+	}
 
-	reconcileNS(t, r, "team-a")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			active := NewActiveNamespaces()
+			for _, ns := range tt.initialActive {
+				active.Add(ns)
+			}
 
-	assert.True(t, active.Contains("team-a"))
-}
+			var objs []client.Object
+			if tt.ns != nil {
+				objs = append(objs, tt.ns)
+			}
 
-func TestNamespaceReconciler_IgnoresUnlabeledNamespace(t *testing.T) {
-	active := NewActiveNamespaces()
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "other-ns"}}
-	r, _ := newNSReconcilerWith(t, active, ns)
+			r, _ := newNSReconcilerWith(t, active, objs...)
+			reconcileNS(t, r, tt.reconcileName)
 
-	reconcileNS(t, r, "other-ns")
-
-	assert.False(t, active.Contains("other-ns"))
-}
-
-func TestNamespaceReconciler_RemovesNamespaceWhenLabelDropped(t *testing.T) {
-	active := NewActiveNamespaces()
-	active.Add("team-a")
-
-	// Namespace exists but label has been removed.
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}}
-	r, _ := newNSReconcilerWith(t, active, ns)
-
-	reconcileNS(t, r, "team-a")
-
-	assert.False(t, active.Contains("team-a"))
-}
-
-func TestNamespaceReconciler_RemovesDeletedNamespace(t *testing.T) {
-	active := NewActiveNamespaces()
-	active.Add("team-a")
-
-	// Namespace does not exist in the fake client (already deleted).
-	r, _ := newNSReconcilerWith(t, active)
-
-	reconcileNS(t, r, "team-a")
-
-	assert.False(t, active.Contains("team-a"))
+			assert.Equal(t, tt.wantActive, active.Contains(tt.reconcileName))
+		})
+	}
 }
 
 // TestNamespaceReconciler_PodTransformFollowsActiveSet verifies the end-to-end
