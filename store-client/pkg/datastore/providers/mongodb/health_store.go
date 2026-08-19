@@ -16,17 +16,12 @@ package mongodb
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -36,18 +31,6 @@ type MongoHealthEventStore struct {
 	databaseClient   client.DatabaseClient
 	collectionClient client.CollectionClient
 }
-
-type projectedHealthEventID struct {
-	ID interface{} `bson:"_id"`
-}
-
-type typedHealthEventDocument struct {
-	CreatedAt         time.Time                    `bson:"createdAt"`
-	HealthEvent       *protos.HealthEvent          `bson:"healthevent,omitempty"`
-	HealthEventStatus *datastore.HealthEventStatus `bson:"healtheventstatus"`
-}
-
-var _ datastore.HealthEventColdStartReader = (*MongoHealthEventStore)(nil)
 
 // NewMongoHealthEventStore creates a new MongoDB health event store
 func NewMongoHealthEventStore(databaseClient client.DatabaseClient,
@@ -470,139 +453,6 @@ func (h *MongoHealthEventStore) FindHealthEventsByQueryBatched(ctx context.Conte
 	}
 
 	return nil
-}
-
-// FindHealthEventIDsByQueryBatched streams matching IDs without decoding event payloads.
-func (h *MongoHealthEventStore) FindHealthEventIDsByQueryBatched(
-	ctx context.Context,
-	builder datastore.QueryBuilder,
-	batchSize int,
-	fn func([]string) error,
-) error {
-	if batchSize <= 0 {
-		return fmt.Errorf("health event ID batch size must be positive")
-	}
-
-	cursor, err := h.databaseClient.Find(ctx, builder.ToMongo(), &client.FindOptions{
-		Projection: map[string]interface{}{"_id": 1},
-	})
-	if err != nil {
-		return datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"failed to find health event IDs",
-			err,
-		)
-	}
-	defer cursor.Close(ctx)
-
-	ids := make([]string, 0, batchSize)
-
-	for cursor.Next(ctx) {
-		var document projectedHealthEventID
-		if err := cursor.Decode(&document); err != nil {
-			return datastore.NewQueryError(
-				datastore.ProviderMongoDB,
-				"failed to decode health event ID",
-				err,
-			)
-		}
-
-		id, err := mongoHealthEventIDString(document.ID)
-		if err != nil {
-			return err
-		}
-
-		ids = append(ids, id)
-
-		if len(ids) == batchSize {
-			if err := fn(ids); err != nil {
-				return err
-			}
-
-			ids = make([]string, 0, batchSize)
-		}
-	}
-
-	if err := cursor.Err(); err != nil {
-		return datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"cursor error while iterating health event IDs",
-			err,
-		)
-	}
-
-	if len(ids) > 0 {
-		return fn(ids)
-	}
-
-	return nil
-}
-
-func mongoHealthEventIDString(id interface{}) (string, error) {
-	switch value := id.(type) {
-	case primitive.ObjectID:
-		return value.Hex(), nil
-	default:
-		return "", fmt.Errorf("unsupported MongoDB health event ID type %T", id)
-	}
-}
-
-// FindHealthEventByID decodes one health event directly into the typed model.
-func (h *MongoHealthEventStore) FindHealthEventByID(
-	ctx context.Context,
-	id string,
-) (*model.HealthEventWithStatus, error) {
-	objectID, err := primitive.ObjectIDFromHex(id)
-	if err != nil {
-		return nil, fmt.Errorf("invalid MongoDB health event ID %q: %w", id, err)
-	}
-
-	return h.findTypedHealthEventByNativeID(ctx, objectID)
-}
-
-func (h *MongoHealthEventStore) findTypedHealthEventByNativeID(
-	ctx context.Context,
-	documentID interface{},
-) (*model.HealthEventWithStatus, error) {
-	result, err := h.databaseClient.FindOne(ctx, map[string]interface{}{"_id": documentID}, nil)
-	if err != nil {
-		return nil, datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"failed to find health event by ID",
-			err,
-		)
-	}
-
-	if err := result.Err(); err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, nil
-		}
-
-		return nil, datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"failed to find health event by ID",
-			err,
-		)
-	}
-
-	var document typedHealthEventDocument
-	if err := result.Decode(&document); err != nil {
-		return nil, datastore.NewQueryError(
-			datastore.ProviderMongoDB,
-			"failed to decode health event by ID",
-			err,
-		)
-	}
-
-	healthEvent := &model.HealthEventWithStatus{
-		CreatedAt:   document.CreatedAt,
-		HealthEvent: document.HealthEvent,
-	}
-	if document.HealthEventStatus != nil {
-		healthEvent.HealthEventStatus = document.HealthEventStatus.ToProto()
-	}
-
-	return healthEvent, nil
 }
 
 // normalizeHealthEvents converts bson.M types to map[string]interface{} in HealthEvent fields

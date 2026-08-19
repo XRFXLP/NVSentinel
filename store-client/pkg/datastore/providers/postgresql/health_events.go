@@ -18,7 +18,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -26,7 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -35,12 +33,6 @@ import (
 // PostgreSQLHealthEventStore implements HealthEventStore for PostgreSQL
 type PostgreSQLHealthEventStore struct {
 	db *sql.DB
-}
-
-type typedHealthEventDocument struct {
-	CreatedAt         time.Time                    `json:"createdAt"`
-	HealthEvent       *protos.HealthEvent          `json:"healthevent,omitempty"`
-	HealthEventStatus *datastore.HealthEventStatus `json:"healtheventstatus"`
 }
 
 // NewPostgreSQLHealthEventStore creates a new PostgreSQL health event store
@@ -932,129 +924,6 @@ func (p *PostgreSQLHealthEventStore) FindHealthEventsByQuery(ctx context.Context
 	return p.queryHealthEventsWithID(ctx, query, args...)
 }
 
-// FindHealthEventIDsByQueryBatched streams matching IDs using keyset pagination.
-func (p *PostgreSQLHealthEventStore) FindHealthEventIDsByQueryBatched(
-	ctx context.Context,
-	builder datastore.QueryBuilder,
-	batchSize int,
-	fn func([]string) error,
-) error {
-	if batchSize <= 0 {
-		return fmt.Errorf("health event ID batch size must be positive")
-	}
-
-	whereClause, args := builder.ToSQL()
-	lastID := ""
-
-	for {
-		q, queryArgs := healthEventIDBatchQuery(whereClause, args, lastID, batchSize)
-
-		ids, err := p.queryHealthEventIDBatch(ctx, q, queryArgs, batchSize)
-		if err != nil {
-			return err
-		}
-
-		if len(ids) == 0 {
-			return nil
-		}
-
-		if err := fn(ids); err != nil {
-			return err
-		}
-
-		if len(ids) < batchSize {
-			return nil
-		}
-
-		lastID = ids[len(ids)-1]
-	}
-}
-
-func healthEventIDBatchQuery(
-	whereClause string,
-	args []interface{},
-	lastID string,
-	batchSize int,
-) (string, []interface{}) {
-	//nolint:gosec // G202 false positive - clauses use placeholders; batchSize is an integer
-	q := fmt.Sprintf("SELECT id FROM health_events WHERE %s", whereClause)
-
-	queryArgs := append([]interface{}{}, args...)
-
-	if lastID != "" {
-		q += fmt.Sprintf(" AND id > $%d", len(queryArgs)+1)
-		queryArgs = append(queryArgs, lastID)
-	}
-
-	q += fmt.Sprintf(" ORDER BY id LIMIT %d", batchSize)
-
-	return q, queryArgs
-}
-
-func (p *PostgreSQLHealthEventStore) queryHealthEventIDBatch(
-	ctx context.Context,
-	q string,
-	args []interface{},
-	batchSize int,
-) ([]string, error) {
-	rows, err := p.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query health event IDs: %w", err)
-	}
-	defer rows.Close()
-
-	ids := make([]string, 0, batchSize)
-
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("failed to scan health event ID: %w", err)
-		}
-
-		ids = append(ids, id)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating health event IDs: %w", err)
-	}
-
-	return ids, nil
-}
-
-// FindHealthEventByID decodes one JSONB document directly into the typed model.
-func (p *PostgreSQLHealthEventStore) FindHealthEventByID(
-	ctx context.Context,
-	id string,
-) (*model.HealthEventWithStatus, error) {
-	var documentJSON []byte
-	if err := p.db.QueryRowContext(
-		ctx,
-		"SELECT document FROM health_events WHERE id = $1",
-		id,
-	).Scan(&documentJSON); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-
-		return nil, fmt.Errorf("failed to query health event by ID: %w", err)
-	}
-
-	var document typedHealthEventDocument
-	if err := json.Unmarshal(documentJSON, &document); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal health event by ID: %w", err)
-	}
-
-	healthEvent := &model.HealthEventWithStatus{
-		CreatedAt:   document.CreatedAt,
-		HealthEvent: document.HealthEvent,
-	}
-	if document.HealthEventStatus != nil {
-		healthEvent.HealthEventStatus = document.HealthEventStatus.ToProto()
-	}
-
-	return healthEvent, nil
-}
-
 // FindHealthEventsByQueryBatched iterates matching health events in bounded batches.
 // fn is called once per batch of up to batchSize events. Return a non-nil error from
 // fn to stop iteration early. Uses LIMIT/OFFSET pagination to bound memory.
@@ -1191,6 +1060,5 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventsByQuery(ctx context.Conte
 	return nil
 }
 
-// Verify that PostgreSQLHealthEventStore implements the datastore interfaces.
+// Verify that PostgreSQLHealthEventStore implements the HealthEventStore interface
 var _ datastore.HealthEventStore = (*PostgreSQLHealthEventStore)(nil)
-var _ datastore.HealthEventColdStartReader = (*PostgreSQLHealthEventStore)(nil)

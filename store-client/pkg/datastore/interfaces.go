@@ -104,18 +104,6 @@ type HealthEventStore interface {
 	) error
 }
 
-// HealthEventColdStartReader provides the bounded scan and typed point lookup
-// needed to replay health events without retaining raw documents in memory.
-type HealthEventColdStartReader interface {
-	FindHealthEventIDsByQueryBatched(
-		ctx context.Context,
-		builder QueryBuilder,
-		batchSize int,
-		fn func([]string) error,
-	) error
-	FindHealthEventByID(ctx context.Context, id string) (*model.HealthEventWithStatus, error)
-}
-
 // QueryBuilder interface for database-agnostic queries
 type QueryBuilder interface {
 	ToMongo() map[string]interface{}

@@ -710,10 +710,6 @@ func (c *MongoDBClient) Find(ctx context.Context, filter interface{}, opts *Find
 			mongoOpts.SetSort(opts.Sort)
 		}
 
-		if opts.Projection != nil {
-			mongoOpts.SetProjection(opts.Projection)
-		}
-
 		if opts.Limit != nil {
 			mongoOpts.SetLimit(*opts.Limit)
 		}

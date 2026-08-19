@@ -130,10 +130,9 @@ type FindOneOptions struct {
 
 // FindOptions holds options for Find operations
 type FindOptions struct {
-	Sort       interface{}
-	Projection interface{}
-	Limit      *int64
-	Skip       *int64
+	Sort  interface{}
+	Limit *int64
+	Skip  *int64
 }
 
 // CountOptions holds options for Count operations

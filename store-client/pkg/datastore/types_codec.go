@@ -18,10 +18,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"go.mongodb.org/mongo-driver/bson"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // MarshalBSON preserves the public *bool API while writing nullable booleans in
@@ -134,38 +132,6 @@ func (h *HealthEventStatus) UnmarshalJSON(data []byte) error {
 	h.FaultRemediated = faultRemediated
 
 	return nil
-}
-
-// ToProto converts the datastore compatibility representation to the typed
-// protobuf representation used by health-event consumers.
-func (h HealthEventStatus) ToProto() *protos.HealthEventStatus {
-	var nodeQuarantined string
-	if h.NodeQuarantined != nil {
-		nodeQuarantined = string(*h.NodeQuarantined)
-	}
-
-	var userPodsEvictionStatus *protos.OperationStatus
-	if h.UserPodsEvictionStatus.Status != "" || h.UserPodsEvictionStatus.Message != "" {
-		userPodsEvictionStatus = &protos.OperationStatus{
-			Status:  string(h.UserPodsEvictionStatus.Status),
-			Message: h.UserPodsEvictionStatus.Message,
-		}
-	}
-
-	var faultRemediated *wrapperspb.BoolValue
-	if h.FaultRemediated != nil {
-		faultRemediated = wrapperspb.Bool(*h.FaultRemediated)
-	}
-
-	return &protos.HealthEventStatus{
-		NodeQuarantined:           nodeQuarantined,
-		QuarantineFinishTimestamp: h.QuarantineFinishTimestamp,
-		UserPodsEvictionStatus:    userPodsEvictionStatus,
-		DrainFinishTimestamp:      h.DrainFinishTimestamp,
-		FaultRemediated:           faultRemediated,
-		LastRemediationTimestamp:  h.LastRemediationTimestamp,
-		SpanIds:                   h.SpanIds,
-	}
 }
 
 type healthEventStatusBSON struct {
