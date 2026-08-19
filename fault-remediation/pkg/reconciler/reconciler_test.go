@@ -2629,9 +2629,13 @@ func TestAdaptEvents_ForwardsEvents(t *testing.T) {
 func TestControllerReconcilerRetriesOnlyTransientFetchFailures(t *testing.T) {
 	t.Run("missing document is terminal", func(t *testing.T) {
 		store := &MockHealthEventStore{
-			FindHealthEventsByQueryFn: func(context.Context, datastore.QueryBuilder) (
+			FindHealthEventsByQueryFn: func(_ context.Context, builder datastore.QueryBuilder) (
 				[]datastore.HealthEventWithStatus, error,
 			) {
+				assert.NotPanics(t, func() {
+					_ = builder.ToMongo()
+				})
+
 				return nil, nil
 			},
 		}
@@ -2640,7 +2644,7 @@ func TestControllerReconcilerRetriesOnlyTransientFetchFailures(t *testing.T) {
 		}
 
 		result, err := controller.Reconcile(context.Background(), reconcileRequest{
-			documentID: "deleted-event",
+			documentID: "507f1f77bcf86cd799439011",
 		})
 
 		assert.NoError(t, err)
@@ -2668,9 +2672,7 @@ func TestControllerReconcilerRetriesOnlyTransientFetchFailures(t *testing.T) {
 }
 
 func TestHandleColdStartQueuesDocumentIDs(t *testing.T) {
-	nativeDocumentID := [12]byte{1}
 	rawEvent := testRawHealthEvent("event-1", "node-1", protos.RecommendedAction_RESTART_BM)
-	rawEvent["_id"] = nativeDocumentID
 	store := &MockHealthEventStore{
 		FindHealthEventsByQueryBatchedFn: func(
 			_ context.Context,
@@ -2689,7 +2691,7 @@ func TestHandleColdStartQueuesDocumentIDs(t *testing.T) {
 	r.HandleColdStart(context.Background())
 
 	queued := <-r.coldStartCh
-	assert.Equal(t, nativeDocumentID, queued.Object.documentID)
+	assert.Equal(t, "event-1", queued.Object.documentID)
 	assert.Nil(t, queued.Object.event)
 }
 

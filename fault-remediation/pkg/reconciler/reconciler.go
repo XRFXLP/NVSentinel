@@ -1872,7 +1872,7 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 		coldStartBatchSize,
 		func(healthEvents []datastore.HealthEventWithStatus) error {
 			for _, healthEvent := range healthEvents {
-				documentID, err := coldStartDocumentID(healthEvent.RawEvent)
+				documentID, err := utils.ExtractDocumentID(healthEvent.RawEvent)
 				if err != nil {
 					slog.WarnContext(ctx, "Skipping cold-start health event without a document ID", "error", err)
 

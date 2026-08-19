@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"reflect"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -30,7 +29,7 @@ import (
 
 type reconcileRequest struct {
 	event      *datastore.EventWithToken
-	documentID interface{}
+	documentID string
 }
 
 type controllerReconciler struct {
@@ -50,9 +49,9 @@ func (c *controllerReconciler) Reconcile(
 
 func (c *controllerReconciler) reconcileColdStartEvent(
 	ctx context.Context,
-	documentID interface{},
+	documentID string,
 ) (ctrl.Result, error) {
-	if documentID == nil {
+	if documentID == "" {
 		return ctrl.Result{}, errors.New("cold-start reconcile request has no document ID")
 	}
 
@@ -66,7 +65,7 @@ func (c *controllerReconciler) reconcileColdStartEvent(
 			"eventID", documentID,
 			"error", err)
 
-		return ctrl.Result{}, fmt.Errorf("fetch cold-start health event %v: %w", documentID, err)
+		return ctrl.Result{}, fmt.Errorf("fetch cold-start health event %s: %w", documentID, err)
 	}
 
 	if len(healthEvents) == 0 {
@@ -84,17 +83,4 @@ func (c *controllerReconciler) reconcileColdStartEvent(
 	}
 
 	return c.reconciler.Reconcile(ctx, &datastore.EventWithToken{Event: healthEvents[0].RawEvent})
-}
-
-func coldStartDocumentID(rawEvent datastore.Event) (interface{}, error) {
-	documentID, ok := rawEvent["_id"]
-	if !ok || documentID == nil {
-		return nil, errors.New("health event has no document ID")
-	}
-
-	if !reflect.TypeOf(documentID).Comparable() {
-		return nil, fmt.Errorf("health event document ID has non-comparable type %T", documentID)
-	}
-
-	return documentID, nil
 }
