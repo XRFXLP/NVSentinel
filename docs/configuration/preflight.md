@@ -459,17 +459,9 @@ The gang ID embeds the discoverer name (`{discoverer}-{namespace}-{podGroup}`), 
 
 #### Gang coordination Pod cache
 
-When gang coordination is enabled, Preflight watches Pods cluster-wide because
-namespace-specific `PreflightConfig` resources can be added or removed while
-the process is running. The controller-runtime cache namespace set is fixed
-when the manager starts, so limiting it to the namespaces known at startup
-would miss Pods after a new namespace configuration is created.
+When gang coordination is enabled, Preflight watches Pods cluster-wide because namespace-specific `PreflightConfig` resources can be added or removed while the process is running. The controller-runtime cache namespace set is fixed when the manager starts, so limiting it to the namespaces known at startup would miss Pods after a new namespace configuration is created.
 
-To keep the cluster-wide cache small, Preflight stores only Pod identity and
-deletion metadata, annotations and labels used by configurable discoverers, the
-gang ConfigMap volume, node and scheduling-group references, and Pod IP and
-phase. Containers, init containers, unrelated volumes, conditions, managed
-fields, and other unused Pod data are discarded before caching.
+To keep the cluster-wide cache small, Preflight stores only Pod identity and deletion metadata, annotations and labels used by configurable discoverers, the gang ConfigMap volume, node and scheduling-group references, and Pod IP and phase. Containers, init containers, unrelated volumes, conditions, managed fields, and other unused Pod data are discarded before caching.
 
 ## Gang coordination
 
