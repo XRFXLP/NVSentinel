@@ -44,19 +44,30 @@ func TestRateLimitConfigApply_ZeroValues_UsesClientGoDefaults(t *testing.T) {
 	assert.Equal(t, rest.DefaultBurst, config.Burst)
 }
 
-func TestRateLimitConfigApply_NegativeValues_ReturnsError(t *testing.T) {
+func TestRateLimitConfigApply_InvalidValues_ReturnsError(t *testing.T) {
 	tests := []RateLimitConfig{
-		{QPS: -1, Burst: 10},
 		{QPS: 5, Burst: -1},
 		{QPS: math.NaN(), Burst: 10},
 		{QPS: math.Inf(1), Burst: 10},
 		{QPS: math.Inf(-1), Burst: 10},
 		{QPS: float64(math.MaxFloat32) * 2, Burst: 10},
+		{QPS: -float64(math.MaxFloat32) * 2, Burst: 10},
 	}
 
 	for _, config := range tests {
 		assert.Error(t, config.Apply(&rest.Config{}))
 	}
+}
+
+func TestRateLimitConfigApply_NegativeQPS_DisablesClientGoRateLimiter(t *testing.T) {
+	config := &rest.Config{Host: "https://example.invalid"}
+	err := (RateLimitConfig{QPS: -1, Burst: 10}).Apply(config)
+	require.NoError(t, err)
+
+	clientset, err := kubernetes.NewForConfig(config)
+	require.NoError(t, err)
+
+	assert.Nil(t, clientset.CoreV1().RESTClient().GetRateLimiter())
 }
 
 func TestRateLimitConfigApply_ConfiguredRateLimits_EnforcedByClientGo(t *testing.T) {

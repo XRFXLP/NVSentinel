@@ -109,9 +109,11 @@ func TestInitializeKubernetesClient_RateLimitScenarios_InitializedInformersUseCo
 
 	lowRate := float64(podCount) / durations["low QPS"].Seconds()
 	highRate := float64(podCount) / durations["high QPS"].Seconds()
-	t.Logf("initialized eviction throughput: low QPS=%.2f pods/s, high QPS=%.2f pods/s",
-		lowRate, highRate)
-	assert.Greater(t, highRate, lowRate)
+	throughputRatio := highRate / lowRate
+	t.Logf("initialized eviction throughput: low QPS=%.2f pods/s, high QPS=%.2f pods/s, ratio=%.2fx",
+		lowRate, highRate, throughputRatio)
+	assert.GreaterOrEqual(t, throughputRatio, 8.0)
+	assert.LessOrEqual(t, throughputRatio, 11.0)
 }
 
 func writeNodeDrainerKubeconfig(t *testing.T, config *rest.Config) string {

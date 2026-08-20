@@ -62,8 +62,8 @@ spec:
           args:
             - "--metrics-port"
             - "{{ .Values.global.metricsPort }}"
-            - "--kube-api-qps={{ ((.Values.global).qps) | default .Values.qps }}"
-            - "--kube-api-burst={{ ((.Values.global).burst) | default .Values.burst }}"
+            - "--kube-api-qps={{ .Values.qps | default ((.Values.global).qps) | default 5 }}"
+            - "--kube-api-burst={{ .Values.burst | default ((.Values.global).burst) | default 10 }}"
             {{- if .Values.kataLabelOverride }}
             - "--kata-label"
             - "{{ .Values.kataLabelOverride }}"

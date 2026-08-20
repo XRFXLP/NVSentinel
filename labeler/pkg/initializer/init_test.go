@@ -106,14 +106,22 @@ func TestInitializeAll_RateLimitScenarios_InitializedLabelerUsesConfiguredQPS(t 
 
 			cancel()
 			require.NoError(t, <-runErr)
+
+			for _, nodeName := range nodeNames {
+				require.NoError(t, adminClient.CoreV1().Nodes().Delete(
+					t.Context(), nodeName, metav1.DeleteOptions{},
+				))
+			}
 		})
 	}
 
 	lowRate := float64(nodeCount) / durations["low QPS"].Seconds()
 	highRate := float64(nodeCount) / durations["high QPS"].Seconds()
-	t.Logf("initialized labeler throughput: low QPS=%.2f nodes/s, high QPS=%.2f nodes/s",
-		lowRate, highRate)
-	assert.Greater(t, highRate, lowRate)
+	throughputRatio := highRate / lowRate
+	t.Logf("initialized labeler throughput: low QPS=%.2f nodes/s, high QPS=%.2f nodes/s, ratio=%.2fx",
+		lowRate, highRate, throughputRatio)
+	assert.GreaterOrEqual(t, throughputRatio, 8.0)
+	assert.LessOrEqual(t, throughputRatio, 11.0)
 }
 
 func writeKubeconfig(t *testing.T, config *rest.Config) string {

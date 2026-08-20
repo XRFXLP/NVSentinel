@@ -37,10 +37,6 @@ podAnnotations: {}
 # Log level for the fault quarantine module (e.g. "debug", "info", "warn", "error")
 logLevel: info
 
-# Kubernetes API client rate limits. Optional global values override these.
-qps: 5
-burst: 10
-
 # Client certificate mount path for database connections
 clientCertMountPath: /etc/ssl/client-certs
 

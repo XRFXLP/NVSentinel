@@ -99,8 +99,8 @@ spec:
           {{- end }}
           - "--circuit-breaker-enabled={{ .Values.circuitBreaker.enabled }}"
           - "--gpu-node-label={{ .Values.gpuNodeLabel }}"
-          - "--kube-api-qps={{ ((.Values.global).qps) | default .Values.qps }}"
-          - "--kube-api-burst={{ ((.Values.global).burst) | default .Values.burst }}"
+          - "--kube-api-qps={{ .Values.qps | default ((.Values.global).qps) | default 5 }}"
+          - "--kube-api-burst={{ .Values.burst | default ((.Values.global).burst) | default 10 }}"
           ports:
             - name: metrics
               containerPort: {{ ((.Values.global).metricsPort) | default 2112 }}

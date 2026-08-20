@@ -50,6 +50,14 @@ global:
   # Prometheus should scrape these endpoints to monitor NVSentinel
   metricsPort: 2112
 
+  # Default Kubernetes API client rate limits for core controllers
+  # Individual fault-quarantine, node-drainer, labeler, and preflight values
+  # override these defaults when configured.
+  # Positive qps values throttle requests; a negative value disables
+  # client-side throttling. Zero qps or burst uses the client-go default.
+  qps: 5
+  burst: 10
+
   # Health Check port for healthz and readyz scraping
   # This port is only used when using ctrl-runtime
   # components expose health and metrics endpoints on this port
@@ -404,6 +412,11 @@ fault-quarantine:
   # error: Error conditions only
   logLevel: info
 
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
+
   # Container image configuration
   image:
     repository: ghcr.io/nvidia/nvsentinel/fault-quarantine
@@ -581,6 +594,11 @@ node-drainer:
 
   # Log level for debugging and monitoring
   logLevel: info
+
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
 
   # Container image configuration
   image:
@@ -1000,6 +1018,11 @@ labeler:
 
   # Log level for debugging
   logLevel: info
+
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
 
   # Container image configuration
   image:
@@ -1687,6 +1710,11 @@ event-exporter:
 ################################################################################
 preflight:
   replicaCount: 1
+
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
 
   # Container image configuration for the webhook server
   image:

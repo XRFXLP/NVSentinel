@@ -59,23 +59,17 @@ type FaultQuarantineClient struct {
 	operationMutex           sync.Map // map[string]*sync.Mutex for per-node locking
 }
 
-// NewFaultQuarantineClient constructs a FaultQuarantineClient. The optional
-// rateLimits argument configures client-go throttling; when omitted, client-go
-// QPS and burst defaults are used.
+// NewFaultQuarantineClient constructs a FaultQuarantineClient using the
+// configured client-go rate limits.
 func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
 	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string,
-	rateLimits ...kubeclient.RateLimitConfig) (*FaultQuarantineClient, error) {
+	rateLimits kubeclient.RateLimitConfig) (*FaultQuarantineClient, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating Kubernetes config: %w", err)
 	}
 
-	limits := kubeclient.RateLimitConfig{}
-	if len(rateLimits) > 0 {
-		limits = rateLimits[0]
-	}
-
-	return newFaultQuarantineClient(config, dryRun, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, limits)
+	return newFaultQuarantineClient(config, dryRun, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, rateLimits)
 }
 
 func newFaultQuarantineClient(config *rest.Config, dryRun bool,

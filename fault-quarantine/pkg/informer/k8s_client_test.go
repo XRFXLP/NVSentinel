@@ -143,27 +143,6 @@ func createTestNode(ctx context.Context, t *testing.T, name string, annotations 
 	}
 }
 
-// TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput
-// exercises FQ's real GET+UPDATE cordon path against envtest.
-func TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput(t *testing.T) {
-	const (
-		nodeCount = 10
-		burst     = 1
-	)
-
-	lowDuration := measureCordonThroughput(t, "low-qps", nodeCount, 4, burst)
-	highDuration := measureCordonThroughput(t, "high-qps", nodeCount, 40, burst)
-
-	lowRate := float64(nodeCount) / lowDuration.Seconds()
-	highRate := float64(nodeCount) / highDuration.Seconds()
-	throughputRatio := highRate / lowRate
-	t.Logf("cordon throughput: low QPS=%.2f nodes/s, high QPS=%.2f nodes/s, ratio=%.2fx",
-		lowRate, highRate, throughputRatio)
-
-	assert.GreaterOrEqual(t, throughputRatio, 8.0)
-	assert.LessOrEqual(t, throughputRatio, 11.0)
-}
-
 // measureCordonThroughput creates nodes with an unrestricted setup client, then
 // measures only requests made by the rate-limited FaultQuarantineClient.
 func measureCordonThroughput(t *testing.T, prefix string, nodeCount int, qps float64, burst int) time.Duration {
@@ -200,6 +179,27 @@ func measureCordonThroughput(t *testing.T, prefix string, nodeCount int, qps flo
 	}
 
 	return time.Since(start)
+}
+
+// TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput
+// exercises FQ's real GET+UPDATE cordon path against envtest.
+func TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput(t *testing.T) {
+	const (
+		nodeCount = 10
+		burst     = 1
+	)
+
+	lowDuration := measureCordonThroughput(t, "low-qps", nodeCount, 4, burst)
+	highDuration := measureCordonThroughput(t, "high-qps", nodeCount, 40, burst)
+
+	lowRate := float64(nodeCount) / lowDuration.Seconds()
+	highRate := float64(nodeCount) / highDuration.Seconds()
+	throughputRatio := highRate / lowRate
+	t.Logf("cordon throughput: low QPS=%.2f nodes/s, high QPS=%.2f nodes/s, ratio=%.2fx",
+		lowRate, highRate, throughputRatio)
+
+	assert.GreaterOrEqual(t, throughputRatio, 8.0)
+	assert.LessOrEqual(t, throughputRatio, 11.0)
 }
 
 func TestQuarantineNodeAndSetAnnotations(t *testing.T) {

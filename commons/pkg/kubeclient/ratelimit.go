@@ -32,7 +32,7 @@ type RateLimitConfig struct {
 func RegisterRateLimitFlags() *RateLimitConfig {
 	config := &RateLimitConfig{}
 	flag.Float64Var(&config.QPS, "kube-api-qps", float64(rest.DefaultQPS),
-		"maximum average Kubernetes API requests per second")
+		"maximum average Kubernetes API requests per second; a negative value disables client-side throttling")
 	flag.IntVar(&config.Burst, "kube-api-burst", rest.DefaultBurst,
 		"maximum burst of Kubernetes API requests")
 
@@ -45,11 +45,7 @@ func (c RateLimitConfig) Apply(config *rest.Config) error {
 		return fmt.Errorf("kube API QPS must be finite")
 	}
 
-	if c.QPS < 0 {
-		return fmt.Errorf("kube API QPS must not be negative")
-	}
-
-	if c.QPS > math.MaxFloat32 {
+	if math.Abs(c.QPS) > math.MaxFloat32 {
 		return fmt.Errorf("kube API QPS exceeds float32 range")
 	}
 

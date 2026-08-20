@@ -3,12 +3,11 @@
   "type": "object",
   "properties": {
     "qps": {
-      "type": "number",
-      "exclusiveMinimum": 0
+      "type": "number"
     },
     "burst": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 0
     },
     "webhook": {
       "type": "object",
