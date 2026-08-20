@@ -21,7 +21,7 @@ metadata:
   name: mongo-app-client-cert
   namespace: {{ $.Release.Namespace }}
 spec:
-  secretName: {{ include "mongodb-store.certificates.secretName" . }}
+  secretName: {{ include "nvsentinel.certificates.secretName" . }}
   duration: 8760h
   renewBefore: 360h
   commonName: mongo-user-client
@@ -69,7 +69,7 @@ metadata:
   name: mongo-app-client-cert
   namespace: {{ $.Release.Namespace }}
 spec:
-  secretName: {{ include "mongodb-store.certificates.secretName" . }}
+  secretName: {{ include "nvsentinel.certificates.secretName" . }}
   duration: 8760h
   renewBefore: 360h
   commonName: mongo-user-client

@@ -60,34 +60,3 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
-
-{{/*
-MongoDB client certificate helpers are local to this subchart so it can be
-rendered and tested independently of the parent NVSentinel chart.
-*/}}
-{{- define "mongodb-store.certificates.secretName" -}}
-{{- $global := .Values.global | default dict -}}
-{{- $datastore := get $global "datastore" | default dict -}}
-{{- $auth := get $datastore "auth" | default dict -}}
-{{- $certificates := get $datastore "certificates" | default dict -}}
-{{- if get $auth "clientCertSecretName" -}}
-{{ get $auth "clientCertSecretName" }}
-{{- else if get $certificates "secretName" -}}
-{{ get $certificates "secretName" }}
-{{- else -}}
-mongo-app-client-cert-secret
-{{- end -}}
-{{- end -}}
-
-{{- define "mongodb-store.certificates.volumeItems" -}}
-{{- $global := .Values.global | default dict -}}
-{{- $datastore := get $global "datastore" | default dict -}}
-{{- $certificates := get $datastore "certificates" | default dict -}}
-items:
-  - key: {{ get $certificates "certKey" | default "tls.crt" }}
-    path: tls.crt
-  - key: {{ get $certificates "keyKey" | default "tls.key" }}
-    path: tls.key
-  - key: {{ get $certificates "caKey" | default "ca.crt" }}
-    path: ca.crt
-{{- end -}}
