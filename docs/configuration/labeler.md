@@ -56,9 +56,7 @@ labeler:
 
 ### Kubernetes API Rate Limits
 
-The labeler inherits the Kubernetes client limits from `global.qps` and
-`global.burst` (defaults: `5` and `10`). Set component values only when the
-labeler needs different limits:
+The labeler inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). Set component values only when the labeler needs different limits:
 
 ```yaml
 labeler:
@@ -66,9 +64,7 @@ labeler:
   burst: 80
 ```
 
-Positive `qps` values enable client-side throttling, `0` uses the client-go
-default, and a negative value disables client-side throttling. `burst` must be
-non-negative; `0` uses the client-go default.
+Positive `qps` values enable client-side throttling, `0` uses the client-go default, and a negative value disables client-side throttling. `burst` must be non-negative; `0` uses the client-go default.
 
 ## Pre-Installed Drivers
 
