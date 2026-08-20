@@ -34,10 +34,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	listersv1 "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
 )
@@ -2400,4 +2402,71 @@ func TestUpdateNodeLabelsForPod_ManagedGate(t *testing.T) {
 		assert.NotContains(t, updated.Labels, DriverInstalledLabel,
 			"lister error must not stamp labels on node")
 	})
+}
+
+// TestKubernetesClientRateLimitsLabelThroughput exercises Labeler's real
+// GET+UPDATE label path against envtest. The ratio assertion demonstrates the
+// effect of configured QPS without tying the test to host-specific latency.
+func TestKubernetesClientRateLimitsLabelThroughput(t *testing.T) {
+	testEnvironment := &envtest.Environment{}
+	testConfig, err := testEnvironment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, testEnvironment.Stop()) })
+
+	adminClient, err := kubernetes.NewForConfig(testConfig)
+	require.NoError(t, err)
+
+	const (
+		nodeCount = 10
+		burst     = 1
+	)
+
+	lowDuration := measureLabelThroughput(t, adminClient, testConfig, "low-qps", nodeCount, 4, burst)
+	highDuration := measureLabelThroughput(t, adminClient, testConfig, "high-qps", nodeCount, 40, burst)
+
+	lowRate := float64(nodeCount) / lowDuration.Seconds()
+	highRate := float64(nodeCount) / highDuration.Seconds()
+	throughputRatio := highRate / lowRate
+	t.Logf("label throughput: low QPS=%.2f nodes/s, high QPS=%.2f nodes/s, ratio=%.2fx",
+		lowRate, highRate, throughputRatio)
+
+	assert.GreaterOrEqual(t, throughputRatio, 8.0)
+	assert.LessOrEqual(t, throughputRatio, 11.0)
+}
+
+// measureLabelThroughput creates nodes with an unrestricted setup client, then
+// measures only GET+UPDATE requests made by the rate-limited Labeler client.
+func measureLabelThroughput(t *testing.T, adminClient kubernetes.Interface, testConfig *rest.Config,
+	prefix string, nodeCount int, qps float64, burst int) time.Duration {
+	t.Helper()
+
+	config := rest.CopyConfig(testConfig)
+	require.NoError(t, (kubeclient.RateLimitConfig{QPS: qps, Burst: burst}).Apply(config))
+
+	clientset, err := kubernetes.NewForConfig(config)
+	require.NoError(t, err)
+
+	nodeIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	nodeLabeler := &Labeler{
+		clientset:  clientset,
+		nodeLister: listersv1.NewNodeLister(nodeIndexer),
+		ctx:        t.Context(),
+	}
+
+	nodeNames := make([]string, nodeCount)
+	for idx := range nodeCount {
+		nodeNames[idx] = fmt.Sprintf("%s-%d-%d", prefix, idx, time.Now().UnixNano())
+		node, createErr := adminClient.CoreV1().Nodes().Create(t.Context(), &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: nodeNames[idx]},
+		}, metav1.CreateOptions{})
+		require.NoError(t, createErr)
+		require.NoError(t, nodeIndexer.Add(node))
+	}
+
+	start := time.Now()
+	for _, nodeName := range nodeNames {
+		require.NoError(t, nodeLabeler.updateNodeLabelsForPod(nodeName, "4.x", LabelValueTrue))
+	}
+
+	return time.Since(start)
 }

@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
 
@@ -71,7 +72,13 @@ func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
 		limits = rateLimits[0]
 	}
 
-	if err := limits.Apply(config); err != nil {
+	return newFaultQuarantineClient(config, dryRun, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, limits)
+}
+
+func newFaultQuarantineClient(config *rest.Config, dryRun bool,
+	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string,
+	rateLimits kubeclient.RateLimitConfig) (*FaultQuarantineClient, error) {
+	if err := rateLimits.Apply(config); err != nil {
 		return nil, fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
 	}
 
