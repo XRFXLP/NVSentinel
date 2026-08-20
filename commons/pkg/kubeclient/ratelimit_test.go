@@ -19,6 +19,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
 
@@ -51,4 +52,22 @@ func TestRateLimitConfigApplyRejectsNegativeValues(t *testing.T) {
 	for _, config := range tests {
 		assert.Error(t, config.Apply(&rest.Config{}))
 	}
+}
+
+func TestRateLimitConfigIsEnforcedByClientGo(t *testing.T) {
+	config := &rest.Config{Host: "https://example.invalid"}
+	err := (RateLimitConfig{QPS: 0.01, Burst: 3}).Apply(config)
+	require.NoError(t, err)
+
+	clientset, err := kubernetes.NewForConfig(config)
+	require.NoError(t, err)
+
+	limiter := clientset.CoreV1().RESTClient().GetRateLimiter()
+	require.NotNil(t, limiter)
+	assert.InDelta(t, 0.01, limiter.QPS(), 0.0001)
+
+	assert.True(t, limiter.TryAccept())
+	assert.True(t, limiter.TryAccept())
+	assert.True(t, limiter.TryAccept())
+	assert.False(t, limiter.TryAccept(), "request beyond the configured burst must be throttled")
 }
