@@ -23,8 +23,11 @@ global:
   metricsPort: 2112
   # Default Kubernetes API client limits for core controllers. Components can
   # override these with their own qps and burst values.
-  # A negative qps value disables client-side throttling.
+  # qps: positive values throttle requests, 0 uses the client-go default,
+  # and -1 (or any negative value) disables client-side throttling.
   qps: 5
+  # burst: positive values set the token-bucket burst size; 0 uses the
+  # client-go default. Negative values are invalid.
   burst: 10
 
   # Datastore configuration
