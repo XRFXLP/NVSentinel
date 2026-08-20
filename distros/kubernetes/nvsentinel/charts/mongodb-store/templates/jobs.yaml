@@ -146,7 +146,7 @@ spec:
           set -e
           
           NAMESPACE="{{ .Release.Namespace }}"
-          CLIENT_CERT_SECRET="{{ include "nvsentinel.certificates.secretName" . }}"
+          CLIENT_CERT_SECRET="{{ include "mongodb-store.certificates.secretName" . }}"
           ISSUER_SECRET="{{ $issuerSecret }}"
           
           echo "Validating client certificate CA..."
@@ -305,6 +305,54 @@ spec:
                     'healthevent.entitiesimpacted.entityvalue': 1,
                     'healthevent.generatedtimestamp.seconds': 1
                   });
+                  db.$MONGODB_COLLECTION_NAME.createIndex(
+                    { 'healtheventstatus.nodequarantined': 1 },
+                    {
+                      name: 'healtheventstatus_nodequarantined_active',
+                      partialFilterExpression: {
+                        'healtheventstatus.nodequarantined': {
+                          '\$in': ['Quarantined', 'AlreadyQuarantined']
+                        }
+                      }
+                    }
+                  );
+                  db.$MONGODB_COLLECTION_NAME.createIndex(
+                    { 'healtheventstatus.userpodsevictionstatus.status': 1 },
+                    {
+                      name: 'healtheventstatus_eviction_in_progress',
+                      partialFilterExpression: {
+                        'healtheventstatus.userpodsevictionstatus.status': 'InProgress'
+                      }
+                    }
+                  );
+                  db.$MONGODB_COLLECTION_NAME.createIndex(
+                    {
+                      'healtheventstatus.nodequarantined': 1,
+                      'healtheventstatus.userpodsevictionstatus.status': 1
+                    },
+                    {
+                      name: 'healtheventstatus_remediation_ready',
+                      partialFilterExpression: {
+                        'healtheventstatus.nodequarantined': {
+                          '\$in': ['Quarantined', 'AlreadyQuarantined']
+                        },
+                        'healtheventstatus.userpodsevictionstatus.status': {
+                          '\$in': ['Succeeded', 'AlreadyDrained']
+                        },
+                        'healtheventstatus.faultremediated': null
+                      }
+                    }
+                  );
+                  db.$MONGODB_COLLECTION_NAME.createIndex(
+                    {
+                      'healtheventstatus.nodequarantined': 1,
+                      'healtheventstatus.userpodsevictionstatus.status': 1
+                    },
+                    {
+                      name: 'healtheventstatus_quarantine_eviction_sparse',
+                      sparse: true
+                    }
+                  );
                 {{- if .Values.mongodb.tls.enabled }}
                 // Create X.509 users (TLS only)
                 var userExists = db.getSiblingDB('\$external').getUser('$MONGODB_APPLICATION_USER_DN');
@@ -399,8 +447,8 @@ spec:
       volumes:
         - name: mongo-certificates
           secret:
-            secretName: {{ include "nvsentinel.certificates.secretName" . }}
-            {{- include "nvsentinel.certificates.volumeItems" . | nindent 12 }}
+            secretName: {{ include "mongodb-store.certificates.secretName" . }}
+            {{- include "mongodb-store.certificates.volumeItems" . | nindent 12 }}
       {{- end }}
       # Job scheduling configuration with backward-compatible fallback
       # Prefers: job.nodeSelector -> Falls back to: mongodb.nodeSelector

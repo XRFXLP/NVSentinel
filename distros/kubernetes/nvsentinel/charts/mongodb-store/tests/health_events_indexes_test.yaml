@@ -1,0 +1,85 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+suite: HealthEvents indexes
+templates:
+  - templates/jobs.yaml
+tests:
+  - it: creates the HealthEvents query indexes for Bitnami MongoDB
+    set:
+      useBitnami: true
+      usePerconaOperator: false
+      global.imagePullSecrets: []
+    documentSelector:
+      path: metadata.name
+      value: create-mongodb-database
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "name: 'healtheventstatus_nodequarantined_active'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "(?s)healtheventstatus_nodequarantined_active.*Quarantined.*AlreadyQuarantined"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "name: 'healtheventstatus_eviction_in_progress'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "(?s)healtheventstatus_eviction_in_progress.*partialFilterExpression.*InProgress"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "name: 'healtheventstatus_remediation_ready'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "(?s)healtheventstatus_remediation_ready.*Succeeded.*AlreadyDrained.*faultremediated.*null"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "name: 'healtheventstatus_quarantine_eviction_sparse'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "(?s)healtheventstatus_quarantine_eviction_sparse.*sparse: true"
+
+  - it: creates the HealthEvents query indexes for Percona MongoDB
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      global.imagePullSecrets: []
+    documentSelector:
+      path: metadata.name
+      value: create-mongodb-database
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "name: 'healtheventstatus_nodequarantined_active'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "(?s)healtheventstatus_nodequarantined_active.*Quarantined.*AlreadyQuarantined"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "name: 'healtheventstatus_eviction_in_progress'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "(?s)healtheventstatus_eviction_in_progress.*partialFilterExpression.*InProgress"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "name: 'healtheventstatus_remediation_ready'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "(?s)healtheventstatus_remediation_ready.*Succeeded.*AlreadyDrained.*faultremediated.*null"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "name: 'healtheventstatus_quarantine_eviction_sparse'"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "(?s)healtheventstatus_quarantine_eviction_sparse.*sparse: true"
