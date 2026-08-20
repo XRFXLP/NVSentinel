@@ -15,26 +15,121 @@
 package initializer
 
 import (
+	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 )
 
-func TestInitializeKubernetesClient_ConfiguredRateLimits_AppliesToClientset(t *testing.T) {
+func TestInitializeKubernetesClient_RateLimitScenarios_InitializedInformersUseConfiguredQPS(t *testing.T) {
+	testEnvironment := &envtest.Environment{}
+	testConfig, err := testEnvironment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, testEnvironment.Stop()) })
+
+	adminClient, err := kubernetes.NewForConfig(testConfig)
+	require.NoError(t, err)
+
+	kubeconfigPath := writeNodeDrainerKubeconfig(t, testConfig)
+
+	tests := []struct {
+		name   string
+		prefix string
+		qps    float64
+	}{
+		{name: "low QPS", prefix: "low-qps", qps: 4},
+		{name: "high QPS", prefix: "high-qps", qps: 40},
+	}
+
+	const podCount = 10
+
+	durations := make(map[string]time.Duration, len(tests))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			namespace := fmt.Sprintf("%s-%d", test.prefix, time.Now().UnixNano())
+			_, createErr := adminClient.CoreV1().Namespaces().Create(t.Context(), &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: namespace},
+			}, metav1.CreateOptions{})
+			require.NoError(t, createErr)
+
+			nodeNames := make([]string, podCount)
+			for idx := range podCount {
+				nodeNames[idx] = fmt.Sprintf("%s-node-%d", test.prefix, idx)
+				_, createErr = adminClient.CoreV1().Pods(namespace).Create(t.Context(), &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-pod-%d", test.prefix, idx)},
+					Spec: corev1.PodSpec{
+						NodeName:   nodeNames[idx],
+						Containers: []corev1.Container{{Name: "workload", Image: "example.invalid/workload"}},
+					},
+				}, metav1.CreateOptions{})
+				require.NoError(t, createErr)
+			}
+
+			clientset, _, initErr := initializeKubernetesClient(InitializationParams{
+				KubeconfigPath: kubeconfigPath,
+				KubernetesClientRateLimits: kubeclient.RateLimitConfig{
+					QPS:   test.qps,
+					Burst: 1,
+				},
+			})
+			require.NoError(t, initErr)
+
+			notReadyTimeoutMinutes := 10
+			initializedInformers, initErr := initializeInformers(
+				clientset, &notReadyTimeoutMinutes, false, false, "kube-system",
+			)
+			require.NoError(t, initErr)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			require.NoError(t, initializedInformers.Run(ctx))
+
+			start := time.Now()
+			for _, nodeName := range nodeNames {
+				require.NoError(t, initializedInformers.EvictAllPodsInImmediateMode(
+					ctx, namespace, nodeName, 0, nil,
+				))
+			}
+			durations[test.name] = time.Since(start)
+		})
+	}
+
+	lowRate := float64(podCount) / durations["low QPS"].Seconds()
+	highRate := float64(podCount) / durations["high QPS"].Seconds()
+	t.Logf("initialized eviction throughput: low QPS=%.2f pods/s, high QPS=%.2f pods/s",
+		lowRate, highRate)
+	assert.Greater(t, highRate, lowRate)
+}
+
+func writeNodeDrainerKubeconfig(t *testing.T, config *rest.Config) string {
+	t.Helper()
+
 	kubeconfigPath := filepath.Join(t.TempDir(), "kubeconfig")
 	require.NoError(t, clientcmd.WriteToFile(clientcmdapi.Config{
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"test": {Server: "https://example.invalid"},
+			"test": {
+				Server:                   config.Host,
+				CertificateAuthorityData: config.CAData,
+			},
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
-			"test": {},
+			"test": {
+				ClientCertificateData: config.CertData,
+				ClientKeyData:         config.KeyData,
+			},
 		},
 		Contexts: map[string]*clientcmdapi.Context{
 			"test": {Cluster: "test", AuthInfo: "test"},
@@ -42,33 +137,5 @@ func TestInitializeKubernetesClient_ConfiguredRateLimits_AppliesToClientset(t *t
 		CurrentContext: "test",
 	}, kubeconfigPath))
 
-	tests := []struct {
-		name  string
-		qps   float64
-		burst int
-	}{
-		{name: "low QPS", qps: 4, burst: 1},
-		{name: "high QPS", qps: 40, burst: 10},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			clientset, restConfig, err := initializeKubernetesClient(InitializationParams{
-				KubeconfigPath: kubeconfigPath,
-				KubernetesClientRateLimits: kubeclient.RateLimitConfig{
-					QPS:   test.qps,
-					Burst: test.burst,
-				},
-			})
-			require.NoError(t, err)
-			assert.InDelta(t, test.qps, restConfig.QPS, 0.0001)
-			assert.Equal(t, test.burst, restConfig.Burst)
-
-			concreteClientset, ok := clientset.(*kubernetes.Clientset)
-			require.True(t, ok)
-			limiter := concreteClientset.CoreV1().RESTClient().GetRateLimiter()
-			require.NotNil(t, limiter)
-			assert.InDelta(t, test.qps, limiter.QPS(), 0.0001)
-		})
-	}
+	return kubeconfigPath
 }

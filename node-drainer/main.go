@@ -109,14 +109,14 @@ func run() error {
 
 	slog.InfoContext(ctx, "Database client cert", "path", databaseClientCertMountPath)
 
-	params := initializer.InitializationParams{
-		DatabaseClientCertMountPath: databaseClientCertMountPath,
-		KubeconfigPath:              *kubeconfigPath,
-		TomlConfigPath:              *tomlConfigPath,
-		MetricsPort:                 *metricsPort,
-		DryRun:                      *dryRun,
-		KubernetesClientRateLimits:  *rateLimits,
-	}
+	params := newInitializationParams(
+		databaseClientCertMountPath,
+		*kubeconfigPath,
+		*tomlConfigPath,
+		*metricsPort,
+		*dryRun,
+		*rateLimits,
+	)
 
 	// Create and start the health/metrics server BEFORE the potentially slow MongoDB
 	// initialization. This ensures Kubernetes liveness probes get HTTP 200 responses
@@ -196,6 +196,18 @@ func run() error {
 
 	// Wait for all goroutines to finish
 	return g.Wait()
+}
+
+func newInitializationParams(databaseClientCertMountPath, kubeconfigPath, tomlConfigPath, metricsPort string,
+	dryRun bool, rateLimits kubeclient.RateLimitConfig) initializer.InitializationParams {
+	return initializer.InitializationParams{
+		DatabaseClientCertMountPath: databaseClientCertMountPath,
+		KubeconfigPath:              kubeconfigPath,
+		TomlConfigPath:              tomlConfigPath,
+		MetricsPort:                 metricsPort,
+		DryRun:                      dryRun,
+		KubernetesClientRateLimits:  rateLimits,
+	}
 }
 
 // createMetricsServer creates and configures the metrics server

@@ -15,26 +15,123 @@
 package initializer
 
 import (
+	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
+	"github.com/nvidia/nvsentinel/labeler/pkg/labeler"
 )
 
-func TestInitializeKubernetesClient_ConfiguredRateLimits_AppliesToClientset(t *testing.T) {
+func TestInitializeAll_RateLimitScenarios_InitializedLabelerUsesConfiguredQPS(t *testing.T) {
+	testEnvironment := &envtest.Environment{}
+	testConfig, err := testEnvironment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, testEnvironment.Stop()) })
+
+	adminClient, err := kubernetes.NewForConfig(testConfig)
+	require.NoError(t, err)
+
+	kubeconfigPath := writeKubeconfig(t, testConfig)
+
+	tests := []struct {
+		name   string
+		prefix string
+		qps    float64
+	}{
+		{name: "low QPS", prefix: "low-qps", qps: 4},
+		{name: "high QPS", prefix: "high-qps", qps: 40},
+	}
+
+	const nodeCount = 10
+
+	durations := make(map[string]time.Duration, len(tests))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			nodeNames := make([]string, nodeCount)
+			for idx := range nodeCount {
+				nodeNames[idx] = fmt.Sprintf("%s-%d-%d", test.prefix, idx, time.Now().UnixNano())
+				_, createErr := adminClient.CoreV1().Nodes().Create(t.Context(), &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   nodeNames[idx],
+						Labels: map[string]string{"nvidia.com/gpu.present": "true"},
+					},
+				}, metav1.CreateOptions{})
+				require.NoError(t, createErr)
+			}
+
+			components, initErr := InitializeAll(InitializationParams{
+				KubeconfigPath:        kubeconfigPath,
+				DCGMAppLabel:          "nvidia-dcgm",
+				DriverAppLabel:        "nvidia-driver-daemonset",
+				GKEInstallerAppLabel:  "nvidia-driver-installer",
+				AssumeDriverInstalled: true,
+				KubernetesClientRateLimits: kubeclient.RateLimitConfig{
+					QPS:   test.qps,
+					Burst: 1,
+				},
+			})
+			require.NoError(t, initErr)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			runErr := make(chan error, 1)
+			start := time.Now()
+			go func() {
+				runErr <- components.Labeler.Run(ctx)
+			}()
+
+			require.Eventually(t, func() bool {
+				for _, nodeName := range nodeNames {
+					node, getErr := adminClient.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+					if getErr != nil || node.Labels[labeler.DriverInstalledLabel] != labeler.LabelValueTrue {
+						return false
+					}
+				}
+
+				return true
+			}, 20*time.Second, 50*time.Millisecond)
+			durations[test.name] = time.Since(start)
+
+			cancel()
+			require.NoError(t, <-runErr)
+		})
+	}
+
+	lowRate := float64(nodeCount) / durations["low QPS"].Seconds()
+	highRate := float64(nodeCount) / durations["high QPS"].Seconds()
+	t.Logf("initialized labeler throughput: low QPS=%.2f nodes/s, high QPS=%.2f nodes/s",
+		lowRate, highRate)
+	assert.Greater(t, highRate, lowRate)
+}
+
+func writeKubeconfig(t *testing.T, config *rest.Config) string {
+	t.Helper()
+
 	kubeconfigPath := filepath.Join(t.TempDir(), "kubeconfig")
 	require.NoError(t, clientcmd.WriteToFile(clientcmdapi.Config{
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"test": {Server: "https://example.invalid"},
+			"test": {
+				Server:                   config.Host,
+				CertificateAuthorityData: config.CAData,
+			},
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
-			"test": {},
+			"test": {
+				ClientCertificateData: config.CertData,
+				ClientKeyData:         config.KeyData,
+			},
 		},
 		Contexts: map[string]*clientcmdapi.Context{
 			"test": {Cluster: "test", AuthInfo: "test"},
@@ -42,31 +139,5 @@ func TestInitializeKubernetesClient_ConfiguredRateLimits_AppliesToClientset(t *t
 		CurrentContext: "test",
 	}, kubeconfigPath))
 
-	tests := []struct {
-		name  string
-		qps   float64
-		burst int
-	}{
-		{name: "low QPS", qps: 4, burst: 1},
-		{name: "high QPS", qps: 40, burst: 10},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			clientset, err := initializeKubernetesClient(InitializationParams{
-				KubeconfigPath: kubeconfigPath,
-				KubernetesClientRateLimits: kubeclient.RateLimitConfig{
-					QPS:   test.qps,
-					Burst: test.burst,
-				},
-			})
-			require.NoError(t, err)
-
-			concreteClientset, ok := clientset.(*kubernetes.Clientset)
-			require.True(t, ok)
-			limiter := concreteClientset.CoreV1().RESTClient().GetRateLimiter()
-			require.NotNil(t, limiter)
-			assert.InDelta(t, test.qps, limiter.QPS(), 0.0001)
-		})
-	}
+	return kubeconfigPath
 }
