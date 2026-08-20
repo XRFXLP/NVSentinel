@@ -306,17 +306,6 @@ spec:
                     'healthevent.generatedtimestamp.seconds': 1
                   });
                   db.$MONGODB_COLLECTION_NAME.createIndex(
-                    { 'healtheventstatus.nodequarantined': 1 },
-                    {
-                      name: 'healtheventstatus_nodequarantined_active',
-                      partialFilterExpression: {
-                        'healtheventstatus.nodequarantined': {
-                          '\$in': ['Quarantined', 'AlreadyQuarantined']
-                        }
-                      }
-                    }
-                  );
-                  db.$MONGODB_COLLECTION_NAME.createIndex(
                     { 'healtheventstatus.userpodsevictionstatus.status': 1 },
                     {
                       name: 'healtheventstatus_eviction_in_progress',
@@ -351,6 +340,18 @@ spec:
                     {
                       name: 'healtheventstatus_quarantine_eviction_sparse',
                       sparse: true
+                    }
+                  );
+                  db.$MONGODB_COLLECTION_NAME.createIndex(
+                    { 'healtheventstatus.nodequarantined': 1 },
+                    {
+                      name: 'healtheventstatus_unresolved_closed',
+                      partialFilterExpression: {
+                        'healtheventstatus.nodequarantined': {
+                          '\$in': ['UnQuarantined', 'Cancelled']
+                        },
+                        'healtheventstatus.faultremediated': null
+                      }
                     }
                   );
                 {{- if .Values.mongodb.tls.enabled }}
