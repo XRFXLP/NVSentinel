@@ -2626,10 +2626,21 @@ func TestAdaptEvents_ForwardsEvents(t *testing.T) {
 	}
 }
 
-// TestControllerReconcilerHandlesColdStartFetchResults verifies that a missing
-// cold-start document is treated as terminal, while a datastore lookup error is
+// TestControllerReconcilerHandlesColdStartFetchResults verifies that invalid and
+// missing cold-start requests are dropped, while a datastore lookup error is
 // returned so controller-runtime requeues and retries the request.
 func TestControllerReconcilerHandlesColdStartFetchResults(t *testing.T) {
+	t.Run("empty document ID is terminal", func(t *testing.T) {
+		controller := controllerReconciler{
+			reconciler: &FaultRemediationReconciler{},
+		}
+
+		result, err := controller.Reconcile(context.Background(), reconcileRequest{})
+
+		assert.NoError(t, err)
+		assert.True(t, result.IsZero())
+	})
+
 	t.Run("missing document is terminal", func(t *testing.T) {
 		store := &MockHealthEventStore{
 			FindHealthEventsByQueryFn: func(_ context.Context, builder datastore.QueryBuilder) (

@@ -16,7 +16,6 @@ package reconciler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -52,7 +51,10 @@ func (c *controllerReconciler) reconcileColdStartEvent(
 	documentID string,
 ) (ctrl.Result, error) {
 	if documentID == "" {
-		return ctrl.Result{}, errors.New("cold-start reconcile request has no document ID")
+		metrics.ProcessingErrors.WithLabelValues("invalid_cold_start_request", "unknown").Inc()
+		slog.ErrorContext(ctx, "Dropping cold-start reconcile request without a document ID")
+
+		return ctrl.Result{}, nil
 	}
 
 	healthEvents, err := c.reconciler.healthEventStore.FindHealthEventsByQuery(
