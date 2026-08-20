@@ -34,6 +34,7 @@ import (
 
 	annotationutil "github.com/nvidia/nvsentinel/commons/pkg/annotation"
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
@@ -58,10 +59,20 @@ type FaultQuarantineClient struct {
 }
 
 func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
-	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string) (*FaultQuarantineClient, error) {
+	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string,
+	rateLimits ...kubeclient.RateLimitConfig) (*FaultQuarantineClient, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating Kubernetes config: %w", err)
+	}
+
+	limits := kubeclient.RateLimitConfig{}
+	if len(rateLimits) > 0 {
+		limits = rateLimits[0]
+	}
+
+	if err := limits.Apply(config); err != nil {
+		return nil, fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
 	}
 
 	config.Wrap(func(rt http.RoundTripper) http.RoundTripper {

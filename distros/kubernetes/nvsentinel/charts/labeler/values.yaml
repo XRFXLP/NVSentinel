@@ -20,6 +20,10 @@ replicaCount: 1
 
 logLevel: info
 
+# Kubernetes API client rate limits. Optional global values override these.
+qps: 5
+burst: 10
+
 image:
   repository: ghcr.io/nvidia/nvsentinel/labeler
   pullPolicy: IfNotPresent

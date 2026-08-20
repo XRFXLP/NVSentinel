@@ -33,6 +33,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
@@ -52,6 +53,7 @@ type InitializationParams struct {
 	TomlConfigPath              string
 	MetricsPort                 string
 	DryRun                      bool
+	KubernetesClientRateLimits  kubeclient.RateLimitConfig
 }
 
 // Components holds the initialized runtime dependencies returned by InitializeAll.
@@ -88,7 +90,10 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.InfoContext(ctx, "Running with partial drain disabled")
 	}
 
-	clientSet, restConfig, err := initializeKubernetesClient(params.KubeconfigPath)
+	clientSet, restConfig, err := initializeKubernetesClient(
+		params.KubeconfigPath,
+		params.KubernetesClientRateLimits,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize kubernetes client: %w", err)
 	}
@@ -288,10 +293,15 @@ func initializeDatastoreComponents(ctx context.Context, ds datastore.DataStore,
 	}, nil
 }
 
-func initializeKubernetesClient(kubeconfigPath string) (kubernetes.Interface, *rest.Config, error) {
+func initializeKubernetesClient(kubeconfigPath string,
+	rateLimits kubeclient.RateLimitConfig) (kubernetes.Interface, *rest.Config, error) {
 	restConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build config: %w", err)
+	}
+
+	if err := rateLimits.Apply(restConfig); err != nil {
+		return nil, nil, fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
 	}
 
 	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {

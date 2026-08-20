@@ -27,6 +27,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
@@ -67,7 +68,7 @@ func main() {
 func run() error {
 	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
 		gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile,
-		assumeDCGMAvailable, assumeDriverInstalled, requireDCGMReadyForBootstrap := parseFlags()
+		assumeDCGMAvailable, assumeDriverInstalled, requireDCGMReadyForBootstrap, rateLimits := parseFlags()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -98,6 +99,7 @@ func run() error {
 		AssumeDriverInstalled:        *assumeDriverInstalled,
 		RequireDCGMReadyForBootstrap: *requireDCGMReadyForBootstrap,
 		ExpectedDeviceCounts:         expectedDeviceCounts,
+		KubernetesClientRateLimits:   *rateLimits,
 	}
 
 	components, err := initializer.InitializeAll(params)
@@ -128,6 +130,7 @@ func parseFlags() (
 	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel,
 	gkeInstallerAppLabel, kataLabel, expectedDeviceCountsConfigFile *string,
 	assumeDCGMAvailable, assumeDriverInstalled, requireDCGMReadyForBootstrap *bool,
+	rateLimits *kubeclient.RateLimitConfig,
 ) {
 	kubeconfig = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	metricsPort = flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
@@ -148,6 +151,7 @@ func parseFlags() (
 			"Use for clusters with host-installed drivers.")
 	requireDCGMReadyForBootstrap = flag.Bool("require-dcgm-ready-for-bootstrap", true,
 		"Require the DCGM pod to be ready before setting the DCGM version label for initial bootstrap.")
+	rateLimits = kubeclient.RegisterRateLimitFlags()
 
 	flag.Parse()
 

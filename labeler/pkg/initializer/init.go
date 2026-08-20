@@ -24,6 +24,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
 	"github.com/nvidia/nvsentinel/labeler/pkg/labeler"
 )
@@ -38,6 +39,7 @@ type InitializationParams struct {
 	AssumeDriverInstalled        bool
 	RequireDCGMReadyForBootstrap bool
 	ExpectedDeviceCounts         devicecounts.Config
+	KubernetesClientRateLimits   kubeclient.RateLimitConfig
 }
 
 type Components struct {
@@ -47,7 +49,7 @@ type Components struct {
 func InitializeAll(params InitializationParams) (*Components, error) {
 	slog.Info("Starting labeler module initialization")
 
-	clientSet, err := initializeKubernetesClient(params.KubeconfigPath)
+	clientSet, err := initializeKubernetesClient(params.KubeconfigPath, params.KubernetesClientRateLimits)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
@@ -77,10 +79,15 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 	}, nil
 }
 
-func initializeKubernetesClient(kubeconfigPath string) (kubernetes.Interface, error) {
+func initializeKubernetesClient(kubeconfigPath string,
+	rateLimits kubeclient.RateLimitConfig) (kubernetes.Interface, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build config: %w", err)
+	}
+
+	if err := rateLimits.Apply(config); err != nil {
+		return nil, fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
 	}
 
 	config.Wrap(func(rt http.RoundTripper) http.RoundTripper {

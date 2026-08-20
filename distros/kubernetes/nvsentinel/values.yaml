@@ -21,6 +21,10 @@ global:
     tag: "12-debian-12-r30"
     pullPolicy: IfNotPresent
   metricsPort: 2112
+  # Optional Kubernetes API client limits for core controllers. When set,
+  # these override each component's qps and burst values.
+  qps: null
+  burst: null
 
   # Datastore configuration
   # By default, datastore is not configured (internal mongodb-config ConfigMap is used).

@@ -21,6 +21,10 @@ image:
 
 imagePullSecrets: []
 
+# Kubernetes API client rate limits. Optional global values override these.
+qps: 5
+burst: 10
+
 imageCache:
   # Enables a DaemonSet that keeps all configured preflight check images
   # running on matching nodes so kubelet considers them in use.

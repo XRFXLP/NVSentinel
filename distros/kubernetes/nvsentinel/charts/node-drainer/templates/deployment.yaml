@@ -111,6 +111,8 @@ spec:
           - "--metrics-port={{ .Values.global.metricsPort }}"
           - "--config-path=/etc/config/config.toml"
           - "--dry-run={{ .Values.global.dryRun }}"
+          - "--kube-api-qps={{ ((.Values.global).qps) | default .Values.qps }}"
+          - "--kube-api-burst={{ ((.Values.global).burst) | default .Values.burst }}"
           {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
           {{- if $certMountPath }}
           - "--database-client-cert-mount-path={{ $certMountPath }}"
