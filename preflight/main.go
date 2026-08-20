@@ -76,7 +76,9 @@ func run() error {
 	flag.IntVar(&port, "port", 8443, "Webhook server port")
 	flag.StringVar(&certDir, "cert-dir", "/certs", "Directory containing TLS certificates")
 	flag.StringVar(&configFile, "config", "/etc/preflight/config.yaml", "Path to config file")
+
 	rateLimits := kubeclient.RegisterRateLimitFlags()
+
 	flag.Parse()
 
 	cfg, err := config.Load(configFile)

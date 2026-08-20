@@ -17,6 +17,7 @@ package kubeclient
 import (
 	"flag"
 	"fmt"
+	"math"
 
 	"k8s.io/client-go/rest"
 )
@@ -40,15 +41,26 @@ func RegisterRateLimitFlags() *RateLimitConfig {
 
 // Apply validates and applies the configured limits to a REST config.
 func (c RateLimitConfig) Apply(config *rest.Config) error {
+	if math.IsNaN(c.QPS) || math.IsInf(c.QPS, 0) {
+		return fmt.Errorf("kube API QPS must be finite")
+	}
+
 	if c.QPS < 0 {
 		return fmt.Errorf("kube API QPS must not be negative")
 	}
+
+	if c.QPS > math.MaxFloat32 {
+		return fmt.Errorf("kube API QPS exceeds float32 range")
+	}
+
 	if c.Burst < 0 {
 		return fmt.Errorf("kube API burst must not be negative")
 	}
+
 	if c.QPS == 0 {
 		c.QPS = float64(rest.DefaultQPS)
 	}
+
 	if c.Burst == 0 {
 		c.Burst = rest.DefaultBurst
 	}

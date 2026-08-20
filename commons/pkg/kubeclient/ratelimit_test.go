@@ -15,6 +15,7 @@
 package kubeclient
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,7 +24,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-func TestRateLimitConfigApply(t *testing.T) {
+func TestRateLimitConfigApply_ExplicitValues_AppliesToRESTConfig(t *testing.T) {
 	config := &rest.Config{}
 
 	err := (RateLimitConfig{QPS: 50, Burst: 100}).Apply(config)
@@ -33,7 +34,7 @@ func TestRateLimitConfigApply(t *testing.T) {
 	assert.Equal(t, 100, config.Burst)
 }
 
-func TestRateLimitConfigApplyUsesClientGoDefaultsForZeroValues(t *testing.T) {
+func TestRateLimitConfigApply_ZeroValues_UsesClientGoDefaults(t *testing.T) {
 	config := &rest.Config{}
 
 	err := (RateLimitConfig{}).Apply(config)
@@ -43,10 +44,14 @@ func TestRateLimitConfigApplyUsesClientGoDefaultsForZeroValues(t *testing.T) {
 	assert.Equal(t, rest.DefaultBurst, config.Burst)
 }
 
-func TestRateLimitConfigApplyRejectsNegativeValues(t *testing.T) {
+func TestRateLimitConfigApply_NegativeValues_ReturnsError(t *testing.T) {
 	tests := []RateLimitConfig{
 		{QPS: -1, Burst: 10},
 		{QPS: 5, Burst: -1},
+		{QPS: math.NaN(), Burst: 10},
+		{QPS: math.Inf(1), Burst: 10},
+		{QPS: math.Inf(-1), Burst: 10},
+		{QPS: float64(math.MaxFloat32) * 2, Burst: 10},
 	}
 
 	for _, config := range tests {
@@ -54,7 +59,7 @@ func TestRateLimitConfigApplyRejectsNegativeValues(t *testing.T) {
 	}
 }
 
-func TestRateLimitConfigIsEnforcedByClientGo(t *testing.T) {
+func TestRateLimitConfigApply_ConfiguredRateLimits_EnforcedByClientGo(t *testing.T) {
 	config := &rest.Config{Host: "https://example.invalid"}
 	err := (RateLimitConfig{QPS: 0.01, Burst: 3}).Apply(config)
 	require.NoError(t, err)
