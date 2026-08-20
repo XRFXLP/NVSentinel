@@ -49,7 +49,7 @@ type Components struct {
 func InitializeAll(params InitializationParams) (*Components, error) {
 	slog.Info("Starting labeler module initialization")
 
-	clientSet, err := initializeKubernetesClient(params.KubeconfigPath, params.KubernetesClientRateLimits)
+	clientSet, err := initializeKubernetesClient(params)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
@@ -79,14 +79,13 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 	}, nil
 }
 
-func initializeKubernetesClient(kubeconfigPath string,
-	rateLimits kubeclient.RateLimitConfig) (kubernetes.Interface, error) {
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+func initializeKubernetesClient(params InitializationParams) (kubernetes.Interface, error) {
+	config, err := clientcmd.BuildConfigFromFlags("", params.KubeconfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build config: %w", err)
 	}
 
-	if err := rateLimits.Apply(config); err != nil {
+	if err := params.KubernetesClientRateLimits.Apply(config); err != nil {
 		return nil, fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
 	}
 

@@ -31,11 +31,9 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 )
 
-// TestKubernetesClientRateLimitsEvictionThroughput exercises Node Drainer's
-// real pod eviction request against envtest. Comparing rates proves that the
-// configured client QPS affects the module operation without imposing a
-// machine-specific absolute throughput threshold.
-func TestKubernetesClientRateLimitsEvictionThroughput(t *testing.T) {
+// TestInformersSendEvictionRequestForPod_RateLimitScenarios_HigherQPSIncreasesThroughput
+// exercises Node Drainer's real pod eviction request against envtest.
+func TestInformersSendEvictionRequestForPod_RateLimitScenarios_HigherQPSIncreasesThroughput(t *testing.T) {
 	testEnvironment := &envtest.Environment{}
 	testConfig, err := testEnvironment.Start()
 	require.NoError(t, err)
@@ -55,11 +53,26 @@ func TestKubernetesClientRateLimitsEvictionThroughput(t *testing.T) {
 		burst    = 1
 	)
 
-	lowDuration := measureEvictionThroughput(t, adminClient, testConfig, namespace, "low-qps", podCount, 4, burst)
-	highDuration := measureEvictionThroughput(t, adminClient, testConfig, namespace, "high-qps", podCount, 40, burst)
+	tests := []struct {
+		name   string
+		prefix string
+		qps    float64
+	}{
+		{name: "low QPS", prefix: "low-qps", qps: 4},
+		{name: "high QPS", prefix: "high-qps", qps: 40},
+	}
 
-	lowRate := float64(podCount) / lowDuration.Seconds()
-	highRate := float64(podCount) / highDuration.Seconds()
+	durations := make(map[string]time.Duration, len(tests))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			durations[test.name] = measureEvictionThroughput(
+				t, adminClient, testConfig, namespace, test.prefix, podCount, test.qps, burst,
+			)
+		})
+	}
+
+	lowRate := float64(podCount) / durations["low QPS"].Seconds()
+	highRate := float64(podCount) / durations["high QPS"].Seconds()
 	throughputRatio := highRate / lowRate
 	t.Logf("eviction throughput: low QPS=%.2f pods/s, high QPS=%.2f pods/s, ratio=%.2fx",
 		lowRate, highRate, throughputRatio)

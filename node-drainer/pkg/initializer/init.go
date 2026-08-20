@@ -90,10 +90,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.InfoContext(ctx, "Running with partial drain disabled")
 	}
 
-	clientSet, restConfig, err := initializeKubernetesClient(
-		params.KubeconfigPath,
-		params.KubernetesClientRateLimits,
-	)
+	clientSet, restConfig, err := initializeKubernetesClient(params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize kubernetes client: %w", err)
 	}
@@ -293,14 +290,13 @@ func initializeDatastoreComponents(ctx context.Context, ds datastore.DataStore,
 	}, nil
 }
 
-func initializeKubernetesClient(kubeconfigPath string,
-	rateLimits kubeclient.RateLimitConfig) (kubernetes.Interface, *rest.Config, error) {
-	restConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+func initializeKubernetesClient(params InitializationParams) (kubernetes.Interface, *rest.Config, error) {
+	restConfig, err := clientcmd.BuildConfigFromFlags("", params.KubeconfigPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build config: %w", err)
 	}
 
-	if err := rateLimits.Apply(restConfig); err != nil {
+	if err := params.KubernetesClientRateLimits.Apply(restConfig); err != nil {
 		return nil, nil, fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
 	}
 

@@ -143,10 +143,9 @@ func createTestNode(ctx context.Context, t *testing.T, name string, annotations 
 	}
 }
 
-// TestFaultQuarantineClientRateLimitsCordonThroughput exercises FQ's real GET+UPDATE
-// cordon path against envtest. The ratio assertion avoids depending on absolute
-// API-server performance while proving that the configured QPS changes module throughput.
-func TestFaultQuarantineClientRateLimitsCordonThroughput(t *testing.T) {
+// TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput
+// exercises FQ's real GET+UPDATE cordon path against envtest.
+func TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput(t *testing.T) {
 	const (
 		nodeCount = 10
 		burst     = 1
