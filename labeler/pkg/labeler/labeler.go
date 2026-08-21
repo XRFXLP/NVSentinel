@@ -930,7 +930,11 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 		return needsUpdate
 	}
 
-	needsUpdate = needsUpdate || l.updateDriverAndDCGMLabels(node, driverLabel, dcgmVersion)
+	// Not `needsUpdate || l.updateDriverAndDCGMLabels(...)`: || short-circuits, so
+	// setting the Kata label would skip the driver and DCGM labels entirely.
+	if l.updateDriverAndDCGMLabels(node, driverLabel, dcgmVersion) {
+		needsUpdate = true
+	}
 
 	if l.deviceCounts.ReconcileNodeLabelsInPlace(
 		l.ctx,

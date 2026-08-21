@@ -2099,6 +2099,60 @@ func TestAssumeDriverInstalled(t *testing.T) {
 	}
 }
 
+// TestReconcileAppliesKataAndDetectionLabelsInOnePass covers a node that needs
+// its Kata label and its driver label at the same time.
+//
+// reconcileNodeLabelsInPlace combined the two results with
+// `needsUpdate || l.updateDriverAndDCGMLabels(...)`, and || short-circuits: once
+// the Kata label had been set, the driver and DCGM labels were never evaluated.
+// A second reconcile pass hid this, because by then the Kata label was already
+// correct and the short circuit no longer triggered — so the labels arrived one
+// pass later than they should, and only if a second pass happened at all.
+func TestReconcileAppliesKataAndDetectionLabelsInOnePass(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "kata-and-driver-node"
+
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err, "failed to setup envtest")
+
+	t.Cleanup(func() { _ = testEnv.Stop() })
+
+	clientset, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	_, err = clientset.CoreV1().Nodes().Create(ctx, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{gpuPresentLabel: LabelValueTrue},
+		},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	labeler, _ := startTransformTestLabeler(t, clientset, devicecounts.Config{})
+
+	// The labeler derives the driver label itself, so give it a reason to want one
+	// on a node with no driver pods.
+	labeler.assumeDriverInstalled = true
+
+	// Startup reconciliation has already labelled the node. Clear both labels so
+	// the next pass has to apply them together, which is the case that regressed.
+	node, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	delete(node.Labels, KataEnabledLabel)
+	delete(node.Labels, DriverInstalledLabel)
+	_, err = clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	require.NoError(t, labeler.updateNodeLabels(nodeName))
+
+	updated, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, LabelValueFalse, updated.Labels[KataEnabledLabel])
+	assert.Equal(t, LabelValueTrue, updated.Labels[DriverInstalledLabel],
+		"the driver label must not be skipped just because the kata label changed")
+}
+
 // TestMemoryUnderNodeUpdatePressure creates nodes in envtest and rapidly updates
 // their status conditions (simulating kubelet heartbeats) to detect unbounded
 // memory growth in the labeler's node event handler path.
