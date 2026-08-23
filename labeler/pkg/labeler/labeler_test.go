@@ -2438,3 +2438,167 @@ func TestUpdateNodeLabelsForPod_ManagedGate(t *testing.T) {
 			"lister error must not stamp labels on node")
 	})
 }
+
+// interleavingLabeler builds a Labeler whose caches are filled by hand and whose
+// informers are never started, so a test can choose the order in which the pod delete
+// handler and the startup sweep observe the world. Racing them against a real
+// apiserver reproduces the drift below only occasionally, which is not enough to
+// reason about it.
+//
+// cachedDriverPods go into the pod indexer without ever existing in the fake
+// clientset: that is precisely the state the informer is in between the apiserver
+// accepting a deletion and the watch delivering it.
+func interleavingLabeler(t *testing.T, node *corev1.Node,
+	cachedDriverPods ...*corev1.Pod) (*Labeler, kubernetes.Interface) {
+	t.Helper()
+
+	const (
+		dcgmApp         = "nvidia-dcgm"
+		driverApp       = "nvidia-driver-daemonset"
+		gkeInstallerApp = "nvidia-driver-installer"
+	)
+
+	podInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Pod{}, 0, cache.Indexers{
+		NodeDCGMIndex:   podNodeIndexerByLabel("app", dcgmApp),
+		NodeDriverIndex: podNodeIndexerByLabel("app", driverApp),
+	})
+
+	for _, pod := range cachedDriverPods {
+		require.NoError(t, podInformer.GetIndexer().Add(pod))
+	}
+
+	nodeInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Node{}, 0, cache.Indexers{})
+	require.NoError(t, nodeInformer.GetStore().Add(node))
+
+	emptyPodInformer := func(index string, indexFunc cache.IndexFunc) cache.SharedIndexInformer {
+		return cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Pod{}, 0,
+			cache.Indexers{index: indexFunc})
+	}
+
+	clientset := fake.NewSimpleClientset(node)
+
+	return &Labeler{
+		ctx:          context.Background(),
+		clientset:    clientset,
+		podInformer:  podInformer,
+		nodeInformer: nodeInformer,
+		nodeLister:   listersv1.NewNodeLister(nodeInformer.GetIndexer()),
+		crdDriverInformer: emptyPodInformer(NodeDriverIndex,
+			podNodeIndexerByLabel(driverComponentLabel, driverComponentValue)),
+		gkeInstallerInformer: emptyPodInformer(NodeGKEDriverInstallerIndex,
+			podNodeIndexerByLabel("k8s-app", gkeInstallerApp)),
+		// The sweep only strips labels once everything has synced, which is the state
+		// the failure occurs in.
+		informersSynced: []cache.InformerSynced{func() bool { return true }},
+	}, clientset
+}
+
+// TestStartupSweepRacesDriverPodDeletion pins the interleaving behind the flake in
+// TestLabeler_handlePodEvent/driver_pod_deletion_removes_driver_label.
+//
+// Two code paths read the same pod indexer and disagree about what is on it. The
+// delete handler is handed the pod that is going away and excludes it by UID, so it
+// computes the post-deletion answer. The sweep is not reacting to a deletion and has
+// nothing to exclude, so it reports whatever the indexer holds. A stale entry is
+// byte-identical to a live one, so the sweep cannot tell the difference and there is
+// nothing to fix at the read site.
+//
+// The sweep is also not atomic: updateNodeLabelsAttempt reads the pod cache, then gets
+// the node, then writes. A deletion that lands entirely inside that window is lost —
+// the delete handler clears the label, and the sweep then writes a decision it formed
+// before the pod went away. Pinning the indexer contents, as these cases do, produces
+// the same outcome as the sweep having read before the delete, without the timing.
+func TestStartupSweepRacesDriverPodDeletion(t *testing.T) {
+	const nodeName = "test-node"
+
+	// Mirrors the CI fixture: the node already carries the label the deletion should
+	// clear, and the only driver pod on it is the one being deleted.
+	fixture := func() (*corev1.Node, *corev1.Pod) {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: nodeName,
+				Labels: map[string]string{
+					DriverInstalledLabel: LabelValueTrue,
+					KataEnabledLabel:     LabelValueFalse,
+				},
+			},
+		}
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "driver-pod",
+				Namespace: "default",
+				UID:       "driver-pod-uid",
+				Labels:    map[string]string{"app": "nvidia-driver-daemonset"},
+			},
+			Spec: corev1.PodSpec{NodeName: nodeName},
+			Status: corev1.PodStatus{
+				Phase:      corev1.PodRunning,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+			},
+		}
+
+		return node, pod
+	}
+
+	driverLabel := func(t *testing.T, clientset kubernetes.Interface) (string, bool) {
+		t.Helper()
+
+		node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+		require.NoError(t, err)
+
+		value, present := node.Labels[DriverInstalledLabel]
+
+		return value, present
+	}
+
+	t.Run("sweep after the delete handler re-stamps the label from the stale indexer", func(t *testing.T) {
+		node, pod := fixture()
+		l, clientset := interleavingLabeler(t, node, pod)
+
+		require.NoError(t, l.handlePodDeleteEvent(pod))
+
+		_, present := driverLabel(t, clientset)
+		require.False(t, present, "the delete handler excludes the deleted pod, so it must clear the label")
+
+		l.reconcileAllNodes()
+
+		value, present := driverLabel(t, clientset)
+		assert.True(t, present, "the sweep trusts the indexer, which still holds the deleted pod")
+		assert.Equal(t, LabelValueTrue, value)
+
+		// Nothing the labeler writes is an input it watches, so no later event
+		// disagrees with the label the sweep just wrote. Once the indexer drops the
+		// pod, the ordinary update path still declines to look at this node.
+		require.NoError(t, l.podInformer.GetIndexer().Delete(pod))
+
+		drifted, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+		require.NoError(t, err)
+		assert.False(t, l.nodeRequiresReconciliation(drifted, drifted),
+			"no watched input changed, so the label stays wrong until something else revisits the node")
+	})
+
+	t.Run("resync repairs the node once the pod indexer catches up", func(t *testing.T) {
+		node, pod := fixture()
+		l, clientset := interleavingLabeler(t, node, pod)
+
+		require.NoError(t, l.handlePodDeleteEvent(pod))
+		l.reconcileAllNodes()
+
+		value, _ := driverLabel(t, clientset)
+		require.Equal(t, LabelValueTrue, value, "precondition: the race left the label set")
+
+		require.NoError(t, l.podInformer.GetIndexer().Delete(pod))
+
+		// A resync replays the node store, handing the same object back as old and new.
+		drifted, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+		require.NoError(t, err)
+		require.NoError(t, l.nodeInformer.GetStore().Update(drifted))
+
+		require.True(t, l.resyncNeedsRepair(drifted, drifted),
+			"the caches now agree the label is wrong, so the resync must act on it")
+		require.NoError(t, l.handleNodeEvent(drifted))
+
+		_, present := driverLabel(t, clientset)
+		assert.False(t, present, "the resync repair clears the label the race left behind")
+	})
+}

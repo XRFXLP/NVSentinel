@@ -490,7 +490,7 @@ func (l *Labeler) registerNodeEventHandlers() error {
 			}
 		},
 		UpdateFunc: func(oldObj, newObj any) {
-			if !l.nodeRequiresReconciliation(oldObj, newObj) {
+			if !l.nodeRequiresReconciliation(oldObj, newObj) && !l.resyncNeedsRepair(oldObj, newObj) {
 				return
 			}
 
@@ -656,6 +656,49 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 	}
 
 	return l.deviceCounts.NodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels)
+}
+
+// resyncNeedsRepair reports whether an informer resync is looking at a node whose
+// labels have drifted from what the caches say they should be.
+//
+// The labeler derives every label it writes from state it watches, but nothing it
+// writes is itself a watched input, so a label stamped from a lagging cache is never
+// revisited. A driver pod deleted while the startup sweep is running is the case that
+// bites: the delete handler correctly drops the label, the sweep re-stamps it from an
+// indexer that has not caught up yet, and no later event ever disagrees. The resync
+// replay is the only pass left that can repair it.
+//
+// The check runs entirely against informer caches, so a node that is already correct
+// costs no API call — which is what makes it affordable against a 30s resync period.
+// A node that has drifted is reconciled twice over, once here and once for real, so
+// the repair logs its label changes twice; that only happens on the rare repair.
+func (l *Labeler) resyncNeedsRepair(oldObj, newObj any) bool {
+	oldNode, oldOk := oldObj.(*v1.Node)
+
+	newNode, newOk := newObj.(*v1.Node)
+	if !oldOk || !newOk {
+		return false
+	}
+
+	// A resync replays the store, handing back the same object as old and new. A real
+	// update always carries a new ResourceVersion.
+	if oldNode.ResourceVersion != newNode.ResourceVersion {
+		return false
+	}
+
+	// Before the caches are warm, disagreement means the caches are incomplete rather
+	// than the node being wrong.
+	if !l.allInformersSynced() {
+		return false
+	}
+
+	driverLabel, dcgmVersion, err := l.desiredNodeLabels(newNode.Name)
+	if err != nil {
+		slog.Debug("Skipping resync repair check", "node", newNode.Name, "error", err)
+		return false
+	}
+
+	return l.reconcileNodeLabelsInPlace(newNode.DeepCopy(), driverLabel, dcgmVersion)
 }
 
 const gpuPresentLabel = "nvidia.com/gpu.present"
