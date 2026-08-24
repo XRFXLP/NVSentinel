@@ -28,6 +28,7 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	resourceinformers "k8s.io/client-go/informers/resource/v1"
 	"k8s.io/client-go/kubernetes"
@@ -37,6 +38,7 @@ import (
 
 	listersv1 "k8s.io/client-go/listers/core/v1"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
 	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
@@ -789,25 +791,24 @@ func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expected
 	}
 
 	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
+		current, err := l.nodeForPatch(nodeName)
 		if err != nil {
 			return err
 		}
 
-		if node.Labels == nil {
-			node.Labels = make(map[string]string)
+		desired := current.DeepCopy()
+		if desired.Labels == nil {
+			desired.Labels = make(map[string]string)
 		}
 
-		needsUpdate := l.updateDriverAndDCGMLabels(node, expectedDriverLabel, expectedDCGMVersion)
+		needsUpdate := l.updateDriverAndDCGMLabels(desired, expectedDriverLabel, expectedDCGMVersion)
 
 		if !needsUpdate {
 			slog.Debug("Node already has correct pod-related labels", "node", nodeName)
 			return nil
 		}
 
-		_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
-
-		return err
+		return l.patchNode(current, desired)
 	})
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
@@ -857,24 +858,68 @@ func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
 		return fmt.Errorf("failed to calculate desired node labels for %s: %w", nodeName, err)
 	}
 
-	node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
+	current, err := l.nodeForPatch(nodeName)
 	if err != nil {
-		return fmt.Errorf("get node %s: %w", nodeName, err)
+		return err
 	}
 
-	if node.Labels == nil {
-		node.Labels = make(map[string]string)
+	desired := current.DeepCopy()
+	if desired.Labels == nil {
+		desired.Labels = make(map[string]string)
 	}
 
-	needsUpdate := l.reconcileNodeLabelsInPlace(node, driverLabel, dcgmVersion)
+	needsUpdate := l.reconcileNodeLabelsInPlace(desired, driverLabel, dcgmVersion)
 	if !needsUpdate {
 		slog.Debug("Node labels are correct", "node", nodeName)
 		return nil
 	}
 
-	_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
+	return l.patchNode(current, desired)
+}
+
+// nodeForPatch returns the Node to diff a write against, preferring the informer
+// cache so that a label write costs one API call rather than a GET followed by a
+// write. The cached Node is a projection — the transform keeps the labels and the
+// DCGM bootstrap annotation — which is enough, because the patch only ever
+// describes keys the caller changed itself.
+//
+// The returned Node is the cache's own object on the hit path, so callers must
+// treat it as read-only and reconcile against a copy.
+func (l *Labeler) nodeForPatch(nodeName string) (*v1.Node, error) {
+	// Before the caches are warm a miss says nothing about the node, so read through
+	// to the API server rather than skipping a label the node genuinely needs.
+	if l.allInformersSynced() {
+		if node, err := l.getNodeFromCache(nodeName); err == nil {
+			return node, nil
+		}
+	}
+
+	node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("update node %s: %w", nodeName, err)
+		return nil, fmt.Errorf("get node %s: %w", nodeName, err)
+	}
+
+	return node, nil
+}
+
+// patchNode writes the difference between current and desired as a JSON merge patch.
+// A patch that would say nothing is skipped, so a reconcile that finds the node
+// already correct costs no API call at all.
+func (l *Labeler) patchNode(current, desired *v1.Node) error {
+	patch, err := kubeclient.NodeMergePatch(current, desired)
+	if err != nil {
+		return err
+	}
+
+	if patch == nil {
+		slog.Debug("Node labels already match the cached state", "node", current.Name)
+		return nil
+	}
+
+	if _, err := l.clientset.CoreV1().Nodes().Patch(
+		l.ctx, current.Name, types.MergePatchType, patch, metav1.PatchOptions{},
+	); err != nil {
+		return fmt.Errorf("patch node %s: %w", current.Name, err)
 	}
 
 	return nil

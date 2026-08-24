@@ -32,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -2640,4 +2641,203 @@ func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.
 	updated, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.NotContains(t, updated.Labels, DriverInstalledLabel)
+}
+
+// TestLabelerWriteCosts pins the API-call budget of the label write path. Reading the
+// node from the informer cache instead of the API server is what makes a label change
+// cost a single PATCH, and it lets a reconcile with nothing to do cost nothing at all
+// — on a large cluster that difference is per node, on every reconcile.
+func TestLabelerWriteCosts(t *testing.T) {
+	nodeName := "gpu-node"
+	clientset := fake.NewSimpleClientset(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{gpuPresentLabel: LabelValueTrue},
+		},
+	})
+
+	labeler, _ := startTransformTestLabeler(t, clientset, devicecounts.Config{})
+
+	// Let startup reconciliation settle, so every write counted below is one this
+	// test asked for.
+	requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueFalse)
+
+	t.Run("a label change costs one patch and nothing else", func(t *testing.T) {
+		// KataEnabledLabel is the labeler's own output, not one of the inputs
+		// nodeRequiresReconciliation watches, so dropping it cannot kick off a
+		// reconcile behind this test's back.
+		node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+		require.NoError(t, err)
+		delete(node.Labels, KataEnabledLabel)
+		_, err = clientset.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
+		require.NoError(t, err)
+
+		requireCachedLabelAbsent(t, labeler, nodeName, KataEnabledLabel)
+		clientset.ClearActions()
+
+		require.NoError(t, labeler.updateNodeLabels(nodeName))
+
+		assert.Equal(t, 1, countNodeActions(clientset, "patch"), "the write itself")
+		assert.Equal(t, 0, countNodeActions(clientset, "get"), "the node came from the cache")
+		assert.Equal(t, 0, countNodeActions(clientset, "update"), "PUT is no longer used")
+
+		updated, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+		require.NoError(t, err)
+		assert.Equal(t, LabelValueFalse, updated.Labels[KataEnabledLabel], "the patch landed")
+		assert.Equal(t, LabelValueTrue, updated.Labels[gpuPresentLabel],
+			"a merge patch must leave labels it does not mention alone")
+	})
+
+	t.Run("a reconcile with nothing to do costs no api call", func(t *testing.T) {
+		requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueFalse)
+		clientset.ClearActions()
+
+		require.NoError(t, labeler.updateNodeLabels(nodeName))
+
+		assert.Equal(t, 0, countNodeActions(clientset, "patch"))
+		assert.Equal(t, 0, countNodeActions(clientset, "get"))
+		assert.Equal(t, 0, countNodeActions(clientset, "update"))
+	})
+}
+
+// TestLabelsConvergeUnderNodeChurn attacks the assumption the PATCH path rests on:
+// that reading the node from the informer cache can go stale without ever losing a
+// write.
+//
+// A stale read can and does compute the wrong answer here — the Kata label is derived
+// from an input label on the node itself, so a cache that has not caught up will
+// briefly hand the labeler last-generation input. What saves it is that every input
+// feeding a label is also an input nodeRequiresReconciliation watches, so the final
+// change always schedules one more reconcile, and that reconcile eventually reads a
+// cache containing it. Convergence rests on that trigger, not on the cache being
+// fresh: point nodeRequiresReconciliation away from the Kata labels and this test
+// fails.
+//
+// The churn below rewrites the input far faster than the cache can follow. Whatever
+// the labeler does in the middle, every node has to end up on the label its final
+// input implies.
+func TestLabelsConvergeUnderNodeChurn(t *testing.T) {
+	const (
+		nodeCount = 20
+		rounds    = 8
+	)
+
+	ctx := context.Background()
+
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err, "failed to setup envtest")
+
+	t.Cleanup(func() { _ = testEnv.Stop() })
+
+	clientset, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	nodeNames := make([]string, nodeCount)
+
+	for idx := range nodeNames {
+		nodeNames[idx] = fmt.Sprintf("churn-node-%d", idx)
+		_, createErr := clientset.CoreV1().Nodes().Create(ctx, &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   nodeNames[idx],
+				Labels: map[string]string{gpuPresentLabel: LabelValueTrue},
+			},
+		}, metav1.CreateOptions{})
+		require.NoError(t, createErr)
+	}
+
+	startTransformTestLabeler(t, clientset, devicecounts.Config{})
+
+	// Rewrite the input label repeatedly, with no pause for the cache to catch up.
+	for round := range rounds {
+		for idx, nodeName := range nodeNames {
+			setKataRuntimeLabel(t, clientset, nodeName, (round+idx)%2 == 0)
+		}
+	}
+
+	// Settle on a known final input, alternating across nodes so that a labeler which
+	// simply wrote the same value everywhere would not pass.
+	for idx, nodeName := range nodeNames {
+		setKataRuntimeLabel(t, clientset, nodeName, idx%2 == 0)
+	}
+
+	require.Eventually(t, func() bool {
+		for idx, nodeName := range nodeNames {
+			node, getErr := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			if getErr != nil {
+				return false
+			}
+
+			expected := LabelValueFalse
+			if idx%2 == 0 {
+				expected = LabelValueTrue
+			}
+
+			if node.Labels[KataEnabledLabel] != expected {
+				return false
+			}
+		}
+
+		return true
+	}, 60*time.Second, 100*time.Millisecond, "labels never converged after churn")
+
+	for _, nodeName := range nodeNames {
+		node, getErr := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		require.NoError(t, getErr)
+		assert.Equal(t, LabelValueTrue, node.Labels[gpuPresentLabel],
+			"a merge patch must not disturb labels it does not mention")
+	}
+}
+
+func setKataRuntimeLabel(t *testing.T, clientset kubernetes.Interface, nodeName string, enabled bool) {
+	t.Helper()
+
+	value := LabelValueFalse
+	if enabled {
+		value = LabelValueTrue
+	}
+
+	patch := fmt.Sprintf(`{"metadata":{"labels":{%q:%q}}}`, KataRuntimeDefaultLabel, value)
+	_, err := clientset.CoreV1().Nodes().Patch(
+		context.Background(), nodeName, types.MergePatchType, []byte(patch), metav1.PatchOptions{},
+	)
+	require.NoError(t, err)
+}
+
+func countNodeActions(clientset *fake.Clientset, verb string) int {
+	count := 0
+
+	for _, action := range clientset.Actions() {
+		if action.GetVerb() == verb && action.GetResource().Resource == "nodes" {
+			count++
+		}
+	}
+
+	return count
+}
+
+// requireCachedLabel waits for the informer cache to show the given label, which is
+// how a test tells that the labeler has finished reacting to earlier events.
+func requireCachedLabel(t *testing.T, l *Labeler, nodeName, key, value string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		node, err := l.getNodeFromCache(nodeName)
+		return err == nil && node.Labels[key] == value
+	}, 10*time.Second, 10*time.Millisecond, "cache never showed %s=%s", key, value)
+}
+
+func requireCachedLabelAbsent(t *testing.T, l *Labeler, nodeName, key string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		node, err := l.getNodeFromCache(nodeName)
+		if err != nil {
+			return false
+		}
+
+		_, exists := node.Labels[key]
+
+		return !exists
+	}, 10*time.Second, 10*time.Millisecond, "cache never dropped %s", key)
 }
