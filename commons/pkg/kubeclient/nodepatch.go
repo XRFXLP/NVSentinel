@@ -15,6 +15,7 @@
 package kubeclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/wait"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/util/retry"
@@ -159,59 +161,45 @@ func isRetryableNodePatchError(err error) bool {
 // the two already agree, so callers can skip the write instead of spending an API
 // call on a no-op.
 //
-// The patch is assembled key by key rather than by marshalling modified, because
-// marshalling a Node emits every populated field. A caller that read original from an
-// informer cache holding a projected Node would then patch the projection's gaps back
-// over the real object. Emitting only keys that differ means fields missing from both
-// sides are left untouched.
+// CreateTwoWayMergePatch compares metadata-only projections of the two Nodes.
+// Excluding every other field from both inputs ensures an informer projection cannot
+// patch its gaps back over the live object.
 //
 // Spec fields such as taints and unschedulable are deliberately out of scope: a merge
 // patch replaces a list wholesale, so patching taints from a projected Node whose Spec
 // had been cleared would silently drop every taint on the real object.
 func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
-	metadata := map[string]any{}
-
-	if labels := stringMapMergePatch(original.Labels, modified.Labels); labels != nil {
-		metadata["labels"] = labels
+	originalMetadata := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:      original.Labels,
+			Annotations: original.Annotations,
+		},
+	}
+	modifiedMetadata := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:      modified.Labels,
+			Annotations: modified.Annotations,
+		},
 	}
 
-	if annotations := stringMapMergePatch(original.Annotations, modified.Annotations); annotations != nil {
-		metadata["annotations"] = annotations
+	originalJSON, err := json.Marshal(originalMetadata)
+	if err != nil {
+		return nil, fmt.Errorf("marshal original metadata for node %q: %w", original.Name, err)
 	}
 
-	if len(metadata) == 0 {
+	modifiedJSON, err := json.Marshal(modifiedMetadata)
+	if err != nil {
+		return nil, fmt.Errorf("marshal modified metadata for node %q: %w", original.Name, err)
+	}
+
+	patch, err := strategicpatch.CreateTwoWayMergePatch(originalJSON, modifiedJSON, v1.Node{})
+	if err != nil {
+		return nil, fmt.Errorf("build strategic merge patch for node %q: %w", original.Name, err)
+	}
+
+	if bytes.Equal(patch, []byte("{}")) {
 		return nil, nil
 	}
 
-	patch, err := json.Marshal(map[string]any{"metadata": metadata})
-	if err != nil {
-		return nil, fmt.Errorf("marshal merge patch for node %s: %w", original.Name, err)
-	}
-
 	return patch, nil
-}
-
-// stringMapMergePatch returns the merge patch entries that turn original into
-// modified: added and changed keys map to their new value, removed keys map to nil so
-// the API server deletes them. It returns nil when the two maps already agree.
-func stringMapMergePatch(original, modified map[string]string) map[string]any {
-	patch := map[string]any{}
-
-	for key, value := range modified {
-		if current, exists := original[key]; !exists || current != value {
-			patch[key] = value
-		}
-	}
-
-	for key := range original {
-		if _, exists := modified[key]; !exists {
-			patch[key] = nil
-		}
-	}
-
-	if len(patch) == 0 {
-		return nil
-	}
-
-	return patch
 }
