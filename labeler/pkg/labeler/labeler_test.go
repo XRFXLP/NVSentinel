@@ -2493,7 +2493,7 @@ func interleavingLabeler(t *testing.T, node *corev1.Node,
 	}, clientset
 }
 
-// TestStartupSweepRacesDriverPodDeletion pins the interleaving behind the flake in
+// TestReconcileAllNodes_DriverPodDeletedDuringSweep_ReStampsStaleLabel pins the interleaving behind the flake in
 // TestLabeler_handlePodEvent/driver_pod_deletion_removes_driver_label.
 //
 // Two code paths read the same pod indexer and disagree about what is on it. The
@@ -2508,7 +2508,7 @@ func interleavingLabeler(t *testing.T, node *corev1.Node,
 // the delete handler clears the label, and the sweep then writes a decision it formed
 // before the pod went away. Pinning the indexer contents, as these cases do, produces
 // the same outcome as the sweep having read before the delete, without the timing.
-func TestStartupSweepRacesDriverPodDeletion(t *testing.T) {
+func TestReconcileAllNodes_DriverPodDeletedDuringSweep_ReStampsStaleLabel(t *testing.T) {
 	const nodeName = "test-node"
 
 	// Mirrors the CI fixture: the node already carries the label the deletion should

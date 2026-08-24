@@ -659,19 +659,19 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 }
 
 // resyncNeedsRepair reports whether an informer resync is looking at a node whose
-// labels have drifted from what the caches say they should be.
+// driver label has drifted from what the pod caches say it should be.
 //
-// The labeler derives every label it writes from state it watches, but nothing it
-// writes is itself a watched input, so a label stamped from a lagging cache is never
-// revisited. A driver pod deleted while the startup sweep is running is the case that
-// bites: the delete handler correctly drops the label, the sweep re-stamps it from an
-// indexer that has not caught up yet, and no later event ever disagrees. The resync
-// replay is the only pass left that can repair it.
+// reconcileAllNodes reads the pod cache, then gets the node, then writes. A driver pod
+// deleted inside that window is lost: the delete handler clears the label, and the
+// sweep writes back the answer it formed before the pod went away. Nothing the labeler
+// writes is an input it watches, so no event disagrees with the stale value afterwards.
+// A replacement pod normally heals it, which leaves the case where none arrives — a
+// drained or decommissioned node still claiming a driver it no longer has.
 //
-// The check runs entirely against informer caches, so a node that is already correct
-// costs no API call — which is what makes it affordable against a 30s resync period.
-// A node that has drifted is reconciled twice over, once here and once for real, so
-// the repair logs its label changes twice; that only happens on the rare repair.
+// The check compares one label against the caches without mutating the node, emitting
+// metrics, or logging, so a node that is already correct costs nothing. That is what
+// makes it affordable against every node on every 30s resync. The repair it triggers
+// is an ordinary reconcile, with all the side effects that normally carries.
 func (l *Labeler) resyncNeedsRepair(oldObj, newObj any) bool {
 	oldNode, oldOk := oldObj.(*v1.Node)
 
@@ -692,13 +692,20 @@ func (l *Labeler) resyncNeedsRepair(oldObj, newObj any) bool {
 		return false
 	}
 
-	driverLabel, dcgmVersion, err := l.desiredNodeLabels(newNode.Name)
+	// Opted-out nodes are driven by the managed label, which is a watched input, so
+	// drift there already raises an event without help from the resync.
+	optedOut, err := managed.IsNodeOptedOut(l.ctx, l.nodeLister, newNode.Name)
+	if err != nil || optedOut {
+		return false
+	}
+
+	driverLabel, err := l.getDriverLabelForNode(newNode.Name, nil)
 	if err != nil {
 		slog.Debug("Skipping resync repair check", "node", newNode.Name, "error", err)
 		return false
 	}
 
-	return l.reconcileNodeLabelsInPlace(newNode.DeepCopy(), driverLabel, dcgmVersion)
+	return newNode.Labels[DriverInstalledLabel] != driverLabel
 }
 
 const gpuPresentLabel = "nvidia.com/gpu.present"
