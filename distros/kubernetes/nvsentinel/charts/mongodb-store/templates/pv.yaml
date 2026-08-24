@@ -13,7 +13,6 @@
 # limitations under the License.
 
 {{ if (eq .Values.mode "manual") }}
-{{- $storage := include "mongodb-store.persistenceSize" . }}
 {{- if .Values.usePerconaOperator }}
 {{- /* Percona PVs - one per replica */ -}}
 {{- $replicaCount := index .Values "psmdb-db" "replsets" "rs0" "size" | default 3 | int }}
@@ -28,7 +27,7 @@ metadata:
     type: local
 spec:
   capacity:
-    storage: {{ $storage | quote }}
+    storage: "8Gi"
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
@@ -49,7 +48,7 @@ metadata:
     type: local
 spec:
   capacity:
-    storage: {{ $storage | quote }}
+    storage: "8Gi"
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
@@ -60,3 +59,4 @@ spec:
 {{- end }}
 {{- end }}
 {{ end }}
+
