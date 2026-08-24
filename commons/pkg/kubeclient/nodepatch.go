@@ -50,6 +50,9 @@ func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
 		return nil, nil
 	}
 
+	// ResourceVersion turns the merge patch into an optimistic concurrency update.
+	metadata["resourceVersion"] = original.ResourceVersion
+
 	patch, err := json.Marshal(map[string]any{"metadata": metadata})
 	if err != nil {
 		return nil, fmt.Errorf("marshal merge patch for node %s: %w", original.Name, err)

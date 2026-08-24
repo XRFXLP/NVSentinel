@@ -2586,8 +2586,7 @@ func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.
 		ObjectMeta: metav1.ObjectMeta{
 			Name: nodeName,
 			Labels: map[string]string{
-				DriverInstalledLabel: LabelValueTrue,
-				KataEnabledLabel:     LabelValueFalse,
+				KataEnabledLabel: LabelValueFalse,
 			},
 		},
 	}
@@ -2608,12 +2607,12 @@ func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.
 	l, clientset := newLabelerWithCachedDriverPods(t, node, pod)
 	fakeClient := clientset.(*fake.Clientset)
 
-	reconcileReadPodCache := make(chan struct{})
+	reconcileReachedPatch := make(chan struct{})
 	releaseReconcile := make(chan struct{})
 	var blocked atomic.Bool
-	fakeClient.PrependReactor("get", "nodes", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+	fakeClient.PrependReactor("patch", "nodes", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
 		if blocked.CompareAndSwap(false, true) {
-			close(reconcileReadPodCache)
+			close(reconcileReachedPatch)
 			<-releaseReconcile
 		}
 
@@ -2622,7 +2621,7 @@ func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.
 
 	reconcileDone := make(chan error, 1)
 	go func() { reconcileDone <- l.updateNodeLabels(nodeName) }()
-	<-reconcileReadPodCache
+	<-reconcileReachedPatch
 
 	// Informer stores remove an object before invoking its delete handler.
 	require.NoError(t, l.podInformer.GetIndexer().Delete(pod))
@@ -2651,8 +2650,9 @@ func TestUpdateNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
 
 	clientset := fake.NewSimpleClientset(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   nodeName,
-			Labels: map[string]string{gpuPresentLabel: LabelValueTrue},
+			Name:            nodeName,
+			ResourceVersion: "1",
+			Labels:          map[string]string{gpuPresentLabel: LabelValueTrue},
 		},
 	})
 
@@ -2675,7 +2675,7 @@ func TestUpdateNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
 				requireCachedLabelAbsent(t, labeler, nodeName, KataEnabledLabel)
 			},
 			expectedPatch: fmt.Sprintf(
-				`{"metadata":{"labels":{%q:%q}}}`,
+				`{"metadata":{"labels":{%q:%q},"resourceVersion":"1"}}`,
 				KataEnabledLabel,
 				LabelValueFalse,
 			),

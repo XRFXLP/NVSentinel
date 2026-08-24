@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"hash/maphash"
 	"log/slog"
+	"maps"
 	"regexp"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -89,6 +91,7 @@ type Labeler struct {
 	deviceCounts                 *devicecounts.Manager
 	assumeDCGMAvailable          bool
 	nodeLocks                    [256]sync.Mutex
+	lastWrittenNodes             sync.Map // map[string]*v1.Node
 }
 
 func (l *Labeler) allInformersSynced() bool {
@@ -790,8 +793,10 @@ func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expected
 		return nil
 	}
 
+	forceLiveRead := false
+
 	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		current, err := l.nodeForPatch(nodeName)
+		current, err := l.nodeForPatchAttempt(nodeName, forceLiveRead)
 		if err != nil {
 			return err
 		}
@@ -808,7 +813,12 @@ func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expected
 			return nil
 		}
 
-		return l.patchNode(current, desired)
+		err = l.patchNode(current, desired)
+		if apierrors.IsConflict(err) {
+			forceLiveRead = true
+		}
+
+		return err
 	})
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
@@ -829,8 +839,15 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 
 func (l *Labeler) updateNodeLabels(nodeName string) error {
 	return l.withNodeLock(nodeName, func() error {
+		forceLiveRead := false
+
 		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			return l.updateNodeLabelsAttempt(nodeName)
+			err := l.updateNodeLabelsAttempt(nodeName, forceLiveRead)
+			if apierrors.IsConflict(err) {
+				forceLiveRead = true
+			}
+
+			return err
 		})
 		if err != nil {
 			metrics.NodeUpdateFailures.Inc()
@@ -852,13 +869,13 @@ func (l *Labeler) withNodeLock(nodeName string, fn func() error) error {
 	return fn()
 }
 
-func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
+func (l *Labeler) updateNodeLabelsAttempt(nodeName string, forceLiveRead bool) error {
 	driverLabel, dcgmVersion, err := l.desiredNodeLabels(nodeName)
 	if err != nil {
 		return fmt.Errorf("failed to calculate desired node labels for %s: %w", nodeName, err)
 	}
 
-	current, err := l.nodeForPatch(nodeName)
+	current, err := l.nodeForPatchAttempt(nodeName, forceLiveRead)
 	if err != nil {
 		return err
 	}
@@ -888,18 +905,57 @@ func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
 func (l *Labeler) nodeForPatch(nodeName string) (*v1.Node, error) {
 	// Before the caches are warm a miss says nothing about the node, so read through
 	// to the API server rather than skipping a label the node genuinely needs.
-	if l.allInformersSynced() {
-		if node, err := l.getNodeFromCache(nodeName); err == nil {
-			return node, nil
-		}
+	if node, ready := l.cachedNodeForPatch(nodeName); ready {
+		return node, nil
 	}
 
+	return l.liveNodeForPatch(nodeName)
+}
+
+func (l *Labeler) cachedNodeForPatch(nodeName string) (*v1.Node, bool) {
+	if !l.allInformersSynced() {
+		return nil, false
+	}
+
+	node, err := l.getNodeFromCache(nodeName)
+	if err != nil {
+		return nil, false
+	}
+
+	written, pending := l.lastWrittenNodes.Load(nodeName)
+	if pending && !nodeWriteObserved(node, written.(*v1.Node)) {
+		return nil, false
+	}
+
+	if pending {
+		l.lastWrittenNodes.Delete(nodeName)
+	}
+
+	return node, true
+}
+
+func (l *Labeler) nodeForPatchAttempt(nodeName string, forceLiveRead bool) (*v1.Node, error) {
+	if forceLiveRead {
+		return l.liveNodeForPatch(nodeName)
+	}
+
+	return l.nodeForPatch(nodeName)
+}
+
+func (l *Labeler) liveNodeForPatch(nodeName string) (*v1.Node, error) {
 	node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("get node %s: %w", nodeName, err)
 	}
 
+	l.lastWrittenNodes.Delete(nodeName)
+
 	return node, nil
+}
+
+func nodeWriteObserved(cached, written *v1.Node) bool {
+	return cached.ResourceVersion == written.ResourceVersion &&
+		maps.Equal(cached.Labels, written.Labels)
 }
 
 // patchNode writes the difference between current and desired as a JSON merge patch.
@@ -916,11 +972,14 @@ func (l *Labeler) patchNode(current, desired *v1.Node) error {
 		return nil
 	}
 
-	if _, err := l.clientset.CoreV1().Nodes().Patch(
+	updated, err := l.clientset.CoreV1().Nodes().Patch(
 		l.ctx, current.Name, types.MergePatchType, patch, metav1.PatchOptions{},
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("patch node %s: %w", current.Name, err)
 	}
+
+	l.lastWrittenNodes.Store(current.Name, updated.DeepCopy())
 
 	return nil
 }

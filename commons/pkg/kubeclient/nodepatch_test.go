@@ -26,9 +26,10 @@ import (
 func node(labels, annotations map[string]string) *v1.Node {
 	return &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "node-1",
-			Labels:      labels,
-			Annotations: annotations,
+			Name:            "node-1",
+			ResourceVersion: "1",
+			Labels:          labels,
+			Annotations:     annotations,
 		},
 	}
 }
@@ -50,31 +51,31 @@ func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
 			name:     "adds a label",
 			original: node(map[string]string{"a": "1"}, nil),
 			modified: node(map[string]string{"a": "1", "b": "2"}, nil),
-			expected: `{"metadata":{"labels":{"b":"2"}}}`,
+			expected: `{"metadata":{"labels":{"b":"2"},"resourceVersion":"1"}}`,
 		},
 		{
 			name:     "changes a label without mentioning the others",
 			original: node(map[string]string{"a": "1", "b": "2"}, nil),
 			modified: node(map[string]string{"a": "9", "b": "2"}, nil),
-			expected: `{"metadata":{"labels":{"a":"9"}}}`,
+			expected: `{"metadata":{"labels":{"a":"9"},"resourceVersion":"1"}}`,
 		},
 		{
 			name:     "removes a label with an explicit null",
 			original: node(map[string]string{"a": "1", "b": "2"}, nil),
 			modified: node(map[string]string{"a": "1"}, nil),
-			expected: `{"metadata":{"labels":{"b":null}}}`,
+			expected: `{"metadata":{"labels":{"b":null},"resourceVersion":"1"}}`,
 		},
 		{
 			name:     "adds an annotation",
 			original: node(nil, nil),
 			modified: node(nil, map[string]string{"bootstrap": "true"}),
-			expected: `{"metadata":{"annotations":{"bootstrap":"true"}}}`,
+			expected: `{"metadata":{"annotations":{"bootstrap":"true"},"resourceVersion":"1"}}`,
 		},
 		{
 			name:     "carries labels and annotations in a single patch",
 			original: node(map[string]string{"a": "1"}, nil),
 			modified: node(map[string]string{"a": "2"}, map[string]string{"bootstrap": "true"}),
-			expected: `{"metadata":{"annotations":{"bootstrap":"true"},"labels":{"a":"2"}}}`,
+			expected: `{"metadata":{"annotations":{"bootstrap":"true"},"labels":{"a":"2"},"resourceVersion":"1"}}`,
 		},
 		{
 			name:     "a nil map and an empty map are the same thing",
@@ -86,7 +87,7 @@ func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
 			name:     "sets a label onto a node that had none",
 			original: node(nil, nil),
 			modified: node(map[string]string{"a": "1"}, nil),
-			expected: `{"metadata":{"labels":{"a":"1"}}}`,
+			expected: `{"metadata":{"labels":{"a":"1"},"resourceVersion":"1"}}`,
 		},
 	}
 
@@ -113,9 +114,10 @@ func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
 func TestNodeMergePatch_ProjectedFields_LeavesThemAlone(t *testing.T) {
 	projected := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "node-1",
-			Labels:      map[string]string{"gpu": "true"},
-			Annotations: map[string]string{"kept": "yes"},
+			Name:            "node-1",
+			ResourceVersion: "1",
+			Labels:          map[string]string{"gpu": "true"},
+			Annotations:     map[string]string{"kept": "yes"},
 		},
 	}
 
@@ -125,7 +127,10 @@ func TestNodeMergePatch_ProjectedFields_LeavesThemAlone(t *testing.T) {
 	patch, err := NodeMergePatch(projected, modified)
 	require.NoError(t, err)
 
-	assert.JSONEq(t, `{"metadata":{"labels":{"driver.installed":"true"}}}`, string(patch))
+	assert.JSONEq(t,
+		`{"metadata":{"labels":{"driver.installed":"true"},"resourceVersion":"1"}}`,
+		string(patch),
+	)
 	assert.NotContains(t, string(patch), "annotations",
 		"an untouched annotation must not appear in the patch")
 	assert.NotContains(t, string(patch), "spec",
