@@ -2675,7 +2675,7 @@ func TestUpdateNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
 				requireCachedLabelAbsent(t, labeler, nodeName, KataEnabledLabel)
 			},
 			expectedPatch: fmt.Sprintf(
-				`{"metadata":{"labels":{%q:%q},"resourceVersion":"1"}}`,
+				`{"metadata":{"labels":{%q:%q}}}`,
 				KataEnabledLabel,
 				LabelValueFalse,
 			),

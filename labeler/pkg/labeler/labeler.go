@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"hash/maphash"
 	"log/slog"
-	"maps"
 	"regexp"
 	"strings"
 	"sync"
@@ -27,15 +26,12 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	resourceinformers "k8s.io/client-go/informers/resource/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/retry"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -91,7 +87,7 @@ type Labeler struct {
 	deviceCounts                 *devicecounts.Manager
 	assumeDCGMAvailable          bool
 	nodeLocks                    [256]sync.Mutex
-	lastWrittenNodes             sync.Map // map[string]*v1.Node
+	nodePatcher                  kubeclient.NodePatcher
 }
 
 func (l *Labeler) allInformersSynced() bool {
@@ -793,33 +789,21 @@ func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expected
 		return nil
 	}
 
-	forceLiveRead := false
+	_, _, err = l.nodePatcher.Patch(
+		l.ctx,
+		l.clientset.CoreV1().Nodes(),
+		nodeName,
+		l.cachedNodeForPatch(nodeName),
+		func(desired *v1.Node) error {
+			if desired.Labels == nil {
+				desired.Labels = make(map[string]string)
+			}
 
-	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		current, err := l.nodeForPatchAttempt(nodeName, forceLiveRead)
-		if err != nil {
-			return err
-		}
+			l.updateDriverAndDCGMLabels(desired, expectedDriverLabel, expectedDCGMVersion)
 
-		desired := current.DeepCopy()
-		if desired.Labels == nil {
-			desired.Labels = make(map[string]string)
-		}
-
-		needsUpdate := l.updateDriverAndDCGMLabels(desired, expectedDriverLabel, expectedDCGMVersion)
-
-		if !needsUpdate {
-			slog.Debug("Node already has correct pod-related labels", "node", nodeName)
 			return nil
-		}
-
-		err = l.patchNode(current, desired)
-		if apierrors.IsConflict(err) {
-			forceLiveRead = true
-		}
-
-		return err
-	})
+		},
+	)
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
 		return fmt.Errorf("failed to reconcile node labeling for %s: %w", nodeName, err)
@@ -839,16 +823,7 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 
 func (l *Labeler) updateNodeLabels(nodeName string) error {
 	return l.withNodeLock(nodeName, func() error {
-		forceLiveRead := false
-
-		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			err := l.updateNodeLabelsAttempt(nodeName, forceLiveRead)
-			if apierrors.IsConflict(err) {
-				forceLiveRead = true
-			}
-
-			return err
-		})
+		err := l.updateNodeLabelsAttempt(nodeName)
 		if err != nil {
 			metrics.NodeUpdateFailures.Inc()
 
@@ -869,119 +844,42 @@ func (l *Labeler) withNodeLock(nodeName string, fn func() error) error {
 	return fn()
 }
 
-func (l *Labeler) updateNodeLabelsAttempt(nodeName string, forceLiveRead bool) error {
+func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
 	driverLabel, dcgmVersion, err := l.desiredNodeLabels(nodeName)
 	if err != nil {
 		return fmt.Errorf("failed to calculate desired node labels for %s: %w", nodeName, err)
 	}
 
-	current, err := l.nodeForPatchAttempt(nodeName, forceLiveRead)
-	if err != nil {
-		return err
-	}
+	_, _, err = l.nodePatcher.Patch(
+		l.ctx,
+		l.clientset.CoreV1().Nodes(),
+		nodeName,
+		l.cachedNodeForPatch(nodeName),
+		func(desired *v1.Node) error {
+			if desired.Labels == nil {
+				desired.Labels = make(map[string]string)
+			}
 
-	desired := current.DeepCopy()
-	if desired.Labels == nil {
-		desired.Labels = make(map[string]string)
-	}
+			l.reconcileNodeLabelsInPlace(desired, driverLabel, dcgmVersion)
 
-	needsUpdate := l.reconcileNodeLabelsInPlace(desired, driverLabel, dcgmVersion)
-	if !needsUpdate {
-		slog.Debug("Node labels are correct", "node", nodeName)
-		return nil
-	}
+			return nil
+		},
+	)
 
-	return l.patchNode(current, desired)
+	return err
 }
 
-// nodeForPatch returns the Node to diff a write against, preferring the informer
-// cache so that a label write costs one API call rather than a GET followed by a
-// write. The cached Node is a projection — the transform keeps the labels and the
-// DCGM bootstrap annotation — which is enough, because the patch only ever
-// describes keys the caller changed itself.
-//
-// The returned Node is the cache's own object on the hit path, so callers must
-// treat it as read-only and reconcile against a copy.
-func (l *Labeler) nodeForPatch(nodeName string) (*v1.Node, error) {
-	// Before the caches are warm a miss says nothing about the node, so read through
-	// to the API server rather than skipping a label the node genuinely needs.
-	if node, ready := l.cachedNodeForPatch(nodeName); ready {
-		return node, nil
-	}
-
-	return l.liveNodeForPatch(nodeName)
-}
-
-func (l *Labeler) cachedNodeForPatch(nodeName string) (*v1.Node, bool) {
+func (l *Labeler) cachedNodeForPatch(nodeName string) *v1.Node {
 	if !l.allInformersSynced() {
-		return nil, false
+		return nil
 	}
 
 	node, err := l.getNodeFromCache(nodeName)
 	if err != nil {
-		return nil, false
-	}
-
-	written, pending := l.lastWrittenNodes.Load(nodeName)
-	if pending && !nodeWriteObserved(node, written.(*v1.Node)) {
-		return nil, false
-	}
-
-	if pending {
-		l.lastWrittenNodes.Delete(nodeName)
-	}
-
-	return node, true
-}
-
-func (l *Labeler) nodeForPatchAttempt(nodeName string, forceLiveRead bool) (*v1.Node, error) {
-	if forceLiveRead {
-		return l.liveNodeForPatch(nodeName)
-	}
-
-	return l.nodeForPatch(nodeName)
-}
-
-func (l *Labeler) liveNodeForPatch(nodeName string) (*v1.Node, error) {
-	node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("get node %s: %w", nodeName, err)
-	}
-
-	l.lastWrittenNodes.Delete(nodeName)
-
-	return node, nil
-}
-
-func nodeWriteObserved(cached, written *v1.Node) bool {
-	return cached.ResourceVersion == written.ResourceVersion &&
-		maps.Equal(cached.Labels, written.Labels)
-}
-
-// patchNode writes the difference between current and desired as a JSON merge patch.
-// A patch that would say nothing is skipped, so a reconcile that finds the node
-// already correct costs no API call at all.
-func (l *Labeler) patchNode(current, desired *v1.Node) error {
-	patch, err := kubeclient.NodeMergePatch(current, desired)
-	if err != nil {
-		return err
-	}
-
-	if patch == nil {
-		slog.Debug("Node labels already match the cached state", "node", current.Name)
 		return nil
 	}
 
-	updated, err := l.clientset.CoreV1().Nodes().Patch(
-		l.ctx, current.Name, types.MergePatchType, patch, metav1.PatchOptions{},
-	)
-	if err != nil {
-		return fmt.Errorf("patch node %s: %w", current.Name, err)
-	}
-
-	l.lastWrittenNodes.Store(current.Name, updated.DeepCopy())
-
-	return nil
+	return node
 }
 
 func (l *Labeler) desiredNodeLabels(nodeName string) (string, string, error) {

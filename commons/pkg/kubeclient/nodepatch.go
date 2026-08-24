@@ -15,11 +15,130 @@
 package kubeclient
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/util/retry"
 )
+
+// NodePatcher applies Node mutations with cache-aware retries.
+//
+// The zero value is ready to use.
+type NodePatcher struct {
+	pendingVersions sync.Map // map[string]string
+}
+
+// Patch applies mutate to a copy of cached and writes only the resulting diff.
+// cached may be nil when an informer is unavailable; in that case Patch reads the
+// current Node from the API server. A write not yet observed at cached's
+// ResourceVersion is also refreshed before the next mutation.
+func (p *NodePatcher) Patch(
+	ctx context.Context,
+	nodes typedcorev1.NodeInterface,
+	nodeName string,
+	cached *v1.Node,
+	mutate func(*v1.Node) error,
+) (*v1.Node, bool, error) {
+	current, err := p.currentNode(ctx, nodes, nodeName, cached)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var (
+		updated *v1.Node
+		changed bool
+	)
+
+	err = retry.OnError(nodePatchBackoff(), isRetryableNodePatchError, func() error {
+		desired := current.DeepCopy()
+
+		if err := mutate(desired); err != nil {
+			return err
+		}
+
+		patch, err := NodeMergePatch(current, desired)
+		if err != nil {
+			return err
+		}
+
+		if patch == nil {
+			updated = current
+			return nil
+		}
+
+		updated, err = nodes.Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
+		if err == nil {
+			p.pendingVersions.Store(nodeName, updated.ResourceVersion)
+
+			changed = true
+
+			return nil
+		}
+
+		if errors.IsConflict(err) {
+			patchErr := err
+
+			current, err = nodes.Get(ctx, nodeName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+
+			return patchErr
+		}
+
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+
+	return updated, changed, nil
+}
+
+func (p *NodePatcher) currentNode(
+	ctx context.Context,
+	nodes typedcorev1.NodeInterface,
+	nodeName string,
+	cached *v1.Node,
+) (*v1.Node, error) {
+	if writtenVersion, pending := p.pendingVersions.LoadAndDelete(nodeName); pending {
+		if cached == nil || writtenVersion == "" || cached.ResourceVersion != writtenVersion.(string) {
+			return nodes.Get(ctx, nodeName, metav1.GetOptions{})
+		}
+	}
+
+	if cached != nil {
+		return cached, nil
+	}
+
+	return nodes.Get(ctx, nodeName, metav1.GetOptions{})
+}
+
+func nodePatchBackoff() wait.Backoff {
+	return wait.Backoff{
+		Steps:    10,
+		Duration: 20 * time.Millisecond,
+		Factor:   2,
+		Jitter:   0.1,
+	}
+}
+
+func isRetryableNodePatchError(err error) bool {
+	return errors.IsConflict(err) ||
+		errors.IsServerTimeout(err) ||
+		errors.IsTooManyRequests(err) ||
+		errors.IsTimeout(err) ||
+		errors.IsServiceUnavailable(err)
+}
 
 // NodeMergePatch builds an RFC 7386 JSON merge patch carrying the label and
 // annotation differences between original and modified. It returns a nil patch when
@@ -49,9 +168,6 @@ func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
 	if len(metadata) == 0 {
 		return nil, nil
 	}
-
-	// ResourceVersion turns the merge patch into an optimistic concurrency update.
-	metadata["resourceVersion"] = original.ResourceVersion
 
 	patch, err := json.Marshal(map[string]any{"metadata": metadata})
 	if err != nil {

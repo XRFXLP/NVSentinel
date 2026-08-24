@@ -15,12 +15,18 @@
 package kubeclient
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func node(labels, annotations map[string]string) *v1.Node {
@@ -32,6 +38,116 @@ func node(labels, annotations map[string]string) *v1.Node {
 			Annotations:     annotations,
 		},
 	}
+}
+
+func TestNodePatcher_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
+	current := node(map[string]string{"a": "1"}, nil)
+	clientset := fake.NewSimpleClientset(current.DeepCopy())
+	var patcher NodePatcher
+	mutate := func(node *v1.Node) error {
+		node.Labels["b"] = "2"
+		return nil
+	}
+
+	clientset.ClearActions()
+	updated, changed, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		current,
+		mutate,
+	)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Len(t, clientset.Actions(), 1)
+	action, ok := clientset.Actions()[0].(k8stesting.PatchAction)
+	require.True(t, ok)
+	assert.JSONEq(t, `{"metadata":{"labels":{"b":"2"}}}`, string(action.GetPatch()))
+
+	clientset.ClearActions()
+	_, changed, err = patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		updated,
+		mutate,
+	)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Empty(t, clientset.Actions())
+}
+
+func TestNodePatcher_PreviousWriteNotInCache_ReadsLiveNode(t *testing.T) {
+	current := node(map[string]string{"a": "1"}, nil)
+	clientset := fake.NewSimpleClientset(current.DeepCopy())
+	var patcher NodePatcher
+
+	updated, _, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		current,
+		func(node *v1.Node) error {
+			node.Labels["b"] = "2"
+			return nil
+		},
+	)
+	require.NoError(t, err)
+
+	stale := current.DeepCopy()
+	stale.ResourceVersion = "stale"
+	clientset.ClearActions()
+	_, changed, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		stale,
+		func(*v1.Node) error { return nil },
+	)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	require.Len(t, clientset.Actions(), 1)
+	assert.Equal(t, "get", clientset.Actions()[0].GetVerb())
+	assert.Equal(t, "2", updated.Labels["b"])
+}
+
+func TestNodePatcher_Conflict_RefreshesLiveNodeBeforeRetry(t *testing.T) {
+	cached := node(map[string]string{"cached": "true"}, nil)
+	live := cached.DeepCopy()
+	live.ResourceVersion = "2"
+	live.Labels["concurrent"] = "preserved"
+	clientset := fake.NewSimpleClientset(live)
+
+	patchAttempts := 0
+	clientset.PrependReactor("patch", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+		patchAttempts++
+		if patchAttempts == 1 {
+			return true, nil, apierrors.NewConflict(
+				schema.GroupResource{Resource: "nodes"},
+				cached.Name,
+				assert.AnError,
+			)
+		}
+
+		return false, nil, nil
+	})
+
+	var patcher NodePatcher
+	updated, changed, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		cached.Name,
+		cached,
+		func(node *v1.Node) error {
+			node.Labels["desired"] = "true"
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, 2, patchAttempts)
+	assert.Equal(t, "preserved", updated.Labels["concurrent"])
+	assert.Equal(t, "true", updated.Labels["desired"])
 }
 
 func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
@@ -51,31 +167,31 @@ func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
 			name:     "adds a label",
 			original: node(map[string]string{"a": "1"}, nil),
 			modified: node(map[string]string{"a": "1", "b": "2"}, nil),
-			expected: `{"metadata":{"labels":{"b":"2"},"resourceVersion":"1"}}`,
+			expected: `{"metadata":{"labels":{"b":"2"}}}`,
 		},
 		{
 			name:     "changes a label without mentioning the others",
 			original: node(map[string]string{"a": "1", "b": "2"}, nil),
 			modified: node(map[string]string{"a": "9", "b": "2"}, nil),
-			expected: `{"metadata":{"labels":{"a":"9"},"resourceVersion":"1"}}`,
+			expected: `{"metadata":{"labels":{"a":"9"}}}`,
 		},
 		{
 			name:     "removes a label with an explicit null",
 			original: node(map[string]string{"a": "1", "b": "2"}, nil),
 			modified: node(map[string]string{"a": "1"}, nil),
-			expected: `{"metadata":{"labels":{"b":null},"resourceVersion":"1"}}`,
+			expected: `{"metadata":{"labels":{"b":null}}}`,
 		},
 		{
 			name:     "adds an annotation",
 			original: node(nil, nil),
 			modified: node(nil, map[string]string{"bootstrap": "true"}),
-			expected: `{"metadata":{"annotations":{"bootstrap":"true"},"resourceVersion":"1"}}`,
+			expected: `{"metadata":{"annotations":{"bootstrap":"true"}}}`,
 		},
 		{
 			name:     "carries labels and annotations in a single patch",
 			original: node(map[string]string{"a": "1"}, nil),
 			modified: node(map[string]string{"a": "2"}, map[string]string{"bootstrap": "true"}),
-			expected: `{"metadata":{"annotations":{"bootstrap":"true"},"labels":{"a":"2"},"resourceVersion":"1"}}`,
+			expected: `{"metadata":{"annotations":{"bootstrap":"true"},"labels":{"a":"2"}}}`,
 		},
 		{
 			name:     "a nil map and an empty map are the same thing",
@@ -87,7 +203,7 @@ func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
 			name:     "sets a label onto a node that had none",
 			original: node(nil, nil),
 			modified: node(map[string]string{"a": "1"}, nil),
-			expected: `{"metadata":{"labels":{"a":"1"},"resourceVersion":"1"}}`,
+			expected: `{"metadata":{"labels":{"a":"1"}}}`,
 		},
 	}
 
@@ -128,7 +244,7 @@ func TestNodeMergePatch_ProjectedFields_LeavesThemAlone(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.JSONEq(t,
-		`{"metadata":{"labels":{"driver.installed":"true"},"resourceVersion":"1"}}`,
+		`{"metadata":{"labels":{"driver.installed":"true"}}}`,
 		string(patch),
 	)
 	assert.NotContains(t, string(patch), "annotations",
