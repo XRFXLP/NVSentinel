@@ -62,12 +62,12 @@ func (p *NodePatcher) Patch(
 		desired := current.DeepCopy()
 
 		if err := mutate(desired); err != nil {
-			return err
+			return fmt.Errorf("mutate node %q: %w", nodeName, err)
 		}
 
 		patch, err := NodeMergePatch(current, desired)
 		if err != nil {
-			return err
+			return fmt.Errorf("build merge patch for node %q: %w", nodeName, err)
 		}
 
 		if patch == nil {
@@ -89,13 +89,13 @@ func (p *NodePatcher) Patch(
 
 			current, err = nodes.Get(ctx, nodeName, metav1.GetOptions{})
 			if err != nil {
-				return err
+				return fmt.Errorf("refresh node %q after patch conflict: %w", nodeName, err)
 			}
 
-			return patchErr
+			return fmt.Errorf("patch node %q: %w", nodeName, patchErr)
 		}
 
-		return err
+		return fmt.Errorf("patch node %q: %w", nodeName, err)
 	})
 	if err != nil {
 		return nil, false, err
@@ -116,7 +116,12 @@ func (p *NodePatcher) currentNode(
 			return cached, nil
 		}
 
-		return nodes.Get(ctx, nodeName, metav1.GetOptions{})
+		current, err := nodes.Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("get node %q from API server: %w", nodeName, err)
+		}
+
+		return current, nil
 	}
 
 	writtenVersion, _ := writtenVersionValue.(string)
@@ -127,11 +132,13 @@ func (p *NodePatcher) currentNode(
 	}
 
 	current, err := nodes.Get(ctx, nodeName, metav1.GetOptions{})
-	if err == nil {
-		p.pendingVersions.CompareAndDelete(nodeName, writtenVersionValue)
+	if err != nil {
+		return nil, fmt.Errorf("refresh node %q while pending write is not in cache: %w", nodeName, err)
 	}
 
-	return current, err
+	p.pendingVersions.CompareAndDelete(nodeName, writtenVersionValue)
+
+	return current, nil
 }
 
 func nodePatchBackoff() wait.Backoff {

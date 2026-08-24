@@ -137,6 +137,7 @@ func TestNodePatcher_LiveReadFailure_PreservesPendingVersion(t *testing.T) {
 		func(*v1.Node) error { return nil },
 	)
 	require.ErrorIs(t, err, assert.AnError)
+	assert.ErrorContains(t, err, `refresh node "node-1" while pending write is not in cache`)
 
 	_, changed, err := patcher.Patch(
 		context.Background(),
