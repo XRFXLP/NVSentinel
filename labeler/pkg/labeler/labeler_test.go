@@ -2439,28 +2439,16 @@ func TestUpdateNodeLabelsForPod_ManagedGate(t *testing.T) {
 	})
 }
 
-// interleavingLabeler builds a Labeler whose caches are filled by hand and whose
-// informers are never started, so a test can choose the order in which the pod delete
-// handler and the startup sweep observe the world. Racing them against a real
-// apiserver reproduces the drift below only occasionally, which is not enough to
-// reason about it.
-//
-// cachedDriverPods go into the pod indexer without ever existing in the fake
-// clientset: that is precisely the state the informer is in between the apiserver
-// accepting a deletion and the watch delivering it.
-func interleavingLabeler(t *testing.T, node *corev1.Node,
+// newLabelerWithCachedDriverPods builds a Labeler with manually controlled informer
+// stores. The driver pods exist only in the pod cache, allowing the test to represent
+// a cache that has not yet observed their deletion.
+func newLabelerWithCachedDriverPods(t *testing.T, node *corev1.Node,
 	cachedDriverPods ...*corev1.Pod) (*Labeler, kubernetes.Interface) {
 	t.Helper()
 
-	const (
-		dcgmApp         = "nvidia-dcgm"
-		driverApp       = "nvidia-driver-daemonset"
-		gkeInstallerApp = "nvidia-driver-installer"
-	)
-
 	podInformer := cache.NewSharedIndexInformer(&cache.ListWatch{}, &corev1.Pod{}, 0, cache.Indexers{
-		NodeDCGMIndex:   podNodeIndexerByLabel("app", dcgmApp),
-		NodeDriverIndex: podNodeIndexerByLabel("app", driverApp),
+		NodeDCGMIndex:   podNodeIndexerByLabel("app", "nvidia-dcgm"),
+		NodeDriverIndex: podNodeIndexerByLabel("app", "nvidia-driver-daemonset"),
 	})
 
 	for _, pod := range cachedDriverPods {
@@ -2486,15 +2474,14 @@ func interleavingLabeler(t *testing.T, node *corev1.Node,
 		crdDriverInformer: emptyPodInformer(NodeDriverIndex,
 			podNodeIndexerByLabel(driverComponentLabel, driverComponentValue)),
 		gkeInstallerInformer: emptyPodInformer(NodeGKEDriverInstallerIndex,
-			podNodeIndexerByLabel("k8s-app", gkeInstallerApp)),
-		// The sweep only strips labels once everything has synced, which is the state
-		// the failure occurs in.
+			podNodeIndexerByLabel("k8s-app", "nvidia-driver-installer")),
+		// Pod-derived labels are reconciled only after every informer has synced.
 		informersSynced: []cache.InformerSynced{func() bool { return true }},
 	}, clientset
 }
 
-// TestReconcileAllNodes_DriverPodDeletedDuringSweep_ReStampsStaleLabel pins the interleaving behind the flake in
-// TestLabeler_handlePodEvent/driver_pod_deletion_removes_driver_label.
+// TestReconcileAllNodes_DriverPodDeletedDuringSweep_ReStampsStaleLabel reproduces a
+// lost update between the startup sweep and a driver pod deletion.
 //
 // Two code paths read the same pod indexer and disagree about what is on it. The
 // delete handler is handed the pod that is going away and excludes it by UID, so it
@@ -2511,8 +2498,8 @@ func interleavingLabeler(t *testing.T, node *corev1.Node,
 func TestReconcileAllNodes_DriverPodDeletedDuringSweep_ReStampsStaleLabel(t *testing.T) {
 	const nodeName = "test-node"
 
-	// Mirrors the CI fixture: the node already carries the label the deletion should
-	// clear, and the only driver pod on it is the one being deleted.
+	// The node starts with the driver label, and the cached pod being deleted is the
+	// only source that currently justifies that label.
 	fixture := func() (*corev1.Node, *corev1.Pod) {
 		node := &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{
@@ -2553,7 +2540,7 @@ func TestReconcileAllNodes_DriverPodDeletedDuringSweep_ReStampsStaleLabel(t *tes
 
 	t.Run("sweep after the delete handler re-stamps the label from the stale indexer", func(t *testing.T) {
 		node, pod := fixture()
-		l, clientset := interleavingLabeler(t, node, pod)
+		l, clientset := newLabelerWithCachedDriverPods(t, node, pod)
 
 		require.NoError(t, l.handlePodDeleteEvent(pod))
 
@@ -2579,7 +2566,7 @@ func TestReconcileAllNodes_DriverPodDeletedDuringSweep_ReStampsStaleLabel(t *tes
 
 	t.Run("resync repairs the node once the pod indexer catches up", func(t *testing.T) {
 		node, pod := fixture()
-		l, clientset := interleavingLabeler(t, node, pod)
+		l, clientset := newLabelerWithCachedDriverPods(t, node, pod)
 
 		require.NoError(t, l.handlePodDeleteEvent(pod))
 		l.reconcileAllNodes()
