@@ -844,6 +844,7 @@ func (l *Labeler) withNodeLock(nodeName string, fn func() error) error {
 	}
 
 	mutex := &l.nodeLocks[hash%uint32(len(l.nodeLocks))]
+
 	mutex.Lock()
 	defer mutex.Unlock()
 
