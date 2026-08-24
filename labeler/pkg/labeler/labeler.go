@@ -17,6 +17,7 @@ package labeler
 import (
 	"context"
 	"fmt"
+	"hash/maphash"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -64,8 +65,9 @@ const (
 )
 
 var (
-	dcgm4Regex = regexp.MustCompile(`.*dcgm:4\..*`)
-	dcgm3Regex = regexp.MustCompile(`.*dcgm:3\..*`)
+	dcgm4Regex       = regexp.MustCompile(`.*dcgm:4\..*`)
+	dcgm3Regex       = regexp.MustCompile(`.*dcgm:3\..*`)
+	nodeLockHashSeed = maphash.MakeSeed()
 )
 
 // Labeler manages node labeling based on pod information
@@ -840,13 +842,8 @@ func (l *Labeler) updateNodeLabels(nodeName string) error {
 }
 
 func (l *Labeler) withNodeLock(nodeName string, fn func() error) error {
-	hash := uint32(2166136261)
-	for idx := range len(nodeName) {
-		hash ^= uint32(nodeName[idx])
-		hash *= 16777619
-	}
-
-	mutex := &l.nodeLocks[hash%uint32(len(l.nodeLocks))]
+	hash := maphash.String(nodeLockHashSeed, nodeName)
+	mutex := &l.nodeLocks[hash%uint64(len(l.nodeLocks))]
 
 	mutex.Lock()
 	defer mutex.Unlock()
