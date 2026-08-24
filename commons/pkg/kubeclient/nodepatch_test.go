@@ -111,6 +111,45 @@ func TestNodePatcher_PreviousWriteNotInCache_ReadsLiveNode(t *testing.T) {
 	assert.Equal(t, "2", updated.Labels["b"])
 }
 
+func TestNodePatcher_LiveReadFailure_PreservesPendingVersion(t *testing.T) {
+	current := node(map[string]string{"a": "1"}, nil)
+	clientset := fake.NewSimpleClientset(current.DeepCopy())
+	var patcher NodePatcher
+	patcher.pendingVersions.Store(current.Name, "written")
+
+	stale := current.DeepCopy()
+	stale.ResourceVersion = "stale"
+	getAttempts := 0
+	clientset.PrependReactor("get", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+		getAttempts++
+		if getAttempts == 1 {
+			return true, nil, assert.AnError
+		}
+
+		return false, nil, nil
+	})
+
+	_, _, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		stale,
+		func(*v1.Node) error { return nil },
+	)
+	require.ErrorIs(t, err, assert.AnError)
+
+	_, changed, err := patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		stale,
+		func(*v1.Node) error { return nil },
+	)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, 2, getAttempts)
+}
+
 func TestNodePatcher_Conflict_RefreshesLiveNodeBeforeRetry(t *testing.T) {
 	cached := node(map[string]string{"cached": "true"}, nil)
 	live := cached.DeepCopy()

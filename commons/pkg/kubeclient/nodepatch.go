@@ -110,17 +110,28 @@ func (p *NodePatcher) currentNode(
 	nodeName string,
 	cached *v1.Node,
 ) (*v1.Node, error) {
-	if writtenVersion, pending := p.pendingVersions.LoadAndDelete(nodeName); pending {
-		if cached == nil || writtenVersion == "" || cached.ResourceVersion != writtenVersion.(string) {
-			return nodes.Get(ctx, nodeName, metav1.GetOptions{})
+	writtenVersionValue, hasPendingWrite := p.pendingVersions.Load(nodeName)
+	if !hasPendingWrite {
+		if cached != nil {
+			return cached, nil
 		}
+
+		return nodes.Get(ctx, nodeName, metav1.GetOptions{})
 	}
 
-	if cached != nil {
+	writtenVersion, _ := writtenVersionValue.(string)
+	if cached != nil && writtenVersion != "" && cached.ResourceVersion == writtenVersion {
+		p.pendingVersions.CompareAndDelete(nodeName, writtenVersionValue)
+
 		return cached, nil
 	}
 
-	return nodes.Get(ctx, nodeName, metav1.GetOptions{})
+	current, err := nodes.Get(ctx, nodeName, metav1.GetOptions{})
+	if err == nil {
+		p.pendingVersions.CompareAndDelete(nodeName, writtenVersionValue)
+	}
+
+	return current, err
 }
 
 func nodePatchBackoff() wait.Backoff {
