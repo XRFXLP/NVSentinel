@@ -789,7 +789,7 @@ func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expected
 		return nil
 	}
 
-	_, _, err = l.nodePatcher.Patch(
+	_, err = l.nodePatcher.Patch(
 		l.ctx,
 		l.clientset.CoreV1().Nodes(),
 		nodeName,
@@ -850,7 +850,7 @@ func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
 		return fmt.Errorf("failed to calculate desired node labels for %s: %w", nodeName, err)
 	}
 
-	_, _, err = l.nodePatcher.Patch(
+	_, err = l.nodePatcher.Patch(
 		l.ctx,
 		l.clientset.CoreV1().Nodes(),
 		nodeName,

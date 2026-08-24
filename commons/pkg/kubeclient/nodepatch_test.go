@@ -50,7 +50,7 @@ func TestNodePatcher_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
 	}
 
 	clientset.ClearActions()
-	updated, changed, err := patcher.Patch(
+	changed, err := patcher.Patch(
 		context.Background(),
 		clientset.CoreV1().Nodes(),
 		current.Name,
@@ -64,8 +64,10 @@ func TestNodePatcher_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
 	require.True(t, ok)
 	assert.JSONEq(t, `{"metadata":{"labels":{"b":"2"}}}`, string(action.GetPatch()))
 
+	updated, err := clientset.CoreV1().Nodes().Get(t.Context(), current.Name, metav1.GetOptions{})
+	require.NoError(t, err)
 	clientset.ClearActions()
-	_, changed, err = patcher.Patch(
+	changed, err = patcher.Patch(
 		context.Background(),
 		clientset.CoreV1().Nodes(),
 		current.Name,
@@ -82,7 +84,7 @@ func TestNodePatcher_PreviousWriteNotInCache_ReadsLiveNode(t *testing.T) {
 	clientset := fake.NewSimpleClientset(current.DeepCopy())
 	var patcher NodePatcher
 
-	updated, _, err := patcher.Patch(
+	_, err := patcher.Patch(
 		context.Background(),
 		clientset.CoreV1().Nodes(),
 		current.Name,
@@ -97,7 +99,7 @@ func TestNodePatcher_PreviousWriteNotInCache_ReadsLiveNode(t *testing.T) {
 	stale := current.DeepCopy()
 	stale.ResourceVersion = "stale"
 	clientset.ClearActions()
-	_, changed, err := patcher.Patch(
+	changed, err := patcher.Patch(
 		context.Background(),
 		clientset.CoreV1().Nodes(),
 		current.Name,
@@ -108,6 +110,9 @@ func TestNodePatcher_PreviousWriteNotInCache_ReadsLiveNode(t *testing.T) {
 	assert.False(t, changed)
 	require.Len(t, clientset.Actions(), 1)
 	assert.Equal(t, "get", clientset.Actions()[0].GetVerb())
+
+	updated, err := clientset.CoreV1().Nodes().Get(t.Context(), current.Name, metav1.GetOptions{})
+	require.NoError(t, err)
 	assert.Equal(t, "2", updated.Labels["b"])
 }
 
@@ -129,7 +134,7 @@ func TestNodePatcher_LiveReadFailure_PreservesPendingVersion(t *testing.T) {
 		return false, nil, nil
 	})
 
-	_, _, err := patcher.Patch(
+	_, err := patcher.Patch(
 		context.Background(),
 		clientset.CoreV1().Nodes(),
 		current.Name,
@@ -139,7 +144,7 @@ func TestNodePatcher_LiveReadFailure_PreservesPendingVersion(t *testing.T) {
 	require.ErrorIs(t, err, assert.AnError)
 	assert.ErrorContains(t, err, `refresh node "node-1" while pending write is not in cache`)
 
-	_, changed, err := patcher.Patch(
+	changed, err := patcher.Patch(
 		context.Background(),
 		clientset.CoreV1().Nodes(),
 		current.Name,
@@ -173,7 +178,7 @@ func TestNodePatcher_Conflict_RefreshesLiveNodeBeforeRetry(t *testing.T) {
 	})
 
 	var patcher NodePatcher
-	updated, changed, err := patcher.Patch(
+	changed, err := patcher.Patch(
 		context.Background(),
 		clientset.CoreV1().Nodes(),
 		cached.Name,
@@ -186,6 +191,9 @@ func TestNodePatcher_Conflict_RefreshesLiveNodeBeforeRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, changed)
 	assert.Equal(t, 2, patchAttempts)
+
+	updated, err := clientset.CoreV1().Nodes().Get(t.Context(), cached.Name, metav1.GetOptions{})
+	require.NoError(t, err)
 	assert.Equal(t, "preserved", updated.Labels["concurrent"])
 	assert.Equal(t, "true", updated.Labels["desired"])
 }

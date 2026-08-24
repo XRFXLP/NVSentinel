@@ -47,16 +47,13 @@ func (p *NodePatcher) Patch(
 	nodeName string,
 	cached *v1.Node,
 	mutate func(*v1.Node) error,
-) (*v1.Node, bool, error) {
+) (bool, error) {
 	current, err := p.currentNode(ctx, nodes, nodeName, cached)
 	if err != nil {
-		return nil, false, err
+		return false, err
 	}
 
-	var (
-		updated *v1.Node
-		changed bool
-	)
+	changed := false
 
 	err = retry.OnError(nodePatchBackoff(), isRetryableNodePatchError, func() error {
 		desired := current.DeepCopy()
@@ -71,11 +68,10 @@ func (p *NodePatcher) Patch(
 		}
 
 		if patch == nil {
-			updated = current
 			return nil
 		}
 
-		updated, err = nodes.Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
+		updated, err := nodes.Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
 		if err == nil {
 			p.pendingVersions.Store(nodeName, updated.ResourceVersion)
 
@@ -98,10 +94,10 @@ func (p *NodePatcher) Patch(
 		return fmt.Errorf("patch node %q: %w", nodeName, err)
 	})
 	if err != nil {
-		return nil, false, err
+		return false, err
 	}
 
-	return updated, changed, nil
+	return changed, nil
 }
 
 func (p *NodePatcher) currentNode(
