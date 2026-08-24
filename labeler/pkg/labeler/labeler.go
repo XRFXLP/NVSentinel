@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -83,6 +84,7 @@ type Labeler struct {
 	requireDCGMReadyForBootstrap bool
 	deviceCounts                 *devicecounts.Manager
 	assumeDCGMAvailable          bool
+	nodeLocks                    [256]sync.Mutex
 }
 
 func (l *Labeler) allInformersSynced() bool {
@@ -490,7 +492,7 @@ func (l *Labeler) registerNodeEventHandlers() error {
 			}
 		},
 		UpdateFunc: func(oldObj, newObj any) {
-			if !l.nodeRequiresReconciliation(oldObj, newObj) && !l.resyncNeedsRepair(oldObj, newObj) {
+			if !l.nodeRequiresReconciliation(oldObj, newObj) {
 				return
 			}
 
@@ -658,56 +660,6 @@ func (l *Labeler) nodeRequiresReconciliation(oldObj, newObj any) bool {
 	return l.deviceCounts.NodeLabelsAffectDeviceCounts(oldNode.Labels, newNode.Labels)
 }
 
-// resyncNeedsRepair reports whether an informer resync is looking at a node whose
-// driver label has drifted from what the pod caches say it should be.
-//
-// reconcileAllNodes reads the pod cache, then gets the node, then writes. A driver pod
-// deleted inside that window is lost: the delete handler clears the label, and the
-// sweep writes back the answer it formed before the pod went away. Nothing the labeler
-// writes is an input it watches, so no event disagrees with the stale value afterwards.
-// A replacement pod normally heals it, which leaves the case where none arrives — a
-// drained or decommissioned node still claiming a driver it no longer has.
-//
-// The check compares one label against the caches without mutating the node, emitting
-// metrics, or logging, so a node that is already correct costs nothing. That is what
-// makes it affordable against every node on every 30s resync. The repair it triggers
-// is an ordinary reconcile, with all the side effects that normally carries.
-func (l *Labeler) resyncNeedsRepair(oldObj, newObj any) bool {
-	oldNode, oldOk := oldObj.(*v1.Node)
-
-	newNode, newOk := newObj.(*v1.Node)
-	if !oldOk || !newOk {
-		return false
-	}
-
-	// A resync replays the store, handing back the same object as old and new. A real
-	// update always carries a new ResourceVersion.
-	if oldNode.ResourceVersion != newNode.ResourceVersion {
-		return false
-	}
-
-	// Before the caches are warm, disagreement means the caches are incomplete rather
-	// than the node being wrong.
-	if !l.allInformersSynced() {
-		return false
-	}
-
-	// Opted-out nodes are driven by the managed label, which is a watched input, so
-	// drift there already raises an event without help from the resync.
-	optedOut, err := managed.IsNodeOptedOut(l.ctx, l.nodeLister, newNode.Name)
-	if err != nil || optedOut {
-		return false
-	}
-
-	driverLabel, err := l.getDriverLabelForNode(newNode.Name, nil)
-	if err != nil {
-		slog.Debug("Skipping resync repair check", "node", newNode.Name, "error", err)
-		return false
-	}
-
-	return newNode.Labels[DriverInstalledLabel] != driverLabel
-}
-
 const gpuPresentLabel = "nvidia.com/gpu.present"
 
 func (l *Labeler) isGPUNode(nodeName string) bool {
@@ -870,16 +822,32 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 }
 
 func (l *Labeler) updateNodeLabels(nodeName string) error {
-	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		return l.updateNodeLabelsAttempt(nodeName)
-	})
-	if err != nil {
-		metrics.NodeUpdateFailures.Inc()
+	return l.withNodeLock(nodeName, func() error {
+		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			return l.updateNodeLabelsAttempt(nodeName)
+		})
+		if err != nil {
+			metrics.NodeUpdateFailures.Inc()
 
-		return fmt.Errorf("failed to update labels for node %s: %w", nodeName, err)
+			return fmt.Errorf("failed to update labels for node %s: %w", nodeName, err)
+		}
+
+		return nil
+	})
+}
+
+func (l *Labeler) withNodeLock(nodeName string, fn func() error) error {
+	hash := uint32(2166136261)
+	for idx := range len(nodeName) {
+		hash ^= uint32(nodeName[idx])
+		hash *= 16777619
 	}
 
-	return nil
+	mutex := &l.nodeLocks[hash%uint32(len(l.nodeLocks))]
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	return fn()
 }
 
 func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
@@ -1093,19 +1061,21 @@ func (l *Labeler) handlePodDeleteEvent(obj any) error {
 		return fmt.Errorf("pod delete event: expected Pod object, got %T", obj)
 	}
 
-	// For delete events, we need to calculate what the labels should be
-	// after this pod is removed, so we exclude it from our calculations
-	expectedDCGMVersion, err := l.getDCGMVersionForNode(pod.Spec.NodeName, pod)
-	if err != nil {
-		return fmt.Errorf("failed to get DCGM version for node %s excluding deleted pod: %w", pod.Spec.NodeName, err)
-	}
+	return l.withNodeLock(pod.Spec.NodeName, func() error {
+		// Calculate and write under the same lock as node-driven reconciliation so
+		// the startup sweep cannot overwrite this result with an older cache read.
+		expectedDCGMVersion, err := l.getDCGMVersionForNode(pod.Spec.NodeName, pod)
+		if err != nil {
+			return fmt.Errorf("failed to get DCGM version for node %s excluding deleted pod: %w", pod.Spec.NodeName, err)
+		}
 
-	expectedDriverLabel, err := l.getDriverLabelForNode(pod.Spec.NodeName, pod)
-	if err != nil {
-		return fmt.Errorf("failed to get driver label for node %s excluding deleted pod: %w", pod.Spec.NodeName, err)
-	}
+		expectedDriverLabel, err := l.getDriverLabelForNode(pod.Spec.NodeName, pod)
+		if err != nil {
+			return fmt.Errorf("failed to get driver label for node %s excluding deleted pod: %w", pod.Spec.NodeName, err)
+		}
 
-	return l.updateNodeLabelsForPod(pod.Spec.NodeName, expectedDCGMVersion, expectedDriverLabel)
+		return l.updateNodeLabelsForPod(pod.Spec.NodeName, expectedDCGMVersion, expectedDriverLabel)
+	})
 }
 
 // handlePodEvent processes all pod events (add, update) idempotently
@@ -1121,17 +1091,19 @@ func (l *Labeler) handlePodEvent(obj any) error {
 		return fmt.Errorf("pod event: expected Pod object, got %T", obj)
 	}
 
-	expectedDCGMVersion, err := l.getDCGMVersionForNode(pod.Spec.NodeName, nil)
-	if err != nil {
-		return fmt.Errorf("failed to get DCGM version for node %s: %w", pod.Spec.NodeName, err)
-	}
+	return l.withNodeLock(pod.Spec.NodeName, func() error {
+		expectedDCGMVersion, err := l.getDCGMVersionForNode(pod.Spec.NodeName, nil)
+		if err != nil {
+			return fmt.Errorf("failed to get DCGM version for node %s: %w", pod.Spec.NodeName, err)
+		}
 
-	expectedDriverLabel, err := l.getDriverLabelForNode(pod.Spec.NodeName, nil)
-	if err != nil {
-		return fmt.Errorf("failed to get driver label for node %s: %w", pod.Spec.NodeName, err)
-	}
+		expectedDriverLabel, err := l.getDriverLabelForNode(pod.Spec.NodeName, nil)
+		if err != nil {
+			return fmt.Errorf("failed to get driver label for node %s: %w", pod.Spec.NodeName, err)
+		}
 
-	return l.updateNodeLabelsForPod(pod.Spec.NodeName, expectedDCGMVersion, expectedDriverLabel)
+		return l.updateNodeLabelsForPod(pod.Spec.NodeName, expectedDCGMVersion, expectedDriverLabel)
+	})
 }
 
 func (l *Labeler) getNodeFromCache(nodeName string) (*v1.Node, error) {
