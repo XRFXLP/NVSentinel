@@ -32,11 +32,11 @@ import (
 	resourceinformers "k8s.io/client-go/informers/resource/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/retry"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 
 	listersv1 "k8s.io/client-go/listers/core/v1"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/managed"
 	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
 	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
@@ -87,7 +87,6 @@ type Labeler struct {
 	deviceCounts                 *devicecounts.Manager
 	assumeDCGMAvailable          bool
 	nodeLocks                    [256]sync.Mutex
-	nodePatcher                  kubeclient.NodePatcher
 }
 
 func (l *Labeler) allInformersSynced() bool {
@@ -789,21 +788,27 @@ func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expected
 		return nil
 	}
 
-	_, err = l.nodePatcher.Patch(
-		l.ctx,
-		l.clientset.CoreV1().Nodes(),
-		nodeName,
-		l.cachedNodeForPatch(nodeName),
-		func(desired *v1.Node) error {
-			if desired.Labels == nil {
-				desired.Labels = make(map[string]string)
-			}
+	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
 
-			l.updateDriverAndDCGMLabels(desired, expectedDriverLabel, expectedDCGMVersion)
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
 
+		needsUpdate := l.updateDriverAndDCGMLabels(node, expectedDriverLabel, expectedDCGMVersion)
+
+		if !needsUpdate {
+			slog.Debug("Node already has correct pod-related labels", "node", nodeName)
 			return nil
-		},
-	)
+		}
+
+		_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
+
+		return err
+	})
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
 		return fmt.Errorf("failed to reconcile node labeling for %s: %w", nodeName, err)
@@ -823,7 +828,9 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 
 func (l *Labeler) updateNodeLabels(nodeName string) error {
 	return l.withNodeLock(nodeName, func() error {
-		err := l.updateNodeLabelsAttempt(nodeName)
+		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			return l.updateNodeLabelsAttempt(nodeName)
+		})
 		if err != nil {
 			metrics.NodeUpdateFailures.Inc()
 
@@ -850,36 +857,27 @@ func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
 		return fmt.Errorf("failed to calculate desired node labels for %s: %w", nodeName, err)
 	}
 
-	_, err = l.nodePatcher.Patch(
-		l.ctx,
-		l.clientset.CoreV1().Nodes(),
-		nodeName,
-		l.cachedNodeForPatch(nodeName),
-		func(desired *v1.Node) error {
-			if desired.Labels == nil {
-				desired.Labels = make(map[string]string)
-			}
-
-			l.reconcileNodeLabelsInPlace(desired, driverLabel, dcgmVersion)
-
-			return nil
-		},
-	)
-
-	return err
-}
-
-func (l *Labeler) cachedNodeForPatch(nodeName string) *v1.Node {
-	if !l.allInformersSynced() {
-		return nil
-	}
-
-	node, err := l.getNodeFromCache(nodeName)
+	node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
+		return fmt.Errorf("get node %s: %w", nodeName, err)
+	}
+
+	if node.Labels == nil {
+		node.Labels = make(map[string]string)
+	}
+
+	needsUpdate := l.reconcileNodeLabelsInPlace(node, driverLabel, dcgmVersion)
+	if !needsUpdate {
+		slog.Debug("Node labels are correct", "node", nodeName)
 		return nil
 	}
 
-	return node
+	_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("update node %s: %w", nodeName, err)
+	}
+
+	return nil
 }
 
 func (l *Labeler) desiredNodeLabels(nodeName string) (string, string, error) {
