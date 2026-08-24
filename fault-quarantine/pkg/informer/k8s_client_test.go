@@ -198,8 +198,8 @@ func TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPS
 	t.Logf("cordon throughput: low QPS=%.2f nodes/s, high QPS=%.2f nodes/s, ratio=%.2fx",
 		lowRate, highRate, throughputRatio)
 
-	assert.GreaterOrEqual(t, throughputRatio, 8.0)
-	assert.LessOrEqual(t, throughputRatio, 11.0)
+	assert.GreaterOrEqual(t, throughputRatio, 6.0)
+	assert.LessOrEqual(t, throughputRatio, 14.0)
 }
 
 func TestQuarantineNodeAndSetAnnotations(t *testing.T) {

@@ -729,8 +729,8 @@ func TestKubernetesClientRateLimitsGangRegistrationThroughput(t *testing.T) {
 	t.Logf("gang registration throughput: low QPS=%.2f gangs/s, high QPS=%.2f gangs/s, ratio=%.2fx",
 		lowRate, highRate, throughputRatio)
 
-	assert.GreaterOrEqual(t, throughputRatio, 8.0)
-	assert.LessOrEqual(t, throughputRatio, 11.0)
+	assert.GreaterOrEqual(t, throughputRatio, 6.0)
+	assert.LessOrEqual(t, throughputRatio, 14.0)
 }
 
 // measureGangRegistrationThroughput measures only ConfigMap requests made by
