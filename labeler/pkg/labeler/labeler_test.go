@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -2713,6 +2714,69 @@ func TestUpdateNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
 				"a merge patch must leave labels it does not mention alone")
 		})
 	}
+}
+
+func TestUpdateNodeLabels_DelayedInformerEvent_EventuallyConverges(t *testing.T) {
+	const nodeName = "delayed-node"
+
+	initial := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeName,
+			Labels: map[string]string{
+				KataRuntimeDefaultLabel: LabelValueFalse,
+				KataEnabledLabel:        LabelValueFalse,
+			},
+		},
+	}
+
+	// A controlled fake watch lets the API object advance independently of the
+	// informer cache, making the stale-cache checkpoints deterministic.
+	clientset := fake.NewSimpleClientset(initial)
+	nodeWatch := watch.NewRaceFreeFake()
+	clientset.PrependWatchReactor("nodes", func(k8stesting.Action) (bool, watch.Interface, error) {
+		return true, nodeWatch, nil
+	})
+
+	labeler, _ := startTransformTestLabeler(t, clientset, devicecounts.Config{})
+	requireCachedLabel(t, labeler, nodeName, KataRuntimeDefaultLabel, LabelValueFalse)
+
+	// Change the API object while withholding its watch event. The informer is synced,
+	// but its node projection deliberately remains one generation behind.
+	liveNode, err := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	liveNode.Labels[KataRuntimeDefaultLabel] = LabelValueTrue
+	liveNode, err = clientset.CoreV1().Nodes().Update(t.Context(), liveNode, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	cachedNode, err := labeler.getNodeFromCache(nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, LabelValueFalse, cachedNode.Labels[KataRuntimeDefaultLabel])
+	assert.Equal(t, LabelValueFalse, liveNode.Labels[KataEnabledLabel])
+
+	// A reconcile against the stale projection computes the stale derived value and
+	// correctly emits no write.
+	clientset.ClearActions()
+	require.NoError(t, labeler.updateNodeLabels(nodeName))
+	assert.Empty(t, clientset.Actions())
+
+	// Deliver the delayed input event. Its handler must reconcile from the new cache
+	// generation and correct the derived label.
+	nodeWatch.Modify(liveNode.DeepCopy())
+	requireCachedLabel(t, labeler, nodeName, KataRuntimeDefaultLabel, LabelValueTrue)
+
+	cachedNode, err = labeler.getNodeFromCache(nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, LabelValueFalse, cachedNode.Labels[KataEnabledLabel])
+
+	require.Eventually(t, func() bool {
+		node, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+		return getErr == nil && node.Labels[KataEnabledLabel] == LabelValueTrue
+	}, 10*time.Second, 10*time.Millisecond)
+
+	finalNode, err := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	nodeWatch.Modify(finalNode.DeepCopy())
+	requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueTrue)
 }
 
 func countNodeActions(clientset *fake.Clientset, verb string) int {
