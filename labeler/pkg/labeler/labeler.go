@@ -1051,36 +1051,15 @@ func (l *Labeler) resourceSlicesForNode(node *v1.Node) []*resourcev1.ResourceSli
 // handlePodDeleteEvent processes pod delete events by recalculating node labels
 // after excluding the deleted pod from consideration
 func (l *Labeler) handlePodDeleteEvent(obj any) error {
-	startTime := time.Now()
-
-	defer func() {
-		metrics.EventHandlingDuration.Observe(time.Since(startTime).Seconds())
-	}()
-
-	pod, ok := obj.(*v1.Pod)
-	if !ok {
-		return fmt.Errorf("pod delete event: expected Pod object, got %T", obj)
-	}
-
-	return l.withNodeLock(pod.Spec.NodeName, func() error {
-		// Calculate and write under the same lock as node-driven reconciliation so
-		// the startup sweep cannot overwrite this result with an older cache read.
-		expectedDCGMVersion, err := l.getDCGMVersionForNode(pod.Spec.NodeName, pod)
-		if err != nil {
-			return fmt.Errorf("failed to get DCGM version for node %s excluding deleted pod: %w", pod.Spec.NodeName, err)
-		}
-
-		expectedDriverLabel, err := l.getDriverLabelForNode(pod.Spec.NodeName, pod)
-		if err != nil {
-			return fmt.Errorf("failed to get driver label for node %s excluding deleted pod: %w", pod.Spec.NodeName, err)
-		}
-
-		return l.updateNodeLabelsForPod(pod.Spec.NodeName, expectedDCGMVersion, expectedDriverLabel)
-	})
+	return l.handlePodLabelEvent(obj, true)
 }
 
 // handlePodEvent processes all pod events (add, update) idempotently
 func (l *Labeler) handlePodEvent(obj any) error {
+	return l.handlePodLabelEvent(obj, false)
+}
+
+func (l *Labeler) handlePodLabelEvent(obj any, deleting bool) error {
 	startTime := time.Now()
 
 	defer func() {
@@ -1092,13 +1071,20 @@ func (l *Labeler) handlePodEvent(obj any) error {
 		return fmt.Errorf("pod event: expected Pod object, got %T", obj)
 	}
 
+	var excludePod *v1.Pod
+	if deleting {
+		excludePod = pod
+	}
+
 	return l.withNodeLock(pod.Spec.NodeName, func() error {
-		expectedDCGMVersion, err := l.getDCGMVersionForNode(pod.Spec.NodeName, nil)
+		// Calculate and write under the same lock as node-driven reconciliation so
+		// the startup sweep cannot overwrite this result with an older cache read.
+		expectedDCGMVersion, err := l.getDCGMVersionForNode(pod.Spec.NodeName, excludePod)
 		if err != nil {
 			return fmt.Errorf("failed to get DCGM version for node %s: %w", pod.Spec.NodeName, err)
 		}
 
-		expectedDriverLabel, err := l.getDriverLabelForNode(pod.Spec.NodeName, nil)
+		expectedDriverLabel, err := l.getDriverLabelForNode(pod.Spec.NodeName, excludePod)
 		if err != nil {
 			return fmt.Errorf("failed to get driver label for node %s: %w", pod.Spec.NodeName, err)
 		}
