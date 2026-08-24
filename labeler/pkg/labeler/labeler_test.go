@@ -2643,12 +2643,11 @@ func TestUpdateNodeLabels_DriverPodDeletedDuringReconcile_DeleteWins(t *testing.
 	assert.NotContains(t, updated.Labels, DriverInstalledLabel)
 }
 
-// TestLabelerWriteCosts pins the API-call budget of the label write path. Reading the
-// node from the informer cache instead of the API server is what makes a label change
-// cost a single PATCH, and it lets a reconcile with nothing to do cost nothing at all
-// — on a large cluster that difference is per node, on every reconcile.
-func TestLabelerWriteCosts(t *testing.T) {
-	nodeName := "gpu-node"
+// TestUpdateNodeLabels_CachedNode_UsesPatchOnly pins the API-call budget and payload
+// of the label write path.
+func TestUpdateNodeLabels_CachedNode_UsesPatchOnly(t *testing.T) {
+	const nodeName = "gpu-node"
+
 	clientset := fake.NewSimpleClientset(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   nodeName,
@@ -2657,50 +2656,66 @@ func TestLabelerWriteCosts(t *testing.T) {
 	})
 
 	labeler, _ := startTransformTestLabeler(t, clientset, devicecounts.Config{})
-
-	// Let startup reconciliation settle, so every write counted below is one this
-	// test asked for.
 	requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueFalse)
 
-	t.Run("a label change costs one patch and nothing else", func(t *testing.T) {
-		// KataEnabledLabel is the labeler's own output, not one of the inputs
-		// nodeRequiresReconciliation watches, so dropping it cannot kick off a
-		// reconcile behind this test's back.
-		node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
-		require.NoError(t, err)
-		delete(node.Labels, KataEnabledLabel)
-		_, err = clientset.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
-		require.NoError(t, err)
+	tests := []struct {
+		name          string
+		setup         func(*testing.T)
+		expectedPatch string
+	}{
+		{
+			name: "label change costs one merge patch",
+			setup: func(t *testing.T) {
+				node, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+				require.NoError(t, getErr)
+				delete(node.Labels, KataEnabledLabel)
+				_, updateErr := clientset.CoreV1().Nodes().Update(t.Context(), node, metav1.UpdateOptions{})
+				require.NoError(t, updateErr)
+				requireCachedLabelAbsent(t, labeler, nodeName, KataEnabledLabel)
+			},
+			expectedPatch: fmt.Sprintf(
+				`{"metadata":{"labels":{%q:%q}}}`,
+				KataEnabledLabel,
+				LabelValueFalse,
+			),
+		},
+		{
+			name: "no-op reconcile costs no API call",
+			setup: func(t *testing.T) {
+				requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueFalse)
+			},
+		},
+	}
 
-		requireCachedLabelAbsent(t, labeler, nodeName, KataEnabledLabel)
-		clientset.ClearActions()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.setup(t)
+			clientset.ClearActions()
 
-		require.NoError(t, labeler.updateNodeLabels(nodeName))
+			require.NoError(t, labeler.updateNodeLabels(nodeName))
 
-		assert.Equal(t, 1, countNodeActions(clientset, "patch"), "the write itself")
-		assert.Equal(t, 0, countNodeActions(clientset, "get"), "the node came from the cache")
-		assert.Equal(t, 0, countNodeActions(clientset, "update"), "PUT is no longer used")
+			expectedPatchCount := 0
+			if tt.expectedPatch != "" {
+				expectedPatchCount = 1
+				action := nodePatchAction(t, clientset.Actions())
+				assert.Equal(t, types.MergePatchType, action.GetPatchType())
+				assert.JSONEq(t, tt.expectedPatch, string(action.GetPatch()))
+			}
 
-		updated, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
-		require.NoError(t, err)
-		assert.Equal(t, LabelValueFalse, updated.Labels[KataEnabledLabel], "the patch landed")
-		assert.Equal(t, LabelValueTrue, updated.Labels[gpuPresentLabel],
-			"a merge patch must leave labels it does not mention alone")
-	})
+			assert.Equal(t, expectedPatchCount, countNodeActions(clientset, "patch"))
+			assert.Equal(t, 0, countNodeActions(clientset, "get"))
+			assert.Equal(t, 0, countNodeActions(clientset, "update"))
 
-	t.Run("a reconcile with nothing to do costs no api call", func(t *testing.T) {
-		requireCachedLabel(t, labeler, nodeName, KataEnabledLabel, LabelValueFalse)
-		clientset.ClearActions()
-
-		require.NoError(t, labeler.updateNodeLabels(nodeName))
-
-		assert.Equal(t, 0, countNodeActions(clientset, "patch"))
-		assert.Equal(t, 0, countNodeActions(clientset, "get"))
-		assert.Equal(t, 0, countNodeActions(clientset, "update"))
-	})
+			updated, getErr := clientset.CoreV1().Nodes().Get(t.Context(), nodeName, metav1.GetOptions{})
+			require.NoError(t, getErr)
+			assert.Equal(t, LabelValueFalse, updated.Labels[KataEnabledLabel], "the desired label is present")
+			assert.Equal(t, LabelValueTrue, updated.Labels[gpuPresentLabel],
+				"a merge patch must leave labels it does not mention alone")
+		})
+	}
 }
 
-// TestLabelsConvergeUnderNodeChurn attacks the assumption the PATCH path rests on:
+// TestLabelsConvergeUnderNodeChurn_FinalInputs_Converge attacks the assumption the PATCH path rests on:
 // that reading the node from the informer cache can go stale without ever losing a
 // write.
 //
@@ -2716,7 +2731,7 @@ func TestLabelerWriteCosts(t *testing.T) {
 // The churn below rewrites the input far faster than the cache can follow. Whatever
 // the labeler does in the middle, every node has to end up on the label its final
 // input implies.
-func TestLabelsConvergeUnderNodeChurn(t *testing.T) {
+func TestLabelsConvergeUnderNodeChurn_FinalInputs_Converge(t *testing.T) {
 	const (
 		nodeCount = 20
 		rounds    = 8
@@ -2814,6 +2829,22 @@ func countNodeActions(clientset *fake.Clientset, verb string) int {
 	}
 
 	return count
+}
+
+func nodePatchAction(t *testing.T, actions []k8stesting.Action) k8stesting.PatchAction {
+	t.Helper()
+
+	for _, action := range actions {
+		if action.GetVerb() == "patch" && action.GetResource().Resource == "nodes" {
+			patchAction, ok := action.(k8stesting.PatchAction)
+			require.True(t, ok)
+
+			return patchAction
+		}
+	}
+
+	require.FailNow(t, "node PATCH action not found")
+	return nil
 }
 
 // requireCachedLabel waits for the informer cache to show the given label, which is

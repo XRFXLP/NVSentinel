@@ -33,7 +33,7 @@ func node(labels, annotations map[string]string) *v1.Node {
 	}
 }
 
-func TestNodeMergePatch(t *testing.T) {
+func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
 	tests := []struct {
 		name     string
 		original *v1.Node
@@ -110,7 +110,7 @@ func TestNodeMergePatch(t *testing.T) {
 // only one annotation and clears Spec entirely — and a patch derived from that
 // projection must not describe the fields the projection dropped, or it would erase
 // them on the real object.
-func TestNodeMergePatchLeavesProjectedFieldsAlone(t *testing.T) {
+func TestNodeMergePatch_ProjectedFields_LeavesThemAlone(t *testing.T) {
 	projected := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "node-1",
@@ -132,7 +132,7 @@ func TestNodeMergePatchLeavesProjectedFieldsAlone(t *testing.T) {
 		"a cleared Spec must never reach the patch, or real taints would be dropped")
 }
 
-func TestNodeMergePatchIgnoresSpecChanges(t *testing.T) {
+func TestNodeMergePatch_SpecChanges_ReturnsNoPatch(t *testing.T) {
 	original := node(nil, nil)
 	modified := original.DeepCopy()
 	modified.Spec.Unschedulable = true
