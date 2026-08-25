@@ -296,11 +296,9 @@ func NamespaceNodeIndexFunc(obj any) ([]string, error) {
 }
 
 func (i *Informers) Run(ctx context.Context) error {
-	if len(i.dryRunMode) == 0 {
-		i.eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{
-			Interface: i.clientset.CoreV1().Events(metav1.NamespaceDefault),
-		})
-	}
+	i.eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{
+		Interface: i.clientset.CoreV1().Events(metav1.NamespaceDefault),
+	})
 
 	go i.podInformer.Run(ctx.Done())
 	go i.nodeInformer.Run(ctx.Done())

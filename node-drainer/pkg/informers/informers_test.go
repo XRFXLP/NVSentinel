@@ -197,7 +197,7 @@ func TestNodeTransformRetainsEventAndEvaluatorFields(t *testing.T) {
 	assert.Empty(t, transformedNode.Status)
 }
 
-func TestInformerTransformsIntegrateWithIndexesAndNodeEvents(t *testing.T) {
+func TestInformerTransformsIntegrateWithIndexes(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
@@ -243,6 +243,22 @@ func TestInformerTransformsIntegrateWithIndexesAndNodeEvents(t *testing.T) {
 	assert.Equal(t, node.UID, cachedNode.UID)
 	assert.Equal(t, node.ResourceVersion, cachedNode.ResourceVersion)
 	assert.Equal(t, node.Annotations, cachedNode.Annotations)
+}
+
+func TestEventRecorderAggregatesNodeEvents(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node-a",
+			UID:  types.UID("node-uid"),
+		},
+	}
+	client := fake.NewSimpleClientset(node)
+	informers, err := NewInformers(client, 0, ptr.To(5), false, false, "")
+	require.NoError(t, err)
+	require.NoError(t, informers.Run(ctx))
 
 	require.NoError(t, informers.UpdateNodeEvent(ctx, node.Name, "AwaitingPodCompletion", "waiting"))
 	require.NoError(t, informers.UpdateNodeEvent(ctx, node.Name, "AwaitingPodCompletion", "waiting"))
@@ -258,28 +274,6 @@ func TestInformerTransformsIntegrateWithIndexesAndNodeEvents(t *testing.T) {
 		assert.Equal(collect, "nvsentinel-node-drainer", event.Source.Component)
 		assert.Equal(collect, int32(2), event.Count)
 	}, 5*time.Second, 50*time.Millisecond)
-}
-
-func TestDryRunDoesNotRecordNodeEvents(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-
-	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "node-a",
-			UID:  types.UID("node-uid"),
-		},
-	}
-	client := fake.NewSimpleClientset(node)
-	informers, err := NewInformers(client, 0, ptr.To(5), false, true, "")
-	require.NoError(t, err)
-	require.NoError(t, informers.Run(ctx))
-
-	require.NoError(t, informers.UpdateNodeEvent(ctx, node.Name, "AwaitingPodCompletion", "waiting"))
-	require.Never(t, func() bool {
-		events, listErr := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{})
-		return listErr == nil && len(events.Items) > 0
-	}, 250*time.Millisecond, 25*time.Millisecond)
 }
 
 func richDrainEligiblePod(namespace, name, nodeName string) *v1.Pod {
