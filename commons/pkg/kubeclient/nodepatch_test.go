@@ -198,12 +198,34 @@ func TestNodePatcher_Conflict_RefreshesLiveNodeBeforeRetry(t *testing.T) {
 	assert.Equal(t, "true", updated.Labels["desired"])
 }
 
-func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
+func TestNodeMergePatch_ReturnsExpectedPatch(t *testing.T) {
+	resourceVersionOriginal := node(nil, nil)
+	resourceVersionOriginal.ResourceVersion = "42"
+	resourceVersionModified := resourceVersionOriginal.DeepCopy()
+	resourceVersionModified.Spec.Unschedulable = true
+
+	projected := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "node-1",
+			ResourceVersion: "1",
+			Labels:          map[string]string{"gpu": "true"},
+			Annotations:     map[string]string{"kept": "yes"},
+		},
+	}
+	projectedModified := projected.DeepCopy()
+	projectedModified.Labels["driver.installed"] = "true"
+
+	specOriginal := node(nil, nil)
+	specModified := specOriginal.DeepCopy()
+	specModified.Spec.Unschedulable = true
+	specModified.Spec.Taints = []v1.Taint{{Key: "held", Effect: v1.TaintEffectNoSchedule}}
+
 	tests := []struct {
 		name     string
 		original *v1.Node
 		modified *v1.Node
 		expected string
+		excluded []string
 	}{
 		{
 			name:     "no change produces no patch",
@@ -253,6 +275,31 @@ func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
 			modified: node(map[string]string{"a": "1"}, nil),
 			expected: `{"metadata":{"labels":{"a":"1"}}}`,
 		},
+		{
+			name:     "spec change includes original resource version",
+			original: resourceVersionOriginal,
+			modified: resourceVersionModified,
+			expected: `{"metadata":{"resourceVersion":"42"},"spec":{"unschedulable":true}}`,
+		},
+		{
+			name:     "projected fields remain absent",
+			original: projected,
+			modified: projectedModified,
+			expected: `{"metadata":{"labels":{"driver.installed":"true"}}}`,
+			excluded: []string{"annotations", "spec"},
+		},
+		{
+			name:     "sets spec fields",
+			original: specOriginal,
+			modified: specModified,
+			expected: `{"metadata":{"resourceVersion":"1"},"spec":{"taints":[{"key":"held","effect":"NoSchedule"}],"unschedulable":true}}`,
+		},
+		{
+			name:     "clears spec fields",
+			original: specModified,
+			modified: specOriginal,
+			expected: `{"metadata":{"resourceVersion":"1"},"spec":{"taints":null,"unschedulable":null}}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -266,73 +313,9 @@ func TestNodeMergePatch_MetadataChanges_ReturnsExpectedPatch(t *testing.T) {
 			}
 
 			assert.JSONEq(t, tt.expected, string(patch))
+			for _, field := range tt.excluded {
+				assert.NotContains(t, string(patch), field)
+			}
 		})
 	}
-}
-
-func TestNodeMergePatch_ChangedNode_IncludesOriginalResourceVersion(t *testing.T) {
-	original := node(nil, nil)
-	original.ResourceVersion = "42"
-	modified := original.DeepCopy()
-	modified.Spec.Unschedulable = true
-
-	patch, err := NodeMergePatch(original, modified)
-	require.NoError(t, err)
-	assert.JSONEq(t,
-		`{"metadata":{"resourceVersion":"42"},"spec":{"unschedulable":true}}`,
-		string(patch),
-	)
-}
-
-// TestNodeMergePatchLeavesProjectedFieldsAlone pins the reason the patch is built key
-// by key. Informer caches often hold a projected Node — the labeler's transform keeps
-// only one annotation and clears Spec entirely — and a patch derived from that
-// projection must not describe the fields the projection dropped, or it would erase
-// them on the real object.
-func TestNodeMergePatch_ProjectedFields_LeavesThemAlone(t *testing.T) {
-	projected := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "node-1",
-			ResourceVersion: "1",
-			Labels:          map[string]string{"gpu": "true"},
-			Annotations:     map[string]string{"kept": "yes"},
-		},
-	}
-
-	modified := projected.DeepCopy()
-	modified.Labels["driver.installed"] = "true"
-
-	patch, err := NodeMergePatch(projected, modified)
-	require.NoError(t, err)
-
-	assert.JSONEq(t,
-		`{"metadata":{"labels":{"driver.installed":"true"}}}`,
-		string(patch),
-	)
-	assert.NotContains(t, string(patch), "annotations",
-		"an untouched annotation must not appear in the patch")
-	assert.NotContains(t, string(patch), "spec",
-		"a cleared Spec must never reach the patch, or real taints would be dropped")
-}
-
-func TestNodeMergePatch_SpecChanges_ReturnsExpectedPatch(t *testing.T) {
-	original := node(nil, nil)
-	modified := original.DeepCopy()
-	modified.Spec.Unschedulable = true
-	modified.Spec.Taints = []v1.Taint{{Key: "held", Effect: v1.TaintEffectNoSchedule}}
-
-	patch, err := NodeMergePatch(original, modified)
-	require.NoError(t, err)
-
-	assert.JSONEq(t,
-		`{"metadata":{"resourceVersion":"1"},"spec":{"taints":[{"key":"held","effect":"NoSchedule"}],"unschedulable":true}}`,
-		string(patch),
-	)
-
-	patch, err = NodeMergePatch(modified, original)
-	require.NoError(t, err)
-	assert.JSONEq(t,
-		`{"metadata":{"resourceVersion":"1"},"spec":{"taints":null,"unschedulable":null}}`,
-		string(patch),
-	)
 }

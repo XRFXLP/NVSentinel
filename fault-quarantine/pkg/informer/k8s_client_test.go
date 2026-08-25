@@ -860,6 +860,8 @@ func TestUnTaintAndUnCordonNode_NonExistentNode(t *testing.T) {
 	}
 }
 
+// TestUpdateNode_CachedNode_UsesPatchAndSkipsNoOp verifies that a cached Node
+// requires one PATCH for a change and no API request once the desired state is present.
 func TestUpdateNode_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
 	node := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-1", ResourceVersion: "1"}}
 	clientset := fake.NewSimpleClientset(node.DeepCopy())
@@ -907,6 +909,8 @@ func TestUpdateNode_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
 	assert.Empty(t, clientset.Actions())
 }
 
+// TestUpdateNode_ConcurrentTaintUpdate_RetriesFromLiveNode verifies that a stale
+// resourceVersion triggers a live refresh and preserves both concurrent taint changes.
 func TestUpdateNode_ConcurrentTaintUpdate_RetriesFromLiveNode(t *testing.T) {
 	const nodeName = "concurrent-taint-update"
 
@@ -974,6 +978,8 @@ func TestUpdateNode_ConcurrentTaintUpdate_RetriesFromLiveNode(t *testing.T) {
 	assert.Contains(t, updated.Spec.Taints, concurrentTaint)
 }
 
+// TestApplyTaints_DeduplicatesByKeyAndEffect verifies that taints with the same
+// Key/Effect pair are updated in place and deduplicated while new pairs are appended.
 func TestApplyTaints_DeduplicatesByKeyAndEffect(t *testing.T) {
 	timeAdded := metav1.Now()
 	node := &v1.Node{
