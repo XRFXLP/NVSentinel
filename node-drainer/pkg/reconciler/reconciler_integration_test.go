@@ -504,9 +504,16 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "waiting for pods to complete")
 
-				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)})
+				eventListOptions := metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)}
+				require.Eventually(t, func() bool {
+					nodeEvents, listErr := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, eventListOptions)
+					return listErr == nil && len(nodeEvents.Items) == 1
+				}, 5*time.Second, 50*time.Millisecond, "node event should be recorded asynchronously")
+
+				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, eventListOptions)
 				require.NoError(t, err)
 				require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
+				require.Equal(t, v1.EventTypeNormal, nodeEvents.Items[0].Type)
 				require.Equal(t, nodeEvents.Items[0].Reason, "AwaitingPodCompletion")
 				expectedMessage := "Waiting for following pods to finish: [completion-test/running-pod-1]"
 				require.Equal(t, expectedMessage, nodeEvents.Items[0].Message, "only expected pods should be drained")
@@ -661,9 +668,16 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "failed timeout eviction for node test-node: waiting for 1 pods to complete or timeout")
 
-				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)})
+				eventListOptions := metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)}
+				require.Eventually(t, func() bool {
+					nodeEvents, listErr := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, eventListOptions)
+					return listErr == nil && len(nodeEvents.Items) == 1
+				}, 5*time.Second, 50*time.Millisecond, "node event should be recorded asynchronously")
+
+				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, eventListOptions)
 				require.NoError(t, err)
 				require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
+				require.Equal(t, v1.EventTypeNormal, nodeEvents.Items[0].Type)
 				require.Equal(t, nodeEvents.Items[0].Reason, "WaitingBeforeForceDelete")
 				expectedMessage := "Waiting for following pods to finish: [pod-1] in namespace: [timeout-test] or they will be force deleted on:"
 				require.Contains(t, nodeEvents.Items[0].Message, expectedMessage, "only expected pods should be drained")
@@ -892,9 +906,16 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "waiting for pods to complete")
 
-				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)})
+				eventListOptions := metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)}
+				require.Eventually(t, func() bool {
+					nodeEvents, listErr := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, eventListOptions)
+					return listErr == nil && len(nodeEvents.Items) == 1
+				}, 5*time.Second, 50*time.Millisecond, "node event should be recorded asynchronously")
+
+				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, eventListOptions)
 				require.NoError(t, err)
 				require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
+				require.Equal(t, v1.EventTypeNormal, nodeEvents.Items[0].Type)
 				require.Equal(t, nodeEvents.Items[0].Reason, "AwaitingPodCompletion")
 				expectedMessage := "Waiting for following pods to finish: [completion-test/running-pod-1 completion-test/running-pod-2 completion-test/running-pod-3]"
 				require.Equal(t, expectedMessage, nodeEvents.Items[0].Message, "pod list should be in sorted order")

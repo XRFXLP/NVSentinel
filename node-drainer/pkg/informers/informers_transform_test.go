@@ -245,10 +245,19 @@ func TestInformerTransformsIntegrateWithIndexesAndNodeEvents(t *testing.T) {
 	assert.Equal(t, node.Annotations, cachedNode.Annotations)
 
 	require.NoError(t, informers.UpdateNodeEvent(ctx, node.Name, "AwaitingPodCompletion", "waiting"))
-	events, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{})
-	require.NoError(t, err)
-	require.Len(t, events.Items, 1)
-	assert.Equal(t, node.UID, events.Items[0].InvolvedObject.UID)
+	require.NoError(t, informers.UpdateNodeEvent(ctx, node.Name, "AwaitingPodCompletion", "waiting"))
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		events, listErr := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{})
+		if !assert.NoError(collect, listErr) || !assert.Len(collect, events.Items, 1) {
+			return
+		}
+
+		event := events.Items[0]
+		assert.Equal(collect, node.UID, event.InvolvedObject.UID)
+		assert.Equal(collect, v1.EventTypeNormal, event.Type)
+		assert.Equal(collect, "nvsentinel-node-drainer", event.Source.Component)
+		assert.Equal(collect, int32(2), event.Count)
+	}, 5*time.Second, 50*time.Millisecond)
 }
 
 func richDrainEligiblePod(namespace, name, nodeName string) *v1.Pod {
