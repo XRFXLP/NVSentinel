@@ -168,8 +168,8 @@ func isRetryableNodePatchError(err error) bool {
 // Taints are emitted only when the caller changed them. A projected Node whose Spec
 // is empty on both sides therefore cannot erase taints from the real object.
 func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
-	originalProjection := nodePatchProjection(original)
-	modifiedProjection := nodePatchProjection(modified)
+	originalProjection := projectNodePatchableFields(original)
+	modifiedProjection := projectNodePatchableFields(modified)
 
 	specChanged := !reflect.DeepEqual(original.Spec.Taints, modified.Spec.Taints) ||
 		original.Spec.Unschedulable != modified.Spec.Unschedulable
@@ -201,7 +201,9 @@ func NodeMergePatch(original, modified *v1.Node) ([]byte, error) {
 	return patch, nil
 }
 
-func nodePatchProjection(node *v1.Node) *v1.Node {
+// projectNodePatchableFields restricts patch generation to the Node fields this
+// helper intentionally supports, preventing callbacks from patching unrelated fields.
+func projectNodePatchableFields(node *v1.Node) *v1.Node {
 	return &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels:      node.Labels,
