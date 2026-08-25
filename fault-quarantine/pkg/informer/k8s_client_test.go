@@ -973,3 +973,32 @@ func TestUpdateNode_ConcurrentTaintUpdate_RetriesFromLiveNode(t *testing.T) {
 	assert.Contains(t, updated.Spec.Taints, fqTaint)
 	assert.Contains(t, updated.Spec.Taints, concurrentTaint)
 }
+
+func TestApplyTaints_DeduplicatesByKeyAndEffect(t *testing.T) {
+	timeAdded := metav1.Now()
+	node := &v1.Node{
+		Spec: v1.NodeSpec{
+			Taints: []v1.Taint{
+				{Key: "shared", Value: "old", Effect: v1.TaintEffectNoSchedule, TimeAdded: &timeAdded},
+				{Key: "shared", Value: "duplicate", Effect: v1.TaintEffectNoSchedule},
+				{Key: "shared", Value: "keep", Effect: v1.TaintEffectNoExecute},
+				{Key: "untouched", Value: "value", Effect: v1.TaintEffectPreferNoSchedule},
+			},
+		},
+	}
+	client := &FaultQuarantineClient{}
+
+	err := client.applyTaints(t.Context(), node, []config.Taint{
+		{Key: "shared", Value: "updated", Effect: string(v1.TaintEffectNoSchedule)},
+		{Key: "shared", Value: "final", Effect: string(v1.TaintEffectNoSchedule)},
+		{Key: "new", Value: "value", Effect: string(v1.TaintEffectNoSchedule)},
+	}, node.Name)
+	require.NoError(t, err)
+
+	assert.Equal(t, []v1.Taint{
+		{Key: "shared", Value: "final", Effect: v1.TaintEffectNoSchedule, TimeAdded: &timeAdded},
+		{Key: "shared", Value: "keep", Effect: v1.TaintEffectNoExecute},
+		{Key: "untouched", Value: "value", Effect: v1.TaintEffectPreferNoSchedule},
+		{Key: "new", Value: "value", Effect: v1.TaintEffectNoSchedule},
+	}, node.Spec.Taints)
+}

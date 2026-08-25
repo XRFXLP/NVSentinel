@@ -362,23 +362,45 @@ func (c *FaultQuarantineClient) applyTaints(
 		return nil
 	}
 
-	existingTaints := make(map[config.Taint]struct{})
-	for _, taint := range node.Spec.Taints {
-		existingTaints[config.Taint{Key: taint.Key, Value: taint.Value, Effect: string(taint.Effect)}] = struct{}{}
+	type taintIdentity struct {
+		key    string
+		effect v1.TaintEffect
 	}
 
-	for _, taintConfig := range taints {
-		key := config.Taint{Key: taintConfig.Key, Value: taintConfig.Value, Effect: string(taintConfig.Effect)}
+	existingTaints := make(map[taintIdentity]int, len(node.Spec.Taints))
 
-		if _, exists := existingTaints[key]; !exists {
-			slog.InfoContext(ctx, "Tainting node", "node", nodename, "taintConfig", taintConfig)
-			node.Spec.Taints = append(node.Spec.Taints, v1.Taint{
-				Key:    taintConfig.Key,
-				Value:  taintConfig.Value,
-				Effect: v1.TaintEffect(taintConfig.Effect),
-			})
-			existingTaints[key] = struct{}{}
+	uniqueTaints := node.Spec.Taints[:0]
+	for _, taint := range node.Spec.Taints {
+		identity := taintIdentity{key: taint.Key, effect: taint.Effect}
+		if _, exists := existingTaints[identity]; exists {
+			continue
 		}
+
+		existingTaints[identity] = len(uniqueTaints)
+		uniqueTaints = append(uniqueTaints, taint)
+	}
+
+	node.Spec.Taints = uniqueTaints
+
+	for _, taintConfig := range taints {
+		identity := taintIdentity{key: taintConfig.Key, effect: v1.TaintEffect(taintConfig.Effect)}
+		if index, exists := existingTaints[identity]; exists {
+			if node.Spec.Taints[index].Value != taintConfig.Value {
+				slog.InfoContext(ctx, "Updating node taint", "node", nodename, "taintConfig", taintConfig)
+				node.Spec.Taints[index].Value = taintConfig.Value
+			}
+
+			continue
+		}
+
+		slog.InfoContext(ctx, "Tainting node", "node", nodename, "taintConfig", taintConfig)
+
+		existingTaints[identity] = len(node.Spec.Taints)
+		node.Spec.Taints = append(node.Spec.Taints, v1.Taint{
+			Key:    taintConfig.Key,
+			Value:  taintConfig.Value,
+			Effect: v1.TaintEffect(taintConfig.Effect),
+		})
 	}
 
 	return nil
