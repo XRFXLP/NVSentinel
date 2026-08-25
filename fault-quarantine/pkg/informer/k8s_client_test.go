@@ -1008,3 +1008,56 @@ func TestApplyTaints_DeduplicatesByKeyAndEffect(t *testing.T) {
 		{Key: "new", Value: "value", Effect: v1.TaintEffectNoSchedule},
 	}, node.Spec.Taints)
 }
+
+// TestMergeAppliedTaints_ReplacesValueByKeyAndEffect verifies that bookkeeping
+// follows Kubernetes taint identity and retains pre-existing ownership state.
+func TestMergeAppliedTaints_ReplacesValueByKeyAndEffect(t *testing.T) {
+	merged := mergeAppliedTaints(
+		[]config.Taint{
+			{
+				Key:         "shared",
+				Value:       "old",
+				Effect:      string(v1.TaintEffectNoSchedule),
+				PreExisting: true,
+			},
+			{Key: "shared", Value: "keep", Effect: string(v1.TaintEffectNoExecute)},
+		},
+		[]config.Taint{
+			{Key: "shared", Value: "new", Effect: string(v1.TaintEffectNoSchedule)},
+			{Key: "shared", Value: "final", Effect: string(v1.TaintEffectNoSchedule)},
+		},
+	)
+
+	assert.ElementsMatch(t, []config.Taint{
+		{
+			Key:         "shared",
+			Value:       "final",
+			Effect:      string(v1.TaintEffectNoSchedule),
+			PreExisting: true,
+		},
+		{Key: "shared", Value: "keep", Effect: string(v1.TaintEffectNoExecute)},
+	}, merged)
+}
+
+// TestHasTaint_MatchesByKeyAndEffect verifies that changing a taint value does
+// not make FQ misclassify the same Kubernetes taint as manually removed.
+func TestHasTaint_MatchesByKeyAndEffect(t *testing.T) {
+	node := &v1.Node{
+		Spec: v1.NodeSpec{
+			Taints: []v1.Taint{
+				{Key: "shared", Value: "new", Effect: v1.TaintEffectNoSchedule},
+			},
+		},
+	}
+
+	assert.True(t, hasTaint(node, config.Taint{
+		Key:    "shared",
+		Value:  "old",
+		Effect: string(v1.TaintEffectNoSchedule),
+	}))
+	assert.False(t, hasTaint(node, config.Taint{
+		Key:    "shared",
+		Value:  "new",
+		Effect: string(v1.TaintEffectNoExecute),
+	}))
+}

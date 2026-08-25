@@ -354,6 +354,11 @@ func labelsWithSessionWinners(node *v1.Node, labels map[string]string) (map[stri
 	return labelsToApply, nil
 }
 
+type taintIdentity struct {
+	key    string
+	effect string
+}
+
 func (c *FaultQuarantineClient) applyTaints(
 	ctx context.Context, node *v1.Node, taints []config.Taint, nodename string,
 ) error {
@@ -362,16 +367,11 @@ func (c *FaultQuarantineClient) applyTaints(
 		return nil
 	}
 
-	type taintIdentity struct {
-		key    string
-		effect v1.TaintEffect
-	}
-
 	existingTaints := make(map[taintIdentity]int, len(node.Spec.Taints))
 
 	uniqueTaints := node.Spec.Taints[:0]
 	for _, taint := range node.Spec.Taints {
-		identity := taintIdentity{key: taint.Key, effect: taint.Effect}
+		identity := taintIdentity{key: taint.Key, effect: string(taint.Effect)}
 		if _, exists := existingTaints[identity]; exists {
 			continue
 		}
@@ -383,7 +383,7 @@ func (c *FaultQuarantineClient) applyTaints(
 	node.Spec.Taints = uniqueTaints
 
 	for _, taintConfig := range taints {
-		identity := taintIdentity{key: taintConfig.Key, effect: v1.TaintEffect(taintConfig.Effect)}
+		identity := taintIdentity{key: taintConfig.Key, effect: taintConfig.Effect}
 		if index, exists := existingTaints[identity]; exists {
 			if node.Spec.Taints[index].Value != taintConfig.Value {
 				slog.InfoContext(ctx, "Updating node taint", "node", nodename, "taintConfig", taintConfig)
@@ -560,10 +560,10 @@ func parseAppliedTaintsAnnotation(value string) ([]config.Taint, error) {
 }
 
 func mergeAppliedTaints(existingTaints, incomingTaints []config.Taint) []config.Taint {
-	mergedByKey := make(map[config.Taint]config.Taint, len(existingTaints)+len(incomingTaints))
+	mergedByKey := make(map[taintIdentity]config.Taint, len(existingTaints)+len(incomingTaints))
 	for _, taints := range [][]config.Taint{existingTaints, incomingTaints} {
 		for _, taint := range taints {
-			key := config.Taint{Key: taint.Key, Value: taint.Value, Effect: taint.Effect}
+			key := taintIdentity{key: taint.Key, effect: taint.Effect}
 			if existing, ok := mergedByKey[key]; ok {
 				taint.PreExisting = existing.PreExisting || taint.PreExisting
 			}

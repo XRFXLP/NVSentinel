@@ -79,8 +79,8 @@ func TestNodePatcher_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
 	assert.Empty(t, clientset.Actions())
 }
 
-func TestNodePatcher_PreviousWriteNotInCache_ReadsLiveNode(t *testing.T) {
-	current := node(map[string]string{"a": "1"}, nil)
+func TestNodePatcher_NoOpBetweenWrites_KeepsReadingLiveNode(t *testing.T) {
+	current := node(nil, map[string]string{"events": "base"})
 	clientset := fake.NewSimpleClientset(current.DeepCopy())
 	var patcher NodePatcher
 
@@ -90,7 +90,7 @@ func TestNodePatcher_PreviousWriteNotInCache_ReadsLiveNode(t *testing.T) {
 		current.Name,
 		current,
 		func(node *v1.Node) error {
-			node.Labels["b"] = "2"
+			node.Annotations["events"] += "|first"
 			return nil
 		},
 	)
@@ -111,12 +111,29 @@ func TestNodePatcher_PreviousWriteNotInCache_ReadsLiveNode(t *testing.T) {
 	require.Len(t, clientset.Actions(), 1)
 	assert.Equal(t, "get", clientset.Actions()[0].GetVerb())
 
+	clientset.ClearActions()
+	changed, err = patcher.Patch(
+		context.Background(),
+		clientset.CoreV1().Nodes(),
+		current.Name,
+		stale,
+		func(node *v1.Node) error {
+			node.Annotations["events"] += "|second"
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	require.Len(t, clientset.Actions(), 2)
+	assert.Equal(t, "get", clientset.Actions()[0].GetVerb())
+	assert.Equal(t, "patch", clientset.Actions()[1].GetVerb())
+
 	updated, err := clientset.CoreV1().Nodes().Get(t.Context(), current.Name, metav1.GetOptions{})
 	require.NoError(t, err)
-	assert.Equal(t, "2", updated.Labels["b"])
+	assert.Equal(t, "base|first|second", updated.Annotations["events"])
 }
 
-func TestNodePatcher_LiveReadFailure_PreservesPendingVersion(t *testing.T) {
+func TestNodePatcher_LiveReadRetriesTransientFailure(t *testing.T) {
 	current := node(map[string]string{"a": "1"}, nil)
 	clientset := fake.NewSimpleClientset(current.DeepCopy())
 	var patcher NodePatcher
@@ -128,21 +145,11 @@ func TestNodePatcher_LiveReadFailure_PreservesPendingVersion(t *testing.T) {
 	clientset.PrependReactor("get", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
 		getAttempts++
 		if getAttempts == 1 {
-			return true, nil, assert.AnError
+			return true, nil, apierrors.NewTooManyRequests("try again", 0)
 		}
 
 		return false, nil, nil
 	})
-
-	_, err := patcher.Patch(
-		context.Background(),
-		clientset.CoreV1().Nodes(),
-		current.Name,
-		stale,
-		func(*v1.Node) error { return nil },
-	)
-	require.ErrorIs(t, err, assert.AnError)
-	assert.ErrorContains(t, err, `refresh node "node-1" while pending write is not in cache`)
 
 	changed, err := patcher.Patch(
 		context.Background(),

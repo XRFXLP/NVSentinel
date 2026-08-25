@@ -51,7 +51,15 @@ func (p *NodePatcher) Patch(
 	cached *v1.Node,
 	mutate func(*v1.Node) error,
 ) (bool, error) {
-	current, err := p.currentNode(ctx, nodes, nodeName, cached)
+	var current *v1.Node
+
+	err := retry.OnError(nodePatchBackoff(), isRetryableNodePatchError, func() error {
+		var err error
+
+		current, err = p.currentNode(ctx, nodes, nodeName, cached)
+
+		return err
+	})
 	if err != nil {
 		return false, err
 	}
@@ -86,10 +94,12 @@ func (p *NodePatcher) Patch(
 		if errors.IsConflict(err) {
 			patchErr := err
 
-			current, err = nodes.Get(ctx, nodeName, metav1.GetOptions{})
+			refreshed, err := nodes.Get(ctx, nodeName, metav1.GetOptions{})
 			if err != nil {
 				return fmt.Errorf("refresh node %q after patch conflict: %w", nodeName, err)
 			}
+
+			current = refreshed
 
 			return fmt.Errorf("patch node %q: %w", nodeName, patchErr)
 		}
@@ -134,8 +144,6 @@ func (p *NodePatcher) currentNode(
 	if err != nil {
 		return nil, fmt.Errorf("refresh node %q while pending write is not in cache: %w", nodeName, err)
 	}
-
-	p.pendingVersions.CompareAndDelete(nodeName, writtenVersionValue)
 
 	return current, nil
 }
