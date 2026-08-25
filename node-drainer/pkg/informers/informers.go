@@ -296,9 +296,11 @@ func NamespaceNodeIndexFunc(obj any) ([]string, error) {
 }
 
 func (i *Informers) Run(ctx context.Context) error {
-	i.eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{
-		Interface: i.clientset.CoreV1().Events(metav1.NamespaceDefault),
-	})
+	if len(i.dryRunMode) == 0 {
+		i.eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{
+			Interface: i.clientset.CoreV1().Events(metav1.NamespaceDefault),
+		})
+	}
 
 	go i.podInformer.Run(ctx.Done())
 	go i.nodeInformer.Run(ctx.Done())
@@ -697,6 +699,7 @@ func (i *Informers) sendEvictionRequestForPod(ctx context.Context, namespace str
 	return nil
 }
 
+// UpdateNodeEvent records a normal event for the named node.
 func (i *Informers) UpdateNodeEvent(_ context.Context, nodeName string, reason string, message string) error {
 	node, err := i.GetNode(nodeName)
 	if err != nil {
