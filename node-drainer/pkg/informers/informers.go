@@ -704,6 +704,7 @@ func (i *Informers) UpdateNodeEvent(_ context.Context, nodeName string, reason s
 	}
 
 	i.eventRecorder.Event(node, v1.EventTypeNormal, reason, message)
+
 	return nil
 }
 
