@@ -24,9 +24,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
@@ -249,13 +251,18 @@ func TestEventRecorderAggregatesNodeEvents(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "node-a",
-			UID:  types.UID("node-uid"),
-		},
-	}
-	client := fake.NewSimpleClientset(node)
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, testEnv.Stop()) })
+
+	client, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+	node, err := client.CoreV1().Nodes().Create(ctx, &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
 	informers, err := NewInformers(client, 0, ptr.To(5), false, false, "")
 	require.NoError(t, err)
 	require.NoError(t, informers.Run(ctx))

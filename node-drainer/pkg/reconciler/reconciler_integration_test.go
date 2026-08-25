@@ -504,7 +504,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "waiting for pods to complete")
 
-				nodeEvent := requireSingleNodeEvent(t, client, ctx, nodeName)
+				nodeEvent := requireSingleNodeEvent(t, client, ctx, nodeName, 5)
 				require.Equal(t, v1.EventTypeNormal, nodeEvent.Type)
 				require.Equal(t, "AwaitingPodCompletion", nodeEvent.Reason)
 				expectedMessage := "Waiting for following pods to finish: [completion-test/running-pod-1]"
@@ -660,7 +660,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "failed timeout eviction for node test-node: waiting for 1 pods to complete or timeout")
 
-				nodeEvent := requireSingleNodeEvent(t, client, ctx, nodeName)
+				nodeEvent := requireSingleNodeEvent(t, client, ctx, nodeName, 1)
 				require.Equal(t, v1.EventTypeNormal, nodeEvent.Type)
 				require.Equal(t, "WaitingBeforeForceDelete", nodeEvent.Reason)
 				expectedMessage := "Waiting for following pods to finish: [pod-1] in namespace: [timeout-test] or they will be force deleted on:"
@@ -890,7 +890,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "waiting for pods to complete")
 
-				nodeEvent := requireSingleNodeEvent(t, client, ctx, nodeName)
+				nodeEvent := requireSingleNodeEvent(t, client, ctx, nodeName, 5)
 				require.Equal(t, v1.EventTypeNormal, nodeEvent.Type)
 				require.Equal(t, "AwaitingPodCompletion", nodeEvent.Reason)
 				expectedMessage := "Waiting for following pods to finish: [completion-test/running-pod-1 completion-test/running-pod-2 completion-test/running-pod-3]"
@@ -1396,6 +1396,7 @@ func requireSingleNodeEvent(
 	client kubernetes.Interface,
 	ctx context.Context,
 	nodeName string,
+	expectedCount int32,
 ) v1.Event {
 	t.Helper()
 
@@ -1404,12 +1405,13 @@ func requireSingleNodeEvent(
 	}
 	require.Eventually(t, func() bool {
 		nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, eventListOptions)
-		return err == nil && len(nodeEvents.Items) == 1
-	}, 5*time.Second, 50*time.Millisecond, "node event should be recorded asynchronously")
+		return err == nil && len(nodeEvents.Items) == 1 && nodeEvents.Items[0].Count == expectedCount
+	}, 5*time.Second, 50*time.Millisecond, "node event should be recorded asynchronously with count %d", expectedCount)
 
 	nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, eventListOptions)
 	require.NoError(t, err)
 	require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
+	require.Equal(t, expectedCount, nodeEvents.Items[0].Count)
 
 	return nodeEvents.Items[0]
 }
