@@ -570,9 +570,9 @@ func (l *Labeler) reconcileAllNodes() {
 		nodes = append(nodes, node)
 	}
 
-	deviceCountPass := l.deviceCounts.NewReconcilePass(nodes, l.loadResourceSlicesForNode)
+	deviceCountCache := l.deviceCounts.NewReconcileCache(nodes, l.loadResourceSlicesForNode)
 	for _, node := range nodes {
-		if err := l.updateNodeLabelsWithDeviceCountPass(node.Name, deviceCountPass); err != nil {
+		if err := l.updateNodeLabelsWithDeviceCountCache(node.Name, deviceCountCache); err != nil {
 			slog.Error("Failed to reconcile node labels", "node", node.Name, "error", err)
 		}
 	}
@@ -830,15 +830,15 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 }
 
 func (l *Labeler) updateNodeLabels(nodeName string) error {
-	return l.updateNodeLabelsWithDeviceCountPass(nodeName, nil)
+	return l.updateNodeLabelsWithDeviceCountCache(nodeName, l.newDeviceCountReconcileCache())
 }
 
-func (l *Labeler) updateNodeLabelsWithDeviceCountPass(
+func (l *Labeler) updateNodeLabelsWithDeviceCountCache(
 	nodeName string,
-	deviceCountPass *devicecounts.ReconcilePass,
+	deviceCountCache *devicecounts.ReconcileCache,
 ) error {
 	return l.withNodeLock(nodeName, func() error {
-		err := l.updateNodeLabelsAttempt(nodeName, deviceCountPass)
+		err := l.updateNodeLabelsAttempt(nodeName, deviceCountCache)
 		if err != nil {
 			metrics.NodeUpdateFailures.Inc()
 
@@ -847,6 +847,13 @@ func (l *Labeler) updateNodeLabelsWithDeviceCountPass(
 
 		return nil
 	})
+}
+
+func (l *Labeler) newDeviceCountReconcileCache() *devicecounts.ReconcileCache {
+	return l.deviceCounts.NewReconcileCache(
+		l.deviceCountCachedNodes(),
+		l.loadResourceSlicesForNode,
+	)
 }
 
 func (l *Labeler) withNodeLock(nodeName string, fn func() error) error {
@@ -861,7 +868,7 @@ func (l *Labeler) withNodeLock(nodeName string, fn func() error) error {
 
 func (l *Labeler) updateNodeLabelsAttempt(
 	nodeName string,
-	deviceCountPass *devicecounts.ReconcilePass,
+	deviceCountCache *devicecounts.ReconcileCache,
 ) error {
 	driverLabel, dcgmVersion, err := l.desiredNodeLabels(nodeName)
 	if err != nil {
@@ -878,11 +885,11 @@ func (l *Labeler) updateNodeLabelsAttempt(
 				desired.Labels = make(map[string]string)
 			}
 
-			l.reconcileNodeLabelsInPlaceWithDeviceCountPass(
+			l.reconcileNodeLabelsInPlaceWithDeviceCountCache(
 				desired,
 				driverLabel,
 				dcgmVersion,
-				deviceCountPass,
+				deviceCountCache,
 			)
 
 			return nil
@@ -939,14 +946,19 @@ func (l *Labeler) stripDetectionLabels(node *v1.Node) bool {
 }
 
 func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVersion string) bool {
-	return l.reconcileNodeLabelsInPlaceWithDeviceCountPass(node, driverLabel, dcgmVersion, nil)
+	return l.reconcileNodeLabelsInPlaceWithDeviceCountCache(
+		node,
+		driverLabel,
+		dcgmVersion,
+		l.newDeviceCountReconcileCache(),
+	)
 }
 
-func (l *Labeler) reconcileNodeLabelsInPlaceWithDeviceCountPass(
+func (l *Labeler) reconcileNodeLabelsInPlaceWithDeviceCountCache(
 	node *v1.Node,
 	driverLabel string,
 	dcgmVersion string,
-	deviceCountPass *devicecounts.ReconcilePass,
+	deviceCountCache *devicecounts.ReconcileCache,
 ) bool {
 	// When the node is opted out of NVSentinel management, strip detection labels
 	// so DaemonSet monitors evict via their existing nodeSelectors (ADR-040).
@@ -987,14 +999,7 @@ func (l *Labeler) reconcileNodeLabelsInPlaceWithDeviceCountPass(
 		needsUpdate = true
 	}
 
-	if deviceCountPass == nil {
-		deviceCountPass = l.deviceCounts.NewReconcilePass(
-			l.deviceCountCachedNodes(),
-			l.loadResourceSlicesForNode,
-		)
-	}
-
-	if deviceCountPass.ReconcileNodeLabelsInPlace(l.ctx, node) {
+	if deviceCountCache.ReconcileNodeLabelsInPlace(l.ctx, node) {
 		needsUpdate = true
 	}
 
@@ -1002,6 +1007,10 @@ func (l *Labeler) reconcileNodeLabelsInPlaceWithDeviceCountPass(
 }
 
 func (l *Labeler) deviceCountCachedNodes() []*v1.Node {
+	if l.nodeInformer == nil {
+		return nil
+	}
+
 	nodes := []*v1.Node{}
 
 	for _, obj := range l.nodeInformer.GetStore().List() {

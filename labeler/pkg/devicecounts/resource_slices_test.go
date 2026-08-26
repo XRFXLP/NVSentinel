@@ -89,7 +89,7 @@ sum(resourceSlices
 	require.Equal(t, "2", node.Labels[testNICCountExpectedLabel])
 }
 
-func TestReconcilePassCachesResourceSlicePeerCounts(t *testing.T) {
+func TestReconcileCacheCachesResourceSlicePeerCounts(t *testing.T) {
 	config := Config{
 		Enabled: true,
 		Classes: []ClassConfig{
@@ -121,7 +121,7 @@ func TestReconcilePassCachesResourceSlicePeerCounts(t *testing.T) {
 	lookups := map[string]int{}
 
 	manager := newTestManager(t, config)
-	pass := manager.NewReconcilePass(
+	reconcileCache := manager.NewReconcileCache(
 		nodes,
 		func(node *corev1.Node) []*resourcev1.ResourceSlice {
 			lookups[node.Name]++
@@ -130,7 +130,7 @@ func TestReconcilePassCachesResourceSlicePeerCounts(t *testing.T) {
 	)
 
 	for _, node := range nodes {
-		require.True(t, pass.ReconcileNodeLabelsInPlace(context.Background(), node))
+		require.True(t, reconcileCache.ReconcileNodeLabelsInPlace(context.Background(), node))
 		require.Equal(t, "2", node.Labels[testNICCountExpectedLabel])
 	}
 

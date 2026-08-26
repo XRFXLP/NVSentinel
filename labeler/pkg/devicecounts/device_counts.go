@@ -73,19 +73,19 @@ type compiledClass struct {
 	program cel.Program
 }
 
-// ReconcilePass caches peer observations for the lifetime of one reconciliation pass.
-// Create a new pass whenever the peer-node or ResourceSlice snapshot may have changed.
-// A pass is used sequentially and discarded after all target nodes are reconciled;
+// ReconcileCache caches peer observations while one or more target nodes are reconciled.
+// Create a new cache whenever the peer-node or ResourceSlice snapshot may have changed.
+// A cache is used sequentially and discarded after its target nodes are reconciled;
 // it is not safe for concurrent use.
-type ReconcilePass struct {
+type ReconcileCache struct {
 	manager *Manager
 
-	// peerNodes is the pass-scoped node snapshot used to learn the maximum
+	// peerNodes is the cache-scoped node snapshot used to learn the maximum
 	// expected count for each class and hardware partition.
 	peerNodes []*corev1.Node
 
 	// loadResourceSlicesForNode performs the indexed informer lookup when a node is
-	// first observed during this pass.
+	// first observed by this cache.
 	loadResourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice
 
 	// resourceSlices memoizes loadResourceSlicesForNode results by node name. A
@@ -96,7 +96,7 @@ type ReconcilePass struct {
 	// obtained by evaluating that class's CEL program for that peer. The value
 	// also records whether evaluation was impossible because its ResourceSlices
 	// were missing or because CEL returned an error. expectedFromPartition uses
-	// this map to avoid reevaluating the same class/peer pair during this pass.
+	// this map to avoid reevaluating the same class/peer pair while the cache lives.
 	peerCurrentCounts map[peerCurrentCountKey]cachedCurrentCount
 
 	// partitionExpected memoizes the maximum count learned from all peers in a
@@ -104,7 +104,7 @@ type ReconcilePass struct {
 	partitionExpected map[partitionExpectedKey]int
 }
 
-// peerCurrentCountKey identifies one peer observation within a ReconcilePass.
+// peerCurrentCountKey identifies one peer observation within a ReconcileCache.
 //
 // classIndex is the position in Manager.classes (the compiled, enabled classes),
 // not the position in the original configuration. Including it prevents two
@@ -117,7 +117,7 @@ type peerCurrentCountKey struct {
 }
 
 // partitionExpectedKey identifies the learned expected count shared by one
-// class and one hardware partition within a ReconcilePass.
+// class and one hardware partition within a ReconcileCache.
 //
 // partitionKey is produced by compiledClass.partitionKey. It is "default" when
 // no grouping labels are configured, or a value such as
@@ -136,7 +136,7 @@ type partitionExpectedKey struct {
 //   - count is valid when missingSource is false and err is nil.
 //
 // Failed and missing-source observations are cached too, so every peer is
-// inspected at most once per class during a ReconcilePass.
+// inspected at most once per class during a ReconcileCache's lifetime.
 type cachedCurrentCount struct {
 	count         int
 	missingSource bool
@@ -221,15 +221,15 @@ func (m *Manager) ReconcileNodeLabelsInPlace(
 	peerNodes []*corev1.Node,
 	loadResourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
 ) bool {
-	return m.NewReconcilePass(peerNodes, loadResourceSlicesForNode).ReconcileNodeLabelsInPlace(ctx, node)
+	return m.NewReconcileCache(peerNodes, loadResourceSlicesForNode).ReconcileNodeLabelsInPlace(ctx, node)
 }
 
-// NewReconcilePass creates a pass-scoped cache for peer expected-count learning.
-func (m *Manager) NewReconcilePass(
+// NewReconcileCache creates a scoped cache for peer expected-count learning.
+func (m *Manager) NewReconcileCache(
 	peerNodes []*corev1.Node,
 	loadResourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
-) *ReconcilePass {
-	return &ReconcilePass{
+) *ReconcileCache {
+	return &ReconcileCache{
 		manager:                   m,
 		peerNodes:                 peerNodes,
 		loadResourceSlicesForNode: loadResourceSlicesForNode,
@@ -239,8 +239,8 @@ func (m *Manager) NewReconcilePass(
 	}
 }
 
-// ReconcileNodeLabelsInPlace evaluates all enabled classes using pass-scoped peer caches.
-func (p *ReconcilePass) ReconcileNodeLabelsInPlace(ctx context.Context, node *corev1.Node) bool {
+// ReconcileNodeLabelsInPlace evaluates all enabled classes using cached peer observations.
+func (p *ReconcileCache) ReconcileNodeLabelsInPlace(ctx context.Context, node *corev1.Node) bool {
 	if !p.manager.Enabled() {
 		return false
 	}
@@ -587,7 +587,7 @@ func normalizeNumericMapValues(values map[string]any) {
 	}
 }
 
-func (p *ReconcilePass) cachedResourceSlicesForNode(node *corev1.Node) []*resourcev1.ResourceSlice {
+func (p *ReconcileCache) cachedResourceSlicesForNode(node *corev1.Node) []*resourcev1.ResourceSlice {
 	if node == nil {
 		return nil
 	}
@@ -606,7 +606,7 @@ func (p *ReconcilePass) cachedResourceSlicesForNode(node *corev1.Node) []*resour
 	return resourceSlices
 }
 
-func (p *ReconcilePass) expectedDeviceCount(
+func (p *ReconcileCache) expectedDeviceCount(
 	ctx context.Context,
 	classIndex int,
 	class compiledClass,
@@ -630,7 +630,7 @@ func (p *ReconcilePass) expectedDeviceCount(
 	return expected
 }
 
-func (p *ReconcilePass) expectedFromPartition(
+func (p *ReconcileCache) expectedFromPartition(
 	ctx context.Context,
 	classIndex int,
 	class compiledClass,
@@ -684,7 +684,7 @@ func peerNodesForPartition(
 	return nodes
 }
 
-func (p *ReconcilePass) currentDeviceCountForPeer(
+func (p *ReconcileCache) currentDeviceCountForPeer(
 	ctx context.Context,
 	classIndex int,
 	class compiledClass,
