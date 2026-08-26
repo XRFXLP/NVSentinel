@@ -2249,7 +2249,7 @@ func nodeIndexerLister(nodes ...*corev1.Node) listersv1.NodeLister {
 	return listersv1.NewNodeLister(indexer)
 }
 
-// TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOnePass
+// TestCalculateAndSetNodeLabels_KataAndDriverLabelsMissing_AppliesBoth
 // covers a node that needs its Kata label and its driver label at the same time.
 //
 // The two results were combined with `needsUpdate ||
@@ -2258,7 +2258,7 @@ func nodeIndexerLister(nodes ...*corev1.Node) listersv1.NodeLister {
 // hid this, because by then the Kata label was already correct and the short circuit
 // no longer triggered — so the labels arrived one pass later than they should, and
 // only if a second pass happened at all.
-func TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOnePass(t *testing.T) {
+func TestCalculateAndSetNodeLabels_KataAndDriverLabelsMissing_AppliesBoth(t *testing.T) {
 	node := &corev1.Node{
 		Name:   "kata-and-driver-node",
 		Labels: map[string]string{gpuPresentLabel: LabelValueTrue},
@@ -2301,7 +2301,7 @@ func TestReconcileNodeLabelsInPlace_KataAndDriverLabelsMissing_AppliesBothInOneP
 		"the driver label must not be skipped just because the kata label changed")
 }
 
-func TestReconcileNodeLabelsInPlace_ManagedGate(t *testing.T) {
+func TestCalculateAndSetNodeLabels_ManagedGate(t *testing.T) {
 	t.Run("strips detection labels when node is opted out", func(t *testing.T) {
 		node := &corev1.Node{
 			Name: "opted-out-node",

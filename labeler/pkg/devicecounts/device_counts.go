@@ -101,8 +101,8 @@ type ReconcileCache struct {
 	// peerCurrentCounts maps a class-and-node key to the current device count
 	// obtained by evaluating that class's CEL program for that peer. The value
 	// also records whether evaluation was impossible because its ResourceSlices
-	// were missing or because CEL returned an error. expectedFromPartition uses
-	// this map to avoid reevaluating the same class/peer pair while the cache lives.
+	// were missing or because CEL returned an error. expectedDeviceCountForPartition
+	// uses this map to avoid reevaluating the same class/peer pair while the cache lives.
 	peerCurrentCounts map[peerCurrentCountKey]cachedCurrentCount
 
 	// partitionExpected memoizes the maximum count learned from all peers in a
@@ -220,14 +220,16 @@ func (m *Manager) ClassCount() int {
 	return len(m.classes)
 }
 
-// ReconcileNodeLabelsInPlace evaluates all enabled device-count classes for a node.
-func (m *Manager) ReconcileNodeLabelsInPlace(
+// CalculateAndSetDeviceCountLabels evaluates all enabled classes and writes
+// their current and expected device-count labels onto node.
+func (m *Manager) CalculateAndSetDeviceCountLabels(
 	ctx context.Context,
 	node *corev1.Node,
 	peerNodes []*corev1.Node,
 	loadResourceSlicesForNode func(*corev1.Node) []*resourcev1.ResourceSlice,
 ) bool {
-	return m.NewReconcileCache(peerNodes, loadResourceSlicesForNode).ReconcileNodeLabelsInPlace(ctx, node)
+	return m.NewReconcileCache(peerNodes, loadResourceSlicesForNode).
+		CalculateAndSetDeviceCountLabels(ctx, node)
 }
 
 // NewReconcileCache creates a scoped cache for peer expected-count learning.
@@ -245,8 +247,9 @@ func (m *Manager) NewReconcileCache(
 	}
 }
 
-// ReconcileNodeLabelsInPlace evaluates all enabled classes using cached peer observations.
-func (p *ReconcileCache) ReconcileNodeLabelsInPlace(ctx context.Context, node *corev1.Node) bool {
+// CalculateAndSetDeviceCountLabels evaluates all enabled classes using cached
+// peer observations and writes their labels onto node.
+func (p *ReconcileCache) CalculateAndSetDeviceCountLabels(ctx context.Context, node *corev1.Node) bool {
 	if !p.manager.Enabled() {
 		return false
 	}
@@ -632,18 +635,24 @@ func (p *ReconcileCache) expectedDeviceCount(
 
 	partitionKey := class.partitionKey(node)
 
-	partitionExpected := p.expectedFromPartition(ctx, classIndex, class, node.Name, partitionKey)
-	if partitionExpected > expected {
-		expected = partitionExpected
+	partitionExpectedCount := p.expectedDeviceCountForPartition(
+		ctx,
+		classIndex,
+		class,
+		node.Name,
+		partitionKey,
+	)
+	if partitionExpectedCount > expected {
+		expected = partitionExpectedCount
 	}
 
 	return expected
 }
 
-// expectedFromPartition computes a class/partition maximum once and caches it.
+// expectedDeviceCountForPartition computes a class/partition maximum once and caches it.
 // Without this cache, each target in a partition of P peers would repeat the
 // same P peer evaluations.
-func (p *ReconcileCache) expectedFromPartition(
+func (p *ReconcileCache) expectedDeviceCountForPartition(
 	ctx context.Context,
 	classIndex int,
 	class compiledClass,

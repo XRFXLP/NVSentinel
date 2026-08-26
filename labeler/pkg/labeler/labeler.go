@@ -966,7 +966,7 @@ func (l *Labeler) calculateAndSetNodeLabels(
 		needsUpdate = true
 	}
 
-	if deviceCountCache.ReconcileNodeLabelsInPlace(l.ctx, node) {
+	if deviceCountCache.CalculateAndSetDeviceCountLabels(l.ctx, node) {
 		needsUpdate = true
 	}
 

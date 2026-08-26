@@ -75,7 +75,7 @@ sum(resourceSlices
 	)))
 
 	manager := newTestManager(t, config)
-	updated := manager.ReconcileNodeLabelsInPlace(
+	updated := manager.CalculateAndSetDeviceCountLabels(
 		context.Background(),
 		node,
 		[]*corev1.Node{node},
@@ -130,7 +130,7 @@ func TestReconcileCacheCachesResourceSlicePeerCounts(t *testing.T) {
 	)
 
 	for _, node := range nodes {
-		require.True(t, reconcileCache.ReconcileNodeLabelsInPlace(context.Background(), node))
+		require.True(t, reconcileCache.CalculateAndSetDeviceCountLabels(context.Background(), node))
 		require.Equal(t, "2", node.Labels[testNICCountExpectedLabel])
 	}
 
