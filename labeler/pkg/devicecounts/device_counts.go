@@ -77,6 +77,12 @@ type compiledClass struct {
 // Create a new cache whenever the peer-node or ResourceSlice snapshot may have changed.
 // A cache is used sequentially and discarded after its target nodes are reconciled;
 // it is not safe for concurrent use.
+//
+// During a fleet reconciliation, the cache ensures each node's ResourceSlices
+// are loaded once, each class/peer CEL expression is evaluated once, and each
+// class/partition maximum is learned once. Combined with the node-name informer
+// index, ResourceSlice processing scales with the N nodes and their K slices
+// (O(N*K)) instead of repeating peer-wide store scans for every target node.
 type ReconcileCache struct {
 	manager *Manager
 
@@ -587,6 +593,9 @@ func normalizeNumericMapValues(values map[string]any) {
 	}
 }
 
+// cachedResourceSlicesForNode loads a node's indexed ResourceSlices at most
+// once. Reusing the result across target and peer evaluations prevents multiple
+// classes from repeating the same O(K) informer lookup.
 func (p *ReconcileCache) cachedResourceSlicesForNode(node *corev1.Node) []*resourcev1.ResourceSlice {
 	if node == nil {
 		return nil
@@ -622,6 +631,7 @@ func (p *ReconcileCache) expectedDeviceCount(
 	expected := maxCountLabel(current, node.Labels[class.Labels.Expected])
 
 	partitionKey := class.partitionKey(node)
+
 	partitionExpected := p.expectedFromPartition(ctx, classIndex, class, node.Name, partitionKey)
 	if partitionExpected > expected {
 		expected = partitionExpected
@@ -630,6 +640,9 @@ func (p *ReconcileCache) expectedDeviceCount(
 	return expected
 }
 
+// expectedFromPartition computes a class/partition maximum once and caches it.
+// Without this cache, each target in a partition of P peers would repeat the
+// same P peer evaluations.
 func (p *ReconcileCache) expectedFromPartition(
 	ctx context.Context,
 	classIndex int,
@@ -684,6 +697,8 @@ func peerNodesForPartition(
 	return nodes
 }
 
+// currentDeviceCountForPeer evaluates each class/peer pair at most once per
+// cache lifetime, including failed and missing-source results.
 func (p *ReconcileCache) currentDeviceCountForPeer(
 	ctx context.Context,
 	classIndex int,
@@ -692,9 +707,11 @@ func (p *ReconcileCache) currentDeviceCountForPeer(
 	peer *corev1.Node,
 ) (int, bool) {
 	key := peerCurrentCountKey{classIndex: classIndex, nodeName: peer.Name}
+
 	cached, ok := p.peerCurrentCounts[key]
 	if !ok {
 		peerResourceSlices := p.cachedResourceSlicesForNode(peer)
+
 		cached.missingSource = class.referencesResourceSlices() && len(peerResourceSlices) == 0
 		if !cached.missingSource {
 			cached.count, cached.err = p.manager.evaluateCurrent(ctx, class, peer, peerResourceSlices)

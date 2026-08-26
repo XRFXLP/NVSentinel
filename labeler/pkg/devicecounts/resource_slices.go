@@ -22,6 +22,9 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
+// ResourceSliceNodeNameIndex names the informer index from spec.nodeName to its
+// ResourceSlices. The index turns a node lookup from a scan of all N*K cached
+// slices into a lookup over only that node's K slices.
 const ResourceSliceNodeNameIndex = "nodeResourceSlice"
 
 // ResourceSliceNodeNameIndexFunc indexes node-local ResourceSlices by spec.nodeName.
@@ -39,7 +42,9 @@ func ResourceSliceNodeNameIndexFunc(obj any) ([]string, error) {
 	return []string{nodeName}, nil
 }
 
-// ResourceSlicesForNode returns node-local ResourceSlices whose spec.nodeName matches the node.
+// ResourceSlicesForNode returns node-local ResourceSlices through the node-name
+// informer index. ByIndex visits only matching slices instead of scanning the
+// complete ResourceSlice store for every target or peer node.
 func ResourceSlicesForNode(indexer cache.Indexer, node *corev1.Node) []*resourcev1.ResourceSlice {
 	if indexer == nil || node == nil {
 		return nil
