@@ -26,19 +26,24 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/labeler/pkg/devicecounts"
 )
 
 func TestResourceSliceMetadataOnlyUpdateDoesNotReconcile(t *testing.T) {
 	assignedNode := testNodeWithDeviceCountLabels("node-a", "", "")
+	assignedNode.Labels[KataRuntimeDefaultLabel] = LabelValueTrue
 	resourceSliceBeforeUpdate := testResourceSliceForNode("slice-a", assignedNode.Name)
+	clientset := newEnvtestClientWithNodes(t, assignedNode)
 	labeler := newTestLabelerWithResourceSlices(
 		t,
+		clientset,
 		[]*corev1.Node{assignedNode},
 		resourceSliceBeforeUpdate,
 	)
@@ -46,13 +51,18 @@ func TestResourceSliceMetadataOnlyUpdateDoesNotReconcile(t *testing.T) {
 	resourceSliceAfterMetadataUpdate.Labels = map[string]string{"changed": "true"}
 
 	require.NoError(t, labeler.resourceSliceInformer.GetIndexer().Update(resourceSliceAfterMetadataUpdate))
-	labeler.clientset.(*fake.Clientset).ClearActions()
 	labeler.newResourceSliceEventHandlers().UpdateFunc(
 		resourceSliceBeforeUpdate,
 		resourceSliceAfterMetadataUpdate,
 	)
 
-	require.Empty(t, labeler.clientset.(*fake.Clientset).Actions())
+	nodeAfterMetadataUpdate, err := clientset.CoreV1().Nodes().Get(
+		context.Background(),
+		assignedNode.Name,
+		metav1.GetOptions{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, LabelValueFalse, nodeAfterMetadataUpdate.Labels[KataEnabledLabel])
 }
 
 func TestResourceSliceNodeReassignmentReconcilesBothNodes(t *testing.T) {
@@ -61,8 +71,10 @@ func TestResourceSliceNodeReassignmentReconcilesBothNodes(t *testing.T) {
 	newlyAssignedNode := testNodeWithDeviceCountLabels("node-b", "", "")
 	resourceSliceBeforeReassignment := testResourceSliceForNode("slice", previouslyAssignedNode.Name)
 	resourceSliceAfterReassignment := testResourceSliceForNode("slice", newlyAssignedNode.Name)
+	clientset := newEnvtestClientWithNodes(t, previouslyAssignedNode, newlyAssignedNode)
 	labeler := newTestLabelerWithResourceSlices(
 		t,
+		clientset,
 		[]*corev1.Node{previouslyAssignedNode, newlyAssignedNode},
 		resourceSliceBeforeReassignment,
 	)
@@ -96,8 +108,10 @@ func TestResourceSliceNodeReassignmentReconcilesBothNodes(t *testing.T) {
 func TestEventReconciliationUsesFreshDeviceCountCache(t *testing.T) {
 	nodeReceivingEvent := testNodeWithDeviceCountLabels("node-a", "", "")
 	peerNodeWithHighestDeviceCount := testNodeWithDeviceCountLabels("node-b", "", "")
+	clientset := newEnvtestClientWithNodes(t, nodeReceivingEvent, peerNodeWithHighestDeviceCount)
 	labeler := newTestLabelerWithResourceSlices(
 		t,
+		clientset,
 		[]*corev1.Node{nodeReceivingEvent, peerNodeWithHighestDeviceCount},
 		testResourceSliceForNode("slice-a", nodeReceivingEvent.Name),
 		testResourceSliceForNode("slice-b-1", peerNodeWithHighestDeviceCount.Name),
@@ -122,8 +136,10 @@ func TestEventReconciliationUsesFreshDeviceCountCache(t *testing.T) {
 
 func TestReconcileNodeLabelsRecalculatesDriverLabelAfterConflict(t *testing.T) {
 	cachedNodeBeforeConflict := testNodeWithDeviceCountLabels("node-a", "", "")
+	clientset := fake.NewSimpleClientset(cachedNodeBeforeConflict.DeepCopy())
 	labeler := newTestLabelerWithResourceSlices(
 		t,
+		clientset,
 		[]*corev1.Node{cachedNodeBeforeConflict},
 		testResourceSliceForNode("slice-a", cachedNodeBeforeConflict.Name),
 	)
@@ -144,7 +160,6 @@ func TestReconcileNodeLabelsRecalculatesDriverLabelAfterConflict(t *testing.T) {
 	require.NoError(t, err)
 
 	patchAttempts := 0
-	clientset := labeler.clientset.(*fake.Clientset)
 	clientset.PrependReactor("patch", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
 		patchAttempts++
 		if patchAttempts == 1 {
@@ -180,6 +195,7 @@ const (
 
 func newTestLabelerWithResourceSlices(
 	t *testing.T,
+	clientset kubernetes.Interface,
 	nodes []*corev1.Node,
 	resourceSlices ...*resourcev1.ResourceSlice,
 ) *Labeler {
@@ -215,16 +231,6 @@ func newTestLabelerWithResourceSlices(
 	manager, err := devicecounts.NewManager(testResourceSliceDeviceCountConfig())
 	require.NoError(t, err)
 
-	clientset := fake.NewSimpleClientset()
-	for _, node := range nodes {
-		_, err := clientset.CoreV1().Nodes().Create(
-			context.Background(),
-			node.DeepCopy(),
-			metav1.CreateOptions{},
-		)
-		require.NoError(t, err)
-	}
-
 	return &Labeler{
 		clientset:             clientset,
 		podInformer:           podInformer,
@@ -240,6 +246,30 @@ func newTestLabelerWithResourceSlices(
 		kataLabels:   []string{KataRuntimeDefaultLabel},
 		deviceCounts: manager,
 	}
+}
+
+func newEnvtestClientWithNodes(t *testing.T, nodes ...*corev1.Node) kubernetes.Interface {
+	t.Helper()
+
+	testEnvironment := &envtest.Environment{}
+	restConfig, err := testEnvironment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, testEnvironment.Stop())
+	})
+
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	require.NoError(t, err)
+	for _, node := range nodes {
+		_, err := clientset.CoreV1().Nodes().Create(
+			context.Background(),
+			node.DeepCopy(),
+			metav1.CreateOptions{},
+		)
+		require.NoError(t, err)
+	}
+
+	return clientset
 }
 
 func testNodeWithDeviceCountLabels(
