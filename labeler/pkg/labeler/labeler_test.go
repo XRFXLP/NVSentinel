@@ -1493,8 +1493,8 @@ func TestLabelerResourceSlicesForNodeFiltersByNodeName(t *testing.T) {
 		Name: "global-slice",
 	}))
 
-	resourceSlices := labeler.resourceSlicesForNode(&corev1.Node{
-		Name: nodeName,
+	resourceSlices := labeler.loadResourceSlicesForNode(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
 	})
 
 	require.Len(t, resourceSlices, 1)

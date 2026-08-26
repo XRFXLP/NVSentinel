@@ -570,7 +570,7 @@ func (l *Labeler) reconcileAllNodes() {
 		nodes = append(nodes, node)
 	}
 
-	deviceCountPass := l.deviceCounts.NewReconcilePass(nodes, l.resourceSlicesForNode)
+	deviceCountPass := l.deviceCounts.NewReconcilePass(nodes, l.loadResourceSlicesForNode)
 	for _, node := range nodes {
 		if err := l.updateNodeLabelsWithDeviceCountPass(node.Name, deviceCountPass); err != nil {
 			slog.Error("Failed to reconcile node labels", "node", node.Name, "error", err)
@@ -990,7 +990,7 @@ func (l *Labeler) reconcileNodeLabelsInPlaceWithDeviceCountPass(
 	if deviceCountPass == nil {
 		deviceCountPass = l.deviceCounts.NewReconcilePass(
 			l.deviceCountCachedNodes(),
-			l.resourceSlicesForNode,
+			l.loadResourceSlicesForNode,
 		)
 	}
 
@@ -1076,7 +1076,7 @@ func (l *Labeler) updateDCGMLabel(node *v1.Node, dcgmVersion string) bool {
 	return true
 }
 
-func (l *Labeler) resourceSlicesForNode(node *v1.Node) []*resourcev1.ResourceSlice {
+func (l *Labeler) loadResourceSlicesForNode(node *v1.Node) []*resourcev1.ResourceSlice {
 	if l.resourceSliceInformer == nil {
 		return nil
 	}
