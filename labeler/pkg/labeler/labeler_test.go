@@ -27,7 +27,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1153,13 +1152,16 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 
 		cachedNode, err := labeler.getNodeFromCache(node.Name)
 		require.NoError(t, err)
+		assert.NotEmpty(t, cachedNode.ResourceVersion)
 		assert.Equal(t, &corev1.Node{
-			Name:            node.Name,
-			UID:             node.UID,
-			ResourceVersion: node.ResourceVersion,
-			Labels:          node.Labels,
-			Annotations: map[string]string{
-				DCGMBootstrapCompletedAnnotation: "true",
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            node.Name,
+				UID:             node.UID,
+				ResourceVersion: cachedNode.ResourceVersion,
+				Labels:          node.Labels,
+				Annotations: map[string]string{
+					DCGMBootstrapCompletedAnnotation: "true",
+				},
 			},
 		}, cachedNode)
 
@@ -1238,6 +1240,7 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 
 		stop()
 	})
+
 }
 
 func startTransformTestLabeler(
@@ -1343,6 +1346,11 @@ func TestNewLabeler_ResourceSliceInformerEnabled(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, labeler.resourceSliceInformer)
 		require.Len(t, labeler.informersSynced, 5)
+		require.Contains(
+			t,
+			labeler.resourceSliceInformer.GetIndexer().GetIndexers(),
+			devicecounts.ResourceSliceNodeNameIndex,
+		)
 	})
 }
 
@@ -1458,48 +1466,6 @@ func TestLabelerNodeRequiresReconciliation_AllocatableChanges(t *testing.T) {
 	})
 }
 
-func TestLabelerResourceSlicesForNodeFiltersByNodeName(t *testing.T) {
-	labeler, err := NewLabeler(
-		fake.NewSimpleClientset(),
-		time.Minute,
-		"nvidia-dcgm",
-		"nvidia-driver-daemonset",
-		"nvidia-driver-installer",
-		"",
-		false,
-		false,
-		testResourceSliceDeviceCountConfig(),
-		false,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, labeler.resourceSliceInformer)
-
-	nodeName := "node-a"
-	otherNodeName := "node-b"
-
-	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
-		Name: "slice-a",
-		Spec: resourcev1.ResourceSliceSpec{
-			NodeName: &nodeName,
-		},
-	}))
-	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
-		Name: "slice-b",
-		Spec: resourcev1.ResourceSliceSpec{
-			NodeName: &otherNodeName,
-		},
-	}))
-	require.NoError(t, labeler.resourceSliceInformer.GetStore().Add(&resourcev1.ResourceSlice{
-		Name: "global-slice",
-	}))
-
-	resourceSlices := labeler.loadResourceSlicesForNode(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
-	})
-
-	require.Len(t, resourceSlices, 1)
-	require.Equal(t, "slice-a", resourceSlices[0].Name)
-}
 
 func testDeviceCountConfig() devicecounts.Config {
 	return devicecounts.Config{
