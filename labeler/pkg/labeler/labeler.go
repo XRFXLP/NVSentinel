@@ -390,7 +390,9 @@ func createNodeInformer(
 }
 
 func createResourceSliceInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
-	return resourceinformers.NewResourceSliceInformer(clientset, resyncPeriod, cache.Indexers{})
+	return resourceinformers.NewResourceSliceInformer(clientset, resyncPeriod, cache.Indexers{
+		devicecounts.ResourceSliceNodeNameIndex: devicecounts.ResourceSliceNodeNameIndexFunc,
+	})
 }
 
 func (l *Labeler) getEventHandlers() cache.ResourceEventHandlerFuncs {
@@ -557,19 +559,25 @@ func (l *Labeler) Run(ctx context.Context) error {
 }
 
 func (l *Labeler) reconcileAllNodes() {
-	nodes := l.nodeInformer.GetStore().List()
-	for _, obj := range nodes {
+	objects := l.nodeInformer.GetStore().List()
+	nodes := make([]*v1.Node, 0, len(objects))
+	for _, obj := range objects {
 		node, ok := obj.(*v1.Node)
 		if !ok {
 			continue
 		}
 
-		if err := l.updateNodeLabels(node.Name); err != nil {
+		nodes = append(nodes, node)
+	}
+
+	deviceCountPass := l.deviceCounts.NewReconcilePass(nodes, l.resourceSlicesForNode)
+	for _, node := range nodes {
+		if err := l.updateNodeLabelsWithDeviceCountPass(node.Name, deviceCountPass); err != nil {
 			slog.Error("Failed to reconcile node labels", "node", node.Name, "error", err)
 		}
 	}
 
-	slog.Info("Completed initial node label reconciliation", "nodeCount", len(nodes))
+	slog.Info("Completed initial node label reconciliation", "nodeCount", len(objects))
 }
 
 // getDCGMVersionForNode returns the expected DCGM version for a specific node.
@@ -822,8 +830,15 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 }
 
 func (l *Labeler) updateNodeLabels(nodeName string) error {
+	return l.updateNodeLabelsWithDeviceCountPass(nodeName, nil)
+}
+
+func (l *Labeler) updateNodeLabelsWithDeviceCountPass(
+	nodeName string,
+	deviceCountPass *devicecounts.ReconcilePass,
+) error {
 	return l.withNodeLock(nodeName, func() error {
-		err := l.updateNodeLabelsAttempt(nodeName)
+		err := l.updateNodeLabelsAttempt(nodeName, deviceCountPass)
 		if err != nil {
 			metrics.NodeUpdateFailures.Inc()
 
@@ -844,7 +859,10 @@ func (l *Labeler) withNodeLock(nodeName string, fn func() error) error {
 	return fn()
 }
 
-func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
+func (l *Labeler) updateNodeLabelsAttempt(
+	nodeName string,
+	deviceCountPass *devicecounts.ReconcilePass,
+) error {
 	driverLabel, dcgmVersion, err := l.desiredNodeLabels(nodeName)
 	if err != nil {
 		return fmt.Errorf("failed to calculate desired node labels for %s: %w", nodeName, err)
@@ -860,7 +878,12 @@ func (l *Labeler) updateNodeLabelsAttempt(nodeName string) error {
 				desired.Labels = make(map[string]string)
 			}
 
-			l.reconcileNodeLabelsInPlace(desired, driverLabel, dcgmVersion)
+			l.reconcileNodeLabelsInPlaceWithDeviceCountPass(
+				desired,
+				driverLabel,
+				dcgmVersion,
+				deviceCountPass,
+			)
 
 			return nil
 		},
@@ -916,6 +939,15 @@ func (l *Labeler) stripDetectionLabels(node *v1.Node) bool {
 }
 
 func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVersion string) bool {
+	return l.reconcileNodeLabelsInPlaceWithDeviceCountPass(node, driverLabel, dcgmVersion, nil)
+}
+
+func (l *Labeler) reconcileNodeLabelsInPlaceWithDeviceCountPass(
+	node *v1.Node,
+	driverLabel string,
+	dcgmVersion string,
+	deviceCountPass *devicecounts.ReconcilePass,
+) bool {
 	// When the node is opted out of NVSentinel management, strip detection labels
 	// so DaemonSet monitors evict via their existing nodeSelectors (ADR-040).
 	optedOut, err := managed.IsNodeOptedOut(l.ctx, l.nodeLister, node.Name)
@@ -955,12 +987,14 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 		needsUpdate = true
 	}
 
-	if l.deviceCounts.ReconcileNodeLabelsInPlace(
-		l.ctx,
-		node,
-		l.deviceCountCachedNodes(),
-		l.resourceSlicesForNode,
-	) {
+	if deviceCountPass == nil {
+		deviceCountPass = l.deviceCounts.NewReconcilePass(
+			l.deviceCountCachedNodes(),
+			l.resourceSlicesForNode,
+		)
+	}
+
+	if deviceCountPass.ReconcileNodeLabelsInPlace(l.ctx, node) {
 		needsUpdate = true
 	}
 
@@ -1047,7 +1081,7 @@ func (l *Labeler) resourceSlicesForNode(node *v1.Node) []*resourcev1.ResourceSli
 		return nil
 	}
 
-	return devicecounts.ResourceSlicesForNode(l.resourceSliceInformer.GetStore(), node)
+	return devicecounts.ResourceSlicesForNode(l.resourceSliceInformer.GetIndexer(), node)
 }
 
 // handlePodDeleteEvent processes pod delete events by recalculating node labels

@@ -56,7 +56,9 @@ sum(resourceSlices
 	}
 
 	node := testNode("node-a", map[string]string{})
-	resourceSliceStore := cache.NewStore(cache.MetaNamespaceKeyFunc)
+	resourceSliceStore := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{
+		ResourceSliceNodeNameIndex: ResourceSliceNodeNameIndexFunc,
+	})
 
 	require.NoError(t, resourceSliceStore.Add(testResourceSlice("slice-a", "node-a",
 		testDevice("roce-a", stringAttribute("roce")),
@@ -85,6 +87,58 @@ sum(resourceSlices
 	require.True(t, updated)
 	require.Equal(t, "2", node.Labels[testNICCountCurrentLabel])
 	require.Equal(t, "2", node.Labels[testNICCountExpectedLabel])
+}
+
+func TestReconcilePassCachesResourceSlicePeerCounts(t *testing.T) {
+	config := Config{
+		Enabled: true,
+		Classes: []ClassConfig{
+			{
+				Name:    "nic",
+				Enabled: true,
+				Labels: Labels{
+					Current:  testNICCountCurrentLabel,
+					Expected: testNICCountExpectedLabel,
+				},
+				CurrentExpression: "resourceSlices.size()",
+			},
+		},
+	}
+
+	nodes := []*corev1.Node{
+		testNode("node-a", map[string]string{}),
+		testNode("node-b", map[string]string{}),
+		testNode("node-c", map[string]string{}),
+	}
+	resourceSlicesByNode := map[string][]*resourcev1.ResourceSlice{
+		"node-a": {testResourceSlice("slice-a", "node-a")},
+		"node-b": {
+			testResourceSlice("slice-b-1", "node-b"),
+			testResourceSlice("slice-b-2", "node-b"),
+		},
+		"node-c": {testResourceSlice("slice-c", "node-c")},
+	}
+	lookups := map[string]int{}
+
+	manager := newTestManager(t, config)
+	pass := manager.NewReconcilePass(
+		nodes,
+		func(node *corev1.Node) []*resourcev1.ResourceSlice {
+			lookups[node.Name]++
+			return resourceSlicesByNode[node.Name]
+		},
+	)
+
+	for _, node := range nodes {
+		require.True(t, pass.ReconcileNodeLabelsInPlace(context.Background(), node))
+		require.Equal(t, "2", node.Labels[testNICCountExpectedLabel])
+	}
+
+	require.Equal(t, map[string]int{
+		"node-a": 1,
+		"node-b": 1,
+		"node-c": 1,
+	}, lookups)
 }
 
 func testResourceSlice(name, nodeName string, devices ...resourcev1.Device) *resourcev1.ResourceSlice {

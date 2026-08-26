@@ -15,39 +15,52 @@
 package devicecounts
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
+const ResourceSliceNodeNameIndex = "nodeResourceSlice"
+
+// ResourceSliceNodeNameIndexFunc indexes node-local ResourceSlices by spec.nodeName.
+func ResourceSliceNodeNameIndexFunc(obj any) ([]string, error) {
+	resourceSlice, ok := obj.(*resourcev1.ResourceSlice)
+	if !ok {
+		return nil, fmt.Errorf("object is not a ResourceSlice")
+	}
+
+	nodeName, ok := resourceSliceNodeName(resourceSlice)
+	if !ok {
+		return nil, nil
+	}
+
+	return []string{nodeName}, nil
+}
+
 // ResourceSlicesForNode returns node-local ResourceSlices whose spec.nodeName matches the node.
-func ResourceSlicesForNode(store cache.Store, node *corev1.Node) []*resourcev1.ResourceSlice {
-	if store == nil {
+func ResourceSlicesForNode(indexer cache.Indexer, node *corev1.Node) []*resourcev1.ResourceSlice {
+	if indexer == nil || node == nil {
 		return nil
 	}
 
-	// The DRA ResourceSlices consumed by device-count classes are node-local and
-	// identify their node through spec.nodeName.
-	resourceSlices := []*resourcev1.ResourceSlice{}
+	objects, err := indexer.ByIndex(ResourceSliceNodeNameIndex, node.Name)
+	if err != nil {
+		return nil
+	}
 
-	for _, obj := range store.List() {
+	resourceSlices := make([]*resourcev1.ResourceSlice, 0, len(objects))
+	for _, obj := range objects {
 		resourceSlice, ok := obj.(*resourcev1.ResourceSlice)
 		if !ok {
 			continue
 		}
 
-		if resourceSliceBelongsToNode(resourceSlice, node.Name) {
-			resourceSlices = append(resourceSlices, resourceSlice)
-		}
+		resourceSlices = append(resourceSlices, resourceSlice)
 	}
 
 	return resourceSlices
-}
-
-func resourceSliceBelongsToNode(resourceSlice *resourcev1.ResourceSlice, nodeName string) bool {
-	resourceSliceNodeName, ok := resourceSliceNodeName(resourceSlice)
-
-	return ok && resourceSliceNodeName == nodeName
 }
 
 func resourceSliceNodeName(resourceSlice *resourcev1.ResourceSlice) (string, bool) {
