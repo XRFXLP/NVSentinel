@@ -26,6 +26,8 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -138,7 +140,7 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					ctx, r.Client, r.NodeLock, gpuReset.Spec.NodeName, "GPUReset",
 				)
 				if err != nil {
-					log.FromContext(ctx).Info("Unable to inspect node lock holder; will retry",
+					slog.WarnContext(ctx, "Unable to inspect node lock holder; will retry",
 						"node", gpuReset.Spec.NodeName, "error", err)
 				} else if active {
 					holderGPUReset, ok := holder.(*v1alpha1.GPUReset)

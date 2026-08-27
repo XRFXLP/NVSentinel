@@ -25,17 +25,21 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	prmproto "github.com/prometheus/client_model/go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -66,6 +70,115 @@ func (m *mockNodeLock) GetHolder(ctx context.Context, nodeName string) (*metav1.
 
 func (m *mockNodeLock) CheckUnlock(ctx context.Context, maintenanceObject client.Object, nodeName string) (retryUnlock bool) {
 	return false
+}
+
+func TestGPUResetReconciler_ContendedSelectors_ExpectedTerminalBehavior(t *testing.T) {
+	t.Parallel()
+
+	gpuUUID := "GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"
+	tests := []struct {
+		name             string
+		incomingSelector *v1alpha1.GPUSelector
+		holderSelector   *v1alpha1.GPUSelector
+		expectTerminal   bool
+	}{
+		{
+			name:             "MatchingUUIDsSetTerminalStatus",
+			incomingSelector: &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
+			holderSelector:   &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
+			expectTerminal:   true,
+		},
+		{
+			name:             "NilSelectorOverlapsSpecificGPU",
+			incomingSelector: nil,
+			holderSelector:   &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
+			expectTerminal:   true,
+		},
+		{
+			name:             "EmptySelectorOverlapsSpecificGPU",
+			incomingSelector: &v1alpha1.GPUSelector{},
+			holderSelector:   &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
+			expectTerminal:   true,
+		},
+		{
+			name:             "MatchingPCIBusIDsSetTerminalStatus",
+			incomingSelector: &v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
+			holderSelector:   &v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
+			expectTerminal:   true,
+		},
+		{
+			name:             "DisjointExplicitSelectorsRemainQueued",
+			incomingSelector: &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
+			holderSelector:   &v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
+			expectTerminal:   false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			testScheme := k8sruntime.NewScheme()
+			require.NoError(t, v1alpha1.AddToScheme(testScheme))
+
+			holder := &v1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{Name: "holder", UID: types.UID("holder-uid")},
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: "test-node",
+					Selector: test.holderSelector,
+				},
+			}
+			incoming := &v1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{Name: "incoming", UID: types.UID("incoming-uid")},
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: "test-node",
+					Selector: test.incomingSelector,
+				},
+			}
+			kubeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithStatusSubresource(&v1alpha1.GPUReset{}).
+				WithObjects(holder, incoming).
+				Build()
+			reconciler := &GPUResetReconciler{
+				Client: kubeClient,
+				NodeLock: &mockNodeLock{
+					contended: true,
+					holder: &metav1.OwnerReference{
+						Kind: "GPUReset",
+						Name: holder.Name,
+						UID:  holder.UID,
+					},
+				},
+			}
+
+			result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: incoming.Name},
+			})
+			require.NoError(t, err)
+
+			var updated v1alpha1.GPUReset
+			require.NoError(t, kubeClient.Get(
+				context.Background(),
+				types.NamespacedName{Name: incoming.Name},
+				&updated,
+			))
+
+			if !test.expectTerminal {
+				assert.Equal(t, 2*time.Second, result.RequeueAfter)
+				assert.Nil(t, updated.Status.CompletionTime)
+
+				return
+			}
+
+			assert.Equal(t, ctrl.Result{}, result)
+			require.NotNil(t, updated.Status.CompletionTime)
+			assert.Equal(t, v1alpha1.ResetFailed, updated.Status.Phase)
+
+			condition := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Complete))
+			require.NotNil(t, condition)
+			assert.Equal(t, string(v1alpha1.ReasonNodeAlreadyUnderMaintenance), condition.Reason)
+			assert.Equal(t, "GPUReset/holder is active for this node", condition.Message)
+		})
+	}
 }
 
 var _ = Describe("GPUReset Controller", func() {
@@ -755,87 +868,6 @@ var _ = Describe("GPUReset Controller", func() {
 
 			By("Verifying the Job's Pod template container still has pre-existing env vars")
 			Expect(targetContainer.Env).To(ContainElement(corev1.EnvVar{Name: "PRE_EXISTING_ENV", Value: "foo"}))
-		})
-	})
-
-	Context("Node Lock", func() {
-		var nodeName = "node-lock-test-node"
-		var node *corev1.Node
-
-		BeforeEach(func() {
-			node = &corev1.Node{Name: nodeName, Labels: make(map[string]string)}
-			Expect(k8sClient.Create(ctx, node)).To(Succeed())
-		})
-
-		AfterEach(func() {
-			if err := k8sClient.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
-				Expect(err).NotTo(HaveOccurred())
-			}
-			var resets v1alpha1.GPUResetList
-			Expect(k8sClient.List(ctx, &resets)).To(Succeed())
-			for _, r := range resets.Items {
-				if r.Spec.NodeName == nodeName {
-					if err := k8sClient.Delete(ctx, &r); err != nil && !apierrors.IsNotFound(err) {
-						Expect(err).NotTo(HaveOccurred())
-					}
-				}
-			}
-
-			var jobList batchv1.JobList
-			Expect(k8sClient.List(ctx, &jobList, client.InNamespace("default"))).To(Succeed())
-			for _, job := range jobList.Items {
-				if strings.HasPrefix(job.Name, "first-reset") || strings.HasPrefix(job.Name, "second-reset") {
-					if err := k8sClient.Delete(ctx, &job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
-						Expect(err).NotTo(HaveOccurred())
-					}
-				}
-			}
-		})
-
-		It("marks an overlapping GPUReset terminal when another GPUReset holds the lock", func() {
-			gpuUUID := "GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"
-			holder := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: "first-reset"},
-				Spec: v1alpha1.GPUResetSpec{
-					NodeName: nodeName,
-					Selector: &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
-				},
-			}
-			incoming := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: "second-reset"},
-				Spec: v1alpha1.GPUResetSpec{
-					NodeName: nodeName,
-					Selector: &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
-				},
-			}
-			Expect(k8sClient.Create(ctx, holder)).To(Succeed())
-			Expect(k8sClient.Create(ctx, incoming)).To(Succeed())
-
-			reconciler.NodeLock = &mockNodeLock{
-				contended: true,
-				holder: &metav1.OwnerReference{
-					Kind: "GPUReset",
-					Name: holder.Name,
-					UID:  holder.UID,
-				},
-			}
-
-			Eventually(func(g Gomega) {
-				_, err := reconciler.Reconcile(ctx, ctrl.Request{
-					NamespacedName: types.NamespacedName{Name: incoming.Name},
-				})
-				g.Expect(err).NotTo(HaveOccurred())
-
-				var updated v1alpha1.GPUReset
-				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: incoming.Name}, &updated)).To(Succeed())
-				g.Expect(updated.Status.CompletionTime).NotTo(BeNil())
-				g.Expect(updated.Status.Phase).To(Equal(v1alpha1.ResetFailed))
-
-				condition := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Complete))
-				g.Expect(condition).NotTo(BeNil())
-				g.Expect(condition.Reason).To(Equal(string(v1alpha1.ReasonNodeAlreadyUnderMaintenance)))
-				g.Expect(condition.Message).To(Equal("GPUReset/first-reset is active for this node"))
-			}, "10s", "250ms").Should(Succeed())
 		})
 	})
 

@@ -158,10 +158,15 @@ func (r *TerminateNodeReconciler) updateTerminateNodeStatus(
 	ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode,
 ) error {
 	var latest janitordgxcnvidiacomv1alpha1.TerminateNode
+
 	key := client.ObjectKey{Name: terminateNode.Name, Namespace: terminateNode.Namespace}
 
 	if err := r.Get(ctx, key, &latest); err != nil {
-		return client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("getting latest TerminateNode %q: %w", terminateNode.Name, err)
 	}
 
 	latest.Status = terminateNode.Status

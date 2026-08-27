@@ -166,7 +166,7 @@ func (lock *nodeLock) LockNode(ctx context.Context, maintenanceObject client.Obj
 func (lock *nodeLock) GetHolder(ctx context.Context, nodeName string) (*metav1.OwnerReference, error) {
 	_, lease, err := lock.getNodeLockLease(ctx, nodeName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting node lock holder for node %q: %w", nodeName, err)
 	}
 
 	owner := lease.GetOwnerReferences()[0]

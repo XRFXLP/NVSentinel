@@ -54,17 +54,9 @@ func activeSameKindHolder(
 		return nil, false, nil
 	}
 
-	var object client.Object
-
-	switch expectedKind {
-	case "RebootNode":
-		object = &janitorv1alpha1.RebootNode{}
-	case "TerminateNode":
-		object = &janitorv1alpha1.TerminateNode{}
-	case "GPUReset":
-		object = &janitorv1alpha1.GPUReset{}
-	default:
-		return nil, false, fmt.Errorf("unsupported maintenance kind %q", expectedKind)
+	object, err := maintenanceObjectForKind(expectedKind)
+	if err != nil {
+		return nil, false, err
 	}
 
 	if err := k8sClient.Get(ctx, client.ObjectKey{Name: holder.Name}, object); err != nil {
@@ -79,30 +71,57 @@ func activeSameKindHolder(
 		return nil, false, nil
 	}
 
-	var completionTime *metav1.Time
+	return object, maintenanceCompletionTime(object) == nil, nil
+}
 
+func maintenanceObjectForKind(kind string) (client.Object, error) {
+	switch kind {
+	case "RebootNode":
+		return &janitorv1alpha1.RebootNode{}, nil
+	case "TerminateNode":
+		return &janitorv1alpha1.TerminateNode{}, nil
+	case "GPUReset":
+		return &janitorv1alpha1.GPUReset{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported maintenance kind %q", kind)
+	}
+}
+
+func maintenanceCompletionTime(object client.Object) *metav1.Time {
 	switch typed := object.(type) {
 	case *janitorv1alpha1.RebootNode:
-		completionTime = typed.Status.CompletionTime
+		return typed.Status.CompletionTime
 	case *janitorv1alpha1.TerminateNode:
-		completionTime = typed.Status.CompletionTime
+		return typed.Status.CompletionTime
 	case *janitorv1alpha1.GPUReset:
-		completionTime = typed.Status.CompletionTime
+		return typed.Status.CompletionTime
+	default:
+		return nil
 	}
-
-	return object, completionTime == nil, nil
 }
 
 func gpuUUIDsOverlap(first, second *janitorv1alpha1.GPUSelector) bool {
-	if first == nil || second == nil {
-		return false
+	if selectsAllGPUs(first) || selectsAllGPUs(second) {
+		return true
 	}
 
-	for _, firstUUID := range first.UUIDs {
-		for _, secondUUID := range second.UUIDs {
-			if firstUUID == secondUUID {
-				return true
-			}
+	return stringSlicesOverlap(first.UUIDs, second.UUIDs) ||
+		stringSlicesOverlap(first.PCIBusIDs, second.PCIBusIDs)
+}
+
+func selectsAllGPUs(selector *janitorv1alpha1.GPUSelector) bool {
+	return selector == nil || (len(selector.UUIDs) == 0 && len(selector.PCIBusIDs) == 0)
+}
+
+func stringSlicesOverlap(first, second []string) bool {
+	values := make(map[string]struct{}, len(first))
+	for _, value := range first {
+		values[value] = struct{}{}
+	}
+
+	for _, value := range second {
+		if _, ok := values[value]; ok {
+			return true
 		}
 	}
 

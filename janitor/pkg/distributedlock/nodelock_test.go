@@ -17,10 +17,13 @@ package distributedlock
 import (
 	"context"
 	"fmt"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -47,6 +50,34 @@ type mockReconciler struct {
 	nodeLock *nodeLock
 	result   ctrl.Result
 	err      error
+}
+
+func TestNodeLock_GetHolder_ExpectedLeaseOwnerReference(t *testing.T) {
+	t.Parallel()
+
+	testScheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(testScheme))
+
+	expected := metav1.OwnerReference{
+		APIVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+		Kind:       "RebootNode",
+		Name:       "test-reboot",
+		UID:        types.UID(testNodeUID),
+	}
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "test-node",
+			Namespace:       testNamespace,
+			OwnerReferences: []metav1.OwnerReference{expected},
+		},
+	}
+	kubeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(lease).Build()
+	nodeLock := NewNodeLock(kubeClient, testNamespace)
+
+	holder, err := nodeLock.GetHolder(context.Background(), lease.Name)
+	require.NoError(t, err)
+	require.NotNil(t, holder)
+	assert.Equal(t, expected, *holder)
 }
 
 func (r *mockReconciler) reconcileHelper(_ context.Context, _ ctrl.Request, _ client.Object) (ctrl.Result, error) {
@@ -252,15 +283,6 @@ var _ = Describe("NodeLock", func() {
 
 			isLocked := nodeLock.LockNode(ctx, testRebootNode, testNode.GetName())
 			Expect(isLocked).To(BeFalse())
-		})
-	})
-
-	Context("Testing GetHolder", func() {
-		It("returns the lease owner reference", func() {
-			holder, err := nodeLock.GetHolder(ctx, testNode.GetName())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(holder).NotTo(BeNil())
-			Expect(*holder).To(Equal(testLeaseLock.OwnerReferences[0]))
 		})
 	})
 

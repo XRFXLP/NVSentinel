@@ -143,10 +143,10 @@ func TestJanitorWebhookRejectsDuplicateReboots(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
-// TestJanitorReportsNonExistentNode verifies that manually-created requests for
-// missing nodes receive terminal controller status.
-func TestJanitorReportsNonExistentNode(t *testing.T) {
-	feature := features.New("TestJanitorReportsNonExistentNode").
+// TestRebootNode_MissingNode_SetsTerminalNodeNotFoundStatus verifies that manually-created
+// requests for missing nodes receive terminal controller status.
+func TestRebootNode_MissingNode_SetsTerminalNodeNotFoundStatus(t *testing.T) {
+	feature := features.New("TestRebootNode_MissingNode_SetsTerminalNodeNotFoundStatus").
 		WithLabel("suite", "controller").
 		WithLabel("component", "janitor")
 

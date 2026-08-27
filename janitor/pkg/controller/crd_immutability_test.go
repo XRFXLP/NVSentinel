@@ -15,58 +15,100 @@
 package controller
 
 import (
-	"fmt"
-	"time"
+	"context"
+	"path/filepath"
+	"testing"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	janitorv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 )
 
-var _ = Describe("Maintenance CRD immutability", func() {
-	It("prevents changing RebootNode nodeName", func() {
-		resource := &janitorv1alpha1.RebootNode{
-			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("immutable-reboot-%d", time.Now().UnixNano())},
-			Spec:       janitorv1alpha1.RebootNodeSpec{NodeName: "node-a"},
-		}
-		Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+func TestMaintenanceCRD_UpdateImmutableFields_RejectsMutation(t *testing.T) {
+	t.Parallel()
 
-		resource.Spec.NodeName = "node-b"
-		Expect(k8sClient.Update(ctx, resource)).To(MatchError(ContainSubstring(
-			"nodeName cannot be changed after creation",
-		)))
+	testScheme := runtime.NewScheme()
+	require.NoError(t, janitorv1alpha1.AddToScheme(testScheme))
+
+	testEnvironment := &envtest.Environment{
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "..", "distros", "kubernetes", "nvsentinel", "charts", "janitor", "crds"),
+		},
+		ErrorIfCRDPathMissing: true,
+	}
+	if binaryDir := getFirstFoundEnvTestBinaryDir(); binaryDir != "" {
+		testEnvironment.BinaryAssetsDirectory = binaryDir
+	}
+
+	restConfig, err := testEnvironment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, testEnvironment.Stop())
 	})
 
-	It("prevents changing TerminateNode nodeName", func() {
-		resource := &janitorv1alpha1.TerminateNode{
-			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("immutable-terminate-%d", time.Now().UnixNano())},
-			Spec:       janitorv1alpha1.TerminateNodeSpec{NodeName: "node-a"},
-		}
-		Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+	kubeClient, err := client.New(restConfig, client.Options{Scheme: testScheme})
+	require.NoError(t, err)
 
-		resource.Spec.NodeName = "node-b"
-		Expect(k8sClient.Update(ctx, resource)).To(MatchError(ContainSubstring(
-			"nodeName cannot be changed after creation",
-		)))
-	})
-
-	It("prevents changing the GPUReset selector", func() {
-		resource := &janitorv1alpha1.GPUReset{
-			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("immutable-gpu-reset-%d", time.Now().UnixNano())},
-			Spec: janitorv1alpha1.GPUResetSpec{
-				NodeName: "node-a",
-				Selector: &janitorv1alpha1.GPUSelector{
-					UUIDs: []string{"GPU-11111111-1111-1111-1111-111111111111"},
+	tests := []struct {
+		name        string
+		resource    client.Object
+		mutate      func(client.Object)
+		errorString string
+	}{
+		{
+			name: "RebootNodeNodeName",
+			resource: &janitorv1alpha1.RebootNode{
+				ObjectMeta: metav1.ObjectMeta{Name: "immutable-reboot"},
+				Spec:       janitorv1alpha1.RebootNodeSpec{NodeName: "node-a"},
+			},
+			mutate: func(resource client.Object) {
+				resource.(*janitorv1alpha1.RebootNode).Spec.NodeName = "node-b"
+			},
+			errorString: "nodeName cannot be changed after creation",
+		},
+		{
+			name: "TerminateNodeNodeName",
+			resource: &janitorv1alpha1.TerminateNode{
+				ObjectMeta: metav1.ObjectMeta{Name: "immutable-terminate"},
+				Spec:       janitorv1alpha1.TerminateNodeSpec{NodeName: "node-a"},
+			},
+			mutate: func(resource client.Object) {
+				resource.(*janitorv1alpha1.TerminateNode).Spec.NodeName = "node-b"
+			},
+			errorString: "nodeName cannot be changed after creation",
+		},
+		{
+			name: "GPUResetSelector",
+			resource: &janitorv1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{Name: "immutable-gpu-reset"},
+				Spec: janitorv1alpha1.GPUResetSpec{
+					NodeName: "node-a",
+					Selector: &janitorv1alpha1.GPUSelector{
+						UUIDs: []string{"GPU-11111111-1111-1111-1111-111111111111"},
+					},
 				},
 			},
-		}
-		Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			mutate: func(resource client.Object) {
+				resource.(*janitorv1alpha1.GPUReset).Spec.Selector.UUIDs =
+					[]string{"GPU-22222222-2222-2222-2222-222222222222"}
+			},
+			errorString: "selector cannot be changed after creation",
+		},
+	}
 
-		resource.Spec.Selector.UUIDs = []string{"GPU-22222222-2222-2222-2222-222222222222"}
-		Expect(k8sClient.Update(ctx, resource)).To(MatchError(ContainSubstring(
-			"selector cannot be changed after creation",
-		)))
-	})
-})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.NoError(t, kubeClient.Create(context.Background(), test.resource))
+
+			test.mutate(test.resource)
+			err := kubeClient.Update(context.Background(), test.resource)
+			require.Error(t, err)
+			assert.ErrorContains(t, err, test.errorString)
+		})
+	}
+}

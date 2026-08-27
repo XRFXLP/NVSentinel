@@ -22,6 +22,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -199,7 +200,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := rebootVal.ValidateCreate(ctx, obj)
-			Expect(err).NotTo(HaveOccurred())
+			require.NoError(GinkgoT(), err)
 		})
 
 		It("Should admit TerminateNode creation when node does not exist", func() {
@@ -211,7 +212,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := terminateVal.ValidateCreate(ctx, obj)
-			Expect(err).NotTo(HaveOccurred())
+			require.NoError(GinkgoT(), err)
 		})
 
 		It("Should admit GPUReset creation when node does not exist", func() {
@@ -225,7 +226,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := gpuResetVal.ValidateCreate(ctx, obj)
-			Expect(err).NotTo(HaveOccurred())
+			require.NoError(GinkgoT(), err)
 		})
 
 		It("Should admit RebootNode updates when node does not exist", func() {
@@ -244,7 +245,7 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := rebootVal.ValidateUpdate(ctx, oldObj, newObj)
-			Expect(err).NotTo(HaveOccurred())
+			require.NoError(GinkgoT(), err)
 		})
 
 		It("Should accept GPUReset updates when node does not exist", func() {
