@@ -191,7 +191,7 @@ var _ = Describe("Janitor Webhook", func() {
 			gpuResetVal = &gpuResetValidator{baseValidator}
 		})
 
-		It("Should admit RebootNode creation when node does not exist", func() {
+		It("Should reject RebootNode creation when node does not exist", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
 				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
@@ -200,10 +200,11 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := rebootVal.ValidateCreate(ctx, obj)
-			require.NoError(GinkgoT(), err)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("node 'non-existent-node' does not exist in the cluster"))
 		})
 
-		It("Should admit TerminateNode creation when node does not exist", func() {
+		It("Should reject TerminateNode creation when node does not exist", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.TerminateNode{
 				Name: "test-terminate",
 				Spec: janitordgxcnvidiacomv1alpha1.TerminateNodeSpec{
@@ -212,10 +213,11 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := terminateVal.ValidateCreate(ctx, obj)
-			require.NoError(GinkgoT(), err)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("node 'non-existent-node' does not exist in the cluster"))
 		})
 
-		It("Should admit GPUReset creation when node does not exist", func() {
+		It("Should reject GPUReset creation when node does not exist", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
 				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
@@ -226,10 +228,11 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := gpuResetVal.ValidateCreate(ctx, obj)
-			require.NoError(GinkgoT(), err)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("node 'non-existent-node' does not exist in the cluster"))
 		})
 
-		It("Should admit RebootNode updates when node does not exist", func() {
+		It("Should reject RebootNode updates when node does not exist", func() {
 			oldObj := &janitordgxcnvidiacomv1alpha1.RebootNode{
 				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
@@ -245,7 +248,8 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := rebootVal.ValidateUpdate(ctx, oldObj, newObj)
-			require.NoError(GinkgoT(), err)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("node 'non-existent-node' does not exist in the cluster"))
 		})
 
 		It("Should accept GPUReset updates when node does not exist", func() {
@@ -322,7 +326,7 @@ var _ = Describe("Janitor Webhook", func() {
 			fakeClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testNode, obj2).Build()
 			baseValidator.Client = fakeClient
 			_, err := rebootVal.ValidateCreate(ctx, obj)
-			Expect(err).NotTo(HaveOccurred())
+			require.NoError(GinkgoT(), err)
 		})
 
 		It("Should accept RebootNode creation when a completed RebootNode exists", func() {
@@ -377,7 +381,7 @@ var _ = Describe("Janitor Webhook", func() {
 			fakeClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testNode, obj2).Build()
 			baseValidator.Client = fakeClient
 			_, err := gpuResetVal.ValidateCreate(ctx, obj)
-			Expect(err).NotTo(HaveOccurred())
+			require.NoError(GinkgoT(), err)
 		})
 
 		It("Should accept GPUReset creation when a completed GPUReset for the same GPU exists", func() {
@@ -469,7 +473,7 @@ var _ = Describe("Janitor Webhook", func() {
 			gpuResetVal = &gpuResetValidator{baseValidator}
 		})
 
-		It("Should defer RebootNode node-name immutability to CRD validation", func() {
+		It("Should reject RebootNode updates when node name changes", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
 				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
@@ -485,10 +489,11 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := rebootVal.ValidateUpdate(ctx, obj, obj2)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("nodeName cannot be changed after creation"))
 		})
 
-		It("Should defer GPUReset node-name immutability to CRD validation", func() {
+		It("Should reject GPUReset updates when node name changes", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
 				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
@@ -508,10 +513,11 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := gpuResetVal.ValidateUpdate(ctx, obj, obj2)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("nodeName cannot be changed after creation"))
 		})
 
-		It("Should defer GPUReset selector immutability to CRD validation", func() {
+		It("Should reject GPUReset updates when GPUs change", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.GPUReset{
 				Name: "test-gpu-reset",
 				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
@@ -531,7 +537,8 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := gpuResetVal.ValidateUpdate(ctx, obj, obj2)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("uuids cannot be changed after creation"))
 		})
 
 		It("Should accept GPUReset updates when node and GPUs do not change", func() {
@@ -704,7 +711,7 @@ var _ = Describe("Janitor Webhook", func() {
 			rebootVal = &rebootNodeValidator{baseValidator}
 		})
 
-		It("Should admit CRD creation without a client when exclusions are not configured", func() {
+		It("Should reject CRD creation when client is nil", func() {
 			obj := &janitordgxcnvidiacomv1alpha1.RebootNode{
 				Name: "test-reboot",
 				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
@@ -713,7 +720,8 @@ var _ = Describe("Janitor Webhook", func() {
 				},
 			}
 			_, err := rebootVal.ValidateCreate(ctx, obj)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("kubernetes client not available"))
 		})
 	})
 

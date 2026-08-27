@@ -19,7 +19,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -110,22 +109,28 @@ type JanitorCustomValidator struct {
 	Client client.Client
 }
 
-func (v *JanitorCustomValidator) validateNodeNotInExclusions(ctx context.Context, nodeName string) error {
-	if len(v.Config.Global.Nodes.Exclusions) == 0 {
-		return nil
-	}
-
+// validateNodeExists checks if the specified node exists in the cluster
+func (v *JanitorCustomValidator) validateNodeExists(ctx context.Context, nodeName string) error {
 	if v.Client == nil {
 		return fmt.Errorf("kubernetes client not available for node validation")
 	}
 
 	var node corev1.Node
 	if err := v.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
+		return fmt.Errorf("node '%s' does not exist in the cluster: %w", nodeName, err)
+	}
 
-		return fmt.Errorf("failed to get node '%s' for exclusion validation: %w", nodeName, err)
+	return nil
+}
+
+func (v *JanitorCustomValidator) validateNodeNotInExclusions(ctx context.Context, nodeName string) error {
+	if v.Client == nil {
+		return fmt.Errorf("kubernetes client not available for node validation")
+	}
+
+	var node corev1.Node
+	if err := v.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err != nil {
+		return fmt.Errorf("node '%s' does not exist in the cluster: %w", nodeName, err)
 	}
 
 	for _, exclusion := range v.Config.Global.Nodes.Exclusions {
@@ -146,10 +151,43 @@ func (v *JanitorCustomValidator) validateNodeNotInExclusions(ctx context.Context
 	return nil
 }
 
-// validateNodeForCreate validates node exclusions, then logs success.
+func (v *JanitorCustomValidator) validateNodeAndGPUs(oldNodeName, newNodeName string,
+	oldUUIDs, newUUIDs []string) error {
+	if oldNodeName != newNodeName {
+		return fmt.Errorf("nodeName cannot be changed after creation")
+	}
+
+	if len(oldUUIDs) != len(newUUIDs) {
+		return fmt.Errorf("uuids cannot be changed after creation")
+	}
+
+	count := make(map[string]int)
+
+	for _, uuid := range oldUUIDs {
+		count[uuid]++
+	}
+
+	for _, uuid := range newUUIDs {
+		count[uuid]--
+		if count[uuid] < 0 {
+			return fmt.Errorf("uuids cannot be changed after creation")
+		}
+	}
+
+	return nil
+}
+
+// validateNodeForCreate validates node existence and exclusions, then logs success.
 func (v *JanitorCustomValidator) validateNodeForCreate(ctx context.Context,
 	controllerType, objName, nodeName string) (admission.Warnings, error) {
 	if nodeName != "" {
+		if err := v.validateNodeExists(ctx, nodeName); err != nil {
+			janitorWebhookLog.Info("Node validation failed",
+				"type", controllerType, "name", objName, "nodeName", nodeName, "error", err.Error())
+
+			return nil, err
+		}
+
 		if err := v.validateNodeNotInExclusions(ctx, nodeName); err != nil {
 			janitorWebhookLog.Info("Node exclusion list validation failed",
 				"type", controllerType, "name", objName, "nodeName", nodeName, "error", err.Error())
@@ -163,10 +201,17 @@ func (v *JanitorCustomValidator) validateNodeForCreate(ctx context.Context,
 	return nil, nil
 }
 
-// validateNodeForUpdate validates node exclusions for updates, then logs success.
+// validateNodeForUpdate validates node existence and exclusions for updates, then logs success.
 func (v *JanitorCustomValidator) validateNodeForUpdate(ctx context.Context,
 	controllerType, objName, nodeName string, allowDeletedNode bool) (admission.Warnings, error) {
 	if len(nodeName) != 0 && !allowDeletedNode {
+		if err := v.validateNodeExists(ctx, nodeName); err != nil {
+			janitorWebhookLog.Info("Node validation failed",
+				"type", controllerType, "name", objName, "nodeName", nodeName, "error", err.Error())
+
+			return nil, err
+		}
+
 		if err := v.validateNodeNotInExclusions(ctx, nodeName); err != nil {
 			janitorWebhookLog.Info("Node exclusion list validation failed",
 				"type", controllerType, "name", objName, "nodeName", nodeName, "error", err.Error())
@@ -198,13 +243,17 @@ func (v *rebootNodeValidator) ValidateCreate(ctx context.Context,
 }
 
 func (v *rebootNodeValidator) ValidateUpdate(ctx context.Context,
-	_, newObj *janitordgxcnvidiacomv1alpha1.RebootNode) (admission.Warnings, error) {
+	oldObj, newObj *janitordgxcnvidiacomv1alpha1.RebootNode) (admission.Warnings, error) {
 	objName := newObj.GetName()
 	nodeName := newObj.Spec.NodeName
 
 	if v.Config == nil || !v.Config.RebootNode.Enabled {
 		janitorWebhookLog.Info("RebootNode controller is disabled, rejecting update", "name", objName)
 		return nil, fmt.Errorf("RebootNode controller is disabled in configuration")
+	}
+
+	if oldObj.Spec.NodeName != nodeName {
+		return nil, fmt.Errorf("nodeName cannot be changed after creation")
 	}
 
 	return v.validateNodeForUpdate(ctx, controllerTypeRebootNode, objName, nodeName, false)
@@ -242,13 +291,17 @@ func (v *terminateNodeValidator) ValidateCreate(ctx context.Context,
 }
 
 func (v *terminateNodeValidator) ValidateUpdate(ctx context.Context,
-	_, newObj *janitordgxcnvidiacomv1alpha1.TerminateNode) (admission.Warnings, error) {
+	oldObj, newObj *janitordgxcnvidiacomv1alpha1.TerminateNode) (admission.Warnings, error) {
 	objName := newObj.GetName()
 	nodeName := newObj.Spec.NodeName
 
 	if v.Config == nil || !v.Config.TerminateNode.Enabled {
 		janitorWebhookLog.Info("TerminateNode controller is disabled, rejecting update", "name", objName)
 		return nil, fmt.Errorf("TerminateNode controller is disabled in configuration")
+	}
+
+	if oldObj.Spec.NodeName != nodeName {
+		return nil, fmt.Errorf("nodeName cannot be changed after creation")
 	}
 
 	return v.validateNodeForUpdate(ctx, controllerTypeTerminateNode, objName, nodeName, false)
@@ -285,13 +338,18 @@ func (v *gpuResetValidator) ValidateCreate(ctx context.Context,
 }
 
 func (v *gpuResetValidator) ValidateUpdate(ctx context.Context,
-	_, newObj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) {
+	oldObj, newObj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) {
 	objName := newObj.GetName()
 	nodeName := newObj.Spec.NodeName
 
 	if v.Config == nil || !v.Config.GPUReset.Enabled {
 		janitorWebhookLog.Info("GPUReset controller is disabled, rejecting update", "name", objName)
 		return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
+	}
+
+	if err := v.validateNodeAndGPUs(oldObj.Spec.NodeName, nodeName, oldObj.Spec.Selector.UUIDs,
+		newObj.Spec.Selector.UUIDs); err != nil {
+		return nil, err
 	}
 
 	// The gpu-reset-controller needs to be able to issue an update request to remove the

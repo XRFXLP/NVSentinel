@@ -17,6 +17,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -230,23 +231,6 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 	node := &corev1.Node{}
 	if err := r.Get(ctx, client.ObjectKey{Name: terminateNode.Spec.NodeName}, node); err != nil {
 		if apierrors.IsNotFound(err) {
-			if !terminateNode.IsTerminateInProgress() {
-				terminateNode.SetCompletionTime()
-				terminateNode.SetCondition(metav1.Condition{
-					Type:               janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated,
-					Status:             metav1.ConditionFalse,
-					Reason:             conditionReasonNodeNotFound,
-					Message:            fmt.Sprintf("Node %q was not found", terminateNode.Spec.NodeName),
-					LastTransitionTime: metav1.Now(),
-				})
-
-				if statusErr := r.updateTerminateNodeStatus(ctx, terminateNode); statusErr != nil {
-					return ctrl.Result{}, statusErr
-				}
-
-				return ctrl.Result{}, nil
-			}
-
 			// Node is already deleted, which is the desired state. Do not return an error.
 			node = nil
 		} else {
@@ -347,6 +331,23 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 			result = ctrl.Result{RequeueAfter: 30 * time.Second}
 		}
 	} else {
+		// If this case is hit it means that the node did not exist when
+		// the CR was created. This case should be handled by the admission webhook.
+		if node == nil {
+			err := errors.New("node not found and terminate not in progress")
+
+			slog.ErrorContext(ctx, "Node not found for terminate", "node", terminateNode.Spec.NodeName)
+
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("janitor.error.type", "node_not_found"),
+				attribute.String("janitor.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
+
+			return ctrl.Result{}, err
+		}
+
 		// Check if signal was already sent (but terminate not in progress due to other issues)
 		signalAlreadySent := false
 

@@ -104,11 +104,6 @@ type GPUSelector struct {
 }
 
 // GPUResetSpec defines the desired GPU reset operation.
-// +kubebuilder:validation:XValidation:rule="self.nodeName == oldSelf.nodeName",message="nodeName cannot be changed after creation"
-// +kubebuilder:validation:XValidation:rule="has(self.selector) == has(oldSelf.selector) && (!has(self.selector) || self.selector == oldSelf.selector)",message="selector cannot be changed after creation"
-//
-//nolint:lll // kubebuilder validation marker must stay on one line
-//nolint:lll // kubebuilder validation marker must stay on one line
 type GPUResetSpec struct {
 	// NodeName identifies the node which contains the GPUs to reset.
 	// +kubebuilder:validation:Required

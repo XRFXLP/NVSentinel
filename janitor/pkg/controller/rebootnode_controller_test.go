@@ -166,45 +166,6 @@ func TestRebootNodeReconciler_DuplicateLockHolder_SetsTerminalMaintenanceStatus(
 	assert.Equal(t, "RebootNode/holder is active for this node", condition.Message)
 }
 
-func TestRebootNodeReconciler_MissingNode_SetsTerminalNodeNotFoundStatus(t *testing.T) {
-	t.Parallel()
-
-	testScheme := k8sruntime.NewScheme()
-	require.NoError(t, coordinationv1.AddToScheme(testScheme))
-	require.NoError(t, corev1.AddToScheme(testScheme))
-	require.NoError(t, janitordgxcnvidiacomv1alpha1.AddToScheme(testScheme))
-
-	rebootNode := &janitordgxcnvidiacomv1alpha1.RebootNode{
-		ObjectMeta: metav1.ObjectMeta{Name: "missing-node-reboot", UID: types.UID("reboot-uid")},
-		Spec:       janitordgxcnvidiacomv1alpha1.RebootNodeSpec{NodeName: "missing-node"},
-	}
-	kubeClient := fake.NewClientBuilder().
-		WithScheme(testScheme).
-		WithStatusSubresource(&janitordgxcnvidiacomv1alpha1.RebootNode{}).
-		WithObjects(rebootNode).
-		Build()
-	reconciler := &RebootNodeReconciler{
-		Client:   kubeClient,
-		NodeLock: distributedlock.NewNodeLock(kubeClient, "default"),
-	}
-
-	result, err := reconciler.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: client.ObjectKey{Name: rebootNode.Name},
-	})
-	require.NoError(t, err)
-	assert.Equal(t, 2*time.Second, result.RequeueAfter)
-
-	var updated janitordgxcnvidiacomv1alpha1.RebootNode
-	require.NoError(t, kubeClient.Get(context.Background(), client.ObjectKey{Name: rebootNode.Name}, &updated))
-	require.NotNil(t, updated.Status.CompletionTime)
-
-	condition := findCondition(updated.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady)
-	require.NotNil(t, condition)
-	assert.Equal(t, metav1.ConditionFalse, condition.Status)
-	assert.Equal(t, conditionReasonNodeNotFound, condition.Reason)
-	assert.Equal(t, `Node "missing-node" was not found`, condition.Message)
-}
-
 var _ = Describe("RebootNode Controller", func() {
 	var (
 		ctx            context.Context

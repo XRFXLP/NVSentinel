@@ -74,10 +74,7 @@ const requeueBackoffForTransientCSPError = 15 * time.Second
 
 // conditionReasonSucceeded is the reason stamped on conditions that completed
 // successfully.
-const (
-	conditionReasonSucceeded    = "Succeeded"
-	conditionReasonNodeNotFound = "NodeNotFound"
-)
+const conditionReasonSucceeded = "Succeeded"
 
 //nolint:lll // kubebuilder RBAC marker must stay on one line
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=rebootnodes,verbs=get;list;watch;create;update;patch;delete
@@ -216,31 +213,16 @@ func (r *RebootNodeReconciler) reconcileHelper(
 
 	var node corev1.Node
 	if err := r.Get(ctx, client.ObjectKey{Name: rebootNode.Spec.NodeName}, &node); err != nil {
-		if apierrors.IsNotFound(err) {
-			rebootNode.SetCompletionTime()
-			rebootNode.SetCondition(metav1.Condition{
-				Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
-				Status:             metav1.ConditionFalse,
-				Reason:             conditionReasonNodeNotFound,
-				Message:            fmt.Sprintf("Node %q was not found", rebootNode.Spec.NodeName),
-				LastTransitionTime: metav1.Now(),
-			})
-
-			if statusErr := r.updateRebootNodeStatusIfChanged(ctx, originalRebootNode, rebootNode); statusErr != nil {
-				return ctrl.Result{}, statusErr
-			}
-
-			return ctrl.Result{}, nil
+		if !apierrors.IsNotFound(err) {
+			span := tracing.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("janitor.error.type", "node_fetch_failed"),
+				attribute.String("janitor.error.message", err.Error()),
+			)
+			tracing.RecordError(span, err)
 		}
 
-		span := tracing.SpanFromContext(ctx)
-		span.SetAttributes(
-			attribute.String("janitor.error.type", "node_fetch_failed"),
-			attribute.String("janitor.error.message", err.Error()),
-		)
-		tracing.RecordError(span, err)
-
-		return ctrl.Result{}, err
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	// Create a fresh gRPC connection per reconciliation so that rotated

@@ -32,9 +32,6 @@ const (
 )
 
 // RebootNodeSpec defines the desired state of RebootNode
-// +kubebuilder:validation:XValidation:rule="self.nodeName == oldSelf.nodeName",message="nodeName cannot be changed after creation"
-//
-//nolint:lll // kubebuilder validation marker must stay on one line
 type RebootNodeSpec struct {
 	// Force indicates whether to force reboot the node
 	// +kubebuilder:default:=false
