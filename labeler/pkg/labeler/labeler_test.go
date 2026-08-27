@@ -1154,14 +1154,12 @@ func TestLabelerInformerTransforms_EndToEnd(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotEmpty(t, cachedNode.ResourceVersion)
 		assert.Equal(t, &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:            node.Name,
-				UID:             node.UID,
-				ResourceVersion: cachedNode.ResourceVersion,
-				Labels:          node.Labels,
-				Annotations: map[string]string{
-					DCGMBootstrapCompletedAnnotation: "true",
-				},
+			Name:            node.Name,
+			UID:             node.UID,
+			ResourceVersion: cachedNode.ResourceVersion,
+			Labels:          node.Labels,
+			Annotations: map[string]string{
+				DCGMBootstrapCompletedAnnotation: "true",
 			},
 		}, cachedNode)
 
@@ -2239,10 +2237,8 @@ func TestCalculateAndSetNodeLabels_KataAndDriverLabelsMissing_AppliesBoth(t *tes
 		NodeDCGMIndex:   podNodeIndexerByLabel("app", "nvidia-dcgm"),
 	})
 	require.NoError(t, podInformer.GetStore().Add(&corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "driver-pod",
-			Labels: map[string]string{"app": "nvidia-driver-daemonset"},
-		},
+		Name:   "driver-pod",
+		Labels: map[string]string{"app": "nvidia-driver-daemonset"},
 		Spec: corev1.PodSpec{NodeName: node.Name},
 		Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{
 			Type:   corev1.PodReady,

@@ -74,7 +74,7 @@ sum(resourceSlices
 		testDevice("roce-c", stringAttribute("roce")),
 	)))
 	require.NoError(t, resourceSliceStore.Add(&resourcev1.ResourceSlice{
-		ObjectMeta: metav1.ObjectMeta{Name: "global-slice"},
+		Name: "global-slice",
 		Spec: resourcev1.ResourceSliceSpec{
 			Driver:  "dra.networking.k8s.aws",
 			Devices: []resourcev1.Device{testDevice("global-roce", stringAttribute("roce"))},

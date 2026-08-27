@@ -277,12 +277,12 @@ func testNodeWithDeviceCountLabels(
 	currentCountLabelValue string,
 	expectedCountLabelValue string,
 ) *corev1.Node {
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+	node := &corev1.Node{
 		Name: name,
 		Labels: map[string]string{
 			KataEnabledLabel: LabelValueFalse,
 		},
-	}}
+	}
 
 	if currentCountLabelValue != "" {
 		node.Labels[testDeviceCountCurrentLabel] = currentCountLabelValue
@@ -296,7 +296,7 @@ func testNodeWithDeviceCountLabels(
 
 func testResourceSliceForNode(name, nodeName string) *resourcev1.ResourceSlice {
 	return &resourcev1.ResourceSlice{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: resourcev1.ResourceSliceSpec{
 			NodeName: &nodeName,
 			Pool: resourcev1.ResourcePool{
