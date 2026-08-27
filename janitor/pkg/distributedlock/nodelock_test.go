@@ -255,6 +255,15 @@ var _ = Describe("NodeLock", func() {
 		})
 	})
 
+	Context("Testing GetHolder", func() {
+		It("returns the lease owner reference", func() {
+			holder, err := nodeLock.GetHolder(ctx, testNode.GetName())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(holder).NotTo(BeNil())
+			Expect(*holder).To(Equal(testLeaseLock.OwnerReferences[0]))
+		})
+	})
+
 	Context("Testing CheckUnlock", func() {
 		It("lock not released: get node lease lock error", func() {
 			initialCounterVal := metrics.GlobalMetrics.GetActionsCountValue(metrics.ActionTypeUnlock, metrics.StatusFailed, testNode.GetName())

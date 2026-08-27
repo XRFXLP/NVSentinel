@@ -27,6 +27,9 @@ const (
 )
 
 // TerminateNodeSpec defines the desired state of TerminateNode
+// +kubebuilder:validation:XValidation:rule="self.nodeName == oldSelf.nodeName",message="nodeName cannot be changed after creation"
+//
+//nolint:lll // kubebuilder validation marker must stay on one line
 type TerminateNodeSpec struct {
 	// Force indicates whether to force terminate the node
 	// +kubebuilder:default:=false

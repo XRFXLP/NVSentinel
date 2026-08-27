@@ -127,6 +127,67 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		})
 	})
 
+	Context("When another TerminateNode holds the node lock", func() {
+		It("Should mark the incoming TerminateNode terminal with holder feedback", func() {
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: crName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			duplicate := &janitordgxcnvidiacomv1alpha1.TerminateNode{
+				ObjectMeta: metav1.ObjectMeta{Name: crName + "-duplicate"},
+				Spec: janitordgxcnvidiacomv1alpha1.TerminateNodeSpec{
+					NodeName: nodeName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, duplicate)).To(Succeed())
+
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: duplicate.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(ctrl.Result{}))
+
+			var updated janitordgxcnvidiacomv1alpha1.TerminateNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: duplicate.Name}, &updated)).To(Succeed())
+			Expect(updated.Status.CompletionTime).NotTo(BeNil())
+
+			condition := findTerminateCondition(
+				updated.Status.Conditions,
+				janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated,
+			)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(nodeAlreadyUnderMaintenanceReason))
+			Expect(condition.Message).To(Equal(fmt.Sprintf("TerminateNode/%s is active for this node", crName)))
+		})
+	})
+
+	Context("When the target node does not exist", func() {
+		It("Should mark the TerminateNode terminal with NodeNotFound", func() {
+			Expect(k8sClient.Delete(ctx, node)).To(Succeed())
+
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: crName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(2 * time.Second))
+
+			var updated janitordgxcnvidiacomv1alpha1.TerminateNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crName}, &updated)).To(Succeed())
+			Expect(updated.Status.CompletionTime).NotTo(BeNil())
+
+			condition := findTerminateCondition(
+				updated.Status.Conditions,
+				janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated,
+			)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(conditionReasonNodeNotFound))
+			Expect(condition.Message).To(Equal(fmt.Sprintf("Node %q was not found", nodeName)))
+		})
+	})
+
 	Context("When sending terminate signal", func() {
 		It("Should successfully send terminate signal and update condition", func() {
 			// Trigger initial reconciliation to set start time

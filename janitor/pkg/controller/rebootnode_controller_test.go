@@ -313,6 +313,66 @@ var _ = Describe("RebootNode Controller", func() {
 		})
 	})
 
+	Context("when another RebootNode holds the node lock", func() {
+		It("marks the incoming RebootNode terminal with holder feedback", func() {
+			holderRequest := reconcile.Request{NamespacedName: types.NamespacedName{Name: testRebootNode.Name}}
+			_, err := reconciler.Reconcile(ctx, holderRequest)
+			Expect(err).NotTo(HaveOccurred())
+
+			duplicate := &janitordgxcnvidiacomv1alpha1.RebootNode{
+				ObjectMeta: metav1.ObjectMeta{Name: crName + "-duplicate"},
+				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
+					NodeName: nodeName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, duplicate)).To(Succeed())
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: duplicate.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			var updated janitordgxcnvidiacomv1alpha1.RebootNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: duplicate.Name}, &updated)).To(Succeed())
+			Expect(updated.Status.CompletionTime).NotTo(BeNil())
+
+			condition := findCondition(
+				updated.Status.Conditions,
+				janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
+			)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(nodeAlreadyUnderMaintenanceReason))
+			Expect(condition.Message).To(Equal(fmt.Sprintf("RebootNode/%s is active for this node", crName)))
+		})
+	})
+
+	Context("when the target node does not exist", func() {
+		It("marks the RebootNode terminal with NodeNotFound", func() {
+			Expect(k8sClient.Delete(ctx, testNode)).To(Succeed())
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: testRebootNode.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(2 * time.Second))
+
+			var updated janitordgxcnvidiacomv1alpha1.RebootNode
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testRebootNode.Name}, &updated)).To(Succeed())
+			Expect(updated.Status.CompletionTime).NotTo(BeNil())
+
+			condition := findCondition(
+				updated.Status.Conditions,
+				janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
+			)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(conditionReasonNodeNotFound))
+			Expect(condition.Message).To(Equal(fmt.Sprintf("Node %q was not found", nodeName)))
+		})
+	})
+
 	Context("when reboot signal fails", func() {
 		It("should set SignalSent condition to False and not requeue", func() {
 			// Configure mock to fail

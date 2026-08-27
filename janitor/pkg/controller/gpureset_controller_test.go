@@ -50,10 +50,18 @@ import (
 // isReady method of this controller which prevents concurrent GPUResets on the same node. The locking functionality in
 // NodeLock will take precedence over the existing logic in this controller. As a result, we should remove the locking
 // functionality in isReady and remove the corresponding tests.
-type mockNodeLock struct{}
+type mockNodeLock struct {
+	contended bool
+	holder    *metav1.OwnerReference
+	holderErr error
+}
 
 func (m *mockNodeLock) LockNode(ctx context.Context, maintenanceObject client.Object, nodeName string) bool {
-	return true
+	return !m.contended
+}
+
+func (m *mockNodeLock) GetHolder(ctx context.Context, nodeName string) (*metav1.OwnerReference, error) {
+	return m.holder, m.holderErr
 }
 
 func (m *mockNodeLock) CheckUnlock(ctx context.Context, maintenanceObject client.Object, nodeName string) (retryUnlock bool) {
@@ -782,6 +790,52 @@ var _ = Describe("GPUReset Controller", func() {
 					}
 				}
 			}
+		})
+
+		It("marks an overlapping GPUReset terminal when another GPUReset holds the lock", func() {
+			gpuUUID := "GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"
+			holder := &v1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{Name: "first-reset"},
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+					Selector: &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
+				},
+			}
+			incoming := &v1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{Name: "second-reset"},
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+					Selector: &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, holder)).To(Succeed())
+			Expect(k8sClient.Create(ctx, incoming)).To(Succeed())
+
+			reconciler.NodeLock = &mockNodeLock{
+				contended: true,
+				holder: &metav1.OwnerReference{
+					Kind: "GPUReset",
+					Name: holder.Name,
+					UID:  holder.UID,
+				},
+			}
+
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, ctrl.Request{
+					NamespacedName: types.NamespacedName{Name: incoming.Name},
+				})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var updated v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: incoming.Name}, &updated)).To(Succeed())
+				g.Expect(updated.Status.CompletionTime).NotTo(BeNil())
+				g.Expect(updated.Status.Phase).To(Equal(v1alpha1.ResetFailed))
+
+				condition := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Complete))
+				g.Expect(condition).NotTo(BeNil())
+				g.Expect(condition.Reason).To(Equal(string(v1alpha1.ReasonNodeAlreadyUnderMaintenance)))
+				g.Expect(condition.Message).To(Equal("GPUReset/first-reset is active for this node"))
+			}, "10s", "250ms").Should(Succeed())
 		})
 	})
 

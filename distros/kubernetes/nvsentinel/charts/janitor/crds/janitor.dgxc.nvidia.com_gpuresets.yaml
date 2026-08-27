@@ -92,6 +92,12 @@ spec:
             required:
             - nodeName
             type: object
+            x-kubernetes-validations:
+            - message: nodeName cannot be changed after creation
+              rule: self.nodeName == oldSelf.nodeName
+            - message: selector cannot be changed after creation
+              rule: has(self.selector) == has(oldSelf.selector) && (!has(self.selector)
+                || self.selector == oldSelf.selector)
           status:
             description: |-
               Most recently observed status of the GPU reset operation.

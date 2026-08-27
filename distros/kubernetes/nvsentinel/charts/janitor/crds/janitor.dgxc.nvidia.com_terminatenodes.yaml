@@ -76,6 +76,9 @@ spec:
             - force
             - nodeName
             type: object
+            x-kubernetes-validations:
+            - message: nodeName cannot be changed after creation
+              rule: self.nodeName == oldSelf.nodeName
           status:
             description: TerminateNodeStatus defines the observed state of TerminateNode
             properties:

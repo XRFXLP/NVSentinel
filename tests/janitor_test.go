@@ -143,14 +143,16 @@ func TestJanitorWebhookRejectsDuplicateReboots(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
-// TestJanitorWebhookRejectsNonExistentNode tests that the janitor webhook
-// rejects RebootNode creation for nodes that don't exist in the cluster.
-func TestJanitorWebhookRejectsNonExistentNode(t *testing.T) {
-	feature := features.New("TestJanitorWebhookRejectsNonExistentNode").
-		WithLabel("suite", "webhook").
+// TestJanitorReportsNonExistentNode verifies that manually-created requests for
+// missing nodes receive terminal controller status.
+func TestJanitorReportsNonExistentNode(t *testing.T) {
+	feature := features.New("TestJanitorReportsNonExistentNode").
+		WithLabel("suite", "controller").
 		WithLabel("component", "janitor")
 
-	feature.Assess("RebootNode for non-existent node is rejected", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("RebootNode for non-existent node receives terminal status", func(ctx context.Context, t *testing.T,
+		c *envconf.Config,
+	) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
@@ -163,18 +165,23 @@ func TestJanitorWebhookRejectsNonExistentNode(t *testing.T) {
 			crName,
 		)
 
-		require.Error(t, err, "RebootNode for non-existent node should be rejected")
+		require.NoError(t, err, "RebootNode for non-existent node should be admitted")
 
-		statusErr, ok := err.(*apierrors.StatusError)
-		require.True(t, ok, "error should be a StatusError")
+		completedCR := helpers.WaitForCRByName(ctx, t, client, crName, helpers.RebootNodeGVK)
+		require.NotNil(t, completedCR, "RebootNode should reach terminal status")
 
-		assert.True(t,
-			apierrors.IsNotFound(err),
-			"error should beNotFound, got: %v", statusErr.ErrStatus.Code)
+		nodeReady := helpers.GetCRCondition(completedCR, "NodeReady")
+		require.NotNil(t, nodeReady, "NodeReady condition should exist")
+		assert.Equal(t, "False", nodeReady["status"])
+		assert.Equal(t, "NodeNotFound", nodeReady["reason"])
 
-		assert.Contains(t, err.Error(), "not found",
-			"error message should mention node not found")
+		return ctx
+	})
 
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client for teardown")
+		require.NoError(t, helpers.DeleteAllCRs(ctx, t, client, helpers.RebootNodeGVK))
 		return ctx
 	})
 

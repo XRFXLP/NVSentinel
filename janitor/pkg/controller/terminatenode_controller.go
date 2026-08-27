@@ -17,7 +17,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -92,6 +91,16 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if !completedReconciling {
 		locked := r.NodeLock.LockNode(ctx, &terminateNode, terminateNode.Spec.NodeName)
 		if !locked {
+			holder, active, err := activeSameKindHolder(
+				ctx, r.Client, r.NodeLock, terminateNode.Spec.NodeName, "TerminateNode",
+			)
+			if err != nil {
+				slog.WarnContext(ctx, "Unable to inspect node lock holder; will retry",
+					"node", terminateNode.Spec.NodeName, "error", err)
+			} else if active {
+				return r.completeDuplicateTermination(ctx, &terminateNode, holder.GetName())
+			}
+
 			return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 		}
 
@@ -122,6 +131,45 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *TerminateNodeReconciler) completeDuplicateTermination(
+	ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode, holderName string,
+) (ctrl.Result, error) {
+	terminateNode.SetInitialConditions()
+	terminateNode.SetStartTime()
+	terminateNode.SetCompletionTime()
+	terminateNode.SetCondition(metav1.Condition{
+		Type:               janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated,
+		Status:             metav1.ConditionFalse,
+		Reason:             nodeAlreadyUnderMaintenanceReason,
+		Message:            fmt.Sprintf("TerminateNode/%s is active for this node", holderName),
+		LastTransitionTime: metav1.Now(),
+	})
+
+	if err := r.updateTerminateNodeStatus(ctx, terminateNode); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *TerminateNodeReconciler) updateTerminateNodeStatus(
+	ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode,
+) error {
+	var latest janitordgxcnvidiacomv1alpha1.TerminateNode
+	key := client.ObjectKey{Name: terminateNode.Name, Namespace: terminateNode.Namespace}
+
+	if err := r.Get(ctx, key, &latest); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+
+	latest.Status = terminateNode.Status
+	if err := r.Status().Update(ctx, &latest); err != nil {
+		return fmt.Errorf("updating TerminateNode %q status: %w", terminateNode.Name, err)
+	}
+
+	return nil
 }
 
 // startTerminateSessionIfNeeded creates or retrieves the long-lived "janitor.terminatenode.terminate_session" span
@@ -177,6 +225,23 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 	node := &corev1.Node{}
 	if err := r.Get(ctx, client.ObjectKey{Name: terminateNode.Spec.NodeName}, node); err != nil {
 		if apierrors.IsNotFound(err) {
+			if !terminateNode.IsTerminateInProgress() {
+				terminateNode.SetCompletionTime()
+				terminateNode.SetCondition(metav1.Condition{
+					Type:               janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated,
+					Status:             metav1.ConditionFalse,
+					Reason:             conditionReasonNodeNotFound,
+					Message:            fmt.Sprintf("Node %q was not found", terminateNode.Spec.NodeName),
+					LastTransitionTime: metav1.Now(),
+				})
+
+				if statusErr := r.updateTerminateNodeStatus(ctx, terminateNode); statusErr != nil {
+					return ctrl.Result{}, statusErr
+				}
+
+				return ctrl.Result{}, nil
+			}
+
 			// Node is already deleted, which is the desired state. Do not return an error.
 			node = nil
 		} else {
@@ -277,23 +342,6 @@ func (r *TerminateNodeReconciler) reconcileHelper(
 			result = ctrl.Result{RequeueAfter: 30 * time.Second}
 		}
 	} else {
-		// If this case is hit it means that the node did not exist when
-		// the CR was created. This case should be handled by the admission webhook.
-		if node == nil {
-			err := errors.New("node not found and terminate not in progress")
-
-			slog.ErrorContext(ctx, "Node not found for terminate", "node", terminateNode.Spec.NodeName)
-
-			span := tracing.SpanFromContext(ctx)
-			span.SetAttributes(
-				attribute.String("janitor.error.type", "node_not_found"),
-				attribute.String("janitor.error.message", err.Error()),
-			)
-			tracing.RecordError(span, err)
-
-			return ctrl.Result{}, err
-		}
-
 		// Check if signal was already sent (but terminate not in progress due to other issues)
 		signalAlreadySent := false
 

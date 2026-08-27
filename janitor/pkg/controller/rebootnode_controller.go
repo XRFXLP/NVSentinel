@@ -74,7 +74,10 @@ const requeueBackoffForTransientCSPError = 15 * time.Second
 
 // conditionReasonSucceeded is the reason stamped on conditions that completed
 // successfully.
-const conditionReasonSucceeded = "Succeeded"
+const (
+	conditionReasonSucceeded    = "Succeeded"
+	conditionReasonNodeNotFound = "NodeNotFound"
+)
 
 //nolint:lll // kubebuilder RBAC marker must stay on one line
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=rebootnodes,verbs=get;list;watch;create;update;patch;delete
@@ -104,6 +107,16 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if !completedReconciling {
 		locked := r.NodeLock.LockNode(ctx, &rebootNode, rebootNode.Spec.NodeName)
 		if !locked {
+			holder, active, err := activeSameKindHolder(
+				ctx, r.Client, r.NodeLock, rebootNode.Spec.NodeName, "RebootNode",
+			)
+			if err != nil {
+				slog.WarnContext(ctx, "Unable to inspect node lock holder; will retry",
+					"node", rebootNode.Spec.NodeName, "error", err)
+			} else if active {
+				return r.completeDuplicateReboot(ctx, &rebootNode, holder.GetName())
+			}
+
 			return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 		}
 
@@ -131,6 +144,28 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	retryUnlock := r.NodeLock.CheckUnlock(ctx, &rebootNode, rebootNode.Spec.NodeName)
 	if retryUnlock {
 		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *RebootNodeReconciler) completeDuplicateReboot(
+	ctx context.Context, rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode, holderName string,
+) (ctrl.Result, error) {
+	original := rebootNode.DeepCopy()
+	rebootNode.SetInitialConditions()
+	rebootNode.SetStartTime()
+	rebootNode.SetCompletionTime()
+	rebootNode.SetCondition(metav1.Condition{
+		Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             nodeAlreadyUnderMaintenanceReason,
+		Message:            fmt.Sprintf("RebootNode/%s is active for this node", holderName),
+		LastTransitionTime: metav1.Now(),
+	})
+
+	if err := r.updateRebootNodeStatusIfChanged(ctx, original, rebootNode); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -181,16 +216,31 @@ func (r *RebootNodeReconciler) reconcileHelper(
 
 	var node corev1.Node
 	if err := r.Get(ctx, client.ObjectKey{Name: rebootNode.Spec.NodeName}, &node); err != nil {
-		if !apierrors.IsNotFound(err) {
-			span := tracing.SpanFromContext(ctx)
-			span.SetAttributes(
-				attribute.String("janitor.error.type", "node_fetch_failed"),
-				attribute.String("janitor.error.message", err.Error()),
-			)
-			tracing.RecordError(span, err)
+		if apierrors.IsNotFound(err) {
+			rebootNode.SetCompletionTime()
+			rebootNode.SetCondition(metav1.Condition{
+				Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             conditionReasonNodeNotFound,
+				Message:            fmt.Sprintf("Node %q was not found", rebootNode.Spec.NodeName),
+				LastTransitionTime: metav1.Now(),
+			})
+
+			if statusErr := r.updateRebootNodeStatusIfChanged(ctx, originalRebootNode, rebootNode); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+
+			return ctrl.Result{}, nil
 		}
 
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		span := tracing.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("janitor.error.type", "node_fetch_failed"),
+			attribute.String("janitor.error.message", err.Error()),
+		)
+		tracing.RecordError(span, err)
+
+		return ctrl.Result{}, err
 	}
 
 	// Create a fresh gRPC connection per reconciliation so that rotated
