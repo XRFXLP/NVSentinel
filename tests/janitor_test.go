@@ -26,7 +26,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
@@ -278,19 +277,15 @@ func TestJanitorDuplicateGPUResetNonOverlappingGPUs(t *testing.T) {
 		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, secondCRName, uuidB)
 		require.NoError(t, err, "second GPUReset with different GPU should be admitted")
 
-		// Give CR#2's reconciler at least one cycle to run before asserting.
-		time.Sleep(helpers.WaitInterval)
+		// Wait for CR#2 to reach a terminal state (completionTime set). It must queue
+		// behind CR#1's lock and then complete normally — not fail with contention.
+		completedCR := helpers.WaitForCRByName(ctx, t, client, secondCRName, helpers.GPUResetGVK)
+		require.NotNil(t, completedCR, "second GPUReset should reach terminal state")
 
-		cur := &unstructured.Unstructured{}
-		cur.SetGroupVersionKind(helpers.GPUResetGVK)
-		err = client.Resources().Get(ctx, secondCRName, "", cur)
-		require.NoError(t, err, "second GPUReset should still exist")
-
-		cond := helpers.GetCRCondition(cur, "Complete")
-		if cond != nil {
-			assert.NotEqual(t, "NodeAlreadyUnderMaintenance", cond["reason"],
-				"non-overlapping GPUReset should not get NodeAlreadyUnderMaintenance")
-		}
+		cond := helpers.GetCRCondition(completedCR, "Complete")
+		require.NotNil(t, cond, "Complete condition should be set on second GPUReset")
+		assert.NotEqual(t, "NodeAlreadyUnderMaintenance", cond["reason"],
+			"non-overlapping GPUReset should not get NodeAlreadyUnderMaintenance")
 
 		return ctx
 	})
