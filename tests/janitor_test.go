@@ -122,6 +122,15 @@ func TestJanitorDuplicateTerminateNodeDetection(t *testing.T) {
 		_, err = helpers.CreateTerminateNodeCR(ctx, client, nodeName, firstCRName)
 		require.NoError(t, err, "first TerminateNode should be admitted")
 
+		// The duplicate-contention logic only fires while CR#1 holds the lock with
+		// completionTime==nil. Wait for CR#1 to show SignalSent=True (CSP acknowledged,
+		// node termination in progress) before creating CR#2. If CR#1 completes first
+		// (gRPC fails fast or no provider configured), skip gracefully.
+		signalSent, _ := helpers.WaitForCRConditionByName(ctx, t, client, firstCRName, helpers.TerminateNodeGVK, "SignalSent", "True")
+		if !signalSent {
+			t.Skip("CSP provider did not send TerminateNode signal; NodeAlreadyUnderMaintenance contention test requires an active long-running termination")
+		}
+
 		_, err = helpers.CreateTerminateNodeCR(ctx, client, nodeName, secondCRName)
 		require.NoError(t, err, "second TerminateNode should be admitted by webhook (reconciler handles contention)")
 
@@ -181,6 +190,15 @@ func TestJanitorDuplicateGPUResetOverlappingGPUs(t *testing.T) {
 
 		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, firstCRName, sharedUUID)
 		require.NoError(t, err, "first GPUReset should be admitted")
+
+		// The duplicate-contention logic only fires while CR#1 holds the lock with
+		// completionTime==nil. Wait for CR#1 to show Ready=True (lock acquired, services
+		// are being torn down) before creating CR#2. If CR#1 completes first (GPU not
+		// present or job fails immediately), skip gracefully.
+		ready, _ := helpers.WaitForCRConditionByName(ctx, t, client, firstCRName, helpers.GPUResetGVK, "Ready", "True")
+		if !ready {
+			t.Skip("GPUReset CR#1 completed before reaching Ready=True; NodeAlreadyUnderMaintenance contention test requires an active long-running reset")
+		}
 
 		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, secondCRName, sharedUUID)
 		require.NoError(t, err, "second GPUReset should be admitted by webhook (reconciler handles contention)")
