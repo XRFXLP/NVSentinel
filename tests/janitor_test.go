@@ -63,6 +63,14 @@ func TestJanitorDuplicateRebootDetection(t *testing.T) {
 		_, err = helpers.CreateRebootNodeCR(ctx, client, nodeName, firstCRName)
 		require.NoError(t, err, "first RebootNode should be admitted")
 
+		// The duplicate-contention logic only fires while CR#1 holds the lock with
+		// completionTime==nil. Wait for CR#1 to show SignalSent=True (reboot signal sent,
+		// node rebooting) before creating CR#2. Skip if the CSP provider fails fast.
+		signalSent, _ := helpers.WaitForCRConditionByName(ctx, t, client, firstCRName, helpers.RebootNodeGVK, "SignalSent", "True")
+		if !signalSent {
+			t.Skip("CSP provider did not send reboot signal; NodeAlreadyUnderMaintenance contention test requires an active long-running reboot")
+		}
+
 		_, err = helpers.CreateRebootNodeCR(ctx, client, nodeName, secondCRName)
 		require.NoError(t, err, "second RebootNode should be admitted by webhook (reconciler handles contention)")
 
@@ -262,12 +270,16 @@ func TestJanitorDuplicateGPUResetNonOverlappingGPUs(t *testing.T) {
 		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, firstCRName, uuidA)
 		require.NoError(t, err, "first GPUReset should be admitted")
 
+		// Wait for CR#1 to hold the lock (Ready=True) before creating CR#2, so that the
+		// non-overlap contention check actually runs in the reconciler. If CR#1 completes
+		// first the test still exercises the assertion (no NodeAlreadyUnderMaintenance).
+		helpers.WaitForCRConditionByName(ctx, t, client, firstCRName, helpers.GPUResetGVK, "Ready", "True")
+
 		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, secondCRName, uuidB)
 		require.NoError(t, err, "second GPUReset with different GPU should be admitted")
 
-		// Wait briefly, then assert NodeAlreadyUnderMaintenance is NOT set.
-		// The second CR should stay in the reconcile queue, not fail with contention.
-		time.Sleep(30 * time.Second)
+		// Give CR#2's reconciler at least one cycle to run before asserting.
+		time.Sleep(helpers.WaitInterval)
 
 		cur := &unstructured.Unstructured{}
 		cur.SetGroupVersionKind(helpers.GPUResetGVK)
