@@ -329,6 +329,7 @@ func (v *gpuResetValidator) ValidateCreate(ctx context.Context,
 	obj *janitordgxcnvidiacomv1alpha1.GPUReset) (admission.Warnings, error) {
 	objName := obj.GetName()
 	nodeName := obj.Spec.NodeName
+
 	if v.Config == nil || !v.Config.GPUReset.Enabled {
 		janitorWebhookLog.Info("GPUReset controller is disabled, rejecting creation", "name", objName)
 		return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
