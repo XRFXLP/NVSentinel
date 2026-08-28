@@ -67,18 +67,18 @@ const (
 
 var (
 	RebootNodeGVK = schema.GroupVersionKind{
-		Group:   "janitor.dgxc.nvidia.com",
-		Version: "v1alpha1",
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
 		Kind:    "RebootNode",
 	}
 	GPUResetGVK = schema.GroupVersionKind{
-		Group:   "janitor.dgxc.nvidia.com",
-		Version: "v1alpha1",
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
 		Kind:    "GPUReset",
 	}
 	TerminateNodeGVK = schema.GroupVersionKind{
-		Group:   "janitor.dgxc.nvidia.com",
-		Version: "v1alpha1",
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
 		Kind:    "TerminateNode",
 	}
 	ExternalRemediationRequestGVK = schema.GroupVersionKind{
