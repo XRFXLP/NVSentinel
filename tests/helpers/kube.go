@@ -839,6 +839,7 @@ func WaitForCRConditionByName(
 	require.Eventually(t, func() bool {
 		cur := &unstructured.Unstructured{}
 		cur.SetGroupVersionKind(gvk)
+
 		if err := c.Resources().Get(ctx, crName, "", cur); err != nil {
 			return false
 		}
