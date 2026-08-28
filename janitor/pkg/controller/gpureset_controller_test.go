@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -33,13 +34,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -70,115 +69,6 @@ func (m *mockNodeLock) GetHolder(ctx context.Context, nodeName string) (*metav1.
 
 func (m *mockNodeLock) CheckUnlock(ctx context.Context, maintenanceObject client.Object, nodeName string) (retryUnlock bool) {
 	return false
-}
-
-func TestGPUResetReconciler_ContendedSelectors_ExpectedTerminalBehavior(t *testing.T) {
-	t.Parallel()
-
-	gpuUUID := "GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"
-	tests := []struct {
-		name             string
-		incomingSelector *v1alpha1.GPUSelector
-		holderSelector   *v1alpha1.GPUSelector
-		expectTerminal   bool
-	}{
-		{
-			name:             "MatchingUUIDsSetTerminalStatus",
-			incomingSelector: &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
-			holderSelector:   &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
-			expectTerminal:   true,
-		},
-		{
-			name:             "NilSelectorOverlapsSpecificGPU",
-			incomingSelector: nil,
-			holderSelector:   &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
-			expectTerminal:   true,
-		},
-		{
-			name:             "EmptySelectorOverlapsSpecificGPU",
-			incomingSelector: &v1alpha1.GPUSelector{},
-			holderSelector:   &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
-			expectTerminal:   true,
-		},
-		{
-			name:             "MatchingPCIBusIDsSetTerminalStatus",
-			incomingSelector: &v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
-			holderSelector:   &v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
-			expectTerminal:   true,
-		},
-		{
-			name:             "DisjointExplicitSelectorsRemainQueued",
-			incomingSelector: &v1alpha1.GPUSelector{UUIDs: []string{gpuUUID}},
-			holderSelector:   &v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
-			expectTerminal:   false,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			testScheme := k8sruntime.NewScheme()
-			require.NoError(t, v1alpha1.AddToScheme(testScheme))
-
-			holder := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: "holder", UID: types.UID("holder-uid")},
-				Spec: v1alpha1.GPUResetSpec{
-					NodeName: "test-node",
-					Selector: test.holderSelector,
-				},
-			}
-			incoming := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: "incoming", UID: types.UID("incoming-uid")},
-				Spec: v1alpha1.GPUResetSpec{
-					NodeName: "test-node",
-					Selector: test.incomingSelector,
-				},
-			}
-			kubeClient := fake.NewClientBuilder().
-				WithScheme(testScheme).
-				WithStatusSubresource(&v1alpha1.GPUReset{}).
-				WithObjects(holder, incoming).
-				Build()
-			reconciler := &GPUResetReconciler{
-				Client: kubeClient,
-				NodeLock: &mockNodeLock{
-					contended: true,
-					holder: &metav1.OwnerReference{
-						Kind: "GPUReset",
-						Name: holder.Name,
-						UID:  holder.UID,
-					},
-				},
-			}
-
-			result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
-				NamespacedName: types.NamespacedName{Name: incoming.Name},
-			})
-			require.NoError(t, err)
-
-			var updated v1alpha1.GPUReset
-			require.NoError(t, kubeClient.Get(
-				context.Background(),
-				types.NamespacedName{Name: incoming.Name},
-				&updated,
-			))
-
-			if !test.expectTerminal {
-				assert.Equal(t, 2*time.Second, result.RequeueAfter)
-				assert.Nil(t, updated.Status.CompletionTime)
-
-				return
-			}
-
-			assert.Equal(t, ctrl.Result{}, result)
-			require.NotNil(t, updated.Status.CompletionTime)
-			assert.Equal(t, v1alpha1.ResetFailed, updated.Status.Phase)
-
-			condition := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Complete))
-			require.NotNil(t, condition)
-			assert.Equal(t, string(v1alpha1.ReasonNodeAlreadyUnderMaintenance), condition.Reason)
-			assert.Equal(t, "GPUReset/holder is active for this node", condition.Message)
-		})
-	}
 }
 
 var _ = Describe("GPUReset Controller", func() {
@@ -295,6 +185,113 @@ var _ = Describe("GPUReset Controller", func() {
 		metrics.GPUResetFailureReasonsTotal.Reset()
 
 		cancel()
+	})
+
+	Context("Node lock contention", func() {
+		DescribeTable("evaluates selector overlap",
+			func(incomingSelector, holderSelector *v1alpha1.GPUSelector, expectTerminal bool) {
+				t := GinkgoT()
+				suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+				nodeName := "contention-node-" + suffix
+				holder := &v1alpha1.GPUReset{
+					ObjectMeta: metav1.ObjectMeta{Name: "holder-" + suffix},
+					Spec: v1alpha1.GPUResetSpec{
+						NodeName: nodeName,
+						Selector: holderSelector,
+					},
+				}
+				incoming := &v1alpha1.GPUReset{
+					ObjectMeta: metav1.ObjectMeta{Name: "incoming-" + suffix},
+					Spec: v1alpha1.GPUResetSpec{
+						NodeName: nodeName,
+						Selector: incomingSelector,
+					},
+				}
+
+				require.NoError(t, k8sClient.Create(ctx, &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+				}))
+				require.NoError(t, k8sClient.Create(ctx, holder))
+				require.NoError(t, k8sClient.Create(ctx, incoming))
+				DeferCleanup(func() {
+					require.NoError(t, client.IgnoreNotFound(k8sClient.Delete(ctx, incoming)))
+					require.NoError(t, client.IgnoreNotFound(k8sClient.Delete(ctx, holder)))
+					require.NoError(t, client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Node{
+						ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+					})))
+				})
+
+				Eventually(func(g Gomega) {
+					var cachedHolder v1alpha1.GPUReset
+					g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: holder.Name}, &cachedHolder)).To(Succeed())
+					var cachedIncoming v1alpha1.GPUReset
+					g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: incoming.Name}, &cachedIncoming)).To(Succeed())
+				}, "10s", "100ms").Should(Succeed())
+
+				reconciler.NodeLock = &mockNodeLock{
+					contended: true,
+					holder: &metav1.OwnerReference{
+						Kind: "GPUReset",
+						Name: holder.Name,
+						UID:  holder.UID,
+					},
+				}
+
+				result, err := reconciler.Reconcile(ctx, ctrl.Request{
+					NamespacedName: types.NamespacedName{Name: incoming.Name},
+				})
+				require.NoError(t, err)
+
+				var updated v1alpha1.GPUReset
+				require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: incoming.Name}, &updated))
+
+				if !expectTerminal {
+					assert.Equal(t, 2*time.Second, result.RequeueAfter)
+					assert.Nil(t, updated.Status.CompletionTime)
+
+					return
+				}
+
+				assert.Equal(t, ctrl.Result{}, result)
+				require.NotNil(t, updated.Status.CompletionTime)
+				assert.Equal(t, v1alpha1.ResetFailed, updated.Status.Phase)
+
+				condition := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Complete))
+				require.NotNil(t, condition)
+				assert.Equal(t, string(v1alpha1.ReasonNodeAlreadyUnderMaintenance), condition.Reason)
+				assert.Equal(t, fmt.Sprintf("GPUReset/%s is active for this node", holder.Name), condition.Message)
+			},
+			Entry(
+				"matching UUIDs set terminal status",
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				true,
+			),
+			Entry(
+				"a nil selector overlaps a specific GPU",
+				nil,
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				true,
+			),
+			Entry(
+				"an empty selector overlaps a specific GPU",
+				&v1alpha1.GPUSelector{},
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				true,
+			),
+			Entry(
+				"matching PCI bus IDs set terminal status",
+				&v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
+				&v1alpha1.GPUSelector{PCIBusIDs: []string{"0000:01:00.0"}},
+				true,
+			),
+			Entry(
+				"known distinct GPU UUIDs remain queued",
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"}},
+				&v1alpha1.GPUSelector{UUIDs: []string{"GPU-b2c3d4e5-f6a7-b8c9-d0e1-f2a3b4c5d6e7"}},
+				false,
+			),
+		)
 	})
 
 	Context("Successful Workflow with GPU Service Manager", func() {

@@ -27,14 +27,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
@@ -108,62 +104,6 @@ func Test_isTransientGRPCError(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestRebootNodeReconciler_DuplicateLockHolder_SetsTerminalMaintenanceStatus(t *testing.T) {
-	t.Parallel()
-
-	testScheme := k8sruntime.NewScheme()
-	require.NoError(t, coordinationv1.AddToScheme(testScheme))
-	require.NoError(t, corev1.AddToScheme(testScheme))
-	require.NoError(t, janitordgxcnvidiacomv1alpha1.AddToScheme(testScheme))
-
-	nodeName := "duplicate-lock-node"
-	holder := &janitordgxcnvidiacomv1alpha1.RebootNode{
-		ObjectMeta: metav1.ObjectMeta{Name: "holder", UID: types.UID("holder-uid")},
-		Spec:       janitordgxcnvidiacomv1alpha1.RebootNodeSpec{NodeName: nodeName},
-	}
-	incoming := &janitordgxcnvidiacomv1alpha1.RebootNode{
-		ObjectMeta: metav1.ObjectMeta{Name: "incoming", UID: types.UID("incoming-uid")},
-		Spec:       janitordgxcnvidiacomv1alpha1.RebootNodeSpec{NodeName: nodeName},
-	}
-	lease := &coordinationv1.Lease{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      nodeName,
-			Namespace: "default",
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: "janitor.dgxc.nvidia.com/v1alpha1",
-				Kind:       "RebootNode",
-				Name:       holder.Name,
-				UID:        holder.UID,
-			}},
-		},
-	}
-	kubeClient := fake.NewClientBuilder().
-		WithScheme(testScheme).
-		WithStatusSubresource(&janitordgxcnvidiacomv1alpha1.RebootNode{}).
-		WithObjects(holder, incoming, lease).
-		Build()
-	reconciler := &RebootNodeReconciler{
-		Client:   kubeClient,
-		NodeLock: distributedlock.NewNodeLock(kubeClient, "default"),
-	}
-
-	result, err := reconciler.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: client.ObjectKey{Name: incoming.Name},
-	})
-	require.NoError(t, err)
-	assert.Equal(t, reconcile.Result{}, result)
-
-	var updated janitordgxcnvidiacomv1alpha1.RebootNode
-	require.NoError(t, kubeClient.Get(context.Background(), client.ObjectKey{Name: incoming.Name}, &updated))
-	require.NotNil(t, updated.Status.CompletionTime)
-
-	condition := findCondition(updated.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady)
-	require.NotNil(t, condition)
-	assert.Equal(t, metav1.ConditionFalse, condition.Status)
-	assert.Equal(t, nodeAlreadyUnderMaintenanceReason, condition.Reason)
-	assert.Equal(t, "RebootNode/holder is active for this node", condition.Message)
 }
 
 var _ = Describe("RebootNode Controller", func() {
@@ -280,6 +220,42 @@ var _ = Describe("RebootNode Controller", func() {
 
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Context("when another RebootNode holds the node lock", func() {
+		It("marks the incoming RebootNode terminal with holder feedback", func() {
+			t := GinkgoT()
+			holderRequest := reconcile.Request{NamespacedName: types.NamespacedName{Name: testRebootNode.Name}}
+			_, err := reconciler.Reconcile(ctx, holderRequest)
+			require.NoError(t, err)
+
+			duplicate := &janitordgxcnvidiacomv1alpha1.RebootNode{
+				ObjectMeta: metav1.ObjectMeta{Name: crName + "-duplicate"},
+				Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
+					NodeName: nodeName,
+				},
+			}
+			require.NoError(t, k8sClient.Create(ctx, duplicate))
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: duplicate.Name},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, reconcile.Result{}, result)
+
+			var updated janitordgxcnvidiacomv1alpha1.RebootNode
+			require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: duplicate.Name}, &updated))
+			require.NotNil(t, updated.Status.CompletionTime)
+
+			condition := findCondition(
+				updated.Status.Conditions,
+				janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
+			)
+			require.NotNil(t, condition)
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, nodeAlreadyUnderMaintenanceReason, condition.Reason)
+			assert.Equal(t, fmt.Sprintf("RebootNode/%s is active for this node", crName), condition.Message)
 		})
 	})
 
