@@ -169,7 +169,7 @@ func TestJanitorDuplicateTerminateNodeDetection(t *testing.T) {
 }
 
 // TestJanitorDuplicateGPUResetOverlappingGPUs tests that a second GPUReset targeting
-// the same node and overlapping GPU UUIDs gets NodeAlreadyUnderMaintenance.
+// the same node and overlapping GPU UUIDs gets GPUAlreadyUnderMaintenance.
 func TestJanitorDuplicateGPUResetOverlappingGPUs(t *testing.T) {
 	feature := features.New("TestJanitorDuplicateGPUResetOverlappingGPUs").
 		WithLabel("suite", "contention").
@@ -191,7 +191,7 @@ func TestJanitorDuplicateGPUResetOverlappingGPUs(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Second GPUReset with overlapping UUID gets NodeAlreadyUnderMaintenance", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Second GPUReset with overlapping UUID gets GPUAlreadyUnderMaintenance", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
@@ -204,7 +204,7 @@ func TestJanitorDuplicateGPUResetOverlappingGPUs(t *testing.T) {
 		// present or job fails immediately), skip gracefully.
 		ready, _ := helpers.WaitForCRConditionByName(ctx, t, client, firstCRName, helpers.GPUResetGVK, "Ready", "True")
 		if !ready {
-			t.Skip("GPUReset CR#1 completed before reaching Ready=True; NodeAlreadyUnderMaintenance contention test requires an active long-running reset")
+			t.Skip("GPUReset CR#1 completed before reaching Ready=True; GPUAlreadyUnderMaintenance contention test requires an active long-running reset")
 		}
 
 		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, secondCRName, sharedUUID)
@@ -216,7 +216,7 @@ func TestJanitorDuplicateGPUResetOverlappingGPUs(t *testing.T) {
 		cond := helpers.GetCRCondition(completedCR, "Complete")
 		require.NotNil(t, cond, "Complete condition should be set")
 		assert.Equal(t, "True", cond["status"], "Complete should be True for terminal failure")
-		assert.Equal(t, "NodeAlreadyUnderMaintenance", cond["reason"])
+		assert.Equal(t, "GPUAlreadyUnderMaintenance", cond["reason"])
 		assert.Contains(t, cond["message"], firstCRName, "message should name the holder CR")
 
 		return ctx
@@ -239,7 +239,7 @@ func TestJanitorDuplicateGPUResetOverlappingGPUs(t *testing.T) {
 
 // TestJanitorDuplicateGPUResetNonOverlappingGPUs tests that a second GPUReset
 // targeting the same node but a different (non-overlapping) GPU UUID is NOT
-// rejected with NodeAlreadyUnderMaintenance — it should queue and eventually run.
+// rejected with GPUAlreadyUnderMaintenance — it should queue and eventually run.
 func TestJanitorDuplicateGPUResetNonOverlappingGPUs(t *testing.T) {
 	feature := features.New("TestJanitorDuplicateGPUResetNonOverlappingGPUs").
 		WithLabel("suite", "contention").
@@ -271,7 +271,7 @@ func TestJanitorDuplicateGPUResetNonOverlappingGPUs(t *testing.T) {
 
 		// Wait for CR#1 to hold the lock (Ready=True) before creating CR#2, so that the
 		// non-overlap contention check actually runs in the reconciler. If CR#1 completes
-		// first the test still exercises the assertion (no NodeAlreadyUnderMaintenance).
+		// first the test still exercises the assertion (no GPUAlreadyUnderMaintenance).
 		helpers.WaitForCRConditionByName(ctx, t, client, firstCRName, helpers.GPUResetGVK, "Ready", "True")
 
 		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, secondCRName, uuidB)
@@ -284,8 +284,8 @@ func TestJanitorDuplicateGPUResetNonOverlappingGPUs(t *testing.T) {
 
 		cond := helpers.GetCRCondition(completedCR, "Complete")
 		require.NotNil(t, cond, "Complete condition should be set on second GPUReset")
-		assert.NotEqual(t, "NodeAlreadyUnderMaintenance", cond["reason"],
-			"non-overlapping GPUReset should not get NodeAlreadyUnderMaintenance")
+		assert.NotEqual(t, "GPUAlreadyUnderMaintenance", cond["reason"],
+			"non-overlapping GPUReset should not get GPUAlreadyUnderMaintenance")
 
 		return ctx
 	})

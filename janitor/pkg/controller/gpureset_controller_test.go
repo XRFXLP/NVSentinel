@@ -258,7 +258,7 @@ var _ = Describe("GPUReset Controller", func() {
 
 				condition := meta.FindStatusCondition(updated.Status.Conditions, string(v1alpha1.Complete))
 				require.NotNil(t, condition)
-				assert.Equal(t, string(v1alpha1.ReasonNodeAlreadyUnderMaintenance), condition.Reason)
+				assert.Equal(t, string(v1alpha1.ReasonGPUAlreadyUnderMaintenance), condition.Reason)
 				assert.Equal(t, fmt.Sprintf("GPUReset/%s is active for this node", holder.Name), condition.Message)
 			},
 			Entry(

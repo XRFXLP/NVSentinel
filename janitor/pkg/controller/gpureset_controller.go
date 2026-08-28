@@ -148,7 +148,7 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 						return r.reconcileTerminalFailure(
 							ctx,
 							&gpuReset,
-							v1alpha1.ReasonNodeAlreadyUnderMaintenance,
+							v1alpha1.ReasonGPUAlreadyUnderMaintenance,
 							fmt.Sprintf("GPUReset/%s is active for this node", holderGPUReset.Name),
 						)
 					}
@@ -1342,7 +1342,7 @@ func reconcilePhase(reason v1alpha1.GPUResetReason) v1alpha1.GPUResetPhase {
 		return v1alpha1.ResetFailed
 	case v1alpha1.ReasonInternalError:
 		return v1alpha1.ResetFailed
-	case v1alpha1.ReasonNodeAlreadyUnderMaintenance:
+	case v1alpha1.ReasonGPUAlreadyUnderMaintenance:
 		return v1alpha1.ResetFailed
 	default:
 		return v1alpha1.ResetUnknown
