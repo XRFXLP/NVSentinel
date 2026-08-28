@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -114,13 +115,8 @@ func selectsAllGPUs(selector *janitorv1alpha1.GPUSelector) bool {
 }
 
 func stringSlicesOverlap(first, second []string) bool {
-	values := make(map[string]struct{}, len(first))
 	for _, value := range first {
-		values[value] = struct{}{}
-	}
-
-	for _, value := range second {
-		if _, ok := values[value]; ok {
+		if slices.Contains(second, value) {
 			return true
 		}
 	}
