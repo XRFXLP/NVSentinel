@@ -76,6 +76,11 @@ var (
 		Version: "v1alpha1",
 		Kind:    "GPUReset",
 	}
+	TerminateNodeGVK = schema.GroupVersionKind{
+		Group:   "janitor.dgxc.nvidia.com",
+		Version: "v1alpha1",
+		Kind:    "TerminateNode",
+	}
 	ExternalRemediationRequestGVK = schema.GroupVersionKind{
 		Group:   "nvsentinel.dgxc.nvidia.com",
 		Version: "v1",
@@ -1144,6 +1149,25 @@ func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crN
 	}
 
 	return gpuReset, nil
+}
+
+func CreateTerminateNodeCR(ctx context.Context, c klient.Client, nodeName string,
+	crName string) (*unstructured.Unstructured, error) {
+	terminateNode := &unstructured.Unstructured{}
+	terminateNode.SetGroupVersionKind(TerminateNodeGVK)
+	terminateNode.SetName(crName)
+
+	err := unstructured.SetNestedField(terminateNode.Object, nodeName, "spec", "nodeName")
+	if err != nil {
+		return nil, fmt.Errorf("failed to set nodeName in spec: %w", err)
+	}
+
+	err = c.Resources().Create(ctx, terminateNode)
+	if err != nil {
+		return nil, err
+	}
+
+	return terminateNode, nil
 }
 
 // CreateExtRRCR returns the apiserver error verbatim so callers can inspect

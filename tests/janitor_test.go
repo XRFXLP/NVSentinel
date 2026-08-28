@@ -26,101 +26,54 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	"tests/helpers"
 )
 
-// TestJanitorWebhookRejectsDuplicateReboots tests that the janitor webhook
-// correctly rejects attempts to create multiple RebootNode CRs for the same node
-// when an active reboot is already in progress.
-func TestJanitorWebhookRejectsDuplicateReboots(t *testing.T) {
-	// TODO: fix flake, the test is known to have a high failure rate and it is unclear why
-	// skipping this test till we can figure out the root cause
-	t.Skip()
-
-	feature := features.New("TestJanitorWebhookRejectsDuplicateReboots").
-		WithLabel("suite", "webhook").
+// TestJanitorDuplicateRebootDetection tests that a second RebootNode CR targeting
+// the same node while a first is active gets NodeAlreadyUnderMaintenance from the
+// reconciler (PR #1678 moved this check from webhook to reconciler).
+func TestJanitorDuplicateRebootDetection(t *testing.T) {
+	feature := features.New("TestJanitorDuplicateRebootDetection").
+		WithLabel("suite", "contention").
 		WithLabel("component", "janitor")
 
-	var selectedNodeName string
+	var nodeName string
+	const firstCRName = "reboot-contention-first"
+	const secondCRName = "reboot-contention-second"
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
-		require.NoError(t, err, "failed to create kubernetes client")
+		require.NoError(t, err)
 
-		nodes, err := helpers.GetAllNodesNames(ctx, client)
-		require.NoError(t, err, "failed to get cluster nodes")
-		require.True(t, len(nodes) > 0, "no nodes found in cluster")
-
-		selectedNodeName = nodes[len(nodes)-1]
-		t.Logf("Selected node for webhook test: %s", selectedNodeName)
+		nodeName, err = helpers.GetRealNodeName(ctx, client)
+		require.NoError(t, err, "failed to get real node")
+		t.Logf("Selected node: %s", nodeName)
 
 		return ctx
 	})
 
-	feature.Assess("First RebootNode CR creation succeeds", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Second RebootNode gets NodeAlreadyUnderMaintenance", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
-		require.NoError(t, err, "failed to create kubernetes client")
+		require.NoError(t, err)
 
-		crName := fmt.Sprintf("reboot-%s-first", selectedNodeName)
-		_, err = helpers.CreateRebootNodeCR(
-			ctx,
-			client,
-			selectedNodeName,
-			crName,
-		)
-		require.NoError(t, err, "first RebootNode CR creation should succeed")
+		_, err = helpers.CreateRebootNodeCR(ctx, client, nodeName, firstCRName)
+		require.NoError(t, err, "first RebootNode should be admitted")
 
-		return ctx
-	})
+		_, err = helpers.CreateRebootNodeCR(ctx, client, nodeName, secondCRName)
+		require.NoError(t, err, "second RebootNode should be admitted by webhook (reconciler handles contention)")
 
-	feature.Assess("Second RebootNode CR creation is rejected by webhook", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err, "failed to create kubernetes client")
+		completedCR := helpers.WaitForCRByName(ctx, t, client, secondCRName, helpers.RebootNodeGVK)
+		require.NotNil(t, completedCR, "second RebootNode should reach terminal state")
 
-		crName := fmt.Sprintf("reboot-%s-second", selectedNodeName)
-		_, err = helpers.CreateRebootNodeCR(
-			ctx,
-			client,
-			selectedNodeName,
-			crName,
-		)
-
-		require.Error(t, err, "second RebootNode CR creation should be rejected")
-
-		statusErr, ok := err.(*apierrors.StatusError)
-		require.True(t, ok, "error should be a StatusError")
-
-		assert.True(t,
-			apierrors.IsForbidden(err) || apierrors.IsInvalid(err),
-			"error should be Forbidden or Invalid, got: %v", statusErr.ErrStatus.Code)
-
-		assert.Contains(t, err.Error(), "already has an active",
-			"error message should mention active reboot")
-
-		return ctx
-	})
-
-	feature.Assess("After first reboot completes, new reboot can be created", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err, "failed to create kubernetes client")
-
-		completedRebootNode := helpers.WaitForCR(ctx, t, client, selectedNodeName, helpers.RebootNodeGVK)
-		require.NotNil(t, completedRebootNode, "first RebootNode should complete")
-
-		crName := fmt.Sprintf("reboot-%s-third", selectedNodeName)
-		_, err = helpers.CreateRebootNodeCR(
-			ctx,
-			client,
-			selectedNodeName,
-			crName,
-		)
-		require.NoError(t, err, "third RebootNode CR creation should succeed after first completed")
-
-		completedRebootNode = helpers.WaitForCR(ctx, t, client, selectedNodeName, helpers.RebootNodeGVK)
-		assert.NotNil(t, completedRebootNode, "third RebootNode should complete")
+		cond := helpers.GetCRCondition(completedCR, "NodeReady")
+		require.NotNil(t, cond, "NodeReady condition should be set")
+		assert.Equal(t, "False", cond["status"], "NodeReady should be False for duplicate")
+		assert.Equal(t, "NodeAlreadyUnderMaintenance", cond["reason"])
+		assert.Contains(t, cond["message"], firstCRName, "message should name the holder CR")
 
 		return ctx
 	})
@@ -128,15 +81,199 @@ func TestJanitorWebhookRejectsDuplicateReboots(t *testing.T) {
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		if err != nil {
-			t.Logf("failed to create kubernetes client for teardown: %v", err)
+			t.Logf("teardown: failed to create client: %v", err)
 			return ctx
 		}
+		if err := helpers.DeleteAllCRs(ctx, t, client, helpers.RebootNodeGVK); err != nil {
+			t.Logf("teardown: failed to delete RebootNode CRs: %v", err)
+		}
+		return ctx
+	})
 
-		err = helpers.DeleteAllCRs(ctx, t, client, helpers.RebootNodeGVK)
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestJanitorDuplicateTerminateNodeDetection tests that a second TerminateNode CR
+// targeting the same node while a first is active gets NodeAlreadyUnderMaintenance.
+func TestJanitorDuplicateTerminateNodeDetection(t *testing.T) {
+	feature := features.New("TestJanitorDuplicateTerminateNodeDetection").
+		WithLabel("suite", "contention").
+		WithLabel("component", "janitor")
+
+	var nodeName string
+	const firstCRName = "terminate-contention-first"
+	const secondCRName = "terminate-contention-second"
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		nodeName, err = helpers.GetRealNodeName(ctx, client)
+		require.NoError(t, err, "failed to get real node")
+		t.Logf("Selected node: %s", nodeName)
+
+		return ctx
+	})
+
+	feature.Assess("Second TerminateNode gets NodeAlreadyUnderMaintenance", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		_, err = helpers.CreateTerminateNodeCR(ctx, client, nodeName, firstCRName)
+		require.NoError(t, err, "first TerminateNode should be admitted")
+
+		_, err = helpers.CreateTerminateNodeCR(ctx, client, nodeName, secondCRName)
+		require.NoError(t, err, "second TerminateNode should be admitted by webhook (reconciler handles contention)")
+
+		completedCR := helpers.WaitForCRByName(ctx, t, client, secondCRName, helpers.TerminateNodeGVK)
+		require.NotNil(t, completedCR, "second TerminateNode should reach terminal state")
+
+		cond := helpers.GetCRCondition(completedCR, "NodeTerminated")
+		require.NotNil(t, cond, "NodeTerminated condition should be set")
+		assert.Equal(t, "False", cond["status"], "NodeTerminated should be False for duplicate")
+		assert.Equal(t, "NodeAlreadyUnderMaintenance", cond["reason"])
+		assert.Contains(t, cond["message"], firstCRName, "message should name the holder CR")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
 		if err != nil {
-			t.Logf("failed to delete RebootNode CRs: %v", err)
+			t.Logf("teardown: failed to create client: %v", err)
+			return ctx
+		}
+		if err := helpers.DeleteAllCRs(ctx, t, client, helpers.TerminateNodeGVK); err != nil {
+			t.Logf("teardown: failed to delete TerminateNode CRs: %v", err)
+		}
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestJanitorDuplicateGPUResetOverlappingGPUs tests that a second GPUReset targeting
+// the same node and overlapping GPU UUIDs gets NodeAlreadyUnderMaintenance.
+func TestJanitorDuplicateGPUResetOverlappingGPUs(t *testing.T) {
+	feature := features.New("TestJanitorDuplicateGPUResetOverlappingGPUs").
+		WithLabel("suite", "contention").
+		WithLabel("component", "janitor")
+
+	var nodeName string
+	const sharedUUID = "GPU-455d8f70-2051-db6c-0430-ffc457bff834"
+	const firstCRName = "gpu-reset-contention-first"
+	const secondCRName = "gpu-reset-contention-second"
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		nodeName, err = helpers.GetRealNodeName(ctx, client)
+		require.NoError(t, err, "failed to get real node")
+		t.Logf("Selected node: %s", nodeName)
+
+		return ctx
+	})
+
+	feature.Assess("Second GPUReset with overlapping UUID gets NodeAlreadyUnderMaintenance", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, firstCRName, sharedUUID)
+		require.NoError(t, err, "first GPUReset should be admitted")
+
+		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, secondCRName, sharedUUID)
+		require.NoError(t, err, "second GPUReset should be admitted by webhook (reconciler handles contention)")
+
+		completedCR := helpers.WaitForCRByName(ctx, t, client, secondCRName, helpers.GPUResetGVK)
+		require.NotNil(t, completedCR, "second GPUReset should reach terminal state")
+
+		cond := helpers.GetCRCondition(completedCR, "Complete")
+		require.NotNil(t, cond, "Complete condition should be set")
+		assert.Equal(t, "True", cond["status"], "Complete should be True for terminal failure")
+		assert.Equal(t, "NodeAlreadyUnderMaintenance", cond["reason"])
+		assert.Contains(t, cond["message"], firstCRName, "message should name the holder CR")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("teardown: failed to create client: %v", err)
+			return ctx
+		}
+		if err := helpers.DeleteAllCRs(ctx, t, client, helpers.GPUResetGVK); err != nil {
+			t.Logf("teardown: failed to delete GPUReset CRs: %v", err)
+		}
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestJanitorDuplicateGPUResetNonOverlappingGPUs tests that a second GPUReset
+// targeting the same node but a different (non-overlapping) GPU UUID is NOT
+// rejected with NodeAlreadyUnderMaintenance — it should queue and eventually run.
+func TestJanitorDuplicateGPUResetNonOverlappingGPUs(t *testing.T) {
+	feature := features.New("TestJanitorDuplicateGPUResetNonOverlappingGPUs").
+		WithLabel("suite", "contention").
+		WithLabel("component", "janitor")
+
+	var nodeName string
+	const uuidA = "GPU-455d8f70-2051-db6c-0430-ffc457bff834"
+	const uuidB = "GPU-b0b0b0b0-aaaa-bbbb-cccc-dddddddddddd"
+	const firstCRName = "gpu-reset-nonoverlap-first"
+	const secondCRName = "gpu-reset-nonoverlap-second"
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		nodeName, err = helpers.GetRealNodeName(ctx, client)
+		require.NoError(t, err, "failed to get real node")
+		t.Logf("Selected node: %s", nodeName)
+
+		return ctx
+	})
+
+	feature.Assess("Second GPUReset with non-overlapping UUID is not immediately rejected", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, firstCRName, uuidA)
+		require.NoError(t, err, "first GPUReset should be admitted")
+
+		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, secondCRName, uuidB)
+		require.NoError(t, err, "second GPUReset with different GPU should be admitted")
+
+		// Wait briefly, then assert NodeAlreadyUnderMaintenance is NOT set.
+		// The second CR should stay in the reconcile queue, not fail with contention.
+		time.Sleep(30 * time.Second)
+
+		cur := &unstructured.Unstructured{}
+		cur.SetGroupVersionKind(helpers.GPUResetGVK)
+		err = client.Resources().Get(ctx, secondCRName, "", cur)
+		require.NoError(t, err, "second GPUReset should still exist")
+
+		cond := helpers.GetCRCondition(cur, "Complete")
+		if cond != nil {
+			assert.NotEqual(t, "NodeAlreadyUnderMaintenance", cond["reason"],
+				"non-overlapping GPUReset should not get NodeAlreadyUnderMaintenance")
 		}
 
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("teardown: failed to create client: %v", err)
+			return ctx
+		}
+		if err := helpers.DeleteAllCRs(ctx, t, client, helpers.GPUResetGVK); err != nil {
+			t.Logf("teardown: failed to delete GPUReset CRs: %v", err)
+		}
 		return ctx
 	})
 
