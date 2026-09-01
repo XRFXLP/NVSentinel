@@ -169,7 +169,7 @@ Genuine power and cooling faults are unaffected, arriving as `GPU_HW_POWER_BRAKE
 
 ### Example: Report throttling again
 
-The UAT suite does this in `tests/uat/*/nvsentinel-values.yaml` so its injected power violation still surfaces as a node event.
+Use this to investigate throttling on a specific cluster; it restores the `GpuPowerWatch` and `GpuThermalWatch` events.
 
 ```yaml
 gpu-health-monitor:

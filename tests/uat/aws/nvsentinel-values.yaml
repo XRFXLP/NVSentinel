@@ -47,10 +47,6 @@ global:
 # Enable debug logging for all components
 gpu-health-monitor:
   verbose: "True"
-  dcgmHealthCheck:
-    # Test 1 asserts the GpuPowerWatchIsNotHealthy event from an injected power
-    # violation, which the chart's default suppression would drop.
-    suppressedErrorCodes: []
 
 syslog-health-monitor:
   logLevel: debug
