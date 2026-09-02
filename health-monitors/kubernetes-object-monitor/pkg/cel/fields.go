@@ -25,6 +25,9 @@ import (
 // ResourceVar is the name of the CEL variable bound to the watched object.
 const ResourceVar = "resource"
 
+// LookupFunc is the name of the CEL function that reads a second object.
+const LookupFunc = "lookup"
+
 // ResourceFieldPaths returns the field paths of the resource variable that
 // compiled reads, each as its own slice of segments.
 // `resource.status.conditions.exists(c, c.type == "Ready")` yields
@@ -52,24 +55,37 @@ func ResourceFieldPaths(compiled *cel.Ast) ([][]string, bool) {
 		return nil, false
 	}
 
-	w := &fieldWalker{ok: true}
-	w.walk(compiled.NativeRep().Expr())
-
+	w := walkExpression(compiled)
 	if !w.ok {
 		return nil, false
 	}
 
-	slices.SortFunc(w.paths, slices.Compare)
-
-	return slices.CompactFunc(w.paths, slices.Equal), true
+	return sortPaths(w.paths), true
 }
 
-// fieldWalker collects resource field paths from an expression graph. shadowed
-// counts the enclosing comprehension bindings named after the resource
-// variable, so an iteration or accumulator variable that shadows it is not
-// mistaken for the object itself.
+// walkExpression walks compiled and returns the walker holding what it read.
+func walkExpression(compiled *cel.Ast) *fieldWalker {
+	w := &fieldWalker{ok: true}
+	w.walk(compiled.NativeRep().Expr())
+
+	return w
+}
+
+// sortPaths orders paths and drops the duplicates.
+func sortPaths(paths [][]string) [][]string {
+	slices.SortFunc(paths, slices.Compare)
+
+	return slices.CompactFunc(paths, slices.Equal)
+}
+
+// fieldWalker collects the field paths an expression graph reads, off the
+// resource variable and off the objects lookup() returns. shadowed counts the
+// enclosing comprehension bindings named after the resource variable, so an
+// iteration or accumulator variable that shadows it is not mistaken for the
+// object itself.
 type fieldWalker struct {
 	paths    [][]string
+	lookups  []lookupRead
 	shadowed int
 	ok       bool
 }
@@ -86,23 +102,65 @@ func (w *fieldWalker) walk(e ast.Expr) {
 	w.walkChildren(e)
 }
 
-// recordChain records e if it is a chain of field accesses rooted at the
-// resource variable, reporting whether it was one.
+// recordChain records e if it is a chain of field accesses rooted at an object
+// the cache can hold: the resource variable, or a lookup() call that names its
+// apiVersion and kind with string literals. It reports whether e was one.
 func (w *fieldWalker) recordChain(e ast.Expr) bool {
-	path, rooted, _ := w.resolve(e)
-	if !rooted {
+	base, path, _ := w.resolve(e)
+
+	switch {
+	case base == nil:
+		return false
+
+	case w.isResource(base):
+		if len(path) == 0 {
+			w.ok = false
+
+			return true
+		}
+
+		w.paths = append(w.paths, slices.Clone(path))
+		w.walkIndexKeys(e)
+
+		return true
+
+	case isLookupCall(base):
+		w.recordLookup(base.AsCall(), path)
+		w.walkIndexKeys(e)
+		// The arguments name the object to read, and reach the resource or a
+		// further lookup to do so.
+		w.walkCall(base.AsCall())
+
+		return true
+
+	default:
 		return false
 	}
+}
 
-	if len(path) == 0 {
-		w.ok = false
-		return true
+// isResource reports whether base is the resource variable itself rather than a
+// comprehension binding that shadows its name.
+func (w *fieldWalker) isResource(base ast.Expr) bool {
+	return base.Kind() == ast.IdentKind && base.AsIdent() == ResourceVar && w.shadowed == 0
+}
+
+// recordLookup records one read of the object call returns. A call whose
+// apiVersion or kind is computed is dropped: nothing can be cached for a GVK
+// that is not known until the expression runs, so such a call reads through the
+// API and needs no fields derived for it.
+func (w *fieldWalker) recordLookup(call ast.CallExpr, path []string) {
+	apiVersion, versionOK := stringLiteral(call.Args()[0])
+	kind, kindOK := stringLiteral(call.Args()[1])
+
+	if !versionOK || !kindOK {
+		return
 	}
 
-	w.paths = append(w.paths, slices.Clone(path))
-	w.walkIndexKeys(e)
-
-	return true
+	w.lookups = append(w.lookups, lookupRead{
+		apiVersion: apiVersion,
+		kind:       kind,
+		path:       slices.Clone(path),
+	})
 }
 
 func (w *fieldWalker) walkChildren(e ast.Expr) {
@@ -203,52 +261,54 @@ func (w *fieldWalker) walkIndexKeys(e ast.Expr) {
 	}
 }
 
-// resolve interprets e as a chain of field accesses rooted at the resource
-// variable. rooted reports whether the chain is anchored at the resource, and
-// path is the field path it reaches. An inexact path is one truncated by a
-// computed index: the subtree at path is retained whole, so accesses beneath it
-// are already covered and need not extend the path.
-func (w *fieldWalker) resolve(e ast.Expr) (path []string, rooted, exact bool) {
+// resolve interprets e as a chain of field accesses and returns the expression
+// the chain is rooted at, along with the field path it reads from that root.
+// base is nil when e is not a chain, so nothing roots it. An inexact path is
+// one truncated by a computed index: the subtree at path is retained whole, so
+// accesses beneath it are already covered and need not extend the path.
+func (w *fieldWalker) resolve(e ast.Expr) (base ast.Expr, path []string, exact bool) {
 	switch e.Kind() {
 	case ast.IdentKind:
-		return nil, e.AsIdent() == ResourceVar && w.shadowed == 0, true
+		return e, nil, true
 	case ast.SelectKind:
 		return w.resolveSelect(e.AsSelect())
 	case ast.CallKind:
-		return w.resolveIndex(e.AsCall())
+		if call := e.AsCall(); isIndex(call) {
+			return w.resolveIndex(call)
+		}
+
+		// Any other call ends the chain. Only lookup() roots one the cache can
+		// serve, which the caller decides.
+		return e, nil, true
 	case ast.ComprehensionKind, ast.ListKind, ast.LiteralKind,
 		ast.MapKind, ast.StructKind, ast.UnspecifiedExprKind:
-		return nil, false, false
+		return nil, nil, false
 	}
 
-	return nil, false, false
+	return nil, nil, false
 }
 
-func (w *fieldWalker) resolveSelect(selectExpr ast.SelectExpr) (path []string, rooted, exact bool) {
-	path, rooted, exact = w.resolve(selectExpr.Operand())
-	if !rooted || !exact {
-		return path, rooted, exact
+func (w *fieldWalker) resolveSelect(selectExpr ast.SelectExpr) (base ast.Expr, path []string, exact bool) {
+	base, path, exact = w.resolve(selectExpr.Operand())
+	if base == nil || !exact {
+		return base, path, exact
 	}
 
-	return append(path, selectExpr.FieldName()), true, true
+	return base, append(path, selectExpr.FieldName()), true
 }
 
-func (w *fieldWalker) resolveIndex(call ast.CallExpr) (path []string, rooted, exact bool) {
-	if !isIndex(call) {
-		return nil, false, false
-	}
-
-	path, rooted, exact = w.resolve(call.Args()[0])
-	if !rooted || !exact {
-		return path, rooted, exact
+func (w *fieldWalker) resolveIndex(call ast.CallExpr) (base ast.Expr, path []string, exact bool) {
+	base, path, exact = w.resolve(call.Args()[0])
+	if base == nil || !exact {
+		return base, path, exact
 	}
 
 	if key, ok := stringLiteral(call.Args()[1]); ok {
-		return append(path, key), true, true
+		return base, append(path, key), true
 	}
 
 	// A computed key can select any entry, so the whole subtree is retained.
-	return path, true, false
+	return base, path, false
 }
 
 func (w *fieldWalker) push(name string) {
@@ -265,6 +325,16 @@ func (w *fieldWalker) pop(name string) {
 
 func isIndex(call ast.CallExpr) bool {
 	return call.FunctionName() == operators.Index && !call.IsMemberFunction() && len(call.Args()) == 2
+}
+
+func isLookupCall(e ast.Expr) bool {
+	if e.Kind() != ast.CallKind {
+		return false
+	}
+
+	call := e.AsCall()
+
+	return call.FunctionName() == LookupFunc && !call.IsMemberFunction() && len(call.Args()) == lookupArgs
 }
 
 func stringLiteral(e ast.Expr) (string, bool) {

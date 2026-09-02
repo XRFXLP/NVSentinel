@@ -213,11 +213,8 @@ func TestTransform_NonUnstructuredInput_PassesThroughUnchanged(t *testing.T) {
 	require.Equal(t, tombstone, out)
 }
 
-func TestBuildCacheTransforms_OpaquePolicy_CachesGVKInFull(t *testing.T) {
-	compiler, err := celenv.NewCompilerEnvironment()
-	require.NoError(t, err)
-
-	transforms := buildCacheTransforms(compiler, []config.Policy{
+func TestBuildCacheEntries_OpaquePolicy_CachesGVKInFull(t *testing.T) {
+	entries := cacheEntries(t, []config.Policy{
 		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
 		// Reads the object as a whole: the fields it touches are not derivable,
 		// so Node must be cached in full.
@@ -225,23 +222,80 @@ func TestBuildCacheTransforms_OpaquePolicy_CachesGVKInFull(t *testing.T) {
 		policyWithExpressions("pod-health", podGVK, `resource.status.phase != 'Running'`, ""),
 	})
 
-	require.NotContains(t, transforms, nodeGVK)
-	require.Contains(t, transforms, podGVK)
+	require.Contains(t, entries, nodeGVK)
+	require.Nil(t, entries[nodeGVK].transform)
+	require.NotNil(t, entries[podGVK].transform)
 }
 
-func TestBuildCacheTransforms_DisabledPolicy_IsIgnored(t *testing.T) {
-	compiler, err := celenv.NewCompilerEnvironment()
-	require.NoError(t, err)
+// TestBuildCacheEntries_LookupOfWatchedGVK_UnionsBothPathSets is the fail-open
+// case. The pod entry is pruned to what the policy watching pods reads, and a
+// lookup() from another policy reads a field outside that set. Pruning it away
+// would not fail the lookup: CEL cannot tell a field the cache dropped from one
+// the object never had, so the predicate would quietly evaluate against an
+// absent field.
+func TestBuildCacheEntries_LookupOfWatchedGVK_UnionsBothPathSets(t *testing.T) {
+	entries := cacheEntries(t, []config.Policy{
+		policyWithExpressions("pod-health", podGVK, `resource.status.phase != 'Running'`, ""),
+		policyWithExpressions("node-owns-pod", nodeGVK,
+			`lookup('v1', 'Pod', 'default', 'device-plugin').spec.nodeName == resource.metadata.name`, ""),
+	})
 
+	require.True(t, entries[podGVK].servesLookups)
+
+	pod := prunedObject(t, entries[podGVK].transform, map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Pod",
+		"metadata":   map[string]any{"name": "device-plugin", "namespace": "default"},
+		"spec":       map[string]any{"nodeName": "gpu-node-0042", "serviceAccountName": "pruned"},
+		"status":     map[string]any{"phase": "Running", "podIP": "10.0.0.1"},
+	})
+
+	require.Equal(t, map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Pod",
+		"metadata":   map[string]any{"name": "device-plugin", "namespace": "default"},
+		"spec":       map[string]any{"nodeName": "gpu-node-0042"},
+		"status":     map[string]any{"phase": "Running"},
+	}, pod.Object)
+}
+
+// TestBuildCacheEntries_WholeObjectLookup_LeavesWatchTransformInPlace covers a
+// lookup() whose result cannot be reduced to fields. The GVK keeps the
+// transform its own policy earns, and the lookup reads through the API rather
+// than the entry that transform prunes.
+func TestBuildCacheEntries_WholeObjectLookup_LeavesWatchTransformInPlace(t *testing.T) {
+	entries := cacheEntries(t, []config.Policy{
+		policyWithExpressions("pod-health", podGVK, `resource.status.phase != 'Running'`, ""),
+		policyWithExpressions("node-owns-pod", nodeGVK,
+			`size(lookup('v1', 'Pod', 'default', 'device-plugin')) > 3`, ""),
+	})
+
+	require.NotNil(t, entries[podGVK].transform)
+	require.False(t, entries[podGVK].servesLookups)
+}
+
+// TestBuildCacheEntries_WholeObjectLookupOfUnwatchedGVK_HasNoEntry keeps the
+// cache from holding a GVK it can do nothing useful with: no policy watches it,
+// and the lookup that names it cannot be served from a pruned entry.
+func TestBuildCacheEntries_WholeObjectLookupOfUnwatchedGVK_HasNoEntry(t *testing.T) {
+	entries := cacheEntries(t, []config.Policy{
+		policyWithExpressions("node-owns-pod", nodeGVK,
+			`size(lookup('v1', 'Pod', 'default', 'device-plugin')) > 3`, ""),
+	})
+
+	require.NotContains(t, entries, podGVK)
+}
+
+func TestBuildCacheEntries_DisabledPolicy_IsIgnored(t *testing.T) {
 	opaque := policyWithExpressions("node-opaque", nodeGVK, `size(resource) > 3`, "")
 	opaque.Enabled = false
 
-	transforms := buildCacheTransforms(compiler, []config.Policy{
+	entries := cacheEntries(t, []config.Policy{
 		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
 		opaque,
 	})
 
-	require.Contains(t, transforms, nodeGVK)
+	require.NotNil(t, entries[nodeGVK].transform)
 }
 
 func TestFieldTree_RedundantPaths_CollapseIntoRetainedSubtree(t *testing.T) {
@@ -252,6 +306,31 @@ func TestFieldTree_RedundantPaths_CollapseIntoRetainedSubtree(t *testing.T) {
 	require.Equal(t, []string{"metadata.labels.example", "metadata.name", "status"}, tree.describe())
 }
 
+func prunedObject(
+	t *testing.T,
+	transform toolscache.TransformFunc,
+	object map[string]any,
+) *unstructured.Unstructured {
+	t.Helper()
+
+	out, err := transform(&unstructured.Unstructured{Object: object})
+	require.NoError(t, err)
+
+	pruned, ok := out.(*unstructured.Unstructured)
+	require.True(t, ok)
+
+	return pruned
+}
+
+func cacheEntries(t *testing.T, policies []config.Policy) map[schema.GroupVersionKind]gvkCache {
+	t.Helper()
+
+	compiler, err := celenv.NewCompilerEnvironment()
+	require.NoError(t, err)
+
+	return buildCacheEntries(compiler, policies)
+}
+
 func transformForGVK(
 	t *testing.T,
 	gvk schema.GroupVersionKind,
@@ -259,13 +338,11 @@ func transformForGVK(
 ) toolscache.TransformFunc {
 	t.Helper()
 
-	compiler, err := celenv.NewCompilerEnvironment()
-	require.NoError(t, err)
+	entries := cacheEntries(t, policies)
+	require.Contains(t, entries, gvk)
+	require.NotNil(t, entries[gvk].transform)
 
-	transforms := buildCacheTransforms(compiler, policies)
-	require.Contains(t, transforms, gvk)
-
-	return transforms[gvk]
+	return entries[gvk].transform
 }
 
 func policyWithExpressions(name string, gvk schema.GroupVersionKind, predicate, nodeAssociation string) config.Policy {

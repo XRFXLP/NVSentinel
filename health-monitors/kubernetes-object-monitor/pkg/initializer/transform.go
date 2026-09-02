@@ -45,63 +45,162 @@ var informerFieldPaths = [][]string{
 	{metadataKey, "deletionTimestamp"},
 }
 
-// buildCacheTransforms derives a cache transform for each GVK from the CEL its
-// enabled policies compile to. A GVK is absent from the result when its objects
-// must be cached in full, either because a policy uses the object as a whole or
-// because an expression failed to compile.
-func buildCacheTransforms(
+// gvkCache is how one GVK is cached, derived from the CEL of the enabled
+// policies.
+type gvkCache struct {
+	// transform prunes the cache entry to the fields the policies read, and is
+	// nil when the objects must be cached in full.
+	transform toolscache.TransformFunc
+	// servesLookups reports whether a lookup() returning this GVK may read the
+	// entry rather than the API. It is false unless the entry retains
+	// everything the policies read off a looked-up object of this GVK, because
+	// a read that silently misses pruned fields changes how a policy evaluates.
+	servesLookups bool
+}
+
+// buildCacheEntries derives how to cache each GVK the enabled policies reach,
+// whether by watching it or by naming it in a lookup(). A GVK a lookup() names
+// but no policy watches is included, so that the lookup can be served from an
+// entry pruned to what it reads instead of from the API.
+func buildCacheEntries(
 	compiler *celenv.Environment,
 	policies []config.Policy,
-) map[schema.GroupVersionKind]toolscache.TransformFunc {
-	policiesByGVK := make(map[schema.GroupVersionKind][]config.Policy)
+) map[schema.GroupVersionKind]gvkCache {
+	reads := collectPolicyReads(compiler, policies)
+	entries := make(map[schema.GroupVersionKind]gvkCache, len(reads))
 
-	for _, policy := range policies {
-		if policy.Enabled {
-			gvk := policyGVK(policy)
-			policiesByGVK[gvk] = append(policiesByGVK[gvk], policy)
-		}
-	}
-
-	transforms := make(map[schema.GroupVersionKind]toolscache.TransformFunc, len(policiesByGVK))
-
-	for gvk, gvkPolicies := range policiesByGVK {
-		tree, opaquePolicy := deriveFieldTree(compiler, gvkPolicies)
-		if tree == nil {
-			slog.Info("Caching full objects: policy fields could not be derived from CEL",
-				"gvk", gvk.String(), "policy", opaquePolicy)
+	for gvk, read := range reads {
+		if !read.watched && read.wholeLookup != "" {
+			// Nothing to cache: no policy watches this GVK, and the lookup that
+			// names it reads the returned object as a whole.
+			slog.Info("Reading lookup() through the API: it uses the whole object",
+				"gvk", gvk.String(), "policy", read.wholeLookup)
 
 			continue
 		}
 
-		transforms[gvk] = newFieldPruningTransform(tree)
-
-		slog.Info("Cache transform derived from policy CEL",
-			"gvk", gvk.String(), "retainedFields", strings.Join(tree.describe(), " "))
+		entries[gvk] = read.gvkCache(gvk)
 	}
 
-	return transforms
+	return entries
 }
 
-// deriveFieldTree returns the fields the policies watching one GVK read. The
-// tree is nil when extraction failed, along with the name of the policy it
-// failed on, and that GVK's objects must then be cached in full.
-func deriveFieldTree(compiler *celenv.Environment, policies []config.Policy) (*fieldTree, string) {
-	tree := newFieldTree(informerFieldPaths)
+// gvkReads is what the enabled policies read off one GVK, in each of the two
+// roles it can play. wholeWatch and wholeLookup name a policy that reads the
+// object as a whole in that role, which no set of paths describes.
+type gvkReads struct {
+	watched     bool
+	watchPaths  [][]string
+	wholeWatch  string
+	lookedUp    bool
+	lookupPaths [][]string
+	wholeLookup string
+}
+
+// policyReads is what the policies read, per GVK.
+type policyReads map[schema.GroupVersionKind]*gvkReads
+
+func (r policyReads) at(gvk schema.GroupVersionKind) *gvkReads {
+	reads := r[gvk]
+	if reads == nil {
+		reads = &gvkReads{}
+		r[gvk] = reads
+	}
+
+	return reads
+}
+
+// collectPolicyReads compiles every expression of every enabled policy and
+// records what it reads, off the object the policy watches and off the objects
+// its lookup() calls return.
+//
+// A compile failure counts as reading the watched object whole rather than
+// being reported: policy.NewEvaluator compiles the same expression with the
+// policy name for context and fails startup there.
+func collectPolicyReads(compiler *celenv.Environment, policies []config.Policy) policyReads {
+	reads := make(policyReads)
 
 	for _, policy := range policies {
+		if !policy.Enabled {
+			continue
+		}
+
+		watched := reads.at(policyGVK(policy))
+		watched.watched = true
+
 		for _, expression := range policyExpressions(policy) {
-			paths, ok := policyFieldPaths(compiler, expression)
-			if !ok {
-				return nil, policy.Name
+			compiled, err := compiler.Compile(expression)
+			if err != nil {
+				watched.wholeWatch = policy.Name
+
+				continue
 			}
 
-			for _, path := range paths {
-				tree.insert(path)
+			if paths, ok := celenv.ResourceFieldPaths(compiled); ok {
+				watched.watchPaths = append(watched.watchPaths, paths...)
+			} else {
+				watched.wholeWatch = policy.Name
 			}
+
+			reads.addLookups(policy.Name, celenv.LookupTargets(compiled))
 		}
 	}
 
-	return tree, ""
+	return reads
+}
+
+func (r policyReads) addLookups(policyName string, targets []celenv.LookupTarget) {
+	for _, target := range targets {
+		gvk := schema.FromAPIVersionAndKind(target.APIVersion, target.Kind)
+
+		lookedUp := r.at(gvk)
+		lookedUp.lookedUp = true
+
+		if !target.Derivable {
+			lookedUp.wholeLookup = policyName
+
+			continue
+		}
+
+		lookedUp.lookupPaths = append(lookedUp.lookupPaths, target.Paths...)
+	}
+}
+
+// gvkCache decides how the GVK is cached from what the policies read off it.
+func (r *gvkReads) gvkCache(gvk schema.GroupVersionKind) gvkCache {
+	if r.wholeWatch != "" {
+		slog.Info("Caching full objects: policy fields could not be derived from CEL",
+			"gvk", gvk.String(), "policy", r.wholeWatch, "servesLookups", r.lookedUp)
+
+		// Every field is there, so a lookup finds whatever it reads.
+		return gvkCache{servesLookups: r.lookedUp}
+	}
+
+	servesLookups := r.lookedUp && r.wholeLookup == ""
+
+	tree := newFieldTree(informerFieldPaths)
+
+	for _, path := range r.watchPaths {
+		tree.insert(path)
+	}
+
+	if servesLookups {
+		for _, path := range r.lookupPaths {
+			tree.insert(path)
+		}
+	}
+
+	if r.wholeLookup != "" {
+		slog.Info("Reading lookup() through the API: it uses the whole object",
+			"gvk", gvk.String(), "policy", r.wholeLookup)
+	}
+
+	slog.Info("Cache transform derived from policy CEL",
+		"gvk", gvk.String(),
+		"retainedFields", strings.Join(tree.describe(), " "),
+		"servesLookups", servesLookups)
+
+	return gvkCache{transform: newFieldPruningTransform(tree), servesLookups: servesLookups}
 }
 
 func policyExpressions(p config.Policy) []string {
@@ -110,19 +209,6 @@ func policyExpressions(p config.Policy) []string {
 	}
 
 	return []string{p.Predicate.Expression, p.NodeAssociation.Expression}
-}
-
-// policyFieldPaths compiles expression and returns the resource field paths it
-// reads. A compile failure is reported as an incomplete extraction rather than
-// an error: policy.NewEvaluator compiles the same expression with the policy
-// name for context and fails startup there.
-func policyFieldPaths(compiler *celenv.Environment, expression string) ([][]string, bool) {
-	compiled, err := compiler.Compile(expression)
-	if err != nil {
-		return nil, false
-	}
-
-	return celenv.ResourceFieldPaths(compiled)
 }
 
 // newFieldPruningTransform returns a cache.TransformFunc that strips every

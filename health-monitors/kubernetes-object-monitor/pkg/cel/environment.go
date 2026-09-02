@@ -23,28 +23,44 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type Environment struct {
 	env *cel.Env
-	// reader backs lookup(). It must not be the manager's cache-backed client:
-	// lookup() names a GVK at runtime, and a cached read of a GVK no policy
-	// watches starts a cluster-wide informer for it on demand.
+	// reader backs lookup() for every GVK the cache holds no entry for. It must
+	// read straight from the API server: a cached read of a GVK with no entry
+	// starts a cluster-wide informer for it on demand and holds it in full.
 	reader client.Reader
-	evalMu sync.Mutex
-	ctx    context.Context
+	// cachedReader and cachedGVKs back lookup() for the GVKs
+	// UseCacheForLookups named. fellBack records the GVKs already reported as
+	// falling back, so a misconfiguration is logged once rather than per
+	// evaluation. All three are written before the manager starts and read
+	// under evalMu, which Evaluate holds while lookup() runs.
+	cachedReader client.Reader
+	cachedGVKs   map[schema.GroupVersionKind]bool
+	fellBack     map[schema.GroupVersionKind]bool
+	evalMu       sync.Mutex
+	ctx          context.Context
 }
 
+// cachedLookupTimeout bounds a cached lookup read. The informer for a GVK no
+// policy watches is created by the first read that needs it, which lists every
+// object of that GVK before answering. Rather than hold up evaluation for that,
+// the first reads fall back to the API and later ones find the informer warm.
+const cachedLookupTimeout = 2 * time.Second
+
 // NewEnvironment returns an Environment that compiles and evaluates policy
-// expressions. The reader backs lookup() only, and must read straight from the
-// API server: lookup() names its GVK at runtime, so a cache-backed reader would
-// start a cluster-wide informer for any GVK no policy watches. Pass
-// mgr.GetAPIReader(), not mgr.GetClient().
+// expressions. The reader backs lookup(), and must read straight from the API
+// server: pass mgr.GetAPIReader(), not mgr.GetClient(). Call
+// UseCacheForLookups to serve the GVKs that do have a cache entry from it.
 func NewEnvironment(r client.Reader) (*Environment, error) {
 	e := &Environment{
-		reader: r,
+		reader:   r,
+		fellBack: make(map[schema.GroupVersionKind]bool),
 	}
 
 	env, err := cel.NewEnv(
@@ -77,6 +93,28 @@ func NewEnvironment(r client.Reader) (*Environment, error) {
 // lookup() has nothing to resolve against.
 func NewCompilerEnvironment() (*Environment, error) {
 	return NewEnvironment(nil)
+}
+
+// UseCacheForLookups routes lookup() reads of gvks through reader, which is the
+// manager's cached client.
+//
+// Only a GVK whose cache entry retains every field the policies read off a
+// looked-up object may be named. Reading an entry pruned without regard for
+// those fields returns an object missing them, which CEL cannot tell from an
+// object that never had them, so the policy would quietly evaluate against
+// absent fields.
+func (e *Environment) UseCacheForLookups(reader client.Reader, gvks []schema.GroupVersionKind) {
+	e.evalMu.Lock()
+	defer e.evalMu.Unlock()
+
+	e.cachedReader = reader
+	e.cachedGVKs = make(map[schema.GroupVersionKind]bool, len(gvks))
+
+	for _, gvk := range gvks {
+		e.cachedGVKs[gvk] = true
+	}
+
+	slog.Info("lookup() reads these GVKs from the cache", "gvks", gvks)
 }
 
 func (e *Environment) Compile(expression string) (*cel.Ast, error) {
@@ -159,7 +197,7 @@ func (e *Environment) lookup(args ...ref.Val) ref.Val {
 		Name:      string(name),
 	}
 
-	if err := e.reader.Get(ctx, key, obj); err != nil {
+	if err := e.getForLookup(ctx, key, obj); err != nil {
 		slog.Error("Failed to get object for lookup", "error", err)
 		return types.NullValue
 	}
@@ -167,4 +205,45 @@ func (e *Environment) lookup(args ...ref.Val) ref.Val {
 	slog.Info("Successfully got object for lookup", "object", obj.Object)
 
 	return types.DefaultTypeAdapter.NativeToValue(obj.Object)
+}
+
+// getForLookup reads the named object into obj, from the cache when its GVK has
+// an entry that retains what the policies read off it, and from the API server
+// otherwise.
+//
+// A cached read falls back to the API on anything but a missing object. The
+// informer for a GVK no policy watches needs cluster-wide list and watch, which
+// a deployment that granted only get for a looked-up GVK will refuse, and
+// falling back keeps such a policy answering as it did before the cache was
+// asked at all.
+func (e *Environment) getForLookup(
+	ctx context.Context,
+	key client.ObjectKey,
+	obj *unstructured.Unstructured,
+) error {
+	gvk := obj.GroupVersionKind()
+
+	if !e.cachedGVKs[gvk] {
+		return e.reader.Get(ctx, key, obj)
+	}
+
+	cacheCtx, cancel := context.WithTimeout(ctx, cachedLookupTimeout)
+	defer cancel()
+
+	err := e.cachedReader.Get(cacheCtx, key, obj)
+	if err == nil || apierrors.IsNotFound(err) {
+		return err
+	}
+
+	if !e.fellBack[gvk] {
+		e.fellBack[gvk] = true
+
+		slog.Warn("Cached lookup failed, reading through the API server instead. "+
+			"Serving it from the cache needs cluster-wide list and watch on the GVK",
+			"gvk", gvk.String(), "error", err)
+	}
+
+	obj.SetGroupVersionKind(gvk)
+
+	return e.reader.Get(ctx, key, obj)
 }

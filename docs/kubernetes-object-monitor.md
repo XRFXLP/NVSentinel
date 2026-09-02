@@ -137,6 +137,10 @@ A recorded field keeps its whole subtree, so comprehensions and computed map key
 
 An expression that uses the resource as a whole rather than through a field access, such as `size(resource)`, cannot be reduced to a set of fields. That resource kind is then cached in full, which is correct but gives up the saving for every policy on that kind. Prefer reading the specific fields you need.
 
+The same derivation covers `lookup()`. A call that gives its apiVersion and kind as string literals, as in `lookup('v1', 'Pod', resource.metadata.namespace, resource.spec.podName).spec.nodeName`, has the fields it reads off the returned object derived too, and that kind is cached cluster-wide pruned to them. Serving a kind this way needs `list` and `watch` on it cluster-wide, not just `get`, because the cache watches every object of the kind; grant that in the ClusterRole for any kind a policy looks up but no policy watches. Where the grant is missing the call reads through the API server instead, and logs once that it did.
+
+A call that computes its apiVersion or kind, whose result is used as a whole, or that names a kind cached for particular namespaces only, also reads through the API server. Each read is then one request per evaluation, so a policy that looks up a literal kind and reads named fields off it is the cheaper shape by a wide margin.
+
 #### Health Event Template
 ```yaml
 healthEvent:

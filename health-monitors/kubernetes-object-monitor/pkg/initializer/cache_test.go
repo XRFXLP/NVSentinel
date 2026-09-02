@@ -32,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	toolscache "k8s.io/client-go/tools/cache"
@@ -68,10 +69,10 @@ func TestNodeNotReadyPolicy_PrunedCacheEntry_EvaluatesAndPublishes(t *testing.T)
 
 	restConfig := startEnvtest(t)
 
-	cacheOptions, err := buildCacheOptions(restConfig, policies, time.Hour)
+	plan, err := buildCachePlan(restConfig, policies, time.Hour)
 	require.NoError(t, err)
 
-	cachedNodes, err := cache.New(restConfig, cacheOptions)
+	cachedNodes, err := cache.New(restConfig, plan.options)
 	require.NoError(t, err)
 
 	startCache(t, ctx, cachedNodes)
@@ -161,30 +162,33 @@ func TestNodeNotReadyPolicy_PrunedCacheEntry_EvaluatesAndPublishes(t *testing.T)
 	require.True(t, publisher.events[1].isHealthy)
 }
 
-// TestLookup_UnwatchedGVK_StartsNoInformer guards the pairing of the two
-// clients. Unstructured reads are served from the cache so that reconciling
-// does not hit the API server, but a cached read of a GVK no policy watches
-// starts a cluster-wide informer for it on demand, and lookup() names its GVK
-// at runtime. lookup() therefore has to be given the API reader.
-func TestLookup_UnwatchedGVK_StartsNoInformer(t *testing.T) {
+// TestLookup_GVKWithoutCacheEntry_StartsNoInformer guards the pairing of the
+// two clients. Unstructured reads are served from the cache so that reconciling
+// does not hit the API server, but a cached read of a GVK the cache has no
+// entry for starts a cluster-wide informer for it on demand and holds it in
+// full. Only the GVKs the policies name with literals get an entry, so a GVK
+// named any other way has to be read through the API.
+func TestLookup_GVKWithoutCacheEntry_StartsNoInformer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	t.Cleanup(cancel)
 
+	// The policy names no GVK in a lookup, so nothing but Node is cached.
 	policies := []config.Policy{
 		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
 	}
 
 	restConfig := startEnvtest(t)
 
-	cacheOptions, err := buildCacheOptions(restConfig, policies, time.Hour)
+	plan, err := buildCachePlan(restConfig, policies, time.Hour)
+	require.NoError(t, err)
+	require.Empty(t, plan.lookupGVKs)
+
+	informedKinds := newKindRecorder(&plan.options)
+
+	cachedPods, err := cache.New(restConfig, plan.options)
 	require.NoError(t, err)
 
-	informedKinds := newKindRecorder(&cacheOptions)
-
-	cachedNodes, err := cache.New(restConfig, cacheOptions)
-	require.NoError(t, err)
-
-	startCache(t, ctx, cachedNodes)
+	startCache(t, ctx, cachedPods)
 
 	apiReader, err := client.New(restConfig, client.Options{})
 	require.NoError(t, err)
@@ -197,8 +201,15 @@ func TestLookup_UnwatchedGVK_StartsNoInformer(t *testing.T) {
 		},
 	}))
 
+	cachedClient, err := client.New(restConfig, client.Options{
+		Cache: &client.CacheOptions{Reader: cachedPods, Unstructured: true},
+	})
+	require.NoError(t, err)
+
 	celEnv, err := celenv.NewEnvironment(apiReader)
 	require.NoError(t, err)
+
+	celEnv.UseCacheForLookups(cachedClient, plan.lookupGVKs)
 
 	compiled, err := celEnv.Compile(`lookup('v1', 'Pod', 'default', 'device-plugin-abcde').spec.nodeName`)
 	require.NoError(t, err)
@@ -208,7 +219,99 @@ func TestLookup_UnwatchedGVK_StartsNoInformer(t *testing.T) {
 	require.Equal(t, "gpu-node-0042", result.Value())
 
 	require.NotContains(t, informedKinds(), "Pod",
-		"lookup() started an informer for an unwatched GVK")
+		"lookup() started an informer for a GVK with no cache entry")
+}
+
+// TestLookup_LiteralGVK_ReadsFromPrunedCacheEntry covers the other side of that
+// pairing: a lookup() naming its GVK with literals has the fields it reads
+// derived like any other, so the GVK gets an entry pruned to them and the call
+// is served from the informer instead of the API server.
+func TestLookup_LiteralGVK_ReadsFromPrunedCacheEntry(t *testing.T) {
+	const (
+		nodeName = "gpu-node-0042"
+		podName  = "device-plugin-abcde"
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+
+	policies := []config.Policy{
+		policyWithExpressions("node-owns-device-plugin", nodeGVK,
+			`lookup('v1', 'Pod', 'default', '`+podName+`').spec.nodeName == resource.metadata.name`, ""),
+	}
+
+	restConfig := startEnvtest(t)
+
+	plan, err := buildCachePlan(restConfig, policies, time.Hour)
+	require.NoError(t, err)
+	require.Equal(t, []schema.GroupVersionKind{podGVK}, plan.lookupGVKs)
+
+	informedKinds := newKindRecorder(&plan.options)
+
+	cachedPods, err := cache.New(restConfig, plan.options)
+	require.NoError(t, err)
+
+	startCache(t, ctx, cachedPods)
+
+	writer, err := client.New(restConfig, client.Options{})
+	require.NoError(t, err)
+
+	require.NoError(t, writer.Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        podName,
+			Namespace:   "default",
+			Labels:      map[string]string{"app": "nvidia-device-plugin"},
+			Annotations: map[string]string{"nvsentinel.nvidia.com/notes": "only exists to be pruned"},
+		},
+		Spec: corev1.PodSpec{
+			NodeName:   nodeName,
+			Containers: []corev1.Container{{Name: "ctr", Image: "registry.k8s.io/pause:3.10"}},
+		},
+	}))
+
+	cachedClient, err := client.New(restConfig, client.Options{
+		Cache: &client.CacheOptions{Reader: cachedPods, Unstructured: true},
+	})
+	require.NoError(t, err)
+
+	// The API reader is left out, so a read that reaches it fails the test
+	// rather than quietly passing on a live GET.
+	celEnv, err := celenv.NewEnvironment(nil)
+	require.NoError(t, err)
+
+	celEnv.UseCacheForLookups(cachedClient, plan.lookupGVKs)
+
+	compiled, err := celEnv.Compile(policies[0].Predicate.Expression)
+	require.NoError(t, err)
+
+	node := map[string]any{"metadata": map[string]any{"name": nodeName}}
+
+	result, err := celEnv.Evaluate(compiled, node, ctx)
+	require.NoError(t, err)
+	require.Equal(t, true, result.Value())
+
+	require.Contains(t, informedKinds(), "Pod",
+		"the looked-up GVK should be served by an informer")
+
+	// The entry holds what the expression reads off the pod and nothing else.
+	cachedPod := &unstructured.Unstructured{}
+	cachedPod.SetGroupVersionKind(podGVK)
+
+	require.NoError(t, cachedPods.Get(ctx,
+		types.NamespacedName{Namespace: "default", Name: podName}, cachedPod))
+
+	nodeNameField, found, err := unstructured.NestedString(cachedPod.Object, "spec", "nodeName")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, nodeName, nodeNameField)
+
+	_, found, err = unstructured.NestedMap(cachedPod.Object, "metadata", "annotations")
+	require.NoError(t, err)
+	require.False(t, found, "annotations should have been pruned from the cached pod")
+
+	_, found, err = unstructured.NestedSlice(cachedPod.Object, "spec", "containers")
+	require.NoError(t, err)
+	require.False(t, found, "containers should have been pruned from the cached pod")
 }
 
 // newKindRecorder installs an informer constructor that records the kind of

@@ -15,10 +15,14 @@ package cel
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -114,6 +118,82 @@ func TestLookup(t *testing.T) {
 			}
 		})
 	}
+}
+
+// erroringReader stands in for a cached client that cannot serve a GVK, which
+// is what a deployment without cluster-wide list and watch on it produces.
+type erroringReader struct {
+	client.Reader
+	err error
+}
+
+func (r erroringReader) Get(_ context.Context, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+	return r.err
+}
+
+func TestLookup_CachedGVK_ReadsFromTheCache(t *testing.T) {
+	cached := fakeClient(obj("v1", "Pod", "default", "test-pod",
+		map[string]any{"spec": map[string]any{"nodeName": "node-1"}}))
+
+	// Only the cache holds the pod, so a lookup that answers with it cannot
+	// have read anywhere else.
+	env, err := NewEnvironment(erroringReader{err: errors.New("read through the API server")})
+	require.NoError(t, err)
+
+	env.UseCacheForLookups(cached, []schema.GroupVersionKind{{Version: "v1", Kind: "Pod"}})
+
+	compiled, err := env.Compile(`lookup('v1', 'Pod', 'default', 'test-pod').spec.nodeName`)
+	require.NoError(t, err)
+
+	result, err := env.Evaluate(compiled, map[string]any{}, context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "node-1", result.Value())
+}
+
+// TestLookup_CachedReadFails_FallsBackToTheAPI keeps a policy working when the
+// cache cannot serve the GVK it names. The informer for a GVK no policy watches
+// is created by the first read that needs it and wants cluster-wide list and
+// watch, which a deployment that granted only get will refuse.
+func TestLookup_CachedReadFails_FallsBackToTheAPI(t *testing.T) {
+	api := fakeClient(obj("v1", "Pod", "default", "test-pod",
+		map[string]any{"spec": map[string]any{"nodeName": "node-1"}}))
+
+	env, err := NewEnvironment(api)
+	require.NoError(t, err)
+
+	env.UseCacheForLookups(
+		erroringReader{err: apierrors.NewForbidden(
+			schema.GroupResource{Resource: "pods"}, "", errors.New("cannot list pods"))},
+		[]schema.GroupVersionKind{{Version: "v1", Kind: "Pod"}},
+	)
+
+	compiled, err := env.Compile(`lookup('v1', 'Pod', 'default', 'test-pod').spec.nodeName`)
+	require.NoError(t, err)
+
+	result, err := env.Evaluate(compiled, map[string]any{}, context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "node-1", result.Value())
+}
+
+// TestLookup_CachedGVKMissingObject_DoesNotFallBack keeps a negative answer
+// cheap. Falling back on a missing object would put a live GET behind every
+// lookup that finds nothing, which is the case a policy watching for a missing
+// object hits on every evaluation.
+func TestLookup_CachedGVKMissingObject_DoesNotFallBack(t *testing.T) {
+	api := fakeClient(obj("v1", "Pod", "default", "test-pod",
+		map[string]any{"spec": map[string]any{"nodeName": "node-1"}}))
+
+	env, err := NewEnvironment(api)
+	require.NoError(t, err)
+
+	env.UseCacheForLookups(fakeClient(), []schema.GroupVersionKind{{Version: "v1", Kind: "Pod"}})
+
+	compiled, err := env.Compile(`lookup('v1', 'Pod', 'default', 'test-pod') == null`)
+	require.NoError(t, err)
+
+	result, err := env.Evaluate(compiled, map[string]any{}, context.Background())
+	require.NoError(t, err)
+	require.Equal(t, true, result.Value())
 }
 
 func TestLookupChaining(t *testing.T) {
