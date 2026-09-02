@@ -53,41 +53,22 @@ func buildCacheTransforms(
 	compiler *celenv.Environment,
 	policies []config.Policy,
 ) map[schema.GroupVersionKind]toolscache.TransformFunc {
-	trees := make(map[schema.GroupVersionKind]*fieldTree)
-	cacheInFull := make(map[schema.GroupVersionKind]string)
+	policiesByGVK := make(map[schema.GroupVersionKind][]config.Policy)
 
-	for _, p := range policies {
-		if !p.Enabled {
-			continue
-		}
-
-		gvk := policyGVK(p)
-
-		tree, ok := trees[gvk]
-		if !ok {
-			tree = newFieldTree(informerFieldPaths)
-			trees[gvk] = tree
-		}
-
-		for _, expression := range policyExpressions(p) {
-			paths, ok := policyFieldPaths(compiler, expression)
-			if !ok {
-				cacheInFull[gvk] = p.Name
-				continue
-			}
-
-			for _, path := range paths {
-				tree.insert(path)
-			}
+	for _, policy := range policies {
+		if policy.Enabled {
+			gvk := policyGVK(policy)
+			policiesByGVK[gvk] = append(policiesByGVK[gvk], policy)
 		}
 	}
 
-	transforms := make(map[schema.GroupVersionKind]toolscache.TransformFunc, len(trees))
+	transforms := make(map[schema.GroupVersionKind]toolscache.TransformFunc, len(policiesByGVK))
 
-	for gvk, tree := range trees {
-		if policyName, full := cacheInFull[gvk]; full {
+	for gvk, gvkPolicies := range policiesByGVK {
+		tree, opaquePolicy := deriveFieldTree(compiler, gvkPolicies)
+		if tree == nil {
 			slog.Info("Caching full objects: policy fields could not be derived from CEL",
-				"gvk", gvk.String(), "policy", policyName)
+				"gvk", gvk.String(), "policy", opaquePolicy)
 
 			continue
 		}
@@ -101,14 +82,34 @@ func buildCacheTransforms(
 	return transforms
 }
 
-func policyExpressions(p config.Policy) []string {
-	expressions := []string{p.Predicate.Expression}
+// deriveFieldTree returns the fields the policies watching one GVK read. The
+// tree is nil when extraction failed, along with the name of the policy it
+// failed on, and that GVK's objects must then be cached in full.
+func deriveFieldTree(compiler *celenv.Environment, policies []config.Policy) (*fieldTree, string) {
+	tree := newFieldTree(informerFieldPaths)
 
-	if p.NodeAssociation != nil {
-		expressions = append(expressions, p.NodeAssociation.Expression)
+	for _, policy := range policies {
+		for _, expression := range policyExpressions(policy) {
+			paths, ok := policyFieldPaths(compiler, expression)
+			if !ok {
+				return nil, policy.Name
+			}
+
+			for _, path := range paths {
+				tree.insert(path)
+			}
+		}
 	}
 
-	return expressions
+	return tree, ""
+}
+
+func policyExpressions(p config.Policy) []string {
+	if p.NodeAssociation == nil {
+		return []string{p.Predicate.Expression}
+	}
+
+	return []string{p.Predicate.Expression, p.NodeAssociation.Expression}
 }
 
 // policyFieldPaths compiles expression and returns the resource field paths it
@@ -158,31 +159,32 @@ func newFieldTree(paths [][]string) *fieldTree {
 	return tree
 }
 
-// insert records a path as a sequence of segments. Segments are never split or
+// insert records a path as a sequence of segments, descending a level per
+// segment and creating the nodes it passes through. Segments are never split or
 // joined, so a map key containing dots stays a single level of the tree.
 func (t *fieldTree) insert(segments []string) {
-	if t.keepSubtree {
-		return
+	node := t
+
+	for _, segment := range segments {
+		if node.keepSubtree {
+			return
+		}
+
+		if node.children == nil {
+			node.children = make(map[string]*fieldTree)
+		}
+
+		child := node.children[segment]
+		if child == nil {
+			child = &fieldTree{}
+			node.children[segment] = child
+		}
+
+		node = child
 	}
 
-	if len(segments) == 0 {
-		t.keepSubtree = true
-		t.children = nil
-
-		return
-	}
-
-	if t.children == nil {
-		t.children = make(map[string]*fieldTree)
-	}
-
-	child, ok := t.children[segments[0]]
-	if !ok {
-		child = &fieldTree{}
-		t.children[segments[0]] = child
-	}
-
-	child.insert(segments[1:])
+	node.keepSubtree = true
+	node.children = nil
 }
 
 // describe renders the retained paths for logging, in sorted order and
@@ -190,27 +192,27 @@ func (t *fieldTree) insert(segments []string) {
 // operators to read and is not used to prune, which is why it can be lossy for
 // a map key that contains dots.
 func (t *fieldTree) describe() []string {
-	var (
-		out     []string
-		collect func(prefix string, node *fieldTree)
-	)
-
-	collect = func(prefix string, node *fieldTree) {
-		if node.keepSubtree || len(node.children) == 0 {
-			out = append(out, prefix)
-			return
-		}
-
-		for name, child := range node.children {
-			collect(prefix+"."+name, child)
-		}
-	}
+	var out []string
 
 	for name, child := range t.children {
-		collect(name, child)
+		out = child.appendPaths(out, name)
 	}
 
 	slices.Sort(out)
+
+	return out
+}
+
+// appendPaths appends the dotted paths retained at or beneath t, each carrying
+// prefix, the path by which t was reached.
+func (t *fieldTree) appendPaths(out []string, prefix string) []string {
+	if t.keepSubtree || len(t.children) == 0 {
+		return append(out, prefix)
+	}
+
+	for name, child := range t.children {
+		out = child.appendPaths(out, prefix+"."+name)
+	}
 
 	return out
 }
@@ -227,26 +229,26 @@ func prune(obj map[string]any, tree *fieldTree) map[string]any {
 	pruned := make(map[string]any, len(tree.children))
 
 	for name, child := range tree.children {
-		value, present := obj[name]
-		if !present {
-			continue
+		if value, present := obj[name]; present {
+			pruned[name] = pruneValue(value, child)
 		}
-
-		if child.keepSubtree {
-			pruned[name] = value
-			continue
-		}
-
-		nested, ok := value.(map[string]any)
-		if !ok {
-			// A path continues past a value that is not an object, so keep the
-			// value whole rather than guess at its shape.
-			pruned[name] = value
-			continue
-		}
-
-		pruned[name] = prune(nested, child)
 	}
 
 	return pruned
+}
+
+// pruneValue returns value with the fields tree does not retain removed.
+func pruneValue(value any, tree *fieldTree) any {
+	if tree.keepSubtree {
+		return value
+	}
+
+	nested, ok := value.(map[string]any)
+	if !ok {
+		// A path continues past a value that is not an object, so keep the
+		// value whole rather than guess at its shape.
+		return value
+	}
+
+	return prune(nested, tree)
 }
