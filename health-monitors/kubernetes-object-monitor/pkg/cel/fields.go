@@ -14,9 +14,7 @@
 package cel
 
 import (
-	"maps"
 	"slices"
-	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/ast"
@@ -27,9 +25,15 @@ import (
 // ResourceVar is the name of the CEL variable bound to the watched object.
 const ResourceVar = "resource"
 
-// ResourceFieldPaths returns the dot-separated field paths of the resource
-// variable that compiled reads. `resource.status.conditions.exists(c, c.type ==
-// "Ready")` yields ["status.conditions"].
+// ResourceFieldPaths returns the field paths of the resource variable that
+// compiled reads, each as its own slice of segments.
+// `resource.status.conditions.exists(c, c.type == "Ready")` yields
+// [["status", "conditions"]].
+//
+// Paths are segmented rather than dotted because a segment can be a map key
+// taken from a string literal, and Kubernetes map keys routinely contain dots:
+// metadata.labels["nvidia.com/gpu.present"] is three segments, not five, and
+// joining it would make the label indistinguishable from a nested field.
 //
 // A returned path stands for the entire subtree beneath it. That is what makes
 // comprehensions safe to derive fields from: recording status.conditions covers
@@ -43,22 +47,21 @@ const ResourceVar = "resource"
 // access, as in size(resource), because no set of paths describes what such an
 // expression reads. Callers must cache the object in full in that case: pruning
 // against an incomplete field set silently changes evaluation results.
-func ResourceFieldPaths(compiled *cel.Ast) ([]string, bool) {
+func ResourceFieldPaths(compiled *cel.Ast) ([][]string, bool) {
 	if compiled == nil || compiled.NativeRep() == nil {
 		return nil, false
 	}
 
-	w := &fieldWalker{
-		paths: make(map[string]struct{}),
-		ok:    true,
-	}
+	w := &fieldWalker{ok: true}
 	w.walk(compiled.NativeRep().Expr())
 
 	if !w.ok {
 		return nil, false
 	}
 
-	return slices.Sorted(maps.Keys(w.paths)), true
+	slices.SortFunc(w.paths, slices.Compare)
+
+	return slices.CompactFunc(w.paths, slices.Equal), true
 }
 
 // fieldWalker collects resource field paths from an expression graph. shadowed
@@ -66,7 +69,7 @@ func ResourceFieldPaths(compiled *cel.Ast) ([]string, bool) {
 // variable, so an iteration or accumulator variable that shadows it is not
 // mistaken for the object itself.
 type fieldWalker struct {
-	paths    map[string]struct{}
+	paths    [][]string
 	shadowed int
 	ok       bool
 }
@@ -96,7 +99,7 @@ func (w *fieldWalker) recordChain(e ast.Expr) bool {
 		return true
 	}
 
-	w.paths[strings.Join(path, ".")] = struct{}{}
+	w.paths = append(w.paths, slices.Clone(path))
 	w.walkIndexKeys(e)
 
 	return true

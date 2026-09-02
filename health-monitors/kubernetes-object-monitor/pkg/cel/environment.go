@@ -37,6 +37,11 @@ type Environment struct {
 	ctx    context.Context
 }
 
+// NewEnvironment returns an Environment that compiles and evaluates policy
+// expressions. The reader backs lookup() only, and must read straight from the
+// API server: lookup() names its GVK at runtime, so a cache-backed reader would
+// start a cluster-wide informer for any GVK no policy watches. Pass
+// mgr.GetAPIReader(), not mgr.GetClient().
 func NewEnvironment(r client.Reader) (*Environment, error) {
 	e := &Environment{
 		reader: r,

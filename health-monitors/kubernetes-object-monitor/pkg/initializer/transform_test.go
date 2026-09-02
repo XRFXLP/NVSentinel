@@ -36,7 +36,7 @@ var (
 	podGVK  = schema.GroupVersionKind{Version: "v1", Kind: "Pod"}
 )
 
-func TestTransformOnProductionShapedNode(t *testing.T) {
+func TestTransform_ProductionShapedNode_RetainsOnlyPolicyFields(t *testing.T) {
 	transform := transformForGVK(t, nodeGVK, []config.Policy{
 		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
 	})
@@ -96,7 +96,41 @@ func TestTransformOnProductionShapedNode(t *testing.T) {
 		"expected at least a 4x reduction, got %d bytes from %d", after, before)
 }
 
-func TestTransformKeepsDeletionTimestampWhenPresent(t *testing.T) {
+// TestTransform_LabelKeyContainingDots_IsRetained covers a policy that indexes
+// a label by a literal key. Label keys routinely contain dots, so a path
+// flattened to a dotted string would be read back as five nested fields, none
+// of which exist, and the label the policy reads would be pruned away.
+func TestTransform_LabelKeyContainingDots_IsRetained(t *testing.T) {
+	transform := transformForGVK(t, nodeGVK, []config.Policy{
+		policyWithExpressions("gpu-present", nodeGVK,
+			`resource.metadata.labels["nvidia.com/gpu.present"] != "true"`, ""),
+	})
+
+	node := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Node",
+		"metadata": map[string]any{
+			"name": "gpu-node-0042",
+			"labels": map[string]any{
+				"nvidia.com/gpu.present":      "true",
+				"topology.kubernetes.io/zone": "us-west-2a",
+			},
+		},
+	}}
+
+	out, err := transform(node)
+	require.NoError(t, err)
+
+	pruned, ok := out.(*unstructured.Unstructured)
+	require.True(t, ok)
+
+	labels, found, err := unstructured.NestedStringMap(pruned.Object, "metadata", "labels")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, map[string]string{"nvidia.com/gpu.present": "true"}, labels)
+}
+
+func TestTransform_DeletionTimestampPresent_IsRetained(t *testing.T) {
 	transform := transformForGVK(t, nodeGVK, []config.Policy{
 		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
 	})
@@ -113,7 +147,7 @@ func TestTransformKeepsDeletionTimestampWhenPresent(t *testing.T) {
 	require.NotNil(t, pruned.GetDeletionTimestamp())
 }
 
-func TestTransformKeepsFieldsFromNodeAssociation(t *testing.T) {
+func TestTransform_NodeAssociationExpression_FieldsAreRetained(t *testing.T) {
 	transform := transformForGVK(t, podGVK, []config.Policy{
 		policyWithExpressions(
 			"gpu-operator-pod-health",
@@ -161,7 +195,7 @@ func TestTransformKeepsFieldsFromNodeAssociation(t *testing.T) {
 	}, pruned.Object)
 }
 
-func TestTransformPassesThroughNonUnstructuredInput(t *testing.T) {
+func TestTransform_NonUnstructuredInput_PassesThroughUnchanged(t *testing.T) {
 	transform := transformForGVK(t, nodeGVK, []config.Policy{
 		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
 	})
@@ -179,7 +213,7 @@ func TestTransformPassesThroughNonUnstructuredInput(t *testing.T) {
 	require.Equal(t, tombstone, out)
 }
 
-func TestBuildCacheTransformsSkipsGVKWithOpaquePolicy(t *testing.T) {
+func TestBuildCacheTransforms_OpaquePolicy_CachesGVKInFull(t *testing.T) {
 	compiler, err := celenv.NewCompilerEnvironment()
 	require.NoError(t, err)
 
@@ -195,7 +229,7 @@ func TestBuildCacheTransformsSkipsGVKWithOpaquePolicy(t *testing.T) {
 	require.Contains(t, transforms, podGVK)
 }
 
-func TestBuildCacheTransformsIgnoresDisabledPolicies(t *testing.T) {
+func TestBuildCacheTransforms_DisabledPolicy_IsIgnored(t *testing.T) {
 	compiler, err := celenv.NewCompilerEnvironment()
 	require.NoError(t, err)
 
@@ -210,12 +244,12 @@ func TestBuildCacheTransformsIgnoresDisabledPolicies(t *testing.T) {
 	require.Contains(t, transforms, nodeGVK)
 }
 
-func TestFieldTreeCollapsesRedundantPaths(t *testing.T) {
-	tree := newFieldTree([]string{"metadata.name", "status"})
-	tree.insert("status.conditions.type")
-	tree.insert("metadata.labels.example")
+func TestFieldTree_RedundantPaths_CollapseIntoRetainedSubtree(t *testing.T) {
+	tree := newFieldTree([][]string{{"metadata", "name"}, {"status"}})
+	tree.insert([]string{"status", "conditions", "type"})
+	tree.insert([]string{"metadata", "labels", "example"})
 
-	require.Equal(t, []string{"metadata.labels.example", "metadata.name", "status"}, tree.paths())
+	require.Equal(t, []string{"metadata.labels.example", "metadata.name", "status"}, tree.describe())
 }
 
 func transformForGVK(

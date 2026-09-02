@@ -33,7 +33,7 @@ func TestBuildManagerOptions_CacheSyncTimeout_PreservesConfiguredValue(t *testin
 	require.Equal(t, timeout, opts.Controller.CacheSyncTimeout)
 }
 
-func TestBuildManagerOptionsServesUnstructuredReadsFromCache(t *testing.T) {
+func TestBuildManagerOptions_UnstructuredReads_AreServedFromCache(t *testing.T) {
 	opts := buildManagerOptions(Params{}, cache.Options{})
 
 	// Without this the reconciler's Get of an unstructured object is a live
@@ -79,7 +79,7 @@ func TestBuildCacheOptionsKeepsGVKAllNamespacesWhenAnyPolicyOmitsNamespace(t *te
 	require.Empty(t, byObj.Namespaces)
 }
 
-func TestBuildCacheOptionsAttachesTransformToEveryWatchedGVK(t *testing.T) {
+func TestBuildCacheOptions_WatchedGVKs_EachGetATransform(t *testing.T) {
 	opts, err := buildCacheOptionsWithRESTMapper(testRESTMapper(), []config.Policy{
 		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
 		policyWithExpressions("pod-health", podGVK, `resource.status.phase != 'Running'`, ""),
@@ -93,7 +93,7 @@ func TestBuildCacheOptionsAttachesTransformToEveryWatchedGVK(t *testing.T) {
 	}
 }
 
-func TestBuildCacheOptionsOmitsTransformWhenPolicyFieldsAreNotDerivable(t *testing.T) {
+func TestBuildCacheOptions_UnderivablePolicyFields_OmitTransform(t *testing.T) {
 	opts, err := buildCacheOptionsWithRESTMapper(testRESTMapper(), []config.Policy{
 		policyWithExpressions("node-opaque", nodeGVK, `size(resource) > 3`, ""),
 	}, time.Minute)
@@ -104,7 +104,7 @@ func TestBuildCacheOptionsOmitsTransformWhenPolicyFieldsAreNotDerivable(t *testi
 	require.Nil(t, byObj.Transform)
 }
 
-func TestBuildCacheOptionsWithoutEnabledPoliciesHasNoEntries(t *testing.T) {
+func TestBuildCacheOptions_NoEnabledPolicies_HasNoEntries(t *testing.T) {
 	disabled := testPolicy("node-not-ready", "", "v1", "Node", "")
 	disabled.Enabled = false
 

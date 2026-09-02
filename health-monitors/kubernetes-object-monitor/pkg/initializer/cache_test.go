@@ -47,7 +47,7 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
 )
 
-// TestCachedNodeIsPrunedAndStillDrivesTheNodeNotReadyPolicy takes the
+// TestNodeNotReadyPolicy_PrunedCacheEntry_EvaluatesAndPublishes takes the
 // as-shipped node-not-ready policy through the real cache built from it: a node
 // created against a live API server is pruned on its way into the informer, and
 // the reconciler then reads that pruned object, evaluates the predicate against
@@ -56,7 +56,7 @@ import (
 // The reconciler's client reads unstructured objects from the cache, matching
 // what buildManagerOptions configures, so a pruned object missing anything the
 // reconcile path needs fails this test.
-func TestCachedNodeIsPrunedAndStillDrivesTheNodeNotReadyPolicy(t *testing.T) {
+func TestNodeNotReadyPolicy_PrunedCacheEntry_EvaluatesAndPublishes(t *testing.T) {
 	const nodeName = "gpu-node-0042"
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -161,12 +161,12 @@ func TestCachedNodeIsPrunedAndStillDrivesTheNodeNotReadyPolicy(t *testing.T) {
 	require.True(t, publisher.events[1].isHealthy)
 }
 
-// TestLookupDoesNotStartInformersForUnwatchedGVKs guards the pairing of the two
+// TestLookup_UnwatchedGVK_StartsNoInformer guards the pairing of the two
 // clients. Unstructured reads are served from the cache so that reconciling
 // does not hit the API server, but a cached read of a GVK no policy watches
 // starts a cluster-wide informer for it on demand, and lookup() names its GVK
 // at runtime. lookup() therefore has to be given the API reader.
-func TestLookupDoesNotStartInformersForUnwatchedGVKs(t *testing.T) {
+func TestLookup_UnwatchedGVK_StartsNoInformer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	t.Cleanup(cancel)
 
