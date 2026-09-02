@@ -129,6 +129,23 @@ nodeAssociation:
     lookup('v1', 'Pod', resource.metadata.namespace, resource.spec.podName).spec.nodeName
 ```
 
+#### Cached Fields
+
+Policies are read once at startup, so the fields each expression touches are derived from the compiled CEL and the
+informer cache keeps only those, plus the metadata the informer itself needs (`apiVersion`, `kind`, `metadata.name`,
+`metadata.namespace`, `metadata.uid`, `metadata.resourceVersion`, `metadata.deletionTimestamp`). A node object is
+mostly labels, annotations, managed fields and cached image lists, none of which a typical predicate reads, so this
+cuts the cache to a fraction of its former size on large clusters. The retained fields are logged per resource kind
+at startup.
+
+A recorded field keeps its whole subtree, so comprehensions and computed map keys need no special care:
+`resource.status.conditions.filter(c, c.type == "Ready")` keeps every field of every condition, and
+`resource.metadata.labels[resource.spec.nodeName]` keeps all of `metadata.labels`.
+
+An expression that uses the resource as a whole rather than through a field access, such as `size(resource)`, cannot be
+reduced to a set of fields. That resource kind is then cached in full, which is correct but gives up the saving for
+every policy on that kind. Prefer reading the specific fields you need.
+
 #### Health Event Template
 ```yaml
 healthEvent:

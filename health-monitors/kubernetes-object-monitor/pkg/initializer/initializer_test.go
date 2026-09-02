@@ -50,8 +50,12 @@ func TestBuildCacheOptionsLimitsGVKToConfiguredNamespaces(t *testing.T) {
 	require.Contains(t, byObj.Namespaces, "gpu-operator")
 	require.Contains(t, byObj.Namespaces, "monitoring")
 
-	_, ok = byObjectForGVK(opts, schema.GroupVersionKind{Version: "v1", Kind: "Node"})
-	require.False(t, ok)
+	// The cluster-scoped Node still gets an entry so that it has somewhere to
+	// carry a transform, and its Namespaces stays nil, which controller-runtime
+	// requires for cluster-scoped kinds and which caches cluster-wide.
+	byObj, ok = byObjectForGVK(opts, schema.GroupVersionKind{Version: "v1", Kind: "Node"})
+	require.True(t, ok)
+	require.Nil(t, byObj.Namespaces)
 }
 
 func TestBuildCacheOptionsKeepsGVKAllNamespacesWhenAnyPolicyOmitsNamespace(t *testing.T) {
@@ -61,8 +65,44 @@ func TestBuildCacheOptionsKeepsGVKAllNamespacesWhenAnyPolicyOmitsNamespace(t *te
 	}, time.Minute)
 	require.NoError(t, err)
 
-	_, ok := byObjectForGVK(opts, schema.GroupVersionKind{Version: "v1", Kind: "Pod"})
-	require.False(t, ok)
+	byObj, ok := byObjectForGVK(opts, schema.GroupVersionKind{Version: "v1", Kind: "Pod"})
+	require.True(t, ok)
+	require.Empty(t, byObj.Namespaces)
+}
+
+func TestBuildCacheOptionsAttachesTransformToEveryWatchedGVK(t *testing.T) {
+	opts, err := buildCacheOptionsWithRESTMapper(testRESTMapper(), []config.Policy{
+		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
+		policyWithExpressions("pod-health", podGVK, `resource.status.phase != 'Running'`, ""),
+	}, time.Minute)
+	require.NoError(t, err)
+
+	for _, gvk := range []schema.GroupVersionKind{nodeGVK, podGVK} {
+		byObj, ok := byObjectForGVK(opts, gvk)
+		require.True(t, ok, "no cache entry for %s", gvk)
+		require.NotNil(t, byObj.Transform, "no transform for %s", gvk)
+	}
+}
+
+func TestBuildCacheOptionsOmitsTransformWhenPolicyFieldsAreNotDerivable(t *testing.T) {
+	opts, err := buildCacheOptionsWithRESTMapper(testRESTMapper(), []config.Policy{
+		policyWithExpressions("node-opaque", nodeGVK, `size(resource) > 3`, ""),
+	}, time.Minute)
+	require.NoError(t, err)
+
+	byObj, ok := byObjectForGVK(opts, nodeGVK)
+	require.True(t, ok)
+	require.Nil(t, byObj.Transform)
+}
+
+func TestBuildCacheOptionsWithoutEnabledPoliciesHasNoEntries(t *testing.T) {
+	disabled := testPolicy("node-not-ready", "", "v1", "Node", "")
+	disabled.Enabled = false
+
+	opts, err := buildCacheOptionsWithRESTMapper(testRESTMapper(), []config.Policy{disabled}, time.Minute)
+	require.NoError(t, err)
+
+	require.Empty(t, opts.ByObject)
 }
 
 func TestBuildCacheOptionsRejectsNamespaceForClusterScopedGVK(t *testing.T) {

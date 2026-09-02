@@ -202,6 +202,7 @@ func buildCacheOptionsWithRESTMapper(
 		SyncPeriod: &resyncPeriod,
 	}
 
+	watchedGVKs := make(map[schema.GroupVersionKind]bool)
 	namespacesByGVK := make(map[schema.GroupVersionKind]map[string]cache.Config)
 	allNamespacesByGVK := make(map[schema.GroupVersionKind]bool)
 
@@ -211,6 +212,8 @@ func buildCacheOptionsWithRESTMapper(
 		}
 
 		gvk := policyGVK(p)
+		watchedGVKs[gvk] = true
+
 		if p.Resource.Namespace == "" {
 			allNamespacesByGVK[gvk] = true
 			delete(namespacesByGVK, gvk)
@@ -233,14 +236,27 @@ func buildCacheOptionsWithRESTMapper(
 		namespacesByGVK[gvk][p.Resource.Namespace] = cache.Config{}
 	}
 
-	if len(namespacesByGVK) == 0 {
+	if len(watchedGVKs) == 0 {
 		return opts, nil
 	}
 
-	opts.ByObject = make(map[client.Object]cache.ByObject, len(namespacesByGVK))
-	for gvk, namespaces := range namespacesByGVK {
+	compiler, err := celenv.NewCompilerEnvironment()
+	if err != nil {
+		return cache.Options{}, fmt.Errorf("failed to create CEL environment for cache field derivation: %w", err)
+	}
+
+	transforms := buildCacheTransforms(compiler, policies)
+
+	// Every watched GVK gets an entry, cluster-scoped ones included, because the
+	// entry is where the transform lives. Namespaces stays nil to cache
+	// cluster-wide, which controller-runtime also requires of an entry for a
+	// cluster-scoped kind.
+	opts.ByObject = make(map[client.Object]cache.ByObject, len(watchedGVKs))
+
+	for gvk := range watchedGVKs {
 		opts.ByObject[newUnstructuredForGVK(gvk)] = cache.ByObject{
-			Namespaces: namespaces,
+			Namespaces: namespacesByGVK[gvk],
+			Transform:  transforms[gvk],
 		}
 	}
 

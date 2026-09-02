@@ -40,7 +40,7 @@ func NewEnvironment(c client.Client) (*Environment, error) {
 	}
 
 	env, err := cel.NewEnv(
-		cel.Variable("resource", cel.DynType),
+		cel.Variable(ResourceVar, cel.DynType),
 		cel.Variable("now", cel.TimestampType),
 		cel.Function("lookup",
 			cel.Overload("lookup_string_string_string_string",
@@ -58,6 +58,15 @@ func NewEnvironment(c client.Client) (*Environment, error) {
 	e.env = env
 
 	return e, nil
+}
+
+// NewCompilerEnvironment returns an Environment that declares the same
+// variables and functions as NewEnvironment but has no Kubernetes client, so it
+// can compile policy expressions without being able to evaluate lookup(). The
+// cache options are built before the manager exists, and deriving the fields a
+// policy reads needs a compiled AST at that point.
+func NewCompilerEnvironment() (*Environment, error) {
+	return NewEnvironment(nil)
 }
 
 func (e *Environment) Compile(expression string) (*cel.Ast, error) {
@@ -99,6 +108,11 @@ func (e *Environment) Evaluate(ast *cel.Ast, resource any, ctx context.Context) 
 }
 
 func (e *Environment) lookup(args ...ref.Val) ref.Val {
+	if e.client == nil {
+		slog.Error("Lookup is unavailable without a Kubernetes client")
+		return types.NewErr("lookup is unavailable in a compile-only environment")
+	}
+
 	if len(args) != 4 {
 		slog.Error("Lookup requires 4 arguments: version, kind, namespace, name")
 		return types.NewErr("lookup requires 4 arguments: version, kind, namespace, name")
