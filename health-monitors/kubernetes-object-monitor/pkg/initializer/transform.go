@@ -30,11 +30,7 @@ import (
 const metadataKey = "metadata"
 
 // alwaysRetainedPaths survive pruning for every watched GVK regardless of what
-// the policies read. The informer keys objects by name and namespace, delete and
-// resync handling need uid, resourceVersion and deletionTimestamp, and the
-// cache resolves an unstructured object's type from apiVersion and kind.
-// Outside CEL the only reads of a watched object are GetName() and
-// GetNamespace() in the reconciler and GetKind() in the policy evaluator.
+// the policies read. 
 var alwaysRetainedPaths = [][]string{
 	{"apiVersion"},
 	{"kind"},
@@ -51,17 +47,29 @@ type gvkCacheEntry struct {
 	// transform prunes the cache entry to the fields the policies read, and is
 	// nil when the objects must be cached in full.
 	transform toolscache.TransformFunc
-	// servesLookups reports whether a lookup() returning this GVK may read the
-	// entry rather than the API. It is false unless the entry retains
-	// everything the policies read off a looked-up object of this GVK, because
-	// a read that silently misses pruned fields changes how a policy evaluates.
+	// servesLookups reports whether a lookup() of this GVK reads the cache or the API server.
 	servesLookups bool
 }
 
-// buildCacheEntries derives how to cache each GVK the enabled policies reach,
-// whether by watching it or by naming it in a lookup(). A GVK a lookup() names
-// but no policy watches is included, so that the lookup can be served from an
-// entry pruned to what it reads instead of from the API.
+// gvkFieldPaths is what the enabled policies read off one GVK, in each of the
+// two roles it can play. wholeWatch and wholeLookup name a policy that reads
+// the object as a whole in that role, which no set of paths describes.
+type gvkFieldPaths struct {
+	watched     bool
+	watchPaths  [][]string
+	wholeWatch  string
+	lookedUp    bool
+	lookupPaths [][]string
+	wholeLookup string
+}
+
+
+
+// buildCacheEntries decides two things for each kind the enabled policies use:
+// which of its fields the cache keeps, and whether lookup() may read it from
+// the cache. Both follow from the fields the policy expressions read.
+//
+// A policy uses a kind by watching it or by passing it to lookup().
 func buildCacheEntries(
 	compiler *celenv.Environment,
 	policies []config.Policy,
@@ -83,18 +91,6 @@ func buildCacheEntries(
 	}
 
 	return entries
-}
-
-// gvkFieldPaths is what the enabled policies read off one GVK, in each of the
-// two roles it can play. wholeWatch and wholeLookup name a policy that reads
-// the object as a whole in that role, which no set of paths describes.
-type gvkFieldPaths struct {
-	watched     bool
-	watchPaths  [][]string
-	wholeWatch  string
-	lookedUp    bool
-	lookupPaths [][]string
-	wholeLookup string
 }
 
 // fieldPathsByGVK is what the policies read, per GVK.
