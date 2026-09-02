@@ -21,6 +21,8 @@ package initializer
 
 import (
 	"context"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,8 +31,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	toolscache "k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,10 +53,9 @@ import (
 // the reconciler then reads that pruned object, evaluates the predicate against
 // it and publishes.
 //
-// The reconciler is given a client that reads unstructured objects from the
-// cache. In production those reads are live, so this is stricter than the
-// running monitor: it fails if the pruned object is missing anything the
-// reconcile path needs.
+// The reconciler's client reads unstructured objects from the cache, matching
+// what buildManagerOptions configures, so a pruned object missing anything the
+// reconcile path needs fails this test.
 func TestCachedNodeIsPrunedAndStillDrivesTheNodeNotReadyPolicy(t *testing.T) {
 	const nodeName = "gpu-node-0042"
 
@@ -156,6 +159,85 @@ func TestCachedNodeIsPrunedAndStillDrivesTheNodeNotReadyPolicy(t *testing.T) {
 
 	require.Len(t, publisher.events, 2)
 	require.True(t, publisher.events[1].isHealthy)
+}
+
+// TestLookupDoesNotStartInformersForUnwatchedGVKs guards the pairing of the two
+// clients. Unstructured reads are served from the cache so that reconciling
+// does not hit the API server, but a cached read of a GVK no policy watches
+// starts a cluster-wide informer for it on demand, and lookup() names its GVK
+// at runtime. lookup() therefore has to be given the API reader.
+func TestLookupDoesNotStartInformersForUnwatchedGVKs(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+
+	policies := []config.Policy{
+		policyWithExpressions("node-not-ready", nodeGVK, nodeNotReadyPredicate, ""),
+	}
+
+	restConfig := startEnvtest(t)
+
+	cacheOptions, err := buildCacheOptions(restConfig, policies, time.Hour)
+	require.NoError(t, err)
+
+	informedKinds := newKindRecorder(&cacheOptions)
+
+	cachedNodes, err := cache.New(restConfig, cacheOptions)
+	require.NoError(t, err)
+
+	startCache(t, ctx, cachedNodes)
+
+	apiReader, err := client.New(restConfig, client.Options{})
+	require.NoError(t, err)
+
+	require.NoError(t, apiReader.Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "device-plugin-abcde", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			NodeName:   "gpu-node-0042",
+			Containers: []corev1.Container{{Name: "ctr", Image: "registry.k8s.io/pause:3.10"}},
+		},
+	}))
+
+	celEnv, err := celenv.NewEnvironment(apiReader)
+	require.NoError(t, err)
+
+	compiled, err := celEnv.Compile(`lookup('v1', 'Pod', 'default', 'device-plugin-abcde').spec.nodeName`)
+	require.NoError(t, err)
+
+	result, err := celEnv.Evaluate(compiled, map[string]any{}, ctx)
+	require.NoError(t, err)
+	require.Equal(t, "gpu-node-0042", result.Value())
+
+	require.NotContains(t, informedKinds(), "Pod",
+		"lookup() started an informer for an unwatched GVK")
+}
+
+// newKindRecorder installs an informer constructor that records the kind of
+// every informer the cache builds.
+func newKindRecorder(opts *cache.Options) func() []string {
+	var (
+		mu    sync.Mutex
+		kinds []string
+	)
+
+	opts.NewInformer = func(
+		lw toolscache.ListerWatcher,
+		obj runtime.Object,
+		resync time.Duration,
+		indexers toolscache.Indexers,
+	) toolscache.SharedIndexInformer {
+		mu.Lock()
+		kinds = append(kinds, obj.GetObjectKind().GroupVersionKind().Kind)
+		mu.Unlock()
+
+		return toolscache.NewSharedIndexInformer(lw, obj, resync, indexers)
+	}
+
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return slices.Clone(kinds)
+	}
 }
 
 func startEnvtest(t *testing.T) *rest.Config {

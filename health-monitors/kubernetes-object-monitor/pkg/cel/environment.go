@@ -28,15 +28,18 @@ import (
 )
 
 type Environment struct {
-	env    *cel.Env
-	client client.Client
+	env *cel.Env
+	// reader backs lookup(). It must not be the manager's cache-backed client:
+	// lookup() names a GVK at runtime, and a cached read of a GVK no policy
+	// watches starts a cluster-wide informer for it on demand.
+	reader client.Reader
 	evalMu sync.Mutex
 	ctx    context.Context
 }
 
-func NewEnvironment(c client.Client) (*Environment, error) {
+func NewEnvironment(r client.Reader) (*Environment, error) {
 	e := &Environment{
-		client: c,
+		reader: r,
 	}
 
 	env, err := cel.NewEnv(
@@ -61,7 +64,7 @@ func NewEnvironment(c client.Client) (*Environment, error) {
 }
 
 // NewCompilerEnvironment returns an Environment that declares the same
-// variables and functions as NewEnvironment but has no Kubernetes client, so it
+// variables and functions as NewEnvironment but has no Kubernetes reader, so it
 // can compile policy expressions without being able to evaluate lookup(). The
 // cache options are built before the manager exists, and deriving the fields a
 // policy reads needs a compiled AST at that point.
@@ -108,8 +111,8 @@ func (e *Environment) Evaluate(ast *cel.Ast, resource any, ctx context.Context) 
 }
 
 func (e *Environment) lookup(args ...ref.Val) ref.Val {
-	if e.client == nil {
-		slog.Error("Lookup is unavailable without a Kubernetes client")
+	if e.reader == nil {
+		slog.Error("Lookup is unavailable without a Kubernetes reader")
 		return types.NewErr("lookup is unavailable in a compile-only environment")
 	}
 
@@ -154,12 +157,12 @@ func (e *Environment) lookup(args ...ref.Val) ref.Val {
 		Name:      string(name),
 	}
 
-	if err := e.client.Get(ctx, key, obj); err != nil {
-		slog.Error("Failed to get object using cached client", "error", err)
+	if err := e.reader.Get(ctx, key, obj); err != nil {
+		slog.Error("Failed to get object for lookup", "error", err)
 		return types.NullValue
 	}
 
-	slog.Info("Successfully got object using cached client", "object", obj.Object)
+	slog.Info("Successfully got object for lookup", "object", obj.Object)
 
 	return types.DefaultTypeAdapter.NativeToValue(obj.Object)
 }

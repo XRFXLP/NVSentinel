@@ -114,7 +114,11 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		return nil, fmt.Errorf("failed to setup health checks: %w", err)
 	}
 
-	celEnv, err := celenv.NewEnvironment(mgr.GetClient())
+	// lookup() reads whatever GVK the expression names, so it gets the API
+	// reader rather than the cached client, which would start an informer per
+	// looked-up GVK. Policies reach the watched object itself through the
+	// cache, via the reconciler.
+	celEnv, err := celenv.NewEnvironment(mgr.GetAPIReader())
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
@@ -169,6 +173,12 @@ func buildManagerOptions(params Params, cacheOptions cache.Options) ctrl.Options
 		},
 		HealthProbeBindAddress: params.HealthProbeBindAddress,
 		Cache:                  cacheOptions,
+		// Serve the watched objects from the informer cache. Unstructured reads
+		// bypass it by default, which would put a live GET on the API server in
+		// every reconcile of every object.
+		Client: client.Options{
+			Cache: &client.CacheOptions{Unstructured: true},
+		},
 		Controller: ctrlconfig.Controller{
 			CacheSyncTimeout: params.CacheSyncTimeout,
 		},

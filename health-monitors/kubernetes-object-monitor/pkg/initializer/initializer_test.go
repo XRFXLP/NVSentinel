@@ -33,6 +33,15 @@ func TestBuildManagerOptions_CacheSyncTimeout_PreservesConfiguredValue(t *testin
 	require.Equal(t, timeout, opts.Controller.CacheSyncTimeout)
 }
 
+func TestBuildManagerOptionsServesUnstructuredReadsFromCache(t *testing.T) {
+	opts := buildManagerOptions(Params{}, cache.Options{})
+
+	// Without this the reconciler's Get of an unstructured object is a live
+	// call to the API server on every reconcile.
+	require.NotNil(t, opts.Client.Cache)
+	require.True(t, opts.Client.Cache.Unstructured)
+}
+
 func TestBuildCacheOptionsLimitsGVKToConfiguredNamespaces(t *testing.T) {
 	resyncPeriod := time.Minute
 	opts, err := buildCacheOptionsWithRESTMapper(testRESTMapper(), []config.Policy{
