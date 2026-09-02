@@ -115,6 +115,15 @@ func TestLookupTargets_Expressions_ExtractsGVKsAndPaths(t *testing.T) {
 			},
 		},
 		{
+			name: "a whole-object use of the watched resource makes every GVK underivable",
+			expression: `lookup('v1', 'Pod', 'ns', 'a').spec.nodeName != '' && ` +
+				`size(resource) > 3 && ` +
+				`lookup('v1', 'Pod', 'ns', 'a').status.phase == 'Running'`,
+			want: []LookupTarget{
+				{APIVersion: "v1", Kind: "Pod", Derivable: false},
+			},
+		},
+		{
 			name:       "computed apiVersion cannot be named",
 			expression: `lookup(resource.apiVersion, 'Pod', 'ns', 'a').spec.nodeName != ''`,
 			want:       nil,
@@ -157,6 +166,31 @@ func TestLookupTargets_LookupArguments_StillReadTheResource(t *testing.T) {
 
 	require.True(t, ok)
 	require.Equal(t, [][]string{{"metadata", "namespace"}, {"status", "podName"}}, paths)
+}
+
+// TestLookupTargets_WalkStoppedEarly_DropsThePathsGatheredSoFar covers the
+// worst way this could go wrong. The walk stops where the watched object is
+// used as a whole, so a lookup() past that point is never seen — and a lookup()
+// before it names the same GVK. Reporting the fields gathered so far as all
+// that GVK is read for would prune the rest from its cache entry, and the call
+// past the stop would read them as absent rather than as what they hold.
+func TestLookupTargets_WalkStoppedEarly_DropsThePathsGatheredSoFar(t *testing.T) {
+	env, err := NewCompilerEnvironment()
+	require.NoError(t, err)
+
+	compiled, err := env.Compile(
+		`lookup('v1', 'Pod', 'ns', 'a').spec.nodeName != '' && size(resource) > 3 && ` +
+			`lookup('v1', 'Pod', 'ns', 'a').status.phase == 'Running'`)
+	require.NoError(t, err)
+
+	_, ok := ResourceFieldPaths(compiled)
+	require.False(t, ok, "the watched object is used as a whole, so its fields are underivable")
+
+	targets := LookupTargets(compiled)
+
+	require.Len(t, targets, 1)
+	require.False(t, targets[0].Derivable)
+	require.Nil(t, targets[0].Paths)
 }
 
 func TestLookupTargets_NilAST_ReturnsNothing(t *testing.T) {

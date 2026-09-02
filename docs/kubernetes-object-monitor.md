@@ -139,7 +139,9 @@ An expression that uses the resource as a whole rather than through a field acce
 
 The same derivation covers `lookup()`. A call that gives its apiVersion and kind as string literals, as in `lookup('v1', 'Pod', resource.metadata.namespace, resource.spec.podName).spec.nodeName`, has the fields it reads off the returned object derived too, and that kind is cached cluster-wide pruned to them. Such a kind needs `get`, `list` and `watch` on it cluster-wide: `get` for the calls that read through the API server, `list` and `watch` because the cache watches every object of the kind. Grant all three in the ClusterRole for any kind a policy looks up but no policy watches, as the generated rules cover only the kinds policies watch. Where `list` and `watch` are missing the call reads through the API server instead, and logs once that it did.
 
-A call that computes its apiVersion or kind, whose result is used as a whole, or that names a kind cached for particular namespaces only, also reads through the API server. Each read is then one request per evaluation, so a policy that looks up a literal kind and reads named fields off it is the cheaper shape by a wide margin.
+The informer for such a kind is created by the first call that needs it and lists every object of the kind before it can answer. Calls read through the API server until it has caught up, so that no evaluation waits on it.
+
+A call that computes its apiVersion or kind, whose result is used as a whole, that sits in an expression using the watched resource as a whole, or that names a kind cached for particular namespaces only, always reads through the API server. Each read is then one request per evaluation, so a policy that looks up a literal kind and reads named fields off it is the cheaper shape by a wide margin.
 
 #### Health Event Template
 ```yaml

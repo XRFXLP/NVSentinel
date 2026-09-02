@@ -31,9 +31,10 @@ type LookupTarget struct {
 	// Derivable is false.
 	Paths [][]string
 	// Derivable is false when the expression uses a returned object as a whole,
-	// as in size(lookup(...)), because no set of paths describes what such an
-	// expression reads. The GVK must then be read through the API, since a
-	// pruned cache entry would silently answer with fields it dropped.
+	// as in size(lookup(...)), or when the walk of the expression stopped
+	// before the end, because no set of paths describes what it reads then. The
+	// GVK must be read through the API in that case, since a pruned cache entry
+	// would silently answer with fields it dropped.
 	Derivable bool
 }
 
@@ -42,16 +43,26 @@ type LookupTarget struct {
 // kind as string literals. A call that computes either is absent: nothing can
 // be cached for a GVK that is not known until the expression runs.
 //
-// Extraction stops at an expression that uses the watched object as a whole, so
-// a lookup() beyond that point goes unreported. What makes that safe is the
-// contract callers owe an absent GVK, which is the same one they owe a computed
-// GVK: read it through the API.
+// No target is derivable once the walk has stopped at an expression that uses
+// the watched object as a whole. The paths gathered up to that point describe
+// the calls walked so far and no others, and a call beyond it may read further
+// fields of a GVK already gathered, which pruning to those paths would drop.
 func LookupTargets(compiled *cel.Ast) []LookupTarget {
 	if compiled == nil || compiled.NativeRep() == nil {
 		return nil
 	}
 
-	return mergeLookups(walkExpression(compiled).lookups)
+	w := walkExpression(compiled)
+	targets := mergeReadsByGVK(w.lookups)
+
+	if !w.ok {
+		for i := range targets {
+			targets[i].Derivable = false
+			targets[i].Paths = nil
+		}
+	}
+
+	return targets
 }
 
 // lookupRead is one path an expression reads off the object a lookup() call
@@ -62,9 +73,9 @@ type lookupRead struct {
 	path       []string
 }
 
-// mergeLookups gathers the reads of each GVK into a single target, in the order
-// the GVKs were first read.
-func mergeLookups(reads []lookupRead) []LookupTarget {
+// mergeReadsByGVK gathers the reads of each GVK into a single target, in the
+// order the GVKs were first read.
+func mergeReadsByGVK(reads []lookupRead) []LookupTarget {
 	if len(reads) == 0 {
 		return nil
 	}
@@ -101,7 +112,7 @@ func mergeLookups(reads []lookupRead) []LookupTarget {
 		target := *targets[key]
 
 		if target.Derivable {
-			target.Paths = sortPaths(target.Paths)
+			target.Paths = sortedUniquePaths(target.Paths)
 		} else {
 			target.Paths = nil
 		}

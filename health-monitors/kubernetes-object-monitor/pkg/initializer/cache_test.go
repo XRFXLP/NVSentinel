@@ -201,15 +201,10 @@ func TestLookup_GVKWithoutCacheEntry_StartsNoInformer(t *testing.T) {
 		},
 	}))
 
-	cachedClient, err := client.New(restConfig, client.Options{
-		Cache: &client.CacheOptions{Reader: cachedPods, Unstructured: true},
-	})
-	require.NoError(t, err)
-
 	celEnv, err := celenv.NewEnvironment(apiReader)
 	require.NoError(t, err)
 
-	celEnv.UseCacheForLookups(cachedClient, plan.lookupGVKs)
+	celEnv.UseCacheForLookups(cachedPods, plan.lookupGVKs)
 
 	compiled, err := celEnv.Compile(`lookup('v1', 'Pod', 'default', 'device-plugin-abcde').spec.nodeName`)
 	require.NoError(t, err)
@@ -269,17 +264,18 @@ func TestLookup_LiteralGVK_ReadsFromPrunedCacheEntry(t *testing.T) {
 		},
 	}))
 
-	cachedClient, err := client.New(restConfig, client.Options{
-		Cache: &client.CacheOptions{Reader: cachedPods, Unstructured: true},
-	})
-	require.NoError(t, err)
-
 	// The API reader is left out, so a read that reaches it fails the test
 	// rather than quietly passing on a live GET.
 	celEnv, err := celenv.NewEnvironment(nil)
 	require.NoError(t, err)
 
-	celEnv.UseCacheForLookups(cachedClient, plan.lookupGVKs)
+	celEnv.UseCacheForLookups(cachedPods, plan.lookupGVKs)
+
+	// A lookup reads through the API server until the informer behind the GVK
+	// has caught up, which is what leaving the API reader out would trip over.
+	// Waiting here is what the first evaluation of a running monitor declines
+	// to do.
+	warmLookupInformer(t, ctx, cachedPods, podGVK)
 
 	compiled, err := celEnv.Compile(policies[0].Predicate.Expression)
 	require.NoError(t, err)
@@ -372,6 +368,15 @@ func startCache(t *testing.T, ctx context.Context, c cache.Cache) {
 	})
 
 	require.True(t, c.WaitForCacheSync(ctx), "cache did not sync")
+}
+
+// warmLookupInformer creates the informer behind gvk and waits for it to catch
+// up, which a cached lookup of that GVK will not do for itself.
+func warmLookupInformer(t *testing.T, ctx context.Context, c cache.Cache, gvk schema.GroupVersionKind) {
+	t.Helper()
+
+	_, err := c.GetInformer(ctx, newUnstructuredForGVK(gvk))
+	require.NoError(t, err)
 }
 
 func newTestReconciler(

@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -131,8 +132,36 @@ func (r erroringReader) Get(_ context.Context, _ client.ObjectKey, _ client.Obje
 	return r.err
 }
 
+// stubCache reads through a fake client and reports the informer behind every
+// GVK as caught up, or as still catching up when caughtUp is false.
+type stubCache struct {
+	client.Reader
+	caughtUp bool
+}
+
+func (c stubCache) GetInformer(
+	_ context.Context,
+	_ client.Object,
+	_ ...cache.InformerGetOption,
+) (cache.Informer, error) {
+	return stubInformer{caughtUp: c.caughtUp}, nil
+}
+
+type stubInformer struct {
+	cache.Informer
+	caughtUp bool
+}
+
+func (i stubInformer) HasSynced() bool {
+	return i.caughtUp
+}
+
+func caughtUpCache(objs ...client.Object) stubCache {
+	return stubCache{Reader: fakeClient(objs...), caughtUp: true}
+}
+
 func TestLookup_CachedGVK_ReadsFromTheCache(t *testing.T) {
-	cached := fakeClient(obj("v1", "Pod", "default", "test-pod",
+	cached := caughtUpCache(obj("v1", "Pod", "default", "test-pod",
 		map[string]any{"spec": map[string]any{"nodeName": "node-1"}}))
 
 	// Only the cache holds the pod, so a lookup that answers with it cannot
@@ -162,8 +191,11 @@ func TestLookup_CachedReadFails_FallsBackToTheAPI(t *testing.T) {
 	require.NoError(t, err)
 
 	env.UseCacheForLookups(
-		erroringReader{err: apierrors.NewForbidden(
-			schema.GroupResource{Resource: "pods"}, "", errors.New("cannot list pods"))},
+		stubCache{
+			Reader: erroringReader{err: apierrors.NewForbidden(
+				schema.GroupResource{Resource: "pods"}, "", errors.New("cannot list pods"))},
+			caughtUp: true,
+		},
 		[]schema.GroupVersionKind{{Version: "v1", Kind: "Pod"}},
 	)
 
@@ -186,7 +218,7 @@ func TestLookup_CachedGVKMissingObject_DoesNotFallBack(t *testing.T) {
 	env, err := NewEnvironment(api)
 	require.NoError(t, err)
 
-	env.UseCacheForLookups(fakeClient(), []schema.GroupVersionKind{{Version: "v1", Kind: "Pod"}})
+	env.UseCacheForLookups(caughtUpCache(), []schema.GroupVersionKind{{Version: "v1", Kind: "Pod"}})
 
 	compiled, err := env.Compile(`lookup('v1', 'Pod', 'default', 'test-pod') == null`)
 	require.NoError(t, err)
@@ -194,6 +226,36 @@ func TestLookup_CachedGVKMissingObject_DoesNotFallBack(t *testing.T) {
 	result, err := env.Evaluate(compiled, map[string]any{}, context.Background())
 	require.NoError(t, err)
 	require.Equal(t, true, result.Value())
+}
+
+// TestLookup_InformerStillCatchingUp_ReadsThroughTheAPI keeps evaluation off
+// the critical path of an informer sync. The informer for a GVK no policy
+// watches is created by the first read that needs it and lists the whole GVK
+// before it can answer, and never answers at all where cluster-wide list and
+// watch were withheld. Evaluate is serialised, so a read that waited on either
+// would hold up every evaluation in the process.
+func TestLookup_InformerStillCatchingUp_ReadsThroughTheAPI(t *testing.T) {
+	api := fakeClient(obj("v1", "Pod", "default", "test-pod",
+		map[string]any{"spec": map[string]any{"nodeName": "from-the-api"}}))
+
+	env, err := NewEnvironment(api)
+	require.NoError(t, err)
+
+	env.UseCacheForLookups(
+		stubCache{
+			Reader: fakeClient(obj("v1", "Pod", "default", "test-pod",
+				map[string]any{"spec": map[string]any{"nodeName": "from-the-cache"}})),
+			caughtUp: false,
+		},
+		[]schema.GroupVersionKind{{Version: "v1", Kind: "Pod"}},
+	)
+
+	compiled, err := env.Compile(`lookup('v1', 'Pod', 'default', 'test-pod').spec.nodeName`)
+	require.NoError(t, err)
+
+	result, err := env.Evaluate(compiled, map[string]any{}, context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "from-the-api", result.Value())
 }
 
 func TestLookupChaining(t *testing.T) {

@@ -60,7 +60,7 @@ func ResourceFieldPaths(compiled *cel.Ast) ([][]string, bool) {
 		return nil, false
 	}
 
-	return sortPaths(w.paths), true
+	return sortedUniquePaths(w.paths), true
 }
 
 // walkExpression walks compiled and returns the walker holding what it read.
@@ -71,8 +71,8 @@ func walkExpression(compiled *cel.Ast) *fieldWalker {
 	return w
 }
 
-// sortPaths orders paths and drops the duplicates.
-func sortPaths(paths [][]string) [][]string {
+// sortedUniquePaths orders paths and drops the duplicates.
+func sortedUniquePaths(paths [][]string) [][]string {
 	slices.SortFunc(paths, slices.Compare)
 
 	return slices.CompactFunc(paths, slices.Equal)
@@ -106,13 +106,13 @@ func (w *fieldWalker) walk(e ast.Expr) {
 // the cache can hold: the resource variable, or a lookup() call that names its
 // apiVersion and kind with string literals. It reports whether e was one.
 func (w *fieldWalker) recordChain(e ast.Expr) bool {
-	base, path, _ := w.resolve(e)
+	base, path, _ := w.resolveChain(e)
 
 	switch {
 	case base == nil:
 		return false
 
-	case w.isResource(base):
+	case w.isResourceVar(base):
 		if len(path) == 0 {
 			w.ok = false
 
@@ -138,9 +138,9 @@ func (w *fieldWalker) recordChain(e ast.Expr) bool {
 	}
 }
 
-// isResource reports whether base is the resource variable itself rather than a
-// comprehension binding that shadows its name.
-func (w *fieldWalker) isResource(base ast.Expr) bool {
+// isResourceVar reports whether base is the resource variable itself rather
+// than a comprehension binding that shadows its name.
+func (w *fieldWalker) isResourceVar(base ast.Expr) bool {
 	return base.Kind() == ast.IdentKind && base.AsIdent() == ResourceVar && w.shadowed == 0
 }
 
@@ -215,25 +215,25 @@ func (w *fieldWalker) walkComprehension(c ast.ComprehensionExpr) {
 	w.walk(c.IterRange())
 	w.walk(c.AccuInit())
 
-	w.push(c.AccuVar())
-	w.push(c.IterVar())
+	w.pushBinding(c.AccuVar())
+	w.pushBinding(c.IterVar())
 
 	if c.HasIterVar2() {
-		w.push(c.IterVar2())
+		w.pushBinding(c.IterVar2())
 	}
 
 	w.walk(c.LoopCondition())
 	w.walk(c.LoopStep())
 
 	if c.HasIterVar2() {
-		w.pop(c.IterVar2())
+		w.popBinding(c.IterVar2())
 	}
 
-	w.pop(c.IterVar())
+	w.popBinding(c.IterVar())
 
 	w.walk(c.Result())
 
-	w.pop(c.AccuVar())
+	w.popBinding(c.AccuVar())
 }
 
 // walkIndexKeys walks the key expressions of the index operations inside an
@@ -247,7 +247,7 @@ func (w *fieldWalker) walkIndexKeys(e ast.Expr) {
 			e = e.AsSelect().Operand()
 		case ast.CallKind:
 			call := e.AsCall()
-			if !isIndex(call) {
+			if !isIndexCall(call) {
 				return
 			}
 
@@ -261,20 +261,20 @@ func (w *fieldWalker) walkIndexKeys(e ast.Expr) {
 	}
 }
 
-// resolve interprets e as a chain of field accesses and returns the expression
-// the chain is rooted at, along with the field path it reads from that root.
-// base is nil when e is not a chain, so nothing roots it. An inexact path is
-// one truncated by a computed index: the subtree at path is retained whole, so
-// accesses beneath it are already covered and need not extend the path.
-func (w *fieldWalker) resolve(e ast.Expr) (base ast.Expr, path []string, exact bool) {
+// resolveChain interprets e as a chain of field accesses and returns the
+// expression the chain is rooted at, along with the field path it reads from
+// that root. base is nil when e is not a chain, so nothing roots it. An inexact
+// path is one truncated by a computed index: the subtree at path is retained
+// whole, so accesses beneath it are already covered and need not extend it.
+func (w *fieldWalker) resolveChain(e ast.Expr) (base ast.Expr, path []string, exact bool) {
 	switch e.Kind() {
 	case ast.IdentKind:
 		return e, nil, true
 	case ast.SelectKind:
-		return w.resolveSelect(e.AsSelect())
+		return w.resolveSelectChain(e.AsSelect())
 	case ast.CallKind:
-		if call := e.AsCall(); isIndex(call) {
-			return w.resolveIndex(call)
+		if call := e.AsCall(); isIndexCall(call) {
+			return w.resolveIndexChain(call)
 		}
 
 		// Any other call ends the chain. Only lookup() roots one the cache can
@@ -288,8 +288,8 @@ func (w *fieldWalker) resolve(e ast.Expr) (base ast.Expr, path []string, exact b
 	return nil, nil, false
 }
 
-func (w *fieldWalker) resolveSelect(selectExpr ast.SelectExpr) (base ast.Expr, path []string, exact bool) {
-	base, path, exact = w.resolve(selectExpr.Operand())
+func (w *fieldWalker) resolveSelectChain(selectExpr ast.SelectExpr) (base ast.Expr, path []string, exact bool) {
+	base, path, exact = w.resolveChain(selectExpr.Operand())
 	if base == nil || !exact {
 		return base, path, exact
 	}
@@ -297,8 +297,8 @@ func (w *fieldWalker) resolveSelect(selectExpr ast.SelectExpr) (base ast.Expr, p
 	return base, append(path, selectExpr.FieldName()), true
 }
 
-func (w *fieldWalker) resolveIndex(call ast.CallExpr) (base ast.Expr, path []string, exact bool) {
-	base, path, exact = w.resolve(call.Args()[0])
+func (w *fieldWalker) resolveIndexChain(call ast.CallExpr) (base ast.Expr, path []string, exact bool) {
+	base, path, exact = w.resolveChain(call.Args()[0])
 	if base == nil || !exact {
 		return base, path, exact
 	}
@@ -311,19 +311,22 @@ func (w *fieldWalker) resolveIndex(call ast.CallExpr) (base ast.Expr, path []str
 	return base, path, false
 }
 
-func (w *fieldWalker) push(name string) {
+// pushBinding enters a comprehension binding, so that one named after the
+// resource variable shadows it for as long as it is in scope.
+func (w *fieldWalker) pushBinding(name string) {
 	if name == ResourceVar {
 		w.shadowed++
 	}
 }
 
-func (w *fieldWalker) pop(name string) {
+// popBinding leaves a binding pushBinding entered.
+func (w *fieldWalker) popBinding(name string) {
 	if name == ResourceVar {
 		w.shadowed--
 	}
 }
 
-func isIndex(call ast.CallExpr) bool {
+func isIndexCall(call ast.CallExpr) bool {
 	return call.FunctionName() == operators.Index && !call.IsMemberFunction() && len(call.Args()) == 2
 }
 

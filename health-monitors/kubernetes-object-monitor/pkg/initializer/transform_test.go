@@ -303,7 +303,7 @@ func TestFieldTree_RedundantPaths_CollapseIntoRetainedSubtree(t *testing.T) {
 	tree.insert([]string{"status", "conditions", "type"})
 	tree.insert([]string{"metadata", "labels", "example"})
 
-	require.Equal(t, []string{"metadata.labels.example", "metadata.name", "status"}, tree.describe())
+	require.Equal(t, []string{"metadata.labels.example", "metadata.name", "status"}, tree.retainedPaths())
 }
 
 func prunedObject(
@@ -322,7 +322,7 @@ func prunedObject(
 	return pruned
 }
 
-func cacheEntries(t *testing.T, policies []config.Policy) map[schema.GroupVersionKind]gvkCache {
+func cacheEntries(t *testing.T, policies []config.Policy) map[schema.GroupVersionKind]gvkCacheEntry {
 	t.Helper()
 
 	compiler, err := celenv.NewCompilerEnvironment()

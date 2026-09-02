@@ -125,7 +125,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
 	}
 
-	celEnv.UseCacheForLookups(mgr.GetClient(), lookupGVKs)
+	celEnv.UseCacheForLookups(mgr.GetCache(), lookupGVKs)
 
 	evaluator, err := policy.NewEvaluator(celEnv, cfg.Policies)
 	if err != nil {
