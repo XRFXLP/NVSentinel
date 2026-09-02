@@ -69,10 +69,12 @@ func NewEnvironment(r client.Reader) (*Environment, error) {
 }
 
 // NewCompilerEnvironment returns an Environment that declares the same
-// variables and functions as NewEnvironment but has no Kubernetes reader, so it
-// can compile policy expressions without being able to evaluate lookup(). The
-// cache options are built before the manager exists, and deriving the fields a
-// policy reads needs a compiled AST at that point.
+// variables and functions as NewEnvironment but has no reader behind lookup().
+// It exists because the cache options are built before the manager, and
+// deriving the fields a policy reads needs a compiled AST at that point.
+//
+// Only Compile may be called on it. Evaluating an expression that calls
+// lookup() has nothing to resolve against.
 func NewCompilerEnvironment() (*Environment, error) {
 	return NewEnvironment(nil)
 }
@@ -116,11 +118,6 @@ func (e *Environment) Evaluate(ast *cel.Ast, resource any, ctx context.Context) 
 }
 
 func (e *Environment) lookup(args ...ref.Val) ref.Val {
-	if e.reader == nil {
-		slog.Error("Lookup is unavailable without a Kubernetes reader")
-		return types.NewErr("lookup is unavailable in a compile-only environment")
-	}
-
 	if len(args) != 4 {
 		slog.Error("Lookup requires 4 arguments: version, kind, namespace, name")
 		return types.NewErr("lookup requires 4 arguments: version, kind, namespace, name")
