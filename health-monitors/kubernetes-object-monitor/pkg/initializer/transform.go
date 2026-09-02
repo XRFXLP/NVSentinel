@@ -30,7 +30,7 @@ import (
 const metadataKey = "metadata"
 
 // alwaysRetainedPaths survive pruning for every watched GVK regardless of what
-// the policies read. 
+// the policies read.
 var alwaysRetainedPaths = [][]string{
 	{"apiVersion"},
 	{"kind"},
@@ -62,8 +62,6 @@ type gvkFieldPaths struct {
 	lookupPaths [][]string
 	wholeLookup string
 }
-
-
 
 // buildCacheEntries decides two things for each kind the enabled policies use:
 // which of its fields the cache keeps, and whether lookup() may read it from
