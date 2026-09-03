@@ -84,10 +84,10 @@ func sortedUniquePaths(paths [][]string) [][]string {
 // iteration or accumulator variable that shadows it is not mistaken for the
 // object itself.
 type fieldWalker struct {
-	paths    [][]string
-	lookups  []lookupRead
-	shadowed int
-	ok       bool
+	paths            [][]string
+	lookupFieldPaths []lookupFieldPath
+	shadowed         int
+	ok               bool
 }
 
 func (w *fieldWalker) walk(e ast.Expr) {
@@ -144,10 +144,10 @@ func (w *fieldWalker) isResourceVar(base ast.Expr) bool {
 	return base.Kind() == ast.IdentKind && base.AsIdent() == ResourceVar && w.shadowed == 0
 }
 
-// recordLookup records one read of the object call returns. A call whose
-// apiVersion or kind is computed is dropped: nothing can be cached for a GVK
-// that is not known until the expression runs, so such a call reads through the
-// API and needs no fields derived for it.
+// recordLookup records one field path taken off the object call returned. A
+// call whose apiVersion or kind is computed is dropped: nothing can be cached
+// for a GVK that is not known until the expression runs, so such a call reads
+// through the API and needs no fields derived for it.
 func (w *fieldWalker) recordLookup(call ast.CallExpr, path []string) {
 	apiVersion, versionOK := stringLiteral(call.Args()[0])
 	kind, kindOK := stringLiteral(call.Args()[1])
@@ -156,7 +156,7 @@ func (w *fieldWalker) recordLookup(call ast.CallExpr, path []string) {
 		return
 	}
 
-	w.lookups = append(w.lookups, lookupRead{
+	w.lookupFieldPaths = append(w.lookupFieldPaths, lookupFieldPath{
 		apiVersion: apiVersion,
 		kind:       kind,
 		path:       slices.Clone(path),

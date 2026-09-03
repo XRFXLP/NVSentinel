@@ -16,6 +16,7 @@ package cel
 
 import (
 	"github.com/google/cel-go/cel"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // lookupArgs is the arity of lookup(apiVersion, kind, namespace, name).
@@ -53,7 +54,7 @@ func LookupTargets(compiled *cel.Ast) []LookupTarget {
 	}
 
 	w := walkExpression(compiled)
-	targets := mergeReadsByGVK(w.lookups)
+	targets := mergeFieldPathsByGVK(w.lookupFieldPaths)
 
 	if !w.ok {
 		for i := range targets {
@@ -65,60 +66,63 @@ func LookupTargets(compiled *cel.Ast) []LookupTarget {
 	return targets
 }
 
-// lookupRead is one path an expression reads off the object a lookup() call
-// returns. An empty path means it read the object as a whole.
-type lookupRead struct {
+// lookupFieldPath is one field path an expression takes off the object a
+// lookup() call returned, together with the apiVersion and kind that call
+// named. An empty path means the expression used the whole object.
+type lookupFieldPath struct {
 	apiVersion string
 	kind       string
 	path       []string
 }
 
-// mergeReadsByGVK gathers the reads of each GVK into a single target, in the
-// order the GVKs were first read.
-func mergeReadsByGVK(reads []lookupRead) []LookupTarget {
-	if len(reads) == 0 {
+// mergeFieldPathsByGVK turns the field paths into one target per GVK, in the
+// order the GVKs first appeared. A path that is empty leaves its GVK
+// underivable, and the paths gathered for that GVK are then of no use.
+func mergeFieldPathsByGVK(fieldPaths []lookupFieldPath) []LookupTarget {
+	if len(fieldPaths) == 0 {
 		return nil
 	}
 
-	type gvk struct {
-		apiVersion string
-		kind       string
-	}
+	// lookupTargets holds one target per GVK, in the order the GVKs first
+	// appeared. positionOfGVK says where a GVK's target sits in lookupTargets.
+	lookupTargets := make([]LookupTarget, 0, len(fieldPaths))
+	positionOfGVK := make(map[schema.GroupVersionKind]int, len(fieldPaths))
 
-	order := make([]gvk, 0, len(reads))
-	targets := make(map[gvk]*LookupTarget, len(reads))
+	for _, fieldPath := range fieldPaths {
+		gvk := schema.FromAPIVersionAndKind(fieldPath.apiVersion, fieldPath.kind)
 
-	for _, read := range reads {
-		key := gvk{apiVersion: read.apiVersion, kind: read.kind}
+		position, seen := positionOfGVK[gvk]
+		if !seen {
+			position = len(lookupTargets)
+			positionOfGVK[gvk] = position
 
-		target := targets[key]
-		if target == nil {
-			target = &LookupTarget{APIVersion: read.apiVersion, Kind: read.kind, Derivable: true}
-			targets[key] = target
-			order = append(order, key)
+			lookupTargets = append(lookupTargets, LookupTarget{
+				APIVersion: fieldPath.apiVersion,
+				Kind:       fieldPath.kind,
+				Derivable:  true,
+			})
 		}
 
-		if len(read.path) == 0 {
+		target := &lookupTargets[position]
+
+		if len(fieldPath.path) == 0 {
 			target.Derivable = false
+
 			continue
 		}
 
-		target.Paths = append(target.Paths, read.path)
+		target.Paths = append(target.Paths, fieldPath.path)
 	}
 
-	merged := make([]LookupTarget, 0, len(order))
-
-	for _, key := range order {
-		target := *targets[key]
+	for i := range lookupTargets {
+		target := &lookupTargets[i]
 
 		if target.Derivable {
 			target.Paths = sortedUniquePaths(target.Paths)
 		} else {
 			target.Paths = nil
 		}
-
-		merged = append(merged, target)
 	}
 
-	return merged
+	return lookupTargets
 }
