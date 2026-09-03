@@ -45,12 +45,12 @@ const LookupFunc = "lookup"
 // metadata.labels[resource.spec.nodeName], which records metadata.labels and
 // therefore retains whichever key is present at runtime.
 //
-// The second return value reports whether extraction was complete. It is false
-// when the expression uses the object as a whole rather than through a field
-// access, as in size(resource), because no set of paths describes what such an
-// expression reads. Callers must cache the object in full in that case: pruning
-// against an incomplete field set silently changes evaluation results.
-func ResourceFieldPaths(compiled *cel.Ast) ([][]string, bool) {
+// isComplete is false when the expression uses the object as a whole rather
+// than through a field access, as in size(resource), because no set of paths
+// describes what such an expression reads. Callers must cache the object in
+// full in that case: pruning against an incomplete field set silently changes
+// evaluation results.
+func ResourceFieldPaths(compiled *cel.Ast) (fieldPaths [][]string, isComplete bool) {
 	if compiled == nil || compiled.NativeRep() == nil {
 		return nil, false
 	}

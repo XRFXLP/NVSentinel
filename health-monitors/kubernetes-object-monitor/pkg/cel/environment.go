@@ -45,15 +45,15 @@ type Environment struct {
 	// starts a cluster-wide informer for it on demand and holds it in full.
 	reader client.Reader
 	// objectCache and cachedGVKs back lookup() for the GVKs UseCacheForLookups
-	// named. fellBack records the GVKs already reported as falling back, so a
-	// misconfiguration is logged once rather than per evaluation. All three are
-	// written before the manager starts and read under evalMu, which Evaluate
-	// holds while lookup() runs.
-	objectCache LookupCache
-	cachedGVKs  map[schema.GroupVersionKind]bool
-	fellBack    map[schema.GroupVersionKind]bool
-	evalMu      sync.Mutex
-	ctx         context.Context
+	// named. reportedFallback holds the GVKs whose fallback to the API server
+	// has been logged, so a misconfiguration is logged once rather than per
+	// evaluation. All three are written before the manager starts and read
+	// under evalMu, which Evaluate holds while lookup() runs.
+	objectCache      LookupCache
+	cachedGVKs       map[schema.GroupVersionKind]bool
+	reportedFallback map[schema.GroupVersionKind]bool
+	evalMu           sync.Mutex
+	ctx              context.Context
 }
 
 // NewEnvironment returns an Environment that compiles and evaluates policy
@@ -62,8 +62,8 @@ type Environment struct {
 // UseCacheForLookups to serve the GVKs that do have a cache entry from it.
 func NewEnvironment(r client.Reader) (*Environment, error) {
 	e := &Environment{
-		reader:   r,
-		fellBack: make(map[schema.GroupVersionKind]bool),
+		reader:           r,
+		reportedFallback: make(map[schema.GroupVersionKind]bool),
 	}
 
 	env, err := cel.NewEnv(
@@ -263,11 +263,11 @@ func (e *Environment) cacheHasCaughtUp(ctx context.Context, obj *unstructured.Un
 // cache entry, once per GVK: a misconfiguration that persists would otherwise
 // log on every evaluation.
 func (e *Environment) reportFallback(gvk schema.GroupVersionKind, err error) {
-	if e.fellBack[gvk] {
+	if e.reportedFallback[gvk] {
 		return
 	}
 
-	e.fellBack[gvk] = true
+	e.reportedFallback[gvk] = true
 
 	slog.Warn("Reading lookup() through the API server: the cache cannot serve this GVK. "+
 		"Serving it from the cache needs cluster-wide list and watch on it",
