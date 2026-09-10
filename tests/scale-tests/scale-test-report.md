@@ -35,6 +35,7 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
   - [Burst absorption](#burst-absorption)
     - [Namespace eviction mode governs whether a drain can complete](#namespace-eviction-mode-governs-whether-a-drain-can-complete)
 - [B. Methodology](#b-methodology)
+  - [Deployed configuration](#deployed-configuration)
   - [Traps](#traps)
 
 ---
@@ -195,21 +196,20 @@ Recommended **256 Mi / 512 Mi** at any fleet size.
 
 #### health-events-analyzer
 
-Not a Kubernetes API consumer; it reads the event stream from MongoDB. Working set is **flat at 0.015 GB at every scale point**, CPU below 0.01 cores.
+Not a Kubernetes API consumer; it reads the event stream from MongoDB, so fleet size is not its axis and the rows below vary event rate instead. Every earlier reading of this component was taken while it was in `CrashLoopBackOff` and is not usable; see the note that follows.
 
+| Event rate | CPU peak `[M]` | Working set `[M]` |
+| ---------- | -------------- | ----------------- |
+| idle | 0.002 | 25.5 MB |
+| 36.9 events/s, 6,000 events | **0.214** | 19.6-20.1 MB |
 
-| Nodes   | Pods     | CPU med/peak `[M]` | Working set peak `[M]` | Rec. request | Rec. limit |
-| ------- | -------- | ------------------ | ---------------------- | ------------ | ---------- |
-| 4,933   | 731      | <0.01              | 0.015 G                | 128 Mi       | 256 Mi     |
-| 53,513  | 642,243  | <0.01              | 0.015 G                | 128 Mi       | 256 Mi     |
-| 75,005  | ~100,000 | **<0.01**          | **0.01 G**             | 128 Mi       | 256 Mi     |
-| 100,005 | ~100,000 | **<0.01**          | **0.02 G**             | 128 Mi       | 256 Mi     |
+Only CPU has an event-rate axis. Working set sat at 20-25 MB throughout and was slightly lower under load than at rest, which is collection timing rather than a real difference, so memory is a fixed cost of about 25 MB at any rate this cluster can produce. The offered rate is the rate counted from the collection over the injection window, not the rate the injector was asked for; those differ by a third, because its pacing loop overshoots.
 
+CPU works out at **5.8 ms per event**, which puts one full core at roughly 170 events/s. A 100,000-node fleet at the 0.1 events per node per second used elsewhere in this report offers 10,000 events/s, far above that, so this component needs either several replicas or a cheaper rule set at that size. Recommended **256 Mi / 512 Mi**, and size the CPU request against the expected event rate rather than the fleet.
 
-Sized by event rate, not fleet size. The event-rate axis is unmeasured. `[ ]`
+**One event it cannot evaluate stops the component permanently.** When a rule's aggregation fails, health-events-analyzer logs `Event processing failed, NOT marking as processed - will retry on restart`, exits, and receives the same event again on the next start. It accumulated 223 restarts this way over roughly a day, and recovered only after the event was removed from the collection along with its resume token.
 
-Recommended **256 Mi / 512 Mi** at any fleet size.
-
+The aggregation that failed here is asymmetric. A rule matching XID events compares the current event's GPU entities against each candidate document's, and the candidate side is written `{"$ifNull": ["$healthevent.entitiesimpacted", []]}` while the current-event side is the bare field. A guard above it admits the event on `checkname == SysLogsXIDError` alone, on the stated assumption that an XID event always carries GPU_UUID entities. Synthetic events that set that checkname without entities therefore pass the guard and reach `$size` on null. The events came from the benchmark rather than from production, so the aggregation is not wrong about real traffic -- but the failure mode it produces is unbounded, because a single unevaluable document takes the component down until someone deletes it by hand. `[M]`
 
 #### janitor
 
@@ -584,6 +584,117 @@ Node size was chosen to match production GPU workers (53.6 KB, measured in #1718
 
 **Reading etcd.** `apiserver_storage_size_bytes` is file-allocated and reports whichever of three members answered, varying ~983 MB with no load; it cannot measure growth. Use `apiserver_storage_objects` per resource, which is exact but recomputed periodically.
 
+
+### Deployed configuration
+
+Every figure in this report depends on what the components were actually configured to do, so the deployed configuration is reproduced here rather than described. This is read from the live cluster, not from the chart defaults.
+
+**kubernetes-object-monitor** watches two policies. Its per-node and per-pod memory is a function of these, since each enabled policy adds a watch on its resource kind:
+
+```toml
+[controller]
+  maxConcurrentReconciles = 100
+
+[[policies]]
+  name = "NodeNotReady"
+  enabled = true
+  [policies.resource]
+    group = "";  version = "v1";  kind = "Node"
+  [policies.predicate]
+    expression = "has(resource.status.conditions) && resource.status.conditions.exists(c, c.type == \"Ready\" && c.status == \"False\")"
+  [policies.healthEvent]
+    componentClass = "Node";  isFatal = true;  errorCode = ["NODE_NOT_READY"]
+    recommendedAction = "CONTACT_SUPPORT";  message = "Node is not ready"
+
+[[policies]]
+  name = "PodOnUnschedulableNode"
+  enabled = true
+  [policies.resource]
+    group = "";  version = "v1";  kind = "Pod"
+  [policies.predicate]
+    expression = "resource.status.phase == \"Failed\" && lookup('v1', 'Node', '', resource.spec.nodeName).spec.unschedulable == true"
+  [policies.nodeAssociation]
+    expression = "resource.spec.nodeName"
+  [policies.healthEvent]
+    componentClass = "Node";  isFatal = false;  errorCode = ["POD_ON_UNSCHEDULABLE_NODE"]
+    recommendedAction = "CONTACT_SUPPORT";  message = "Pod failed on an unschedulable node"
+```
+
+The Pod policy is why kubernetes-object-monitor holds a Pod cache at all, and therefore why it is the largest component at 100,000 nodes with a pod on every node. Its `--resync-period=24h` means the fleet-wide relist that would otherwise dominate CPU does not occur within a measurement window. Note that `--cache-sync-timeout` is passed twice, `2m` then `10m`; the later value wins.
+
+**fault-quarantine** cordons on one ruleset, and every injected event in this report is shaped to match it:
+
+```toml
+label-prefix = "k8saas.nvidia.com/"
+[circuitBreaker]
+percentage = 50
+duration = "5m"
+
+[[rule-sets]]
+  enabled = true;  version = "1";  priority = 0
+  name = "GPU fatal error ruleset"
+  [[rule-sets.match.all]]
+    kind = "HealthEvent"
+    expression = "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
+  [[rule-sets.match.all]]
+    kind = "Node"
+    expression = "!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == 'false')"
+  [rule-sets.cordon]
+    shouldCordon = true
+```
+
+The circuit breaker is configured at 50% over 5 minutes but disabled on the command line (`--circuit-breaker-enabled=false`), so none of the burst results were shaped by it. An event whose agent is anything other than `gpu-health-monitor` matches nothing and produces no cordon, which from outside is indistinguishable from a stalled pipeline.
+
+**node-drainer** decides per namespace whether a drain can complete, which governs every drain figure in A3:
+
+```toml
+evictionTimeoutInSeconds = "60"
+systemNamespaces = "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"
+deleteAfterTimeoutMinutes = 60
+notReadyTimeoutMinutes = 5
+drainGPUPods = false
+partialDrainEnabled = false
+
+[[userNamespaces]]
+name = "e2e-pods";  mode = "Immediate"
+[[userNamespaces]]
+name = "*";  mode = "AllowCompletion"
+```
+
+`drainGPUPods = false` means a pod requesting `nvidia.com/gpu` is never evicted, so drain-latency measurements must place pods that request none.
+
+**Client rate limits, as deployed.** These are the values behind the QPS table:
+
+| Component | Flags |
+|---|---|
+| kubernetes-object-monitor | `--max-concurrent-reconciles=100 --resync-period=24h`, no QPS flags |
+| fault-quarantine | `--kube-api-qps=100 --kube-api-burst=200`, `--circuit-breaker-enabled=false` |
+| labeler | `--kube-api-qps=500 --kube-api-burst=1000`, `--require-dcgm-ready-for-bootstrap=true` |
+| node-drainer-bench | `--kube-api-qps=400 --kube-api-burst=800` |
+| janitor | `--enable-ttl=false --default-ttl=336h`, no QPS flags |
+| fault-remediation | `--leader-elect=true --enable-log-collector=false`, no QPS flags |
+| preflight | `--config=/etc/preflight/config.yaml`, no QPS flags |
+| health-events-analyzer | `--processing-strategy=EXECUTE_REMEDIATION`, no QPS flags |
+
+A component with no QPS flag gets controller-runtime's default, which sets `cfg.QPS = -1` when the loaded value is zero, disabling client-side rate limiting entirely and leaving the API server's own fairness rules as the only limit.
+
+**labeler** takes no resync flag; the period is hard-coded to 30 seconds at `labeler/pkg/initializer/init.go:61`, which is what sets the two-cycle time-to-label in A3.
+
+**janitor** runs all three controllers with a 25-minute timeout and reaches the CSP through a bench provider:
+
+```yaml
+global:
+  timeout: 25m
+  manualMode: false
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50051
+rebootNodeController:   {enabled: true, timeout: 25m}
+terminateNodeController: {enabled: true, timeout: 25m}
+gpuResetController:      {enabled: true, timeout: 25m}
+```
+
+**fault-remediation** maps recommended actions onto janitor CRs. `COMPONENT_RESET`, `RESTART_BM` and `RESTART_VM` all create a `RebootNode` completing on `NodeReady`; `REPLACE_VM` creates a `TerminateNode` completing on `NodeTerminated`. Both templates carry a 336-hour TTL annotation. Since 62% of production events recommend `COMPONENT_RESET`, the reboot path is the one that matters for MTTR.
+
+**health-events-analyzer** runs 8 rule sets covering 20 named rules, all correlation rules over the event history: `MultipleRemediations`, `RepeatedXIDErrorOnSameGPU`, `RepeatedXID31OnSameGPU`, `RepeatedXID31OnDifferentGPU`, `RepeatedXID13OnSameGPCAndTPC`, `RepeatedXID13OnDifferentGPCAndTPC`, `XIDErrorSoloNoBurst`, and thirteen XID74 register-decoding and NIC rules. Each incoming event is evaluated against all of them, which is where its 5.8 ms per event goes.
 
 ### Traps
 
