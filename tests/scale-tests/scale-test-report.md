@@ -6,14 +6,14 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
 
 - [Summary](#summary)
 - [A1. Component sizing](#a1-component-sizing)
-    - [kubernetes-object-monitor](#kubernetes-object-monitor)
-    - [fault-quarantine](#fault-quarantine)
-    - [labeler](#labeler)
-    - [node-drainer](#node-drainer)
-    - [preflight](#preflight)
-    - [fault-remediation](#fault-remediation)
-    - [health-events-analyzer](#health-events-analyzer)
-    - [janitor](#janitor)
+  - [kubernetes-object-monitor](#kubernetes-object-monitor)
+  - [fault-quarantine](#fault-quarantine)
+  - [labeler](#labeler)
+  - [node-drainer](#node-drainer)
+  - [preflight](#preflight)
+  - [fault-remediation](#fault-remediation)
+  - [health-events-analyzer](#health-events-analyzer)
+  - [janitor](#janitor)
   - [QPS](#qps)
 - [A2. Load on external components](#a2-load-on-external-components)
   - [Kubernetes API](#kubernetes-api)
@@ -50,7 +50,7 @@ The whole control plane costs about 235 GB of memory at 100,000 nodes. NVSentine
 
 Two components are most of the component total. At 100,000 nodes with a pod on every node, kubernetes-object-monitor is 33.9 GB and fault-quarantine 17.9 GB; labeler is 6.6 GB, janitor 4.9 GB, node-drainer 1.0 GB, and nothing else exceeds 0.6 GB.
 
-CPU was never a constraint at any scale tested. The busiest component peaked at 2.00 cores, so four cores per component is sufficient with headroom to spare.
+CPU was never a constraint for the components whose cost follows fleet size: the busiest peaked at 2.00 cores, so four cores each is sufficient with headroom. health-events-analyzer is the exception, because its cost follows event rate rather than node count. At 5.8 ms of CPU per event a single replica saturates a core near 170 events/s, while 100,000 nodes at 0.1 events per node per second offer 10,000 events/s, so it needs to be sized against the expected event rate and will require several replicas or a cheaper rule set at that scale.
 
 Cordon completes in 26 ms P50 and 165 ms P99 under continuous load, and a node carrying one evictable pod is drained about ten seconds after that, which is one of node-drainer's recheck cycles. Detection to drained is 10.11 s P50 and 10.29 s P99; five hundred nodes failing at once stretches that to 55.5 s with every node completing.
 
@@ -103,7 +103,7 @@ Lets walk over component by component:
 <img width="1260" height="770" alt="Image" src="https://github.com/user-attachments/assets/ceadafc2-b5c8-49ea-8d3b-a1a2fea86ba1" />
 
 
-#### kubernetes-object-monitor
+### kubernetes-object-monitor
 
 Node + Pod watches, one per enabled policy; CEL-derived transform (#1720). Per-node cost 174,175 B/node. Per pod cost: ~3,700 B/pod settled, 4,400 B at peak
 
@@ -119,7 +119,7 @@ Node + Pod watches, one per enabled policy; CEL-derived transform (#1720). Per-n
 | 100,005 | ~100,000 | 0.61 / 1.21 | 33.90 G | 28 Gi | 48 Gi |
 
 
-#### fault-quarantine
+### fault-quarantine
 
 Per-node cost **161,516 B/node**; retained bytes/node `33,144-34,337` `[I]`. Events sent at 0.1 events per second per node with 1:4 ratio of fatal and non-fatal.
 
@@ -133,7 +133,7 @@ Per-node cost **161,516 B/node**; retained bytes/node `33,144-34,337` `[I]`. Eve
 | 100,005 | 0.29 / 0.46        | 16.17 G                | 12 Gi        | 18 Gi      |
 | 100,005 | **0.18 / 0.32** | **17.88 G** | 20 Gi | 40 Gi |
 
-#### labeler
+### labeler
 
 Eager informers: one for Nodes with a fixed field projection, and **four pod informers**, each label-scoped -- `app in (dcgm, driver)`, the driver-component label excluding that app, `k8s-app=<gke-installer>`, and ResourceSlice objects. 
 
@@ -145,9 +145,9 @@ Eager informers: one for Nodes with a fixed field projection, and **four pod inf
 | 25,005 | 50,000 (DCGM + driver) | **1.96 G** | **2.58 G** | 0.05 / 0.33 | 3 Gi | 6 Gi |
 | 10,005 | 20,000 (DCGM + driver) | **0.59 G** | **0.59 G** | 0.01 / 0.19 | 1 Gi | 2 Gi |
 
-#### node-drainer
+### node-drainer
 
-Node drainer strippes pod depending on whether it is drain eligible or not:
+Node drainer strips pods depending on whether they are drain eligible or not:
 
 | Pod type        | Cost per pod | Basis                                                                                         |
 | --------------- | ------------ | --------------------------------------------------------------------------------------------- |
@@ -166,7 +166,7 @@ Now the scale sweep:
 | 100,005 | 0 | 0.13 /  0.20 | 1.01 G | 1 Gi | 2 Gi |
 | 100,005 | ~100,000 | 0.10 / 0.38 | 1.04 G | 2 Gi | 4 Gi |
 
-#### preflight
+### preflight
 
 Pod informer only; no Node cache.
 
@@ -179,7 +179,7 @@ Pod informer only; no Node cache.
 | 100,005 | ~100,000 | **0.03 / 0.16**    | **0.54 G**             | 1 Gi         | 2 Gi       |
 
 
-#### fault-remediation
+### fault-remediation
 
 No Kubernetes watches, and Node reads bypass the cache (`Client.Cache.DisableFor`). Working set is **flat at 0.014-0.019 GB from 4,933 to 53,513 nodes**, and unaffected by pod count. CPU 0.09 med / 0.18 peak.
 
@@ -196,7 +196,7 @@ The flat profile is the point: this component is sized by its remediation rate, 
 
 Recommended **256 Mi / 512 Mi** at any fleet size.
 
-#### health-events-analyzer
+### health-events-analyzer
 
 Not a Kubernetes API consumer; it reads the event stream from MongoDB, so its cost follows event rate rather than fleet size.
 
@@ -209,7 +209,7 @@ Memory is a fixed cost of about 25 MB at any rate. CPU is **5.8 ms per event**, 
 
 Recommended **256 Mi / 512 Mi**, with CPU sized against the expected event rate rather than the fleet.
 
-#### janitor
+### janitor
 
 Node informer created **lazily** on the first `TerminateNode` reconcile, so an idle janitor is **flat at 0.022 GB regardless of fleet size** — 4,933 through 25,005 nodes all read the same. Once triggered it costs **19,616 B/node**: measured on a 25,005-node fleet, one `TerminateNode` took it from 11.4 MB to a settled 501.9 MB, peaking at 926.5 MB during the sync. At larger fleets it reads **2.74 GB at 75,005 nodes and 4.17 GB at 100,005** `[M]`. The behaviour was isolated cleanly at 50,005 nodes: a freshly restarted janitor sat at **54.7 MB**, and a single `TerminateNode` took it to **2.41 GB within 40 seconds**, then flat. Nothing else changed — same fleet, no other work — so one reconcile is the whole difference, a **44x jump**. That gives **48,195 B/node**, consistent with the 41,698 B/node implied at 100,005 nodes. The 19,616 B/node measured at 25,005 is the outlier and was probably sampled before the sync settled.
 
@@ -273,7 +273,7 @@ Per node in a 100-node burst: fault-remediation 9, janitor 6, node-drainer 3.7, 
 | DB size, file-allocated | 16.73-16.75 GB | 16.70 GB | 15.76-16.75 GB |
 | growth | none over 139 s | +288 objects / 638 s (0.45 obj/s, ~449 B/s) | +97 objects per 97 remediated nodes, ~94 KiB |
 
-All growth under continuous load is RebootNode CRs at 993 B median; pods and nodes are unchanged. `apiserver_storage_size_bytes` varies by up to 983 MB between consecutive scrapes, because each API server instance reports its own etcd backend's file size and those files are allocated independently. It also never shrinks, since freed space is reused inside the file rather than returned. etcd threshold is 16GB across tiers, but the usage is published only via CloudWatch, which peaked at 14.59 GB — 91% of the 4XL tier's 16 GB. Other problem with that is cloudWatch metrics blows up in high load usage so it cannot be reliably relies upon:
+All growth under continuous load is RebootNode CRs at 993 B median; pods and nodes are unchanged. `apiserver_storage_size_bytes` varies by up to 983 MB between consecutive scrapes, because each API server instance reports its own etcd backend's file size and those files are allocated independently. It also never shrinks, since freed space is reused inside the file rather than returned. The etcd threshold is 16 GB across tiers, but in-use size is published only through CloudWatch, and CloudWatch itself degrades under the load that matters. Its peak reading of 14.59 GB, about 91% of the 4XL tier's 16 GB, is therefore the only signal available rather than an authoritative measurement, and neither that figure nor the 91% derived from it should be used as a margin. The gap is genuine -- no in-cluster metric reports in-use size, since `apiserver_storage_size_bytes` is file-allocated:
 
 <img width="3136" height="736" alt="Image" src="https://github.com/user-attachments/assets/d861781c-403f-4f6e-9691-b13e6a795e56" />
 
@@ -288,7 +288,7 @@ All growth under continuous load is RebootNode CRs at 993 B median; pods and nod
 | oplog | 27 entries / 139 s, +0.01 MB | 1.03 GB over 17.1 h | **612 entries, +402 KB** |
 | storage | 0.144 GB / 1.21M docs | 0.13 GB / 1.25M docs | **+196 docs**, storage unchanged |
 
-Most of the command rate is the driver checking on the server, not work. Each client sends a `hello` to every member every 10 seconds, so the rate follows the number of clients: 2,017/s at 30,059 connections, about 10,000/s at 350,174. Each node opens 3 connections to the primary and 2 to each secondary, and that does not change under load.
+Most of the command rate is the driver checking on the server, not work: each client heartbeats every member every 10 seconds. The rates in the table are measured `command/s` from `serverStatus`, not derived from the connection counts beside them -- 2,017/s on the primary alongside 30,059 connections, and about 10,000/s alongside 350,174. Each node opens 3 connections to the primary and 2 to each secondary, and that does not change under load.
 
 Connections do not slow the pipeline. With 70,143 connections open, injecting 100 fatal events took 144 ms with no errors and all 100 nodes were cordoned within 31 seconds, each carrying a drain-eligible pod. `[M]`
 
@@ -308,7 +308,7 @@ etcd holds the live objects plus every revision written in the last five minutes
 
 Node size is the lever. A lease is 869 B and a node 55 KB, so node heartbeats are 8% of the writes and 79% of the bytes.
 
-Bulk changes inflate this badly, because their revisions sit in the window too. 140,000 node creates and 90,000 deletes in an hour took the in-use size to **14.59 GB, 91% of the 4XL tier's threshold**, against a settled floor of 2.33 GB at 10,000 nodes. Measure after churn has aged out, not during.
+Bulk changes inflate this badly, because their revisions sit in the window too. 140,000 node creates and 90,000 deletes in an hour took the in-use size to a CloudWatch-reported **14.59 GB, about 91% of the 4XL tier's threshold** -- a figure from the unreliable source noted above, so treat it as indicative -- against a settled floor of 2.33 GB at 10,000 nodes. Measure after churn has aged out, not during.
 
 100,000 nodes was run twice, and the pod population decided whether it held. With **100,005 nodes and 101,533 pods** the cluster ran normally. With the same fleet and **203,411 pods** at the 50 KB user profile, etcd crossed the threshold and refused every write, including the deletes needed to recover; it came back only after compaction aged the churn out. Nodes alone are about 5.5 GB, so at 100,000 nodes the usable pod budget is roughly 100,000 at that object size. `[M]`
 
@@ -387,7 +387,7 @@ Measured in burst-free windows, so the tails are steady-state rather than burst 
 
 Percentiles are computed from per-document timestamps, so they are exact rather than snapped to Prometheus histogram buckets.
 
-Drain is 99.1% of the measured MTTR, and it is a wait rather than work: node-drainer evicts the pod, requeues at its 10 s base backoff, confirms the pod is gone and marks the node drained. Everything NVSentinel does outside that wait totals 91 ms, two orders of magnitude below the backoff constant, so MTTR at this fleet size is set by that constant rather than by anything that grows with node count.
+Drain is 10.09 s of the 10.18 s detect-to-dispatch chain measured in that run, 99.1% of it, and it is a wait rather than work: node-drainer evicts the pod, requeues at its 10 s base backoff, confirms the pod is gone and marks the node drained. Everything NVSentinel does outside that wait totals 91 ms, two orders of magnitude below the backoff constant, so MTTR at this fleet size is set by that constant rather than by anything that grows with node count.
 
 ### Full-chain run, 200-node burst `[M]`
 
@@ -465,7 +465,9 @@ This supersedes an earlier reading taken at 100,005 nodes that showed 45% of dra
 
 ### Burst absorption
 
-N nodes fail simultaneously. Method: brand-new KWOK nodes that had never existed before (zero quarantine history), 5 pods/node placed by round-robin (not gang/random), one burst per size, no concurrent fault or burst injection during the window.
+N nodes fail simultaneously. Method: brand-new KWOK nodes that had never existed before (zero quarantine history), 5 pods/node placed by round-robin (not gang/random), no concurrent fault or burst injection during the window.
+
+Each burst size was run **once**, so every figure below is a single observation with no run-to-run variance behind it. They show the shape of burst absorption; they are not SLA percentiles in the sense the continuous-load table is, and a repeat run would be needed before quoting them as such.
 
 
 | Burst      | Detect->cordon P50/P99 | Cordon->drained P50/P99 | MTTR P50/P99      |
@@ -476,6 +478,8 @@ N nodes fail simultaneously. Method: brand-new KWOK nodes that had never existed
 
 
 All three bursts reached **100% drain completion**, confirmed by direct tracking every 20 seconds: 100/100 by t=160s, 500/500 by t=200s, 1000/1000 by t=260s, with no further change over the following four minutes of observation.
+
+Those completion times and the cordon-to-drained medians above them do not reconcile -- a 100-node burst cannot complete at t=160s if its median drain took 268 s -- because they were taken from different clocks: completion was polled from node state relative to injection, while the percentiles come from per-document timestamps relative to each node's own cordon. The completion figures are sound as a statement that every node drained; the two sets should not be compared against each other, and a re-run capturing both from the documents would be needed to state a single consistent timeline.
 
 Cordon time scales with burst size, 1.1 s to 5.9 s to 28.0 s at the median, because fault-quarantine consumes its change stream serially and absorption is roughly node count times a per-event cost.
 
@@ -543,9 +547,9 @@ The benchmark put roughly 158,000 pods there. Eighty-three shards existed and no
 
 Whatever the cause, enforcement continued from what had last been programmed. `mongodb-networkpolicy` held a source-IP list of three pods that no longer existed, so every mongod created afterwards was denied on port 27017. Two policies deleted by `helm uninstall` sat `Terminating` on a finalizer for three days, still isolating the pods they selected while programming no rules. A replacement policy allowing 27017 never received a `PolicyEndpoint` at all.
 
-That took a long time to diagnose, because the symptom looks like an application bug. Port 9216 on the same pods stayed reachable, since its rule granted `0.0.0.0/0` and had no source list to go stale. Enforcement itself was correct throughout, and MongoDB, TLS, DNS and the CNI agent were all investigated first. The discriminator is that a port with no listener returns a RST while a port blocked by policy times out.
+That took a long time to diagnose, because the symptom looks like an application bug. Port 9216 on the same pods stayed reachable, since its rule granted `0.0.0.0/0` and had no source list to go stale. Enforcement itself was correct throughout, and MongoDB, TLS, DNS and the CNI agent were all investigated first. A partial discriminator is that a port with no listener usually returns a RST while a port blocked by policy times out, but a timeout on its own is inconclusive -- routing and security-group filtering produce one too. Test a port with a known listener, and read the `PolicyEndpoint` source-IP rules before attributing a timeout to policy enforcement.
 
-Deleting the 83 stale shards restored connectivity in about two minutes, by leaving the mongod pods selected by no policy at all, and the namespace was moved onto narrow policies with no namespace-wide selector.
+Deleting the 83 stale shards restored connectivity in about two minutes, by leaving the mongod pods selected by no policy at all. That is a fail-open step and should be treated as one: between the deletion and the replacement policies taking effect, MongoDB's 27017 was reachable from anywhere the network allowed, with no policy-level restriction. Anyone repeating it should put a replacement allowlist in place first or concurrently, and confirm both that approved sources can reach 27017 and that others cannot, before calling the recovery complete. The namespace was afterwards moved onto narrow policies with no namespace-wide selector.
 
 Where the controller stops keeping up was not found, because it kept up across the whole measured range and rebuilt shards correctly at 51,000 selected pods. The stall therefore begins somewhere between that and the 158,000 that broke it, and pushing further risks reproducing it on a control plane that cannot be restarted. The ratio is the useful figure rather than a breaking point.
 
@@ -685,7 +689,7 @@ name = "*";  mode = "AllowCompletion"
 | preflight | `--config=/etc/preflight/config.yaml`, no QPS flags |
 | health-events-analyzer | `--processing-strategy=EXECUTE_REMEDIATION`, no QPS flags |
 
-A component with no QPS flag gets controller-runtime's default, which sets `cfg.QPS = -1` when the loaded value is zero, disabling client-side rate limiting entirely and leaving the API server's own fairness rules as the only limit.
+A component with no QPS flag and a controller-runtime client gets that library's `GetConfig` default, which sets `cfg.QPS = -1` when the loaded value is zero, disabling client-side rate limiting and leaving the API server's own fairness rules as the only limit. Every module here builds against controller-runtime v0.25.0. This applies to the controller-runtime path only; a component constructing a client-go client directly would take client-go's defaults instead, and the effective values per component were not enumerated.
 
 **labeler** takes no resync flag; the period is hard-coded to 30 seconds at `labeler/pkg/initializer/init.go:61`, which is what sets the two-cycle time-to-label in A3.
 
