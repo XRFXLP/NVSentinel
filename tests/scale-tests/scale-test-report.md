@@ -2,6 +2,43 @@
 
 Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied input.
 
+## Table of contents
+
+- [Summary](#summary)
+- [A1. Component sizing](#a1-component-sizing)
+    - [kubernetes-object-monitor](#kubernetes-object-monitor)
+    - [fault-quarantine](#fault-quarantine)
+    - [labeler](#labeler)
+    - [node-drainer](#node-drainer)
+    - [preflight](#preflight)
+    - [fault-remediation](#fault-remediation)
+    - [health-events-analyzer](#health-events-analyzer)
+    - [janitor](#janitor)
+  - [QPS](#qps)
+- [A2. Load on external components](#a2-load-on-external-components)
+  - [Kubernetes API](#kubernetes-api)
+  - [etcd](#etcd)
+  - [MongoDB](#mongodb)
+  - [Node heartbeats and CNI](#node-heartbeats-and-cni)
+  - [What etcd actually holds](#what-etcd-actually-holds-m)
+  - [KWOK nodes and the AWS cloud-controller-manager](#kwok-nodes-and-the-aws-cloud-controller-manager-m)
+  - [Where the API load actually comes from](#where-the-api-load-actually-comes-from-m)
+  - [NetworkPolicy enforcement broke and stayed broken](#networkpolicy-enforcement-broke-and-stayed-broken-m)
+  - [MongoDB per member](#mongodb-per-member)
+  - [Cost per event, by component](#cost-per-event-by-component-m)
+- [A3. Customer-facing SLAs](#a3-customer-facing-slas)
+  - [Continuous load, 0.47 nodes/s](#continuous-load-047-nodess-m)
+  - [Full-chain run, 200-node burst](#full-chain-run-200-node-burst-m)
+  - [MTTR decomposition](#mttr-decomposition)
+  - [Event consumption rate](#event-consumption-rate-m)
+  - [Drain latency with real pods](#drain-latency-with-real-pods-m)
+  - [Burst absorption](#burst-absorption)
+    - [Namespace eviction mode governs whether a drain can complete](#namespace-eviction-mode-governs-whether-a-drain-can-complete)
+- [B. Methodology](#b-methodology)
+  - [Traps](#traps)
+
+---
+
 ## Summary
 
 NVSentinel has been tested upto 100k nodes, resource consumption grows predictably with fleet size and stays within ordinary limits with reasonable throughputs.
