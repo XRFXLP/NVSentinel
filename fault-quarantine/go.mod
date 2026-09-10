@@ -23,7 +23,7 @@ require (
 require (
 	cel.dev/expr v0.25.3 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
-	github.com/XSAM/otelsql v0.43.0 // indirect
+	github.com/XSAM/otelsql v0.44.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
