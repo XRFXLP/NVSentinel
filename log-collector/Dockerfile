@@ -17,7 +17,7 @@
 # optionally uploads artifacts to a file server.
 # Base: Ubuntu for minimal, stable tooling (bash, curl, tar, gzip, sudo)
 
-FROM public.ecr.aws/docker/library/ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
+FROM public.ecr.aws/docker/library/ubuntu:26.04@sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG KUBECTL_VERSION=v1.34.8
