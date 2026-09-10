@@ -53,8 +53,6 @@ Two components are most of the component total. At 100,000 nodes with a pod on e
 
 CPU was never a constraint. The busiest component peaked at 2.00 cores, four cores each is sufficient with headroom, and nothing recorded a single throttled CFS period.
 
-One component does not keep up at fleet scale, for reasons unrelated to its resources. health-events-analyzer consumes its event stream serially and takes about 17.6 ms per event, so it saturates near 55 events/s, while 100,000 nodes at 0.1 events per node per second would offer 10,000. Neither more CPU nor more replicas moves that as the component is built today.
-
 Cordon completes in 26 ms P50 and 165 ms P99 under continuous load, and a node carrying one evictable pod is drained about ten seconds after that, which is one of node-drainer's recheck cycles. Detection to drained is 10.11 s P50 and 10.29 s P99; five hundred nodes failing at once stretches that to 55.5 s with every node completing.
 
 What broke during testing was the infrastructure around NVSentinel, not NVSentinel: the AWS VPC CNI stopped rebuilding `PolicyEndpoint` objects and went on enforcing stale rules, the EBS CSI provisioner ran out of memory and stopped attaching volumes cluster-wide, and etcd's 16 GB threshold put the cluster into read-only. Each took MongoDB down with it. The first two are described in the appendix; etcd's budget is in A2.
@@ -182,6 +180,8 @@ Now the scale sweep:
 | 100,005 | ~100,000 | 0.10 / 0.38        | 1.04 G                 | 2 Gi         | 4 Gi       |
 
 
+These figures are with an empty queue; see queue memory below.
+
 ### preflight
 
 Pod informer only; no Node cache.
@@ -203,15 +203,17 @@ No Kubernetes watches, and Node reads bypass the cache (`Client.Cache.DisableFor
 
 | Nodes   | Pods     | CPU med/peak `[M]` | Working set peak `[M]` | Rec. request | Rec. limit |
 | ------- | -------- | ------------------ | ---------------------- | ------------ | ---------- |
-| 4,933   | 731      | 0.09 / 0.18        | 0.015 G                | 128 Mi       | 256 Mi     |
-| 53,513  | 642,243  | 0.09 / 0.18        | 0.019 G                | 128 Mi       | 256 Mi     |
-| 75,005  | ~100,000 | **0.07 / 0.08**    | **0.07 G**             | 128 Mi       | 256 Mi     |
-| 100,005 | ~100,000 | **0.01 / 0.04**    | **0.02 G**             | 128 Mi       | 256 Mi     |
+| 4,933   | 731      | 0.09 / 0.18        | 0.015 G                | 2 Gi         | 4 Gi       |
+| 53,513  | 642,243  | 0.09 / 0.18        | 0.019 G                | 2 Gi         | 4 Gi       |
+| 75,005  | ~100,000 | **0.07 / 0.08**    | **0.07 G**             | 2 Gi         | 4 Gi       |
+| 100,005 | ~100,000 | **0.01 / 0.04**    | **0.02 G**             | 2 Gi         | 4 Gi       |
 
 
 The flat profile is the point: this component is sized by its remediation rate, not by fleet size.
 
-Recommended **256 Mi / 512 Mi** at any fleet size.
+These figures are with an empty queue; see queue memory below.
+
+Recommended **2 Gi / 4 Gi**. The working set is a rounding error, but a queued backlog is not: 4 Gi covers roughly half a million events on the live path.
 
 ### health-events-analyzer
 
@@ -248,6 +250,19 @@ Per scale point, for the triggered case. An untriggered janitor reads 0.022-0.05
 | 100,005 | 731      | 0.05 / 0.09        | 4.17 G                           | 6 Gi         | 12 Gi      |
 | 100,005 | ~100,000 | 0.10 / 0.36        | 4.90 G                           | 6 Gi         | 12 Gi      |
 
+
+### Queue memory
+
+Both components hold one entry per pending event, so a backlog is memory the sizing tables above do not include. Two points each:
+
+| Component | Backlog source | Queued events | Working set | Per event `[M]` |
+| --- | --- | --- | --- | --- |
+| node-drainer | replay | ~200,000 | 182 → 315 MB | 0.67 KB |
+| node-drainer | replay | 1,048,415 | 255.7 → 979.7 MB | 0.69 KB |
+| fault-remediation | cold start | 200,668 | 41.5 → 133.7 MB | 0.47 KB |
+| fault-remediation | live stream | 1,389,136 | 791 → 9,463 MB | 7.79 KB |
+
+node-drainer queues a node name, event ID and document ID on either path, and its two points agree at 0.67 and 0.69 KB. fault-remediation queues a document ID on cold start and the whole decoded event on the live path, which is the 16x difference between its two rows.
 
 ### QPS
 
