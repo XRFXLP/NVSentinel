@@ -50,7 +50,9 @@ The whole control plane costs about 235 GB of memory at 100,000 nodes. NVSentine
 
 Two components are most of the component total. At 100,000 nodes with a pod on every node, kubernetes-object-monitor is 33.9 GB and fault-quarantine 17.9 GB; labeler is 6.6 GB, janitor 4.9 GB, node-drainer 1.0 GB, and nothing else exceeds 0.6 GB.
 
-CPU was never a constraint for the components whose cost follows fleet size: the busiest peaked at 2.00 cores, so four cores each is sufficient with headroom. health-events-analyzer is the exception, because its cost follows event rate rather than node count. At 5.8 ms of CPU per event a single replica saturates a core near 170 events/s, while 100,000 nodes at 0.1 events per node per second offer 10,000 events/s, so it needs to be sized against the expected event rate and will require several replicas or a cheaper rule set at that scale.
+CPU was never a constraint. The busiest component peaked at 2.00 cores, four cores each is sufficient with headroom, and nothing recorded a single throttled CFS period.
+
+One component does not keep up at fleet scale, for reasons unrelated to its resources. health-events-analyzer consumes its event stream serially and takes about 17.6 ms per event, so it saturates near 55 events/s, while 100,000 nodes at 0.1 events per node per second would offer 10,000. Neither more CPU nor more replicas moves that as the component is built today.
 
 Cordon completes in 26 ms P50 and 165 ms P99 under continuous load, and a node carrying one evictable pod is drained about ten seconds after that, which is one of node-drainer's recheck cycles. Detection to drained is 10.11 s P50 and 10.29 s P99; five hundred nodes failing at once stretches that to 55.5 s with every node completing.
 
@@ -66,6 +68,8 @@ Section A1 carries per-component sizing, A2 the load on external systems, A3 the
 ## A1. Component sizing
 
 **Memory at a glance.** The control plane costs about 2.35 MB per node, with no meaningful fixed term. Two components are most of NVSentinel's own share: at 100k nodes KOM is 33.9 GB and fault-quarantine 17.9 GB, together four-fifths of the 64.9 GB component total; labeler is 6.6 GB, janitor 4.9 GB, and everything else under 1.1 GB. At 50,000 nodes the same order holds at 11.8 / 8.6 / 3.9 / 2.4 GB. The marginal cost from 25k to 100k is **0.71 GB per 1,000 nodes**.
+
+![Component working set against fleet size](results/component-memory.png)
 
 | Nodes   | Control plane | MongoDB         | NVSentinel components |
 | ------- | ------------- | --------------- | --------------------- |
@@ -205,9 +209,9 @@ Not a Kubernetes API consumer; it reads the event stream from MongoDB, so its co
 | idle | 0.002 | 25.5 MB | 128 Mi | 256 Mi |
 | 36.9 events/s | **0.214** | 19.6-20.1 MB | 128 Mi | 256 Mi |
 
-Memory is a fixed cost of about 25 MB at any rate. CPU is **5.8 ms per event**, so one replica saturates a core near 170 events/s, while a 100,000-node fleet at 0.1 events per node per second offers 10,000 events/s.
+Memory is a fixed cost of about 25 MB at any rate. CPU is **5.8 ms per event**, and the component consumes its stream in a single serial loop (`store-client/pkg/client/event_processor.go`), so that cost is a throughput ceiling of roughly 170 events/s rather than something more cores would absorb. A 100,000-node fleet at 0.1 events per node per second offers 10,000 events/s.
 
-Recommended **256 Mi / 512 Mi**, with CPU sized against the expected event rate rather than the fleet.
+Recommended **256 Mi / 512 Mi**, and CPU is not a sizing lever here. At saturation the container draws about 0.2 cores against a 2-core limit and records **zero** throttled CFS periods, so it is blocked on MongoDB rather than short of CPU. The deployed 500m request already covers the saturated draw; raising it does not raise throughput.
 
 ### janitor
 
@@ -344,6 +348,8 @@ The memory is connections, not data: 85.0 GB resident across the three members a
 
 ### Cost per event, by component `[M]`
 
+![Per-event handling cost by component](results/cost-per-event.png)
+
 Every component publishes a histogram of its own handling time, so this cost is read straight off the components rather than inferred from CPU counters. Lifetime means across this session's runs:
 
 | Component | Metric | Events timed | Mean |
@@ -388,6 +394,8 @@ Measured in burst-free windows, so the tails are steady-state rather than burst 
 Percentiles are computed from per-document timestamps, so they are exact rather than snapped to Prometheus histogram buckets.
 
 Drain is 10.09 s of the 10.18 s detect-to-dispatch chain measured in that run, 99.1% of it, and it is a wait rather than work: node-drainer evicts the pod, requeues at its 10 s base backoff, confirms the pod is gone and marks the node drained. Everything NVSentinel does outside that wait totals 91 ms, two orders of magnitude below the backoff constant, so MTTR at this fleet size is set by that constant rather than by anything that grows with node count.
+
+![Where MTTR goes](results/mttr-composition.png)
 
 ### Full-chain run, 200-node burst `[M]`
 
@@ -540,6 +548,8 @@ The control plane also stops publishing its own metrics under load. The AWS/EKS 
 ### NetworkPolicy enforcement broke and stayed broken `[M]`
 
 The AWS VPC CNI expands each `NetworkPolicy` into `PolicyEndpoint` objects, sharded by how many pods the selector matches. The sharding is strictly linear: driving a namespace-wide selector from 1,000 to 51,000 pods produced 1, 6, 21 and 51 shards at those points, exactly **1,000 pod endpoints per shard**, with no deviation. A policy therefore costs one object per thousand pods it selects, and every one of them is rewritten when membership changes.
+
+![PolicyEndpoint shards against selected pods](results/policyendpoint-sharding.png)
 
 NVSentinel ships a policy that selects a whole namespace. `metrics-access`, from the top-level chart (`distros/kubernetes/nvsentinel/templates/networkpolicy.yaml`), selects `app.kubernetes.io/name NotIn [incluster-file-server]` -- every pod in the namespace except one. Every per-component chart uses a narrow positive selector; only this one is namespace-wide, written that way because the components share no common label to select on. Alongside only NVSentinel it costs a single shard, so nothing is visibly wrong until something large shares the namespace.
 
