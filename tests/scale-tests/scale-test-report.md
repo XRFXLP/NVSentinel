@@ -104,9 +104,6 @@ Similar things happened with the pods:
 
 Lets walk over component by component:
 
-<img width="1260" height="770" alt="Image" src="https://github.com/user-attachments/assets/ceadafc2-b5c8-49ea-8d3b-a1a2fea86ba1" />
-
-
 ### kubernetes-object-monitor
 
 Node + Pod watches, one per enabled policy; CEL-derived transform (#1720). Per-node cost 174,175 B/node. Per pod cost: ~3,700 B/pod settled, 4,400 B at peak
@@ -234,16 +231,20 @@ Per scale point, for the triggered case. An untriggered janitor reads 0.022-0.05
 
 ### QPS
 
-| Component | `--kube-api-qps` | Burst | API calls per operation | Throughput measured |
-|---|---|---|---|---|
-| fault-quarantine | 100 | 200 | 1 PATCH per cordon | 41.2 cordons/s (100-node burst) |
-| node-drainer | 400 (`node-drainer-bench`, the live instance) | 800 | 3.0 eviction calls per evictable pod | 19.2 evictions/s = 3.85 nodes/s (1,000-node burst) |
-| labeler | 500 | 1000 | 1 PATCH per relevant event | 53,513 nodes labelled in 18.3 min |
-| fault-remediation | via `KUBE_API_QPS`, otherwise disabled | 2x if set | 9 per remediated node: 5 GET, 3 PUT, 1 POST | 1.1 nodes/s at 10.4 req/s |
-| janitor | disabled, not configurable | — | >=5.7 per reboot: 2 GET, 1.8 PUT, 1 POST, 0.8 DELETE | — |
-| kubernetes-object-monitor | disabled, not configurable | — | **0** — one cache-served `Get()`, no writes | — |
-| health-events-analyzer | n/a — not a Kubernetes API consumer | — | — | — |
+The last column is the one to compare across rows: a client limit only means something once it is divided by what that component spends per node. A component with a high limit and an expensive path can be the bottleneck while one with a low limit and a single call is not.
 
+| Component | `--kube-api-qps` / burst | API calls per node | Nodes/s at the limit | Throughput measured |
+|---|---|---|---|---|
+| fault-quarantine | 100 / 200 | 1 PATCH per cordon | **100** | 41.2 cordons/s (100-node burst) |
+| node-drainer | 400 / 800 | 3.7 mean per node over a 100-node burst (audit logs, mostly nodes with nothing to evict); the eviction path itself costs 3.0 per evictable pod, so 15 at 5 pods/node | **108** at 3.7, **27** at 5 pods/node | 19.2 evictions/s = 3.85 nodes/s (1,000-node burst) |
+| labeler | 500 / 1000 | 1 PATCH per relevant event | **500** | 53,513 nodes labelled in 18.3 min |
+| fault-remediation | unset, so unlimited | 9 per remediated node: 5 GET, 3 PUT, 1 POST | unbounded client-side | 1.1 nodes/s at 10.4 req/s |
+| janitor | unset, so unlimited | >=5.7 per reboot: 2 GET, 1.8 PUT, 1 POST, 0.8 DELETE | unbounded client-side | — |
+| kubernetes-object-monitor | unset, so unlimited | 1 PUT per policy-match transition, cache-served read | — | — |
+
+health-events-analyzer is absent from the table because it makes no Kubernetes API calls at all: it constructs no client, exposes no `rest_client_requests_total` series, and reaches the rest of the system through MongoDB and the platform-connector socket.
+
+Normalised this way the two rate-limited stages of the fault path are close to balanced -- fault-quarantine at 100 nodes/s and node-drainer at 108 -- which is the right shape, since a cordon that outruns the drain behind it only builds a queue. That balance holds only at the measured 3.7 calls per node. node-drainer's cost is per evictable pod rather than per node, so a fleet running 5 evictable pods per node puts it at 27 nodes/s and makes it the binding stage, roughly a quarter of fault-quarantine's budget.
 
 ## A2. Load on external components
 
@@ -320,6 +321,8 @@ Bulk changes inflate this badly, because their revisions sit in the window too. 
 
 What a remediation costs, per node, during a 100-node burst:
 
+![API calls per remediated node, by verb](results/api-calls-per-node.png)
+
 | Component | Requests per node | Breakdown |
 |---|---|---|
 | fault-remediation | **9** | 5 get, 3 update, 1 create |
@@ -327,7 +330,9 @@ What a remediation costs, per node, during a 100-node burst:
 | node-drainer | 3.7 | get |
 | janitor-provider | 2.2 | get |
 | fault-quarantine | **1** | 1 patch, the cordon |
-| labeler, preflight, kubernetes-object-monitor | **0** | watch only |
+| labeler, preflight | **0** | watch only |
+
+kubernetes-object-monitor is not in that table because its cost is per policy-match transition, not per remediated node. Each transition writes one PUT of a full Node object (`pkg/annotations/manager.go`); a conflict retry adds another, and a reconcile that changes nothing costs nothing.
 
 Those add up to about 22 requests per node, so remediating an entire 53,513-node fleet costs roughly 1.2 million requests. Compressed into ten minutes that is 2,000 requests a second -- about what the simulation harness already generates on its own, and well inside APF, which peaked at 116 of 1,085 seats.
 
