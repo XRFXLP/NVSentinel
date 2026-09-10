@@ -25,6 +25,14 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 )
 
+func TestBuildManagerOptions_CacheSyncTimeout_PreservesConfiguredValue(t *testing.T) {
+	timeout := 10 * time.Minute
+
+	opts := buildManagerOptions(Params{CacheSyncTimeout: timeout}, cache.Options{})
+
+	require.Equal(t, timeout, opts.Controller.CacheSyncTimeout)
+}
+
 func TestBuildCacheOptionsLimitsGVKToConfiguredNamespaces(t *testing.T) {
 	resyncPeriod := time.Minute
 	opts, err := buildCacheOptionsWithRESTMapper(testRESTMapper(), []config.Policy{
@@ -42,8 +50,12 @@ func TestBuildCacheOptionsLimitsGVKToConfiguredNamespaces(t *testing.T) {
 	require.Contains(t, byObj.Namespaces, "gpu-operator")
 	require.Contains(t, byObj.Namespaces, "monitoring")
 
-	_, ok = byObjectForGVK(opts, schema.GroupVersionKind{Version: "v1", Kind: "Node"})
-	require.False(t, ok)
+	// A cluster-scoped GVK now gets an entry so a transform can be attached to
+	// it; leaving Namespaces empty is what keeps it cluster-wide.
+	nodeObj, ok := byObjectForGVK(opts, schema.GroupVersionKind{Version: "v1", Kind: "Node"})
+	require.True(t, ok)
+	require.Empty(t, nodeObj.Namespaces)
+	require.NotNil(t, nodeObj.Transform)
 }
 
 func TestBuildCacheOptionsKeepsGVKAllNamespacesWhenAnyPolicyOmitsNamespace(t *testing.T) {
@@ -53,8 +65,11 @@ func TestBuildCacheOptionsKeepsGVKAllNamespacesWhenAnyPolicyOmitsNamespace(t *te
 	}, time.Minute)
 	require.NoError(t, err)
 
-	_, ok := byObjectForGVK(opts, schema.GroupVersionKind{Version: "v1", Kind: "Pod"})
-	require.False(t, ok)
+	// One policy omits the namespace, so the GVK must stay cluster-wide even
+	// though another policy named a namespace.
+	podObj, ok := byObjectForGVK(opts, schema.GroupVersionKind{Version: "v1", Kind: "Pod"})
+	require.True(t, ok)
+	require.Empty(t, podObj.Namespaces)
 }
 
 func TestBuildCacheOptionsRejectsNamespaceForClusterScopedGVK(t *testing.T) {

@@ -20,8 +20,18 @@ spec:
     kind: Node
   selector:
     matchExpressions:
-      - key: kwok.x-k8s.io/node
-        operator: Exists
+      - key: '.metadata.annotations.["kwok.x-k8s.io/node"]'
+        operator: 'In'
+        values:
+          - 'fake'
+      # Without this second clause the selector stays true after the stage has
+      # run, so KWOK re-applies node-initialize forever -- throttled only by
+      # nodePlayStageParallelism. At 10k nodes that is ~244 node status writes
+      # per second, each a new ~53 KB etcd revision, which is what drives the
+      # etcd database size far above the live object footprint. Matching on an
+      # unset allocatable makes the stage fire exactly once per node.
+      - key: '.status.allocatable.cpu'
+        operator: 'DoesNotExist'
   weight: 1
   delay:
     durationMilliseconds: 500
@@ -106,6 +116,156 @@ spec:
         reason: GpuDcgmConnectivityFailureIsHealthy
         status: "False"
         type: GpuDcgmConnectivityFailure
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuXidErrorIsHealthy
+        status: "False"
+        type: GpuXidError
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuEccUncorrectableErrorIsHealthy
+        status: "False"
+        type: GpuEccUncorrectableError
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuEccCorrectableErrorIsHealthy
+        status: "False"
+        type: GpuEccCorrectableError
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuThermalThrottleIsHealthy
+        status: "False"
+        type: GpuThermalThrottle
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuPowerBrakeThrottleIsHealthy
+        status: "False"
+        type: GpuPowerBrakeThrottle
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuNvlinkDownIsHealthy
+        status: "False"
+        type: GpuNvlinkDown
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuMemoryErrorIsHealthy
+        status: "False"
+        type: GpuMemoryError
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuDriverMismatchIsHealthy
+        status: "False"
+        type: GpuDriverMismatch
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuPcieReplayErrorIsHealthy
+        status: "False"
+        type: GpuPcieReplayError
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuRowRemapFailureIsHealthy
+        status: "False"
+        type: GpuRowRemapFailure
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuClockThrottleIsHealthy
+        status: "False"
+        type: GpuClockThrottle
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: GpuPersistenceModeIsHealthy
+        status: "False"
+        type: GpuPersistenceMode
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: NvSwitchHealthCheckIsHealthy
+        status: "False"
+        type: NvSwitchHealthCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: NvLinkTrainingCheckIsHealthy
+        status: "False"
+        type: NvLinkTrainingCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: NicLinkDownCheckIsHealthy
+        status: "False"
+        type: NicLinkDownCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: NicErrorCheckIsHealthy
+        status: "False"
+        type: NicErrorCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: RdmaDeviceCheckIsHealthy
+        status: "False"
+        type: RdmaDeviceCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: IbLinkFlapCheckIsHealthy
+        status: "False"
+        type: IbLinkFlapCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: NvmeSmartCheckIsHealthy
+        status: "False"
+        type: NvmeSmartCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: FilesystemCheckIsHealthy
+        status: "False"
+        type: FilesystemCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: CpuThermalCheckIsHealthy
+        status: "False"
+        type: CpuThermalCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: MemoryEccCheckIsHealthy
+        status: "False"
+        type: MemoryEccCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: BmcConnectivityCheckIsHealthy
+        status: "False"
+        type: BmcConnectivityCheck
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: ContainerRuntimeHealthIsHealthy
+        status: "False"
+        type: ContainerRuntimeHealth
+      - lastHeartbeatTime: {{ Now | Quote }}
+        lastTransitionTime: {{ Now | Quote }}
+        message: "No Health Failures"
+        reason: KubeletPluginCheckIsHealthy
+        status: "False"
+        type: KubeletPluginCheck
       addresses:
       - address: {{ .ObjectMeta.Name }}
         type: Hostname
@@ -399,12 +559,20 @@ spec:
     kind: Node
   selector:
     matchExpressions:
-      - key: kwok.x-k8s.io/node
-        operator: Exists
+      - key: '.metadata.annotations.["kwok.x-k8s.io/node"]'
+        operator: 'In'
+        values:
+          - 'fake'
   weight: 2
+  # Real kubelets with the NodeLease feature refresh the cheap Lease object
+  # every ~10s but rewrite the Node object itself only every ~5 minutes. A 30s
+  # node rewrite is an order of magnitude more churn than production, and at
+  # fleet scale each rewrite is a new ~50 KB etcd revision: 10k nodes at 30s is
+  # roughly 1 GB of revisions per minute, which drives the etcd database size
+  # far above the live object footprint.
   delay:
-    durationMilliseconds: 30000
-    jitterDurationMilliseconds: 5000
+    durationMilliseconds: 300000
+    jitterDurationMilliseconds: 30000
   next:
     statusTemplate: |
       conditions:
@@ -447,8 +615,12 @@ spec:
     kind: Pod
   selector:
     matchExpressions:
-      - key: kwok.x-k8s.io/node
-        operator: DoesNotExist
+      - key: '.metadata.deletionTimestamp'
+        operator: 'DoesNotExist'
+      - key: '.status.phase'
+        operator: 'In'
+        values:
+          - 'Pending'
   weight: 1
   delay:
     durationMilliseconds: 300
@@ -477,30 +649,17 @@ spec:
         status: "True"
         type: PodScheduled
       containerStatuses:
-      {{ range .Spec.Containers }}
-      - containerID: "cri-o://{{ .Name }}aabbccddeeff0011223344556677889900aabbccddeeff0011223344556677"
-        image: {{ .Image | Quote }}
-        imageID: "{{ .Image }}@sha256:aabbccddeeff0011223344556677889900aabbccddeeff0011223344556677889900"
-        lastState:
-          terminated:
-            containerID: "cri-o://{{ .Name }}00ffeeddccbbaa9988776655443322110000ffeeddccbbaa9988776655443322"
-            exitCode: 0
-            finishedAt: {{ Now | Quote }}
-            reason: Completed
-            startedAt: {{ Now | Quote }}
-        name: {{ .Name | Quote }}
+      {{ range .spec.containers }}
+      - containerID: "cri-o://{{ .name }}aabbccddeeff0011223344556677889900aabbccddeeff0011223344556677"
+        image: {{ .image | Quote }}
+        imageID: "{{ .image }}@sha256:aabbccddeeff0011223344556677889900aabbccddeeff0011223344556677889900"
+        name: {{ .name | Quote }}
         ready: true
         restartCount: 0
         started: true
         state:
           running:
             startedAt: {{ Now | Quote }}
-        volumeMounts:
-        - mountPath: /var/run
-          name: var-run-vol
-        - mountPath: /etc/config
-          name: config
-          readOnly: true
       {{ end }}
       hostIP: "10.0.10.194"
       hostIPs:
@@ -524,10 +683,8 @@ spec:
     kind: Pod
   selector:
     matchExpressions:
-      - key: kwok.x-k8s.io/node
-        operator: DoesNotExist
-      - key: metadata.deletionTimestamp
-        operator: Exists
+      - key: '.metadata.deletionTimestamp'
+        operator: 'Exists'
   weight: 1
   delay:
     durationMilliseconds: 100

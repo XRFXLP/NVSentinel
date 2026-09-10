@@ -37,6 +37,8 @@ def _init_event_processor(
     metadata_path: str,
     processing_strategy: platformconnector_pb2.ProcessingStrategy,
     store_only_checks: frozenset[str],
+    connectivity_failure_escalation_threshold: int,
+    platform_connector_token_path: str,
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
@@ -50,6 +52,8 @@ def _init_event_processor(
                 metadata_path=metadata_path,
                 processing_strategy=processing_strategy,
                 store_only_checks=store_only_checks,
+                connectivity_failure_escalation_threshold=connectivity_failure_escalation_threshold,
+                token_path=platform_connector_token_path or None,
             )
         case _:
             log.fatal(f"Unknown event processor {event_processor_name}")
@@ -88,6 +92,18 @@ def _init_event_processor(
     required=False,
 )
 @click.option(
+    "--platform-connector-token-path",
+    type=click.Path(),
+    default="",
+    envvar="PLATFORM_CONNECTOR_TOKEN_PATH",
+    help=(
+        "Path to a projected ServiceAccount token presented as a bearer credential "
+        "when publishing health events to platform-connector. Defaults to the "
+        "PLATFORM_CONNECTOR_TOKEN_PATH environment variable; empty disables it."
+    ),
+    required=False,
+)
+@click.option(
     "--suppress-nvlink-down-unbridged-pcie",
     type=bool,
     default=False,
@@ -113,6 +129,7 @@ def cli(
     dcgm_k8s_service_enabled,
     metadata_path,
     processing_strategy,
+    platform_connector_token_path,
     suppress_nvlink_down_unbridged_pcie,
 ):
     exit = Event()
@@ -155,6 +172,10 @@ def cli(
         sys.exit(1)
 
     log.info(f"Event handling strategy configured to: {processing_strategy_value}")
+    log.info(
+        "Platform-connector token auth: %s",
+        f"enabled (path={platform_connector_token_path})" if platform_connector_token_path else "disabled",
+    )
 
     metrics.set_flag("store_only_mode", processing_strategy == "STORE_ONLY")
     metrics.set_flag("dcgm_k8s_service_enabled", dcgm_k8s_service_enabled)
@@ -164,31 +185,69 @@ def cli(
 
     thermal_margin_enabled = False
     thermal_margin_store_only = False
+    power_brake_enabled = False
+    power_brake_store_only = False
+    power_brake_min_consecutive_polls = 1
     if config.has_section("dcgmfieldsmonitoring"):
-        thermal_margin_enabled = config["dcgmfieldsmonitoring"].getboolean(
-            "gputemplimitmonitoringenabled", fallback=False
-        )
-        thermal_margin_store_only = config["dcgmfieldsmonitoring"].getboolean("gputemplimitstoreonly", fallback=False)
+        fields_monitoring_config = config["dcgmfieldsmonitoring"]
+        thermal_margin_enabled = fields_monitoring_config.getboolean("gputemplimitmonitoringenabled", fallback=False)
+        thermal_margin_store_only = fields_monitoring_config.getboolean("gputemplimitstoreonly", fallback=False)
         log.info(
             "GpuThermalMarginWatch field monitor: enabled=%s store_only=%s",
             thermal_margin_enabled,
             thermal_margin_store_only,
         )
 
+        power_brake_enabled = fields_monitoring_config.getboolean("gpupowerbrakemonitoringenabled", fallback=False)
+        power_brake_store_only = fields_monitoring_config.getboolean("gpupowerbrakestoreonly", fallback=False)
+        power_brake_min_consecutive_polls = fields_monitoring_config.getint(
+            "gpupowerbrakeminconsecutivepolls", fallback=1
+        )
+        log.info(
+            "GpuPowerBrakeWatch field monitor: enabled=%s store_only=%s min_consecutive_polls=%s",
+            power_brake_enabled,
+            power_brake_store_only,
+            power_brake_min_consecutive_polls,
+        )
+
     # Per-check observe-only set: when store-only is enabled the new
     # GpuThermalMarginWatch emits STORE_ONLY events (persisted + exported as
     # metrics but excluded from the remediation pipeline, so no node condition
     # or cordon) while every other DCGM check keeps the process-wide strategy.
-    store_only_checks = frozenset({"GpuThermalMarginWatch"}) if thermal_margin_store_only else frozenset()
+    store_only_checks = set()
+    if thermal_margin_store_only:
+        store_only_checks.add("GpuThermalMarginWatch")
+    if power_brake_store_only:
+        store_only_checks.add("GpuPowerBrakeWatch")
+
+    # GpuDcgmUnresponsive recommends a node reboot, so it ships observe-only
+    # and has to be turned on deliberately per fleet.
+    probe_store_only = dcgm_config.getboolean("ProbeStoreOnly", fallback=True)
+    if probe_store_only:
+        store_only_checks.add("GpuDcgmUnresponsive")
+    log.info("GpuDcgmUnresponsive check: store_only=%s", probe_store_only)
+
+    store_only_checks = frozenset(store_only_checks)
 
     suppressed_error_codes = frozenset()
+    connectivity_failure_escalation_threshold = 0
     if config.has_section("dcgmhealthcheck"):
-        suppressed_error_codes_raw = config["dcgmhealthcheck"].get("SuppressedErrorCodes", fallback="")
+        health_check_config = config["dcgmhealthcheck"]
+        suppressed_error_codes_raw = health_check_config.get("SuppressedErrorCodes", fallback="")
         suppressed_error_codes = frozenset(
             code.strip() for code in suppressed_error_codes_raw.split(",") if code.strip()
         )
         if suppressed_error_codes:
             log.info(f"DCGM error codes suppressed via config: {sorted(suppressed_error_codes)}")
+
+        connectivity_failure_escalation_threshold = health_check_config.getint(
+            "ConnectivityFailureEscalationThreshold", fallback=0
+        )
+        if connectivity_failure_escalation_threshold > 0:
+            log.info(
+                "DCGM connectivity failures escalate to RESTART_BM after %d consecutive cycles",
+                connectivity_failure_escalation_threshold,
+            )
 
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
@@ -204,12 +263,20 @@ def cli(
                 metadata_path,
                 processing_strategy_value,
                 store_only_checks,
+                connectivity_failure_escalation_threshold,
+                platform_connector_token_path,
             )
         )
 
     metadata_reader = MetadataReader(metadata_path)
 
     poll_interval = int(dcgm_config["PollIntervalSeconds"])
+    # Defaults to the /healthz staleness window, so the watchdog reports at the
+    # same moment the loop is declared stale. Critical event delivery is bounded
+    # separately so it remains inside the liveness restart budget. DCGM does not
+    # expose a documented fixed RPC timeout, so fleets should validate this
+    # deadline in STORE_ONLY mode before enabling remediation. Set to 0 to disable.
+    probe_deadline_seconds = dcgm_config.getfloat("ProbeDeadlineSeconds", fallback=poll_interval * 3)
     prom_server, t = start_health_server(port, staleness_seconds=poll_interval * 3)
 
     def process_exit_signal(signum, frame):
@@ -230,6 +297,9 @@ def cli(
         dcgm_mode=dcgm_mode,
         suppressed_error_codes=suppressed_error_codes,
         suppress_unbridged_pcie_nvlink_down=suppress_nvlink_down_unbridged_pcie,
+        probe_deadline_seconds=probe_deadline_seconds,
+        power_brake_enabled=power_brake_enabled,
+        power_brake_min_consecutive_polls=power_brake_min_consecutive_polls,
     )
     dcgm_watcher.start([], exit)
 

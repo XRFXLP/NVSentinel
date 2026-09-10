@@ -30,17 +30,21 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
+	toolscache "k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
+	celpkg "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/controller"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
@@ -52,9 +56,16 @@ type Params struct {
 	MetricsBindAddress      string
 	HealthProbeBindAddress  string
 	ResyncPeriod            time.Duration
+	CacheSyncTimeout        time.Duration
 	MaxConcurrentReconciles int
 	PlatformConnectorSocket string
-	ProcessingStrategy      string
+	// PlatformConnectorToken is the path to a projected ServiceAccount token
+	// presented to platform-connector. This monitor watches cluster-wide
+	// objects and therefore reports on nodes other than its own, which
+	// platform-connector only permits for an allowlisted, token-authenticated
+	// identity. Empty disables token authentication.
+	PlatformConnectorToken string
+	ProcessingStrategy     string
 }
 
 type Components struct {
@@ -77,7 +88,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 
 	slog.Info("Loaded policy configuration", "policies", len(cfg.Policies))
 
-	conn, err := dialPlatformConnector(params.PlatformConnectorSocket)
+	conn, err := dialPlatformConnector(params.PlatformConnectorSocket, params.PlatformConnectorToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to platform connector: %w", err)
 	}
@@ -143,13 +154,7 @@ func createManager(params Params, policies []config.Policy) (ctrl.Manager, error
 		return nil, err
 	}
 
-	mgrOpts := ctrl.Options{
-		Metrics: server.Options{
-			BindAddress: params.MetricsBindAddress,
-		},
-		HealthProbeBindAddress: params.HealthProbeBindAddress,
-		Cache:                  cacheOptions,
-	}
+	mgrOpts := buildManagerOptions(params, cacheOptions)
 
 	mgr, err := ctrl.NewManager(restConfig, mgrOpts)
 	if err != nil {
@@ -157,6 +162,19 @@ func createManager(params Params, policies []config.Policy) (ctrl.Manager, error
 	}
 
 	return mgr, nil
+}
+
+func buildManagerOptions(params Params, cacheOptions cache.Options) ctrl.Options {
+	return ctrl.Options{
+		Metrics: server.Options{
+			BindAddress: params.MetricsBindAddress,
+		},
+		HealthProbeBindAddress: params.HealthProbeBindAddress,
+		Cache:                  cacheOptions,
+		Controller: ctrlconfig.Controller{
+			CacheSyncTimeout: params.CacheSyncTimeout,
+		},
+	}
 }
 
 func buildCacheOptions(
@@ -217,18 +235,108 @@ func buildCacheOptionsWithRESTMapper(
 		namespacesByGVK[gvk][p.Resource.Namespace] = cache.Config{}
 	}
 
-	if len(namespacesByGVK) == 0 {
+	// Every watched GVK gets an entry, not only the namespaced ones, because
+	// the transform below is attached per GVK. Previously a cluster-scoped
+	// resource such as Node produced no entry at all and so was cached whole.
+	gvks := make(map[schema.GroupVersionKind]bool, len(namespacesByGVK)+len(allNamespacesByGVK))
+	for gvk := range namespacesByGVK {
+		gvks[gvk] = true
+	}
+
+	for gvk := range allNamespacesByGVK {
+		gvks[gvk] = true
+	}
+
+	if len(gvks) == 0 {
 		return opts, nil
 	}
 
-	opts.ByObject = make(map[client.Object]cache.ByObject, len(namespacesByGVK))
-	for gvk, namespaces := range namespacesByGVK {
-		opts.ByObject[newUnstructuredForGVK(gvk)] = cache.ByObject{
-			Namespaces: namespaces,
+	transforms := buildTransforms(policies)
+
+	opts.ByObject = make(map[client.Object]cache.ByObject, len(gvks))
+	for gvk := range gvks {
+		byObject := cache.ByObject{}
+		if ns := namespacesByGVK[gvk]; ns != nil {
+			byObject.Namespaces = ns
 		}
+
+		if t, ok := transforms[gvk]; ok {
+			byObject.Transform = t
+		}
+
+		opts.ByObject[newUnstructuredForGVK(gvk)] = byObject
 	}
 
 	return opts, nil
+}
+
+// buildTransforms derives, per GVK, a cache transform that keeps only the
+// fields the enabled policies actually read.
+//
+// The field set comes from the policy expressions themselves, which are known
+// configuration read at startup, so this does not constrain what an operator
+// may write. If any expression for a GVK cannot be resolved statically -- it
+// uses the object whole rather than through a field -- that GVK gets no
+// transform and is cached in full, because pruning on an incomplete field set
+// would change what the policy sees.
+func buildTransforms(policies []config.Policy) map[schema.GroupVersionKind]toolscache.TransformFunc {
+	env, err := celpkg.NewEnvironment(nil)
+	if err != nil {
+		slog.Warn("Cannot build cache transforms, caching objects in full", "error", err)
+		return nil
+	}
+
+	pathsByGVK := make(map[schema.GroupVersionKind][][]string)
+	opaque := make(map[schema.GroupVersionKind]bool)
+
+	for _, p := range policies {
+		if !p.Enabled {
+			continue
+		}
+
+		gvk := policyGVK(p)
+
+		exprs := []string{p.Predicate.Expression}
+		if p.NodeAssociation != nil && p.NodeAssociation.Expression != "" {
+			exprs = append(exprs, p.NodeAssociation.Expression)
+		}
+
+		for _, expr := range exprs {
+			if expr == "" {
+				continue
+			}
+
+			ast, err := env.Compile(expr)
+			if err != nil {
+				opaque[gvk] = true
+				break
+			}
+
+			paths, ok := celpkg.ReferencedPaths(ast)
+			if !ok {
+				opaque[gvk] = true
+				break
+			}
+
+			pathsByGVK[gvk] = append(pathsByGVK[gvk], paths...)
+		}
+	}
+
+	out := make(map[schema.GroupVersionKind]toolscache.TransformFunc, len(pathsByGVK))
+
+	for gvk, paths := range pathsByGVK {
+		if opaque[gvk] {
+			slog.Info("Policy reads the object opaquely, caching it in full", "gvk", gvk.String())
+			continue
+		}
+
+		slog.Info("Pruning cached objects to policy fields",
+			"gvk", gvk.String(), "fields", describePaths(paths))
+
+		out[gvk] = pruningTransform(paths)
+	}
+
+	return out
 }
 
 func validateResourceNamespaceScope(
@@ -296,8 +404,15 @@ func registerControllers(
 	return nil
 }
 
-func dialPlatformConnector(socket string) (*grpc.ClientConn, error) {
+func dialPlatformConnector(socket, tokenPath string) (*grpc.ClientConn, error) {
 	socketPath := strings.TrimPrefix(socket, "unix://")
+
+	dialOpts := append(
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		grpcclient.DialOptions(tokenPath)...,
+	)
+
+	slog.Info("Dialing platform connector", "socket", socket, "tokenAuthEnabled", tokenPath != "")
 
 	for attempt := 1; attempt <= 10; attempt++ {
 		if _, err := os.Stat(socketPath); err != nil {
@@ -311,7 +426,7 @@ func dialPlatformConnector(socket string) (*grpc.ClientConn, error) {
 			return nil, fmt.Errorf("socket not found after retries: %w", err)
 		}
 
-		conn, err := grpc.NewClient(socket, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpc.NewClient(socket, dialOpts...)
 		if err != nil {
 			slog.Warn("Failed to create gRPC client", "attempt", attempt, "error", err)
 

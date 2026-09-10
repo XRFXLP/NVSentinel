@@ -1,0 +1,22 @@
+{
+  "enableK8sPlatformConnector": "false",
+  "K8sConnectorQps": 5.0,
+  "K8sConnectorBurst": 10,
+  "MaxNodeConditionMessageLength": 1024,
+  "CompactedHealthEventMsgLen": 72,
+  "StoreConnectorMaxRetries": 3,
+  "enableMongoDBStorePlatformConnector": "true",
+  "enablePostgresDBStorePlatformConnector": "false",
+  "enableNodeBindingAuth": "false",
+  "AuthAudience": "platform-connector.nvsentinel.nvidia.com",
+  "AuthCrossNodeServiceAccounts": [
+    "system:serviceaccount:nvsentinel:health-events-analyzer"
+  ],
+  "AuthMode": "permissive",
+  "AuthFailOpenOnUnavailable": "false",
+  "enableGRPCSinkConnector": "false",
+  "GRPCSinkTarget": "",
+  "GRPCSinkConnectorMaxRetries": 3,
+  "GRPCSinkTokenPath": "",
+  "pipeline": []
+}

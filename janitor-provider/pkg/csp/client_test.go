@@ -35,6 +35,7 @@ func TestProvider_String(t *testing.T) {
 		{"azure provider", ProviderAzure, "azure"},
 		{"oci provider", ProviderOCI, "oci"},
 		{"nebius provider", ProviderNebius, "nebius"},
+		{"lambda provider", ProviderLambda, "lambda"},
 		{"generic provider", ProviderGeneric, "generic"},
 	}
 
@@ -67,6 +68,7 @@ func TestGetProviderFromEnv_Valid(t *testing.T) {
 		{"azure", "azure", ProviderAzure},
 		{"oci", "oci", ProviderOCI},
 		{"nebius", "nebius", ProviderNebius},
+		{"lambda", "lambda", ProviderLambda},
 		{"generic", "generic", ProviderGeneric},
 	}
 
@@ -193,6 +195,7 @@ func TestProviderConstants(t *testing.T) {
 	assert.Equal(t, Provider("azure"), ProviderAzure)
 	assert.Equal(t, Provider("oci"), ProviderOCI)
 	assert.Equal(t, Provider("nebius"), ProviderNebius)
+	assert.Equal(t, Provider("lambda"), ProviderLambda)
 	assert.Equal(t, Provider("generic"), ProviderGeneric)
 }
 
@@ -239,6 +242,12 @@ func TestNewWithProvider_AllProviders(t *testing.T) {
 			provider:      ProviderNebius,
 			shouldSucceed: true,
 		},
+		{
+			name:          "lambda provider",
+			provider:      ProviderLambda,
+			shouldSucceed: false,
+			skipReason:    "Lambda client requires an API key",
+		},
 	}
 
 	for _, tt := range tests {
@@ -277,8 +286,7 @@ func TestNew_WithContext(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create a context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Should succeed with valid context
 	client, err := New(ctx)
@@ -300,12 +308,14 @@ func TestGetProviderFromString(t *testing.T) {
 		{"azure lowercase", "azure", ProviderAzure, false},
 		{"oci lowercase", "oci", ProviderOCI, false},
 		{"nebius lowercase", "nebius", ProviderNebius, false},
+		{"lambda lowercase", "lambda", ProviderLambda, false},
 		{"generic lowercase", "generic", ProviderGeneric, false},
 		{"kind uppercase", "KIND", ProviderKind, false}, // case insensitive
 		{"aws uppercase", "AWS", ProviderAWS, false},
 		{"gcp mixed case", "GcP", ProviderGCP, false},
 		{"azure mixed case", "Azure", ProviderAzure, false},
 		{"nebius mixed case", "Nebius", ProviderNebius, false},
+		{"lambda mixed case", "Lambda", ProviderLambda, false},
 		{"generic mixed case", "Generic", ProviderGeneric, false},
 		{"invalid", "invalid", "", true},
 		{"empty", "", "", true},

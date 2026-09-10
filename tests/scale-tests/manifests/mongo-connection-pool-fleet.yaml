@@ -1,0 +1,90 @@
+# Drives the whole simulated fleet at a chosen per-node event rate.
+#
+# A StatefulSet rather than a Deployment because every replica needs a distinct
+# node range: a Deployment gives all pods identical arguments, so all of them
+# would write for nodes 0-499 and the fleet would see one shard's worth of load
+# no matter how many replicas ran. --shard-stride makes the binary read its own
+# pod ordinal and offset --node-start-index by ordinal*stride; the image is
+# distroless, so there is no shell to compute that in.
+#
+#   500 connectors x N replicas, each covering --node-span nodes round-robin
+#   --rate is per connector, so fleet rate = connectors x rate, and the
+#   per-node rate is rate / node-span
+#
+# At 75,000 nodes: 10 replicas x 500 connectors x 15 span = 75,000 nodes covered
+# by 5,000 connectors at 1.5 events/s each = 7,500 events/s = 0.1 per node per
+# second, on ~35,000 connections rather than 525,000. Tying one connector to one
+# node made the event rate inseparable from the connection count, so MongoDB's
+# connection ceiling blocked component measurements that had nothing to do with
+# connections.
+#   --fatal-permille=2000       = 1 fatal for every 4 non-fatal
+#   ~3,500 connections/replica  = the fleet's own connection count
+#
+# At 100,000 nodes: 10 replicas x 500 connectors x 20 span = 100,000 nodes, every
+# node in the fleet. --rate is per connector, so 2.0/s over 20 nodes is 0.1 per
+# node per second, 10,000 events/s fleet-wide, on ~35,000 connections.
+#
+# --ramp-ms is 60 rather than the 20 used at 50,000 nodes. Every replica starts
+# at once, so the ramp inside a pod is the only thing spreading the connection
+# storm across the replica set; at 20 ms a third of the connectors failed their
+# initial connect inside a single fifteen-second window and never retried.
+#
+# Scale deliberately; at full rate this writes ~25 MB/s into a datastore whose
+# volume has single-digit gigabytes free.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo-pool-fleet
+  namespace: nvsentinel
+spec:
+  serviceName: mongo-pool-fleet
+  podManagementPolicy: Parallel
+  replicas: 0
+  selector:
+    matchLabels: {app: mongo-pool-fleet}
+  template:
+    metadata:
+      labels: {app: mongo-pool-fleet}
+    spec:
+      # Keep the load generator off the simulated fleet; kwok nodes run nothing.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - {key: "kwok.x-k8s.io/node", operator: DoesNotExist}
+      containers:
+        - name: pool
+          image: docker.io/xrfxlp/mongo-connection-pool:mcp-202609091137
+          args:
+            - --connectors=500
+            - --ramp-ms=60
+            - --shard-stride=10000
+            - --node-span=20
+            - --pool-size=3
+            - --rate=2.0
+            - --fatal-permille=2000
+            - --node-prefix=kwok-node-
+            - --node-index-width=6
+            - --agent=gpu-health-monitor
+            - --mongo-uri=mongodb://mongodb-rs0.nvsentinel.svc.cluster.local:27017/?replicaSet=rs0&tls=true
+            - --mongo-cert-dir=/etc/ssl/client-certs
+            - --mongo-auth=x509
+          env:
+            - {name: POD_NAME, valueFrom: {fieldRef: {fieldPath: metadata.name}}}
+          volumeMounts:
+            - {name: cert, mountPath: /etc/ssl/client-certs}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {cpu: "4", memory: 8Gi}
+      tolerations:
+        - {key: dedicated, operator: Equal, value: system-workload, effect: NoSchedule}
+        - {key: dedicated, operator: Equal, value: system-workload, effect: NoExecute}
+      volumes:
+        - name: cert
+          secret:
+            secretName: mongo-app-client-cert-secret
+            items:
+              - {key: tls.crt, path: tls.crt}
+              - {key: tls.key, path: tls.key}
+              - {key: ca.crt, path: ca.crt}

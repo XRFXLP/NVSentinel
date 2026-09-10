@@ -18,8 +18,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
+	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,31 +33,66 @@ var (
 	_ model.CSPClient = (*Client)(nil)
 )
 
-// Client is the Kind implementation of the CSP Client interface.
-type Client struct{}
+// defaultRebootDuration is how long a simulated reboot takes when
+// KIND_REBOOT_DURATION is unset. It is deliberately short: a long simulated
+// wait becomes the dominant term in every measurement and hides the behaviour
+// of the components themselves. Scale tests sweep this value upward from near
+// zero to find where the external wait starts masking internal limits.
+const defaultRebootDuration = 5 * time.Second
 
-// NewClient creates a new Kind client.
+// Client is the Kind implementation of the CSP Client interface.
+type Client struct {
+	rebootDuration time.Duration
+}
+
+// NewClient creates a new Kind client. The simulated reboot duration is read
+// from KIND_REBOOT_DURATION (any Go duration string, e.g. "5m", "1h").
 func NewClient(ctx context.Context) (*Client, error) {
 	// Kind client is a simulation client with no actual CSP connection
-	return &Client{}, nil
+	d := defaultRebootDuration
+
+	if v := os.Getenv("KIND_REBOOT_DURATION"); v != "" {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("parse KIND_REBOOT_DURATION %q: %w", v, err)
+		}
+
+		if parsed < 0 {
+			return nil, fmt.Errorf("KIND_REBOOT_DURATION must not be negative, got %s", parsed)
+		}
+
+		d = parsed
+	}
+
+	slog.InfoContext(ctx, "Kind CSP client initialised", "simulatedRebootDuration", d)
+
+	return &Client{rebootDuration: d}, nil
 }
 
-// SendRebootSignal simulates sending a reboot signal for a kind node
+// SendRebootSignal simulates sending a reboot signal for a kind node. It
+// returns immediately, encoding the start time in the request reference the
+// way the azure and oci providers do; the wait is accounted for in
+// IsNodeReady. Blocking here would instead cap how many reboots can be in
+// flight at once, which is exactly the property scale tests need to measure.
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
-	// nolint:gosec // G404: Using weak random for simulation is acceptable
-	// wait some random time to simulate a real csp (very short for fast tests)
-	time.Sleep(time.Duration(3+rand.IntN(3)) * time.Second)
-
-	return model.ResetSignalRequestRef(""), nil
+	return model.ResetSignalRequestRef(time.Now().UTC().Format(time.RFC3339)), nil
 }
 
-// IsNodeReady checks if the node is ready (simulated with randomness for kind)
+// IsNodeReady reports the node ready once the simulated reboot duration has
+// elapsed since the signal was sent.
 func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
-	// simulate some randomness if the node is ready or not (very high success rate for fast tests)
-	// requestID is unused in simulation mode
-	_ = requestID
+	if requestID == "" {
+		// No start time recorded (e.g. a CR created before this field was
+		// populated); fall back to reporting ready.
+		return true, nil
+	}
 
-	return rand.IntN(100) > 5, nil //nolint:gosec // G404: weak random acceptable for simulation
+	startedAt, err := time.Parse(time.RFC3339, requestID)
+	if err != nil {
+		return false, fmt.Errorf("parse reboot start time %q: %w", requestID, err)
+	}
+
+	return time.Since(startedAt) >= c.rebootDuration, nil
 }
 
 // SendTerminateSignal simulates terminating a kind node by removing the docker container
@@ -106,14 +142,7 @@ func (c *Client) SendTerminateSignal(
 		return "", fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	found := false
-
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if line == containerName {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(strings.Split(strings.TrimSpace(string(output)), "\n"), containerName)
 
 	if !found {
 		slog.InfoContext(ctx, "Container not found, assuming already deleted", "container", containerName)
@@ -168,10 +197,8 @@ func (c *Client) deleteAndVerifyContainer(
 		return fmt.Errorf("failed to verify container deletion: %w", err)
 	}
 
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if line == containerName {
-			return fmt.Errorf("container %s still exists after deletion attempt", containerName)
-		}
+	if slices.Contains(strings.Split(strings.TrimSpace(string(output)), "\n"), containerName) {
+		return fmt.Errorf("container %s still exists after deletion attempt", containerName)
 	}
 
 	return nil

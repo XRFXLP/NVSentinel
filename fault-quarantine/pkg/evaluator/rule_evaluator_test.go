@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -72,11 +73,9 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 	labels[informer.GPUNodeLabel] = "true"
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   name,
-			Labels: labels,
-		},
-		Spec: corev1.NodeSpec{},
+		Name:   name,
+		Labels: labels,
+		Spec:   corev1.NodeSpec{},
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
 				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
@@ -87,6 +86,46 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 	_, err := testClient.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create test node %s: %v", name, err)
+	}
+}
+
+func TestNodeRuleEvaluatorWithMetadataAndSpecOnly(t *testing.T) {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	node := &corev1.Node{
+		Name:        "slim-node",
+		Labels:      map[string]string{"environment": "production"},
+		Annotations: map[string]string{"maintenance": "false"},
+		Spec: corev1.NodeSpec{
+			Unschedulable: true,
+			Taints: []corev1.Taint{{
+				Key:    "dedicated",
+				Value:  "gpu",
+				Effect: corev1.TaintEffectNoSchedule,
+			}},
+		},
+	}
+	if err := indexer.Add(node); err != nil {
+		t.Fatalf("indexer.Add() error = %v", err)
+	}
+
+	evaluator, err := NewNodeRuleEvaluator(
+		`node.metadata.name == "slim-node" &&
+		 node.metadata.labels["environment"] == "production" &&
+		 node.metadata.annotations["maintenance"] == "false" &&
+		 node.spec.unschedulable &&
+		 node.spec.taints.exists(t, t.key == "dedicated")`,
+		corelisters.NewNodeLister(indexer),
+	)
+	if err != nil {
+		t.Fatalf("NewNodeRuleEvaluator() error = %v", err)
+	}
+
+	result, err := evaluator.Evaluate(&protos.HealthEvent{NodeName: "slim-node"})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if result != common.RuleEvaluationSuccess {
+		t.Fatalf("Evaluate() = %v, want success", result)
 	}
 }
 
@@ -168,6 +207,63 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 			expectEvaluate: common.RuleEvaluationFailed,
 			expectError:    true,
 		},
+		// ADR-040: nvsentinel.dgxc.nvidia.com/managed=false skips quarantine.
+		{
+			name:       "ADR-040 managed=false skips quarantine",
+			expression: `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"nvsentinel.dgxc.nvidia.com/managed": "false",
+			},
+			expectEvaluate: common.RuleEvaluationFailed,
+			expectError:    false,
+		},
+		{
+			name:           "ADR-040 managed label absent — quarantine proceeds",
+			expression:     `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels:     map[string]string{},
+			expectEvaluate: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		{
+			name:       "ADR-040 managed=true — quarantine proceeds (only 'false' opts out)",
+			expression: `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"nvsentinel.dgxc.nvidia.com/managed": "true",
+			},
+			expectEvaluate: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		// Combined expression matching the default rulesets: both old and ADR-040 labels respected.
+		{
+			name: "combined expression: ADR-040 managed=false skips even if k8saas label absent",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"nvsentinel.dgxc.nvidia.com/managed": "false",
+			},
+			expectEvaluate: common.RuleEvaluationFailed,
+			expectError:    false,
+		},
+		{
+			name: "combined expression: no opt-out labels — quarantine proceeds",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels:     map[string]string{},
+			expectEvaluate: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		{
+			// Verifies the legacy k8saas compatibility clause still skips quarantine
+			// independently of the ADR-040 label, so removing it would break this test.
+			name: "combined expression: legacy k8saas=false skips quarantine (backwards compat)",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"k8saas.nvidia.com/ManagedByNVSentinel": "false",
+			},
+			expectEvaluate: common.RuleEvaluationFailed,
+			expectError:    false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -240,7 +336,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("Failed to roundtrip event: %v", err)
 	}
 
-	expectedMap := map[string]interface{}{
+	expectedMap := map[string]any{
 		"id":                "123",
 		"version":           float64(1),
 		"agent":             "test-agent",
@@ -250,23 +346,23 @@ func TestRoundTrip(t *testing.T) {
 		"isHealthy":         false,
 		"message":           "test-message",
 		"recommendedAction": float64(protos.RecommendedAction_RESTART_VM),
-		"errorCode":         []interface{}{"E001", "E002"},
-		"entitiesImpacted": []interface{}{
-			map[string]interface{}{
+		"errorCode":         []any{"E001", "E002"},
+		"entitiesImpacted": []any{
+			map[string]any{
 				"entityType":  "GPU",
 				"entityValue": "GPU-0",
 			},
 		},
-		"metadata": map[string]interface{}{"key1": "value1"},
-		"generatedTimestamp": map[string]interface{}{
+		"metadata": map[string]any{"key1": "value1"},
+		"generatedTimestamp": map[string]any{
 			"seconds": float64(eventTime.GetSeconds()),
 			"nanos":   float64(eventTime.GetNanos()),
 		},
-		"nodeName":                 "test-node",
-		"processingStrategy":        float64(0),
-		"quarantineOverrides":       nil,
-		"drainOverrides":            nil,
-		"customRecommendedAction":   "",
+		"nodeName":                "test-node",
+		"processingStrategy":      float64(0),
+		"quarantineOverrides":     nil,
+		"drainOverrides":          nil,
+		"customRecommendedAction": "",
 	}
 
 	if !reflect.DeepEqual(result, expectedMap) {

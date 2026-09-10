@@ -15,64 +15,57 @@
 package devicecounts
 
 import (
-	"log/slog"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
-const NodeResourceSliceIndex = "nodeResourceSlice"
+// ResourceSliceNodeNameIndex names the informer index from spec.nodeName to its
+// ResourceSlices. The index turns a node lookup from a scan of all N*K cached
+// slices into a lookup over only that node's K slices.
+const ResourceSliceNodeNameIndex = "nodeResourceSlice"
 
-// ResourceSlicesForNode returns node-local ResourceSlices whose spec.nodeName matches the node.
-// Uses the NodeResourceSliceIndex for O(slices_per_node) lookup; falls back to full scan if the
-// index is unavailable (e.g. store does not implement cache.Indexer).
-func ResourceSlicesForNode(store cache.Store, node *corev1.Node) []*resourcev1.ResourceSlice {
-	if store == nil {
+// ResourceSliceNodeNameIndexFunc indexes node-local ResourceSlices by spec.nodeName.
+func ResourceSliceNodeNameIndexFunc(obj any) ([]string, error) {
+	resourceSlice, ok := obj.(*resourcev1.ResourceSlice)
+	if !ok {
+		return nil, fmt.Errorf("object is not a ResourceSlice")
+	}
+
+	nodeName, ok := resourceSliceNodeName(resourceSlice)
+	if !ok {
+		return nil, nil
+	}
+
+	return []string{nodeName}, nil
+}
+
+// ResourceSlicesForNode returns node-local ResourceSlices through the node-name
+// informer index. ByIndex visits only matching slices instead of scanning the
+// complete ResourceSlice store for every target or peer node.
+func ResourceSlicesForNode(indexer cache.Indexer, node *corev1.Node) []*resourcev1.ResourceSlice {
+	if indexer == nil || node == nil {
 		return nil
 	}
 
-	if indexer, ok := store.(cache.Indexer); ok {
-		objs, err := indexer.ByIndex(NodeResourceSliceIndex, node.Name)
-		if err == nil {
-			slices := make([]*resourcev1.ResourceSlice, 0, len(objs))
-			for _, obj := range objs {
-				if rs, ok := obj.(*resourcev1.ResourceSlice); ok {
-					slices = append(slices, rs)
-				}
-			}
-			slog.Debug("ResourceSlicesForNode via index",
-				"node", node.Name,
-				"found", len(slices),
-			)
-			return slices
-		}
+	objects, err := indexer.ByIndex(ResourceSliceNodeNameIndex, node.Name)
+	if err != nil {
+		return nil
 	}
 
-	// Fallback: full scan (O(S) — used only if index is missing)
-	all := store.List()
-	resourceSlices := []*resourcev1.ResourceSlice{}
-	for _, obj := range all {
+	resourceSlices := make([]*resourcev1.ResourceSlice, 0, len(objects))
+	for _, obj := range objects {
 		resourceSlice, ok := obj.(*resourcev1.ResourceSlice)
 		if !ok {
 			continue
 		}
-		if resourceSliceBelongsToNode(resourceSlice, node.Name) {
-			resourceSlices = append(resourceSlices, resourceSlice)
-		}
+
+		resourceSlices = append(resourceSlices, resourceSlice)
 	}
-	slog.Debug("ResourceSlicesForNode via scan",
-		"node", node.Name,
-		"found", len(resourceSlices),
-		"scanned", len(all),
-	)
+
 	return resourceSlices
-}
-
-func resourceSliceBelongsToNode(resourceSlice *resourcev1.ResourceSlice, nodeName string) bool {
-	resourceSliceNodeName, ok := resourceSliceNodeName(resourceSlice)
-
-	return ok && resourceSliceNodeName == nodeName
 }
 
 func resourceSliceNodeName(resourceSlice *resourcev1.ResourceSlice) (string, bool) {

@@ -108,7 +108,14 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		PartialDrainEnabled:       partialDrainEnabled,
 	}
 
-	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), false, dryRun)
+	informersInstance, err := informers.NewInformers(
+		client,
+		1*time.Minute,
+		new(2),
+		false,
+		dryRun,
+		tomlConfig.SystemNamespaces,
+	)
 	require.NoError(t, err)
 	go func() { _ = informersInstance.Run(ctx) }()
 	require.Eventually(t, informersInstance.HasSynced, 30*time.Second, 1*time.Second)
@@ -636,8 +643,8 @@ func createNodeWithLabelsAndAnnotations(ctx context.Context, t *testing.T, clien
 	nodeName string, labels map[string]string, annotations map[string]string) {
 	t.Helper()
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: labels, Annotations: annotations},
-		Status:     v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}},
+		Name: nodeName, Labels: labels, Annotations: annotations,
+		Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}},
 	}
 	_, err := client.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	require.NoError(t, err)

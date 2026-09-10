@@ -1,0 +1,36 @@
+# Throwaway shell with mongosh and the application X.509 client certificate
+# mounted, for reading server-side connection counts during connector-pool
+# scaling. The certificate stays in the cluster; nothing is copied locally.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mongosh-helper
+  namespace: nvsentinel
+spec:
+  restartPolicy: Never
+  containers:
+    - name: shell
+      image: percona/percona-server-mongodb:7.0
+      command: ['sleep', '86400']
+      volumeMounts:
+        - {name: cert, mountPath: /etc/ssl/mongo-client}
+      resources:
+        requests: {cpu: 50m, memory: 128Mi}
+        limits: {cpu: 500m, memory: 512Mi}
+  tolerations:
+    - {key: dedicated, operator: Equal, value: system-workload, effect: NoSchedule}
+    - {key: dedicated, operator: Equal, value: system-workload, effect: NoExecute}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - {key: "kwok.x-k8s.io/node", operator: DoesNotExist}
+  volumes:
+    - name: cert
+      secret:
+        secretName: mongo-app-client-cert-secret
+        items:
+          - {key: tls.crt, path: tls.crt}
+          - {key: tls.key, path: tls.key}
+          - {key: ca.crt, path: ca.crt}

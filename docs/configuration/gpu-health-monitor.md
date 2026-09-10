@@ -161,6 +161,76 @@ gpu-health-monitor:
       - DCGM_FR_CLOCK_THROTTLE_POWER
 ```
 
+## Hardware Power Brake Detection
+
+`GpuPowerBrakeWatch` fails a GPU whose clocks-event-reasons mask has the hardware power brake bit (`0x80`) set, meaning the power delivery path is forcing clocks down. It reads `DCGM_FI_DEV_CLOCKS_EVENT_REASONS` directly, in the same way `GpuThermalMarginWatch` reads field 153, because DCGM's POWER health watch does not report the brake.
+
+That distinction matters. The POWER watch's dominant code, `DCGM_FR_CLOCK_THROTTLE_POWER`, tracks power-capped clock throttling, maps to `NONE`, and is the worked example under [DCGM Health Check Incident Suppression](#dcgm-health-check-incident-suppression) above. On a 288-node GB200 cluster it was observed active on 69% of nodes while exactly 50% had a brake asserted, correlating with neither the brake bit nor the SW power cap bit (`0x04`). A sustained brake is a power delivery fault, so it needs its own signal rather than sharing a non-actionable one.
+
+`GPU_HW_POWER_BRAKE_VIOLATION` maps to `CONTACT_SUPPORT` in `dcgmerrorsmapping.csv`, matching the thermal precedent: an asserted brake is a facility or power delivery problem, not something a node reboot resolves.
+
+```yaml
+gpu-health-monitor:
+  dcgmFieldsMonitoring:
+    gpuPowerBrakeMonitoringEnabled: false
+    gpuPowerBrakeStoreOnly: true
+    gpuPowerBrakeMinConsecutivePolls: 3
+```
+
+### gpuPowerBrakeMonitoringEnabled
+
+Enables the watch. Off by default so existing deployments see no behaviour change. If neither `DCGM_FI_DEV_CLOCKS_EVENT_REASONS` nor the older `DCGM_FI_DEV_CLOCK_THROTTLE_REASONS` is available in the running DCGM build, the monitor logs a warning and disables itself.
+
+### gpuPowerBrakeStoreOnly
+
+Dry run. When true, this check's events are emitted with `processingStrategy=STORE_ONLY`, so they are persisted and exported as metrics but excluded from the remediation pipeline: no node condition and no cordon. Defaults to true, so enabling the watch is observable before it can act.
+
+### gpuPowerBrakeMinConsecutivePolls
+
+Consecutive polls with the bit set before the GPU is failed. A brake asserted for a single poll can be a load transient; a sustained assertion is the actionable case. A clear resets the counter, so a flapping brake never accumulates to a failure. `1` fails on first observation. A GPU with no usable sample is skipped and keeps its counter, so a gap in DCGM data neither raises nor clears a finding. This includes DCGM's int64 "no data" sentinels, whose low byte has the brake bit set and which would otherwise read as an assertion.
+
+## Unresponsive DCGM Detection
+
+A DCGM call that stops answering never returns an error — callers park and the probe blocks forever rather than raising `DCGMError_Timeout`. Meanwhile the node can still report `Ready` with every GPU allocatable and no taint, so no other signal in the stack registers a fault. In `embedded-mode` that hang is node-local, but it is not yet proof of a kernel-driver wedge: DCGM userspace deadlock or lock contention can look the same until an independent NVML/`nvidia-smi` probe confirms the driver itself.
+
+The poll loop cannot report this itself: it is blocked before the point where it would publish anything, and `/healthz` only observes that the loop is frozen, so kubelet restarts the container and the replacement blocks in the same place. The settings below close that gap.
+
+```yaml
+gpu-health-monitor:
+  dcgm:
+    pollIntervalSeconds: 15
+    # Omit (or null) to default to pollIntervalSeconds * 3; set 0 to disable.
+    probeStoreOnly: true
+  dcgmHealthCheck:
+    connectivityFailureEscalationThreshold: 0
+```
+
+### probeStoreOnly
+
+Ships the check in dry-run. While `true` (the default) `GpuDcgmUnresponsive` is emitted with `processingStrategy=STORE_ONLY`, so it is persisted and exported as metrics but excluded from the remediation pipeline — no node condition, no cordon, no reboot. The event still carries `RESTART_BM` so the record shows what the node needs.
+
+Watch `dcgm_probe_hangs` and the stored events for a release or two, confirm the detections match real on-node hangs on your fleet, then set `probeStoreOnly: false` to let remediation act on them. Both the unhealthy and the clearing event use the same strategy, so fault-quarantine always sees a consistent pair.
+
+### probeDeadlineSeconds
+
+Seconds a single DCGM probe may run before a watchdog thread — which the blocked probe cannot stop — reports the stalled operation. In `embedded-mode` the call is in-process and node-local, so it publishes `GpuDcgmUnresponsive` with error code `DCGM_PROBE_HANG` and recommended action `RESTART_BM`. In `operator-service` and `external-hostengine` modes, the same symptom can come from the endpoint, DNS, or network; those modes publish `GpuDcgmConnectivityFailure` with `CONTACT_SUPPORT` instead. Defaults to `PollIntervalSeconds * 3` when unset. Set to `0` to disable the watchdog.
+
+The default equals the `/healthz` staleness window (`PollIntervalSeconds * 3`), so the monitor reports when the poll loop is officially considered stalled. Critical event delivery is capped at 15 seconds, leaving the liveness probe's remaining failure budget to persist the finding before kubelet restarts the container.
+
+DCGM exposes timeout errors but does not document a fixed timeout for every RPC. Treat any deadline you configure as a fleet-specific value, not proof that every slower operation is a hard hang. The chart templates `PollIntervalSeconds` from `dcgm.pollIntervalSeconds` and, when `probeDeadlineSeconds` is null/omitted, sets the deadline to `pollIntervalSeconds * 3` so the two stay coupled. Leave `probeStoreOnly` enabled while measuring normal embedded-mode probe latencies. If you substantially raise `probeDeadlineSeconds`, verify the resulting deadline still precedes the configured liveness restart; the chart exposes `livenessProbe.periodSeconds` and `livenessProbe.failureThreshold` for that adjustment.
+
+The event reports once per hang episode. After delivery, a marker under the monitor's persistent `/var/run/nvsentinel` state survives liveness restarts; it prevents the same hang from being republished and lets the first successful probe emit the healthy clearing event. Every DCGM call in the poll loop is tracked, including connect, health check, thermal margin evaluation, and the cleanup that follows a connectivity failure. Cleanup during intentional shutdown is not tracked, so a slow teardown while DCGM is restarting cannot be reported as a hang. `dcgm_probe_hangs` increments when the deadline is crossed even if event delivery must be retried.
+
+### connectivityFailureEscalationThreshold
+
+Number of consecutive `GpuDcgmConnectivityFailure` cycles after which the recommended action escalates from `CONTACT_SUPPORT` to `RESTART_BM`.
+
+Enable this only when the configured DCGM endpoint is node-local and repeated unreachability has been validated as a driver wedge. With a shared service, service failure, DNS issue, or network policy, rebooting the node is not a valid remediation.
+
+Defaults to `0`, which disables escalation and keeps every connectivity failure at `CONTACT_SUPPORT`. The counter resets once connectivity is restored, and the escalated event is published once rather than on every subsequent cycle.
+
+> **Note**: Both settings recommend `RESTART_BM`, which fault-remediation maps to a `RebootNode` CR. A reboot is the practical recovery when an on-node DCGM probe will not return — whether the underlying cause is a wedged driver or DCGM userspace holding driver locks. Nodes are drained before the reboot by node-drainer. Note that `probeStoreOnly` gates this for `GpuDcgmUnresponsive`, while `connectivityFailureEscalationThreshold` is opt-in by being `0` by default.
+
 ## Additional Volumes
 
 Extension point for mounting additional host paths required by DCGM in specific environments.

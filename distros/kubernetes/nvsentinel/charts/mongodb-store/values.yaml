@@ -31,6 +31,16 @@
 useBitnami: true
 usePerconaOperator: false
 
+# TTL expireAfterSeconds. Default 2592000 (30d); production often 604800 (7d).
+# Also used for external Mongo. Unset/null → 2592000 (int(nil) is 0, immediate expiry).
+# Job name is create-mongodb-database-<seconds>-<scriptHash> (-l app.kubernetes.io/name=create-mongodb-database).
+collectionExpirySeconds: 2592000
+
+# PVC size. Default 8Gi is for development.
+# Bitnami: mongodb.persistence.size
+# Percona: psmdb-db.replsets.rs0.volumeSpec.pvc.resources.requests.storage
+# Existing Bound PVCs do not grow on helm upgrade (StatefulSet VCT is immutable).
+
 # SCRAM application user (created when mongodb.tls.enabled is false).
 # Instead of X.509 cert-based users, the Job creates a SCRAM-SHA-256 user
 # with readWrite access to the NVSentinel database.
@@ -47,17 +57,8 @@ scramAppUser:
 # Common Job configuration (applies to both Bitnami and Percona)
 # If not set, falls back to mongodb.jobTolerations and mongodb.nodeSelector for backward compatibility
 job:
-  nodeSelector:
-    topology.kubernetes.io/zone: us-east-1b
-  tolerations:
-    - key: dedicated
-      operator: Equal
-      value: system-workload
-      effect: NoSchedule
-    - key: dedicated
-      operator: Equal
-      value: system-workload
-      effect: NoExecute
+  nodeSelector: {}
+  tolerations: []
 
 # =============================================================================
 # Bitnami MongoDB Configuration (used when usePerconaOperator=false)
@@ -117,6 +118,7 @@ mongodb:
   
   persistence:
     resourcePolicy: "keep"
+    size: &persistenceSize "8Gi"
   
   automountServiceAccountToken: true
   
@@ -257,6 +259,13 @@ mongodb:
       repository: bitnamilegacy/mongodb-exporter
       tag: 0.41.2-debian-12-r1
       pullSecrets: []
+    resources:
+      requests:
+        cpu: 200m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 192Mi
     command:
       - /bin/bash
       - -ec
@@ -273,25 +282,12 @@ mongodb:
 # Percona MongoDB Operator Configuration (used when usePerconaOperator=true)
 # =============================================================================
 psmdb-operator:
-  nodeSelector:
-    topology.kubernetes.io/zone: us-east-1b
-  tolerations:
-    - key: dedicated
-      operator: Equal
-      value: system-workload
-      effect: NoSchedule
-    - key: dedicated
-      operator: Equal
-      value: system-workload
-      effect: NoExecute
+  nodeSelector: {}
+  tolerations: []
 
 psmdb-db:
   nameOverride: mongodb
   fullnameOverride: mongodb
-  image:
-    tag: "7.0.39-21"
-  unsafeFlags:
-    tls: true
   replsets:
     rs0:
       name: rs0
@@ -317,18 +313,9 @@ psmdb-db:
         pvc:
           resources:
             requests:
-              storage: "8Gi"
-      nodeSelector:
-        topology.kubernetes.io/zone: us-east-1b
-      tolerations:
-        - key: dedicated
-          operator: Equal
-          value: system-workload
-          effect: NoSchedule
-        - key: dedicated
-          operator: Equal
-          value: system-workload
-          effect: NoExecute
+              storage: *persistenceSize
+      nodeSelector: {}
+      tolerations: []
       podDisruptionBudget:
         maxUnavailable: 1
       sidecars:
@@ -372,11 +359,7 @@ psmdb-db:
     enabled: false
   
   tls:
-    mode: allowTLS
-    issuerConf:
-      name: mongodb-psmdb-issuer
-      kind: Issuer
-      group: cert-manager.io
+    mode: requireTLS
 
   secrets:
     keyFile: mongodb-keyfile

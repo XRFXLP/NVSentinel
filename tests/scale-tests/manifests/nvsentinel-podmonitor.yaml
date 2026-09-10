@@ -1,0 +1,26 @@
+# Scrape NVSentinel component metrics into Prometheus, so their history outlives
+# a run instead of existing only in whatever was sampled live at the time.
+#
+# The Prometheus instance selects monitors by `release: prometheus` with an empty
+# namespace selector, so that label is what makes this take effect.
+#
+# Every component exposes a container port named `metrics` -- 2112 for all of
+# them except preflight, which serves on 8080 under the same name. Selecting by
+# port name rather than number covers all eight with one monitor, and pods
+# without that port are simply skipped, so the empty pod selector is safe.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: nvsentinel-components
+  namespace: nvsentinel
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames: [nvsentinel]
+  selector: {}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 25s

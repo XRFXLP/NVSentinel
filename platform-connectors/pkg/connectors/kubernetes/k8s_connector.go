@@ -19,14 +19,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"go.opentelemetry.io/otel/attribute"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
-	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
-	"k8s.io/client-go/tools/record"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
@@ -48,12 +45,16 @@ type K8sConnectorConfig struct {
 }
 
 type K8sConnector struct {
-	clientset     kubernetes.Interface
-	ringBuffer    *ringbuffer.RingBuffer
-	stopCh        <-chan struct{}
-	ctx           context.Context
-	config        K8sConnectorConfig
-	eventRecorder record.EventRecorder
+	clientset  kubernetes.Interface
+	ringBuffer *ringbuffer.RingBuffer
+	stopCh     <-chan struct{}
+	ctx        context.Context
+	config     K8sConnectorConfig
+
+	// nodeEventNames caches the last written event name per dedupe key;
+	// see writeNodeEvent. nodeEventMu guards only the lazy init.
+	nodeEventMu    sync.Mutex
+	nodeEventNames *expirable.LRU[string, string]
 }
 
 // NewK8sConnector creates a K8sConnector with the given Kubernetes client, ring buffer, and configuration.
@@ -62,26 +63,12 @@ func NewK8sConnector(
 	ringBuffer *ringbuffer.RingBuffer,
 	stopCh <-chan struct{}, ctx context.Context,
 	cfg K8sConnectorConfig) *K8sConnector {
-
-	s := runtime.NewScheme()
-	_ = corev1.AddToScheme(s)
-	_ = scheme.AddToScheme(s)
-
-	broadcaster := record.NewBroadcaster()
-	broadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{
-		Interface: client.CoreV1().Events(DefaultNamespace),
-	})
-	broadcaster.StartStructuredLogging(0)
-
-	recorder := broadcaster.NewRecorder(s, corev1.EventSource{Component: "platform-connector"})
-
 	return &K8sConnector{
-		clientset:     client,
-		ringBuffer:    ringBuffer,
-		stopCh:        stopCh,
-		ctx:           ctx,
-		config:        cfg,
-		eventRecorder: recorder,
+		clientset:  client,
+		ringBuffer: ringBuffer,
+		stopCh:     stopCh,
+		ctx:        ctx,
+		config:     cfg,
 	}
 }
 

@@ -1,0 +1,49 @@
+# Simulates many platform-connector MongoDB clients from a small number of pods.
+#
+# Each simulated connector is a goroutine with its own mongo.Client, so it holds
+# its own connection pool and the server counts it separately. Running the real
+# connector binary per simulated connector needs a container each, which caps the
+# fleet at roughly ten thousand across five worker nodes; goroutines remove that
+# limit.
+#
+#   kubectl -n nvsentinel scale deploy/mongo-connection-pool --replicas=N
+#   connections = replicas x --connectors x --pool-size
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo-connection-pool
+  namespace: nvsentinel
+spec:
+  replicas: 0
+  selector:
+    matchLabels: {app: mongo-connection-pool}
+  template:
+    metadata:
+      labels: {app: mongo-connection-pool}
+    spec:
+      containers:
+        - name: pool
+          image: docker.io/xrfxlp/mongo-connection-pool:mcp-202609020743
+          args:
+            - --connectors=500
+            - --pool-size=3
+            - --rate=0.1
+            - --mongo-uri=mongodb://mongodb-rs0.nvsentinel.svc.cluster.local:27017/?replicaSet=rs0&tls=true
+            - --mongo-cert-dir=/etc/ssl/client-certs
+            - --mongo-auth=x509
+          volumeMounts:
+            - {name: cert, mountPath: /etc/ssl/client-certs}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {cpu: "4", memory: 8Gi}
+      tolerations:
+        - {key: dedicated, operator: Equal, value: system-workload, effect: NoSchedule}
+        - {key: dedicated, operator: Equal, value: system-workload, effect: NoExecute}
+      volumes:
+        - name: cert
+          secret:
+            secretName: mongo-app-client-cert-secret
+            items:
+              - {key: tls.crt, path: tls.crt}
+              - {key: tls.key, path: tls.key}
+              - {key: ca.crt, path: ca.crt}

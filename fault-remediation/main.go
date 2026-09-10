@@ -33,6 +33,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -200,6 +201,18 @@ func createManager() (ctrl.Manager, error) {
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
 		},
+		// Nodes are only ever read by name (pkg/annotation, pkg/crstatus), never listed.
+		// Serving those point reads from the manager's cache would start a cluster-wide
+		// Node informer on the first remediation, retaining every Node object untransformed
+		// (~83 KB/node, 8.5 GB at 53k nodes) and blocking that first reconcile for ~43s
+		// while it lists and syncs. It also breaks retry.RetryOnConflict, which re-reads the
+		// same stale cached object on every attempt. Read Nodes live instead.
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{&corev1.Node{}},
+			},
+		},
+		PprofBindAddress:        ":6060",
 		HealthProbeBindAddress:  healthAddr,
 		LeaderElection:          enableLeaderElection,
 		LeaseDuration:           &leaderElectionLeaseDuration,
