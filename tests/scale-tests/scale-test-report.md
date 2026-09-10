@@ -260,7 +260,7 @@ Both components hold one entry per pending event, so a backlog is memory the siz
 | node-drainer | replay | ~200,000 | 182 → 315 MB | 0.67 KB |
 | node-drainer | replay | 1,048,415 | 255.7 → 979.7 MB | 0.69 KB |
 | fault-remediation | cold start | 200,668 | 41.5 → 133.7 MB | 0.47 KB |
-| fault-remediation | live stream | 1,389,136 | 791 → 9,463 MB | 7.79 KB |
+| fault-remediation | live stream | +1,113,804 (275,332 → 1,389,136) | 791 → 9,463 MB | 7.79 KB |
 
 node-drainer queues a node name, event ID and document ID on either path, and its two points agree at 0.67 and 0.69 KB. fault-remediation queues a document ID on cold start and the whole decoded event on the live path, which is the 16x difference between its two rows.
 
@@ -629,7 +629,7 @@ The exposure is not confined to the benchmark. NVSentinel's own DaemonSets -- `p
 
 `csi-provisioner` in `kube-system/ebs-csi-controller` watches PersistentVolumeClaims and PersistentVolumes cluster-wide, and its cache grows with the objects on the cluster rather than with the volumes it manages. At this node count it exceeded its 10 GiB limit and was OOM-killed repeatedly -- 267 restarts -- after which no `VolumeAttachment` was created for any new pod.
 
-MongoDB is the visible casualty. Its pods are a StatefulSet with EBS-backed volumes, so a mongod that restarts for any reason cannot get its volume back and stays in `PodInitializing` indefinitely; the fault-handling components then fail their datastore connection and the pipeline stops. Nothing in that chain names the provisioner, which is what makes it slow to diagnose.
+MongoDB is the visible casualty. Its pods are a StatefulSet with EBS-backed volumes, so a mongod whose restart requires a new `VolumeAttachment` cannot get its volume back and remains in `PodInitializing` until that attachment is created and fulfilled; the fault-handling components then fail their datastore connection and the pipeline stops. Nothing in that chain names the provisioner, which is what makes it slow to diagnose.
 
 Raising the limit to 24 GiB resolved it, and MongoDB recovered 112 seconds later without further intervention. The controller still shows the restart history from that period.
 
