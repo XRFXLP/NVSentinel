@@ -19,11 +19,8 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
   - [Kubernetes API](#kubernetes-api)
   - [etcd](#etcd)
   - [MongoDB](#mongodb)
-  - [Node heartbeats and CNI](#node-heartbeats-and-cni)
   - [What etcd actually holds](#what-etcd-actually-holds-m)
-  - [KWOK nodes and the AWS cloud-controller-manager](#kwok-nodes-and-the-aws-cloud-controller-manager-m)
-  - [Where the API load actually comes from](#where-the-api-load-actually-comes-from-m)
-  - [NetworkPolicy enforcement broke and stayed broken](#networkpolicy-enforcement-broke-and-stayed-broken-m)
+  - [What a remediation costs the API server](#what-a-remediation-costs-the-api-server-m)
   - [MongoDB per member](#mongodb-per-member)
   - [Cost per event, by component](#cost-per-event-by-component-m)
 - [A3. Customer-facing SLAs](#a3-customer-facing-slas)
@@ -34,9 +31,14 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
   - [Drain latency with real pods](#drain-latency-with-real-pods-m)
   - [Burst absorption](#burst-absorption)
     - [Namespace eviction mode governs whether a drain can complete](#namespace-eviction-mode-governs-whether-a-drain-can-complete)
-- [B. Methodology](#b-methodology)
-  - [Deployed configuration](#deployed-configuration)
-  - [Traps](#traps)
+- [Appendix](#appendix)
+  - [API server load produced by the simulation harness](#api-server-load-produced-by-the-simulation-harness-m)
+    - [Node heartbeats and pod status](#node-heartbeats-and-pod-status)
+  - [Simulated nodes and the AWS cloud-controller-manager](#simulated-nodes-and-the-aws-cloud-controller-manager-m)
+  - [NetworkPolicy enforcement broke and stayed broken](#networkpolicy-enforcement-broke-and-stayed-broken-m)
+  - [Methodology](#methodology)
+    - [Deployed configuration](#deployed-configuration)
+    - [Traps](#traps)
 
 ---
 
@@ -53,7 +55,7 @@ CPU was never a constraint at any scale tested. The busiest component peaked at 
 Cordon completes in 26 ms P50 and 165 ms P99 under continuous load, and a node carrying one evictable pod is drained about ten seconds after that, which is one of node-drainer's recheck cycles. Detection to drained is 10.11 s P50 and 10.29 s P99; five hundred nodes failing at once stretches that to 55.5 s with every node completing.
 
 What broke frequently during testing is infra around it in three ways:
-1.  A namespace-wide NetworkPolicy stopped being enforced above roughly 100,000 pods in one namespace and silently dropped MongoDB traffic. 
+1.  A namespace-wide NetworkPolicy kept enforcing stale rules once its `PolicyEndpoint` objects stopped being rebuilt, silently dropping MongoDB traffic. 
 2. The EBS CSI provisioner exceeded its 10 GiB limit at this node count and stopped attaching volumes cluster-wide, which takes MongoDB down with it. 
 3.  etcd's 16 GB database threshold caps the fleet. At 100,000 nodes the nodes alone are about 5.5 GB, so the same fleet ran normally with 101,533 pods and went read-only with 203,411, which also makes bulk operations during measurement risky.
 
@@ -196,20 +198,16 @@ Recommended **256 Mi / 512 Mi** at any fleet size.
 
 #### health-events-analyzer
 
-Not a Kubernetes API consumer; it reads the event stream from MongoDB, so fleet size is not its axis and the rows below vary event rate instead. Every earlier reading of this component was taken while it was in `CrashLoopBackOff` and is not usable; see the note that follows.
+Not a Kubernetes API consumer; it reads the event stream from MongoDB, so its cost follows event rate rather than fleet size.
 
-| Event rate | CPU peak `[M]` | Working set `[M]` |
-| ---------- | -------------- | ----------------- |
-| idle | 0.002 | 25.5 MB |
-| 36.9 events/s, 6,000 events | **0.214** | 19.6-20.1 MB |
+| Event rate | CPU peak `[M]` | Working set `[M]` | Rec. request | Rec. limit |
+| ---------- | -------------- | ----------------- | ------------ | ---------- |
+| idle | 0.002 | 25.5 MB | 128 Mi | 256 Mi |
+| 36.9 events/s | **0.214** | 19.6-20.1 MB | 128 Mi | 256 Mi |
 
-Only CPU has an event-rate axis. Working set sat at 20-25 MB throughout and was slightly lower under load than at rest, which is collection timing rather than a real difference, so memory is a fixed cost of about 25 MB at any rate this cluster can produce. The offered rate is the rate counted from the collection over the injection window, not the rate the injector was asked for; those differ by a third, because its pacing loop overshoots.
+Memory is a fixed cost of about 25 MB at any rate. CPU is **5.8 ms per event**, so one replica saturates a core near 170 events/s, while a 100,000-node fleet at 0.1 events per node per second offers 10,000 events/s.
 
-CPU works out at **5.8 ms per event**, which puts one full core at roughly 170 events/s. A 100,000-node fleet at the 0.1 events per node per second used elsewhere in this report offers 10,000 events/s, far above that, so this component needs either several replicas or a cheaper rule set at that size. Recommended **256 Mi / 512 Mi**, and size the CPU request against the expected event rate rather than the fleet.
-
-**One event it cannot evaluate stops the component permanently.** When a rule's aggregation fails, health-events-analyzer logs `Event processing failed, NOT marking as processed - will retry on restart`, exits, and receives the same event again on the next start. It accumulated 223 restarts this way over roughly a day, and recovered only after the event was removed from the collection along with its resume token.
-
-The aggregation that failed here is asymmetric. A rule matching XID events compares the current event's GPU entities against each candidate document's, and the candidate side is written `{"$ifNull": ["$healthevent.entitiesimpacted", []]}` while the current-event side is the bare field. A guard above it admits the event on `checkname == SysLogsXIDError` alone, on the stated assumption that an XID event always carries GPU_UUID entities. Synthetic events that set that checkname without entities therefore pass the guard and reach `$size` on null. The events came from the benchmark rather than from production, so the aggregation is not wrong about real traffic -- but the failure mode it produces is unbounded, because a single unevaluable document takes the component down until someone deletes it by hand. `[M]`
+Recommended **256 Mi / 512 Mi**, with CPU sized against the expected event rate rather than the fleet.
 
 #### janitor
 
@@ -263,7 +261,7 @@ Rates per second. Idle and continuous differ mainly in KWOK lease traffic, not i
 | APF seats of 1,085 | 92 | 55 | 64 / **116** |
 | APF rejections | **0** | **0** | **0** |
 
-PUT is almost entirely KWOK lease renewal `[S]`. APF never exceeded 11% of its seats and never queued a request, so the API server is far from a limit at this size. 
+PUT is almost entirely simulated-node lease renewal and pod status rather than anything NVSentinel does; the breakdown is in the appendix. `[S]` APF never exceeded 11% of its seats and never queued a request, so the API server is far from a limit at this size. 
 
 Per node in a 100-node burst: fault-remediation 9, janitor 6, node-drainer 3.7, janitor-provider 2.2, fault-quarantine 1, labeler and preflight. Taken from EKS audit logs, which cover the three components that register no client-go metrics; cross-checked against `rest_client_requests_total` where both exist and they agree (0.49 vs 0.50/s, 9 calls/node from both). `[M]`
 
@@ -296,15 +294,6 @@ Connections do not slow the pipeline. With 70,143 connections open, injecting 10
 
 A remediated node costs **6.1 oplog entries, about 4 KB, and 1.96 stored documents** -- the event itself and its status record. Allocated storage does not move at this size, because those documents fit inside an extent the collection already holds. `[M]`
 
-### Node heartbeats and CNI
-
-Heartbeats are most of the write traffic, and their volume is set by fleet size rather than by activity. Across 50,021 nodes the API server sees 247 node PATCHes a second idle and 193 under load -- roughly one per node every three and a half minutes -- alongside 1,600 to 2,900 lease PUTs a second. A simulated node renews its lease every 30.6 seconds where a real kubelet on the same cluster renews every 10.3, because KWOK sets `leaseDurationSeconds` to 120 against the kubelet's 40.
-
-Lease renewal is only part of that PUT traffic. 53,540 leases renewing every 30.6 seconds accounts for roughly 1,750 a second; the rest is pod status. Broken down by resource on a 10,005-node fleet carrying 20,733 pods, **78% of PUTs are `pods/status`** at 3,074/s, followed by endpoints at 161/s, nodes at 138/s and a tail of controller status subresources. Every KWOK pod has its status written periodically by the kwok controller, so pod count drives PUT volume more than node count does -- which is why the 642,243-pod fleet showed PUT traffic the lease arithmetic could not account for. `[M]`
-
-The CNI policy controller is the one thing in this list that breaks rather than bends. A namespace with a few narrow NetworkPolicies has four `PolicyEndpoint` shards; a single namespace-wide selector produces 83, and beyond that the controller stalls and does not recover on its own.
-
-
 ### What etcd actually holds `[M]`
 
 etcd holds the live objects plus every revision written in the last five minutes, so its size is live data plus five minutes of churn. At 25,000 nodes that churn is about 2 GB:
@@ -323,22 +312,7 @@ Bulk changes inflate this badly, because their revisions sit in the window too. 
 
 100,000 nodes was run twice, and the pod population decided whether it held. With **100,005 nodes and 101,533 pods** the cluster ran normally. With the same fleet and **203,411 pods** at the 50 KB user profile, etcd crossed the threshold and refused every write, including the deletes needed to recover; it came back only after compaction aged the churn out. Nodes alone are about 5.5 GB, so at 100,000 nodes the usable pod budget is roughly 100,000 at that object size. `[M]`
 
-### KWOK nodes and the AWS cloud-controller-manager `[M]`
-
-A simulated node has no EC2 instance behind it, and the cloud-controller-manager reacts badly to that in two ways. Neither is configurable on a managed control plane. The tagging controller never gives up. It reads an instance ID from `spec.providerID`, fails to parse it, and requeues the node with no rate limit -- **579 log lines a second** across 53,513 nodes, the largest single source of control-plane load in this cluster. Three values were tried on live nodes: empty and `kwok://<name>` both fail to parse and spin locally; `aws:///us-east-1a/i-<17 hex>` parses and is worse, because it turns the local spin into real EC2 `CreateTags` calls that fail and requeue. The fleet therefore runs with no providerID at all.
-
-Upstream fixed this. `cloud-provider-aws` now skips nodes whose instance ID cannot be valid, with a comment naming KWOK directly, but the CCM in this EKS control plane predates that and returns an error instead. The issue behind it, [cloud-provider-aws#325](https://github.com/kubernetes/cloud-provider-aws/issues/325), was closed `NOT_PLANNED` in 2022.
-
-Meanwhile the node-lifecycle controller deletes the fleet, at 2.3 nodes a second once it gets the chance -- about 72 minutes to clear 10,000 nodes -- because the instances it looks for do not exist.
-
-The two problems hide each other. At 53,513 nodes the tagging loop saturates the controller and node deletion never runs, so the fleet is stable. At 10,000 there is spare capacity and the fleet quietly decays. **A KWOK fleet on EKS survives only while the control plane is too busy to clean it up.**
-
-The control plane also stops publishing its own metrics under load. The AWS/EKS stream stopped four minutes after etcd peaked and stayed down for six days, every metric ending at the same timestamp, then resumed within minutes of rebuilding the fleet at 10,000 nodes. Nothing flagged it -- `describe-cluster` health stayed `null` -- so it is no use as a warning near the tier limit. Audit logging was unaffected, which is why the API attribution in this report was possible at all.
-
-
-### Where the API load actually comes from `[M]`
-
-Almost none of it is NVSentinel. Over a five-minute idle window the API server handled 585,415 audited requests, and **568,470 of them -- 97.1% -- came from `kwok`**. Every component combined sits in the noise beside the harness: node-drainer 1.85/s, fault-remediation 0.49/s and that entirely leader-election lease renewal, and fault-quarantine, labeler, preflight and kubernetes-object-monitor below the reporting threshold.
+### What a remediation costs the API server `[M]`
 
 What a remediation costs, per node, during a 100-node burst:
 
@@ -356,26 +330,6 @@ Those add up to about 22 requests per node, so remediating an entire 53,513-node
 The costs hold within 20% under sustained load at 0.50 nodes/s: fault-remediation 11 requests per node against 9 in the burst, janitor 5.9 against 6, the extra GETs being retries spread over a longer wall clock.
 
 Sustained load also surfaced something the burst did not: **7 `POST 409` conflicts across 300 remediations**, node-lock contention at 2.3%, all retried successfully.
-
-### NetworkPolicy enforcement broke and stayed broken `[M]`
-
-The AWS VPC CNI expands each `NetworkPolicy` into `PolicyEndpoint` objects, sharded by how many pods the selector matches. The sharding is strictly linear: driving a namespace-wide selector from 1,000 to 51,000 pods produced 1, 6, 21 and 51 shards at those points, exactly **1,000 pod endpoints per shard**, with no deviation. A policy therefore costs one object per thousand pods it selects, and every one of them is rewritten when membership changes.
-
-NVSentinel ships a policy that selects a whole namespace. `metrics-access`, from the top-level chart (`distros/kubernetes/nvsentinel/templates/networkpolicy.yaml`), selects `app.kubernetes.io/name NotIn [incluster-file-server]` -- every pod in the namespace except one. Every per-component chart uses a narrow positive selector; only this one is namespace-wide, written that way because the components share no common label to select on. Alongside only NVSentinel it costs a single shard, so nothing is visibly wrong until something large shares the namespace.
-
-The benchmark put roughly 158,000 pods there, which needs about 158 shards. The controller built 83 and stopped. It never resumed, and because it runs inside the EKS managed control plane it could not be restarted or inspected.
-
-A stalled controller keeps enforcing whatever it last programmed. `mongodb-networkpolicy` held a source-IP list of three pods that no longer existed, so every mongod created afterwards was denied on port 27017. Two policies deleted by `helm uninstall` sat `Terminating` on a finalizer for three days, still isolating the pods they selected while programming no rules. A replacement policy allowing 27017 never received a `PolicyEndpoint` at all.
-
-That took a long time to diagnose, because the symptom looks like an application bug. Port 9216 on the same pods stayed reachable, since its rule granted `0.0.0.0/0` and had no source list to go stale. Enforcement itself was correct throughout, and MongoDB, TLS, DNS and the CNI agent were all investigated first. The discriminator is that a port with no listener returns a RST while a port blocked by policy times out.
-
-Deleting the 83 stale shards restored connectivity in about two minutes, by leaving the mongod pods selected by no policy at all, and the namespace was moved onto narrow policies with no namespace-wide selector.
-
-Where the controller stops keeping up was not found, because it kept up across the whole measured range and rebuilt shards correctly at 51,000 selected pods. The stall therefore begins somewhere between that and the 158,000 that broke it, and pushing further risks reproducing it on a control plane that cannot be restarted. The ratio is the useful figure rather than a breaking point.
-
-Two details from AWS's own documentation bear on this. A known bug leaves `PolicyEndpoints` uncleaned after pods are deleted, but it is specific to VPC CNI 1.19.3-eksbuild.1 and this cluster ran **v1.21.1-eksbuild.3** with network-policy-agent v1.3.1, so it is not the explanation. More relevant, AWS states that the network policy agent [only supports pods created by a Deployment or ReplicaSet](https://docs.aws.amazon.com/eks/latest/userguide/network-policies-troubleshooting.html) and that behaviour with standalone pods may be inconsistent. The benchmark scaler creates pods directly, standalone or DaemonSet-owned, so the population that triggered the sharding sat outside the supported configuration. That does not explain a controller that never recovers, but it does mean this was not a clean reproduction of a production workload.
-
-The fix is to select the components positively, either an `In` list of their names or an `app.kubernetes.io/part-of: nvsentinel` label added to each component's pod template, so the policy's cost follows NVSentinel's own pod count rather than whatever else is co-located.
 
 ### MongoDB per member
 
@@ -424,6 +378,7 @@ Measured in burst-free windows, so the tails are steady-state rather than burst 
 | Time to drain                                          | 10.09 s                                          | 10.14 s    | 10.27 s    | 10.92 s    | cordon → drained across 400 nodes at 0.5 nodes/s, each carrying one drain-eligible pod in an `Immediate` namespace `[M]`. The band is one node-drainer recheck cycle: it evicts, requeues at its 10 s base backoff, confirms the pod is gone, and marks the node drained                                                        |
 | Time to remediate                                      | 0.08 s                                           | 0.09 s     | 0.17 s     | 0.24 s     | drained → remediation dispatched across 400 nodes at 0.5 nodes/s `[M]`. Under a 200-node burst the same stage is 3.20 s, essentially all of it change-stream queue wait                                                               |
 | **NVSentinel MTTR**                                    | **10.11 s**                                      | **10.16 s** | **10.29 s** | **10.94 s** | detect → drained, same 400-node run `[M]`. Almost all of it is the drain recheck cycle; detection to cordon is 17 ms at the median                                                                                                                                                                                            |
+| **NVSentinel MTTR, excluding drain**                   | **0.091 s**                                      | **0.101 s** | **0.241 s** | **0.529 s** | detect → remediation dispatched with each node's own drain wait subtracted, across 400 nodes at 0.5 nodes/s `[M]`. Detect to cordon is 16 ms and drained to dispatch is 75 ms; everything else is the drain recheck cycle                                                                                             |
 | Simulated reboot wait `[S]`                            | 46.5 s                                           | 77.0 s     | 81.0 s     | 82.0 s     | CR created → `NodeReady=True`, across 200 nodes `[M]`. Excluded from MTTR and not physical: the simulated reboot is 5 s, the remainder is janitor's readiness re-poll. Of it, CR → `SignalSent` is p50 13 s / p99 30 s |
 | Customer end-to-end MTTR `[I]`                         | 10.19 s + R                                      | 10.24 s + R | 10.43 s + R | 11.02 s + R | detect → remediation dispatched across 400 nodes at 0.5 nodes/s `[M]`, plus **R**, the reader's own reboot-to-Ready time. Substituting this harness's R gives 57 s end-to-end at the median `[S]`                                   |
 | Sustained fault rate supported                         | 0.47 nodes/s sustained with no degradation `[M]` |            |            |            | far below saturation                                                                                                                                                                                        |
@@ -431,6 +386,8 @@ Measured in burst-free windows, so the tails are steady-state rather than burst 
 
 
 Percentiles are computed from per-document timestamps, so they are exact rather than snapped to Prometheus histogram buckets.
+
+Drain is 99.1% of the measured MTTR, and it is a wait rather than work: node-drainer evicts the pod, requeues at its 10 s base backoff, confirms the pod is gone and marks the node drained. Everything NVSentinel does outside that wait totals 91 ms, two orders of magnitude below the backoff constant, so MTTR at this fleet size is set by that constant rather than by anything that grows with node count.
 
 ### Full-chain run, 200-node burst `[M]`
 
@@ -544,7 +501,59 @@ node-drainer's deployed config maps namespaces to eviction modes: `e2e-pods` is 
 
 Any drain measurement must therefore place its pods in an `Immediate` namespace. Pods in a namespace matching `*` are never evicted by node-drainer within the measurement window, so cordon-to-drain times taken there record the harness, not the component.
 
-## B. Methodology
+---
+
+## Appendix
+
+The material here is either how the measurements were taken, or behaviour of the environment they
+were taken in rather than of NVSentinel. It is separated so that the sections above describe the
+product and this one describes the harness and the cloud underneath it.
+
+### API server load produced by the simulation harness `[M]`
+
+Almost none of the API traffic on this cluster is NVSentinel's. Over a five-minute idle window the API server handled 585,415 audited requests, and **568,470 of them -- 97.1% -- came from `kwok`**. Every component combined sits in the noise beside the harness: node-drainer 1.85/s, fault-remediation 0.49/s and that entirely leader-election lease renewal, and fault-quarantine, labeler, preflight and kubernetes-object-monitor below the reporting threshold.
+
+#### Node heartbeats and pod status
+
+Heartbeats are most of the write traffic, and their volume is set by fleet size rather than by activity. Across 50,021 nodes the API server sees 247 node PATCHes a second idle and 193 under load -- roughly one per node every three and a half minutes -- alongside 1,600 to 2,900 lease PUTs a second. A simulated node renews its lease every 30.6 seconds where a real kubelet on the same cluster renews every 10.3, because KWOK sets `leaseDurationSeconds` to 120 against the kubelet's 40.
+
+Lease renewal is only part of that PUT traffic. 53,540 leases renewing every 30.6 seconds accounts for roughly 1,750 a second; the rest is pod status. Broken down by resource on a 10,005-node fleet carrying 20,733 pods, **78% of PUTs are `pods/status`** at 3,074/s, followed by endpoints at 161/s, nodes at 138/s and a tail of controller status subresources. Every KWOK pod has its status written periodically by the kwok controller, so pod count drives PUT volume more than node count does -- which is why the 642,243-pod fleet showed PUT traffic the lease arithmetic could not account for. `[M]`
+
+The CNI policy controller is the one thing in this list that breaks rather than bends. A namespace with a few narrow NetworkPolicies has four `PolicyEndpoint` shards; a single namespace-wide selector produces 83, and beyond that the controller stalls and does not recover on its own.
+
+### Simulated nodes and the AWS cloud-controller-manager `[M]`
+
+A simulated node has no EC2 instance behind it, and the cloud-controller-manager reacts badly to that in two ways. Neither is configurable on a managed control plane. The tagging controller never gives up. It reads an instance ID from `spec.providerID`, fails to parse it, and requeues the node with no rate limit -- **579 log lines a second** across 53,513 nodes, the largest single source of control-plane load in this cluster. Three values were tried on live nodes: empty and `kwok://<name>` both fail to parse and spin locally; `aws:///us-east-1a/i-<17 hex>` parses and is worse, because it turns the local spin into real EC2 `CreateTags` calls that fail and requeue. The fleet therefore runs with no providerID at all.
+
+Upstream fixed this. `cloud-provider-aws` now skips nodes whose instance ID cannot be valid, with a comment naming KWOK directly, but the CCM in this EKS control plane predates that and returns an error instead. The issue behind it, [cloud-provider-aws#325](https://github.com/kubernetes/cloud-provider-aws/issues/325), was closed `NOT_PLANNED` in 2022.
+
+Meanwhile the node-lifecycle controller deletes the fleet, at 2.3 nodes a second once it gets the chance -- about 72 minutes to clear 10,000 nodes -- because the instances it looks for do not exist.
+
+The two problems hide each other. At 53,513 nodes the tagging loop saturates the controller and node deletion never runs, so the fleet is stable. At 10,000 there is spare capacity and the fleet quietly decays. **A KWOK fleet on EKS survives only while the control plane is too busy to clean it up.**
+
+The control plane also stops publishing its own metrics under load. The AWS/EKS stream stopped four minutes after etcd peaked and stayed down for six days, every metric ending at the same timestamp, then resumed within minutes of rebuilding the fleet at 10,000 nodes. Nothing flagged it -- `describe-cluster` health stayed `null` -- so it is no use as a warning near the tier limit. Audit logging was unaffected, which is why the API attribution in this report was possible at all.
+
+### NetworkPolicy enforcement broke and stayed broken `[M]`
+
+The AWS VPC CNI expands each `NetworkPolicy` into `PolicyEndpoint` objects, sharded by how many pods the selector matches. The sharding is strictly linear: driving a namespace-wide selector from 1,000 to 51,000 pods produced 1, 6, 21 and 51 shards at those points, exactly **1,000 pod endpoints per shard**, with no deviation. A policy therefore costs one object per thousand pods it selects, and every one of them is rewritten when membership changes.
+
+NVSentinel ships a policy that selects a whole namespace. `metrics-access`, from the top-level chart (`distros/kubernetes/nvsentinel/templates/networkpolicy.yaml`), selects `app.kubernetes.io/name NotIn [incluster-file-server]` -- every pod in the namespace except one. Every per-component chart uses a narrow positive selector; only this one is namespace-wide, written that way because the components share no common label to select on. Alongside only NVSentinel it costs a single shard, so nothing is visibly wrong until something large shares the namespace.
+
+The benchmark put roughly 158,000 pods there. Eighty-three shards existed and no more appeared, and the policies stayed in that state until they were deleted by hand. Whether the controller stopped, and why, was never established: it runs inside the EKS managed control plane, its logs are not exported, and the node agent containers are distroless, so nothing on either side could be read.
+
+Whatever the cause, enforcement continued from what had last been programmed. `mongodb-networkpolicy` held a source-IP list of three pods that no longer existed, so every mongod created afterwards was denied on port 27017. Two policies deleted by `helm uninstall` sat `Terminating` on a finalizer for three days, still isolating the pods they selected while programming no rules. A replacement policy allowing 27017 never received a `PolicyEndpoint` at all.
+
+That took a long time to diagnose, because the symptom looks like an application bug. Port 9216 on the same pods stayed reachable, since its rule granted `0.0.0.0/0` and had no source list to go stale. Enforcement itself was correct throughout, and MongoDB, TLS, DNS and the CNI agent were all investigated first. The discriminator is that a port with no listener returns a RST while a port blocked by policy times out.
+
+Deleting the 83 stale shards restored connectivity in about two minutes, by leaving the mongod pods selected by no policy at all, and the namespace was moved onto narrow policies with no namespace-wide selector.
+
+Where the controller stops keeping up was not found, because it kept up across the whole measured range and rebuilt shards correctly at 51,000 selected pods. The stall therefore begins somewhere between that and the 158,000 that broke it, and pushing further risks reproducing it on a control plane that cannot be restarted. The ratio is the useful figure rather than a breaking point.
+
+Two details from AWS's own documentation bear on this. A known bug leaves `PolicyEndpoints` uncleaned after pods are deleted, but it is specific to VPC CNI 1.19.3-eksbuild.1 and this cluster ran **v1.21.1-eksbuild.3** with network-policy-agent v1.3.1, so it is not the explanation. More relevant, AWS states that the network policy agent [only supports pods created by a Deployment or ReplicaSet](https://docs.aws.amazon.com/eks/latest/userguide/network-policies-troubleshooting.html) and that behaviour with standalone pods may be inconsistent. The benchmark scaler creates pods directly, standalone or DaemonSet-owned, so the population that triggered the sharding sat outside the supported configuration. That does not explain a controller that never recovers, but it does mean this was not a clean reproduction of a production workload.
+
+The exposure is not confined to the benchmark. NVSentinel's own DaemonSets -- `platform-connectors`, `metadata-collector` and one of the two `gpu-health-monitor` DCGM variants -- put three pods per node in this namespace by default, so a clean install at 100,000 nodes selects roughly 300,000 pods and needs about 300 shards, well past the 83 seen here. AWS has open reports of chunked `PolicyEndpoint` sets degrading as that count rises, from clusters far smaller than this one. What the right change is on our side is not settled, and is tracked in [#1792](https://github.com/NVIDIA/NVSentinel/issues/1792).
+
+### Methodology
 
 <details>
 <summary>How every number in this report was produced, and what it was produced on.</summary>
@@ -585,7 +594,7 @@ Node size was chosen to match production GPU workers (53.6 KB, measured in #1718
 **Reading etcd.** `apiserver_storage_size_bytes` is file-allocated and reports whichever of three members answered, varying ~983 MB with no load; it cannot measure growth. Use `apiserver_storage_objects` per resource, which is exact but recomputed periodically.
 
 
-### Deployed configuration
+#### Deployed configuration
 
 Every figure in this report depends on what the components were actually configured to do, so the deployed configuration is reproduced here rather than described. This is read from the live cluster, not from the chart defaults.
 
@@ -696,7 +705,7 @@ gpuResetController:      {enabled: true, timeout: 25m}
 
 **health-events-analyzer** runs 8 rule sets covering 20 named rules, all correlation rules over the event history: `MultipleRemediations`, `RepeatedXIDErrorOnSameGPU`, `RepeatedXID31OnSameGPU`, `RepeatedXID31OnDifferentGPU`, `RepeatedXID13OnSameGPCAndTPC`, `RepeatedXID13OnDifferentGPCAndTPC`, `XIDErrorSoloNoBurst`, and thirteen XID74 register-decoding and NIC rules. Each incoming event is evaluated against all of them, which is where its 5.8 ms per event goes.
 
-### Traps
+#### Traps
 
 The health-event collection is never wiped between runs. Any SLA query must bound `createdAt` to the run — without it this run's cordon P99 read 11 s instead of 1.4 s.
 
@@ -709,6 +718,3 @@ A component that cannot reach MongoDB is not necessarily a MongoDB problem. Read
 **A controller can hold a cluster-wide informer that its watch registration never mentions.** controller-runtime creates informers lazily, on the first cached read of a GVK, so `SetupWithManager` lists only what is watched eagerly. janitor registers no Node watch, yet one `TerminateNode` CR takes it from 11 MB to 500-870 MB on a 25,005-node fleet as the informer lists the fleet inside a single reconcile. An idle pod's memory therefore says nothing about the component at scale, and the first real unit of work after a restart blocks for the full list-and-sync. Audit by checking which client each constructor receives, not by grepping for `Watches`.
 
 </details>
-
-
-
