@@ -206,7 +206,9 @@ Not a Kubernetes API consumer; it reads the event stream from MongoDB, so its co
 | idle | 0.002 | 25.5 MB | 128 Mi | 256 Mi |
 | 36.9 events/s | **0.214** | 19.6-20.1 MB | 128 Mi | 256 Mi |
 
-Memory is a fixed cost of about 25 MB at any rate. CPU is **5.8 ms per event**, and the component consumes its stream in a single serial loop (`store-client/pkg/client/event_processor.go`), so that cost is a throughput ceiling of roughly 170 events/s rather than something more cores would absorb. A 100,000-node fleet at 0.1 events per node per second offers 10,000 events/s.
+Wall time per event held between 17.5 and 19.4 ms across measured rates from 1.8 to 55 events/s, so the ceiling is flat rather than degrading with load.
+
+Memory is a fixed cost of about 25 MB at any rate. Throughput is set by wall time per event, not by CPU: the component consumes its stream in a single serial loop (`store-client/pkg/client/event_processor.go`) and spends most of each event blocked on a MongoDB aggregation, so the **17.6 ms** its own `health_event_analyzer_event_handling_duration_seconds` histogram reports per event gives a ceiling near **55 events/s**. CPU is about 5.8 ms of that 17.6 ms, which is why the container draws 0.2 cores at saturation and why more cores do not raise the ceiling. A 100,000-node fleet at 0.1 events per node per second offers 10,000 events/s.
 
 Recommended **256 Mi / 512 Mi**, and CPU is not a sizing lever here. At saturation the container draws about 0.2 cores against a 2-core limit and records **zero** throttled CFS periods, so it is blocked on MongoDB rather than short of CPU. The deployed 500m request already covers the saturated draw; raising it does not raise throughput.
 
@@ -236,7 +238,7 @@ The last column is the one to compare across rows: a client limit only means som
 | Component | `--kube-api-qps` / burst | API calls per node | Nodes/s at the limit | Throughput measured |
 |---|---|---|---|---|
 | fault-quarantine | 100 / 200 | 1 PATCH per cordon | **100** | 41.2 cordons/s (100-node burst) |
-| node-drainer | 400 / 800 | 3.7 mean per node over a 100-node burst (audit logs, mostly nodes with nothing to evict); the eviction path itself costs 3.0 per evictable pod, so 15 at 5 pods/node | **108** at 3.7, **27** at 5 pods/node | 19.2 evictions/s = 3.85 nodes/s (1,000-node burst) |
+| node-drainer | 400 / 800 | 3.7 mean per node over a 100-node burst (audit logs, mostly nodes with nothing to evict), plus 3.0 per evictable pod, so 18.7 at 5 pods/node | **108** with nothing to evict, **21** at 5 pods/node | 19.2 evictions/s = 3.85 nodes/s (1,000-node burst) |
 | labeler | 500 / 1000 | 1 PATCH per relevant event | **500** | 53,513 nodes labelled in 18.3 min |
 | fault-remediation | unset, so unlimited | 9 per remediated node: 5 GET, 3 PUT, 1 POST | unbounded client-side | 1.1 nodes/s at 10.4 req/s |
 | janitor | unset, so unlimited | >=5.7 per reboot: 2 GET, 1.8 PUT, 1 POST, 0.8 DELETE | unbounded client-side | — |
@@ -244,7 +246,7 @@ The last column is the one to compare across rows: a client limit only means som
 
 health-events-analyzer is absent from the table because it makes no Kubernetes API calls at all: it constructs no client, exposes no `rest_client_requests_total` series, and reaches the rest of the system through MongoDB and the platform-connector socket.
 
-Normalised this way the two rate-limited stages of the fault path are close to balanced -- fault-quarantine at 100 nodes/s and node-drainer at 108 -- which is the right shape, since a cordon that outruns the drain behind it only builds a queue. That balance holds only at the measured 3.7 calls per node. node-drainer's cost is per evictable pod rather than per node, so a fleet running 5 evictable pods per node puts it at 27 nodes/s and makes it the binding stage, roughly a quarter of fault-quarantine's budget.
+Normalised this way the two rate-limited stages of the fault path are close to balanced -- fault-quarantine at 100 nodes/s and node-drainer at 108 -- which is the right shape, since a cordon that outruns the drain behind it only builds a queue. That balance holds only at the measured 3.7 calls per node. node-drainer's cost adds 3.0 calls per evictable pod on top of that baseline, so a fleet running 5 evictable pods per node costs 18.7 calls and puts it at 21 nodes/s, making it the binding stage at roughly a fifth of fault-quarantine's budget.
 
 ## A2. Load on external components
 
@@ -330,7 +332,7 @@ What a remediation costs, per node, during a 100-node burst:
 | node-drainer | 3.7 | get |
 | janitor-provider | 2.2 | get |
 | fault-quarantine | **1** | 1 patch, the cordon |
-| labeler, preflight | **0** | watch only |
+| labeler, preflight | **0** | not on the remediation path; labeler's cost is 1 PATCH per relevant event, preflight's is per pod admission |
 
 kubernetes-object-monitor is not in that table because its cost is per policy-match transition, not per remediated node. Each transition writes one PUT of a full Node object (`pkg/annotations/manager.go`); a conflict retry adds another, and a reconcile that changes nothing costs nothing.
 
@@ -492,7 +494,7 @@ Each burst size was run **once**, so every figure below is a single observation 
 
 All three bursts reached **100% drain completion**, confirmed by direct tracking every 20 seconds: 100/100 by t=160s, 500/500 by t=200s, 1000/1000 by t=260s, with no further change over the following four minutes of observation.
 
-Those completion times and the cordon-to-drained medians above them do not reconcile -- a 100-node burst cannot complete at t=160s if its median drain took 268 s -- because they were taken from different clocks: completion was polled from node state relative to injection, while the percentiles come from per-document timestamps relative to each node's own cordon. The completion figures are sound as a statement that every node drained; the two sets should not be compared against each other, and a re-run capturing both from the documents would be needed to state a single consistent timeline.
+Those completion times and the cordon-to-drained medians above them are inconsistent: a 100-node burst cannot finish 160 s after injection if its median cordon-to-drain was 268 s, and cordon precedes drain, so no difference in reference point accounts for it. The two sets were not produced by the same measurement, and which run each came from was not recorded, so they should not be read against each other. Completion was polled every 20 seconds, so those figures are upper bounds rounded up to the next poll. Stating a single consistent timeline needs a re-run that takes both from the same per-node records.
 
 Cordon time scales with burst size, 1.1 s to 5.9 s to 28.0 s at the median, because fault-quarantine consumes its change stream serially and absorption is roughly node count times a per-event cost.
 
@@ -648,7 +650,7 @@ Every figure in this report depends on what the components were actually configu
     recommendedAction = "CONTACT_SUPPORT";  message = "Pod failed on an unschedulable node"
 ```
 
-The Pod policy is why kubernetes-object-monitor holds a Pod cache at all, and therefore why it is the largest component at 100,000 nodes with a pod on every node. Its `--resync-period=24h` means the fleet-wide relist that would otherwise dominate CPU does not occur within a measurement window. Note that `--cache-sync-timeout` is passed twice, `2m` then `10m`; the later value wins.
+The Pod policy is why kubernetes-object-monitor holds a Pod cache at all, and therefore why it is the largest component at 100,000 nodes with a pod on every node. Its `--resync-period=24h` means the fleet-wide relist that would otherwise dominate CPU does not occur within a measurement window. Its cache sync timeout is 10m.
 
 **fault-quarantine** cordons on one ruleset, and every injected event in this report is shaped to match it:
 
