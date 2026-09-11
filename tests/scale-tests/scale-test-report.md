@@ -14,6 +14,7 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
   - [fault-remediation](#fault-remediation)
   - [health-events-analyzer](#health-events-analyzer)
   - [janitor](#janitor)
+  - [Queue memory](#queue-memory)
   - [QPS](#qps)
 - [A2. Load on external components](#a2-load-on-external-components)
   - [Kubernetes API](#kubernetes-api)
@@ -24,13 +25,12 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
   - [MongoDB per member](#mongodb-per-member)
   - [Cost per event, by component](#cost-per-event-by-component-m)
 - [A3. Customer-facing SLAs](#a3-customer-facing-slas)
-  - [Continuous load, 0.47 nodes/s](#continuous-load-047-nodess-m)
+  - [Continuous load](#continuous-load-m)
   - [Full-chain run, 200-node burst](#full-chain-run-200-node-burst-m)
   - [MTTR decomposition](#mttr-decomposition)
   - [Event consumption rate](#event-consumption-rate-m)
   - [Drain latency with real pods](#drain-latency-with-real-pods-m)
   - [Burst absorption](#burst-absorption)
-    - [Namespace eviction mode governs whether a drain can complete](#namespace-eviction-mode-governs-whether-a-drain-can-complete)
 - [Appendix](#appendix)
   - [API server load produced by the simulation harness](#api-server-load-produced-by-the-simulation-harness-m)
     - [Node heartbeats and pod status](#node-heartbeats-and-pod-status)
@@ -253,16 +253,20 @@ Per scale point, for the triggered case. An untriggered janitor reads 0.022-0.05
 
 ### Queue memory
 
-Both components hold one entry per pending event, so a backlog is memory the sizing tables above do not include. Two points each:
+Both components hold one entry per pending event, so a backlog is memory the sizing tables above do not include.
+
+![Memory held by a queued backlog](results/queue-memory.png)
+
+Two points each:
 
 | Component | Backlog source | Queued events | Working set | Per event `[M]` |
 | --- | --- | --- | --- | --- |
 | node-drainer | replay | ~200,000 | 182 → 315 MB | 0.67 KB |
 | node-drainer | replay | 1,048,415 | 255.7 → 979.7 MB | 0.69 KB |
-| fault-remediation | cold start | 200,668 | 41.5 → 133.7 MB | 0.47 KB |
+| fault-remediation | cold start | 1,037,329 | 73.2 → 643.0 MB | 0.64 KB |
 | fault-remediation | live stream | +1,113,804 (275,332 → 1,389,136) | 791 → 9,463 MB | 7.79 KB |
 
-node-drainer queues a node name, event ID and document ID on either path, and its two points agree at 0.67 and 0.69 KB. fault-remediation queues a document ID on cold start and the whole decoded event on the live path, which is the 16x difference between its two rows.
+node-drainer queues a node name, event ID and document ID on either path, and its two points agree at 0.67 and 0.69 KB. fault-remediation queues a document ID on cold start and the whole decoded event on the live path, which is the 12x difference between its two rows.
 
 ### QPS
 
@@ -305,7 +309,7 @@ Rates per second. Idle and continuous differ mainly in KWOK lease traffic, not i
 | APF rejections     | **0** | **0**      | **0**              |
 
 
-PUT is almost entirely simulated-node lease renewal and pod status rather than anything NVSentinel does; the breakdown is in the appendix. `[S]` APF never exceeded 11% of its seats and never queued a request, so the API server is far from a limit at this size. 
+PUT is almost entirely simulated-node lease renewal and pod status rather than anything NVSentinel does; the breakdown is in [Node heartbeats and pod status](#node-heartbeats-and-pod-status). `[S]` APF never exceeded 11% of its seats and never queued a request, so the API server is far from a limit at this size. 
 
 Per node in a 100-node burst: fault-remediation 9, janitor 6, node-drainer 3.7, janitor-provider 2.2, fault-quarantine 1, labeler and preflight. Taken from EKS audit logs, which cover the three components that register no client-go metrics; cross-checked against `rest_client_requests_total` where both exist and they agree (0.49 vs 0.50/s, 9 calls/node from both). `[M]`
 
@@ -404,7 +408,7 @@ The memory is connections, not data: 85.0 GB resident across the three members a
 
 ![Per-event handling cost by component](results/cost-per-event.png)
 
-Every component publishes a histogram of its own handling time, so this cost is read straight off the components rather than inferred from CPU counters. Lifetime means across this session's runs:
+Read from each component's own handling histogram. Lifetime means:
 
 
 | Component                 | Metric                                              | Events timed | Mean     |
@@ -417,27 +421,24 @@ Every component publishes a histogram of its own handling time, so this cost is 
 | fault-remediation         | `fault_remediation_event_handling_duration_seconds` | 280          | 106 ms   |
 
 
-The spread is the shape of the pipeline. kubernetes-object-monitor and labeler mostly decide that nothing happened and return, fault-quarantine writes one node patch, and node-drainer, janitor and
-fault-remediation each make several API calls and wait on the cluster. The expensive end is also the low-volume end, so the cost per node failure stays small even though the slowest handler is two
-thousand times the fastest.
+The spread follows what each handler does: kubernetes-object-monitor and labeler mostly return without acting, fault-quarantine writes one node patch, and node-drainer, janitor and fault-remediation each make several API calls and wait on the cluster. The slowest is two thousand times the fastest, and also the lowest-volume.
 
-A node update that matters to nobody is cheaper still. Patching 5,000 nodes with an irrelevant label drove 17,803 items through kubernetes-object-monitor's workqueue at **0.045 ms each**, in line with
-its lifetime mean; the other components' handling counts did not move, because the update reaches their informer caches and never becomes an event. At the 250 node writes per second this fleet does when idle, that is under two percent of one core across the whole system.
+An update matching no policy costs less again: patching 5,000 nodes with an irrelevant label drove 17,803 items through kubernetes-object-monitor's workqueue at **0.045 ms each** and moved no other component's count, since the update reaches their caches without becoming an event. At the 250 node writes per second this fleet does when idle, that is under two percent of one core.
 
 ---
 
 ## A3. Customer-facing SLAs
 
-### Continuous load, 0.47 nodes/s `[M]`
+### Continuous load `[M]`
 
-Measured in burst-free windows, so the tails are steady-state rather than burst contention. The cordon row comes from a 314-node window on the 50,000-node fleet; the drain, remediation and MTTR rows come from a later 400-node run at 0.5 nodes/s in which every node carried a drain-eligible pod, which the earlier window did not have. Each row states which.
+Measured in burst-free windows, so the tails are steady-state rather than burst contention. The cordon row is a 314-node window on the 50,000-node fleet, where 0.47 nodes/s is the rate at which nodes completed rather than a rate events were offered at; the input rate was not controlled. The drain, remediation and MTTR rows come from a later run that injected at a set **0.5 nodes/s** across 400 nodes, each carrying a drain-eligible pod, and all 400 completed -- so there input and output rates are the same.
 
 
 | SLA                                  | P50                                              | P90         | P99         | Max         | Conditions                                                                                                                                                                                                                                                                               |
 | ------------------------------------ | ------------------------------------------------ | ----------- | ----------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Time to cordon                       | 26 ms                                            | 48 ms       | 165 ms      | 373 ms      | 50k nodes, 11 pods/node, all DaemonSet                                                                                                                                                                                                                                                   |
+| Time to cordon                       | 26 ms                                            | 48 ms       | 165 ms      | 373 ms      | 50k nodes, 11 pods/node, all DaemonSet; 314 nodes completed over the window (0.47/s)                                                                                                                                                                                                                                                   |
 | Time to label                        | 59 s                                             | 61 s        | 61 s        | 61 s        | driver and DCGM pods appear on a new node → labels on the node object, across 200 nodes `[M]`. The band is tight because labeler applies labels on its 30-second informer resync rather than on the event, so the wall time is two resync cycles; handling itself is 3.8 ms (see A1 QPS) |
-| Time to drain                        | 10.09 s                                          | 10.14 s     | 10.27 s     | 10.92 s     | cordon → drained across 400 nodes at 0.5 nodes/s, each carrying one drain-eligible pod in an `Immediate` namespace `[M]`. The band is one node-drainer recheck cycle: it evicts, requeues at its 10 s base backoff, confirms the pod is gone, and marks the node drained                 |
+| Time to drain                        | 10.09 s                                          | 10.14 s     | 10.27 s     | 10.92 s     | cordon → drained, 400 nodes at 0.5 nodes/s, one drain-eligible pod each `[M]`. The 10 s is node-drainer's recheck backoff, not eviction time                 |
 | Time to remediate                    | 0.08 s                                           | 0.09 s      | 0.17 s      | 0.24 s      | drained → remediation dispatched across 400 nodes at 0.5 nodes/s `[M]`. Under a 200-node burst the same stage is 3.20 s, essentially all of it change-stream queue wait                                                                                                                  |
 | **NVSentinel MTTR**                  | **10.11 s**                                      | **10.16 s** | **10.29 s** | **10.94 s** | detect → drained, same 400-node run `[M]`. Almost all of it is the drain recheck cycle; detection to cordon is 17 ms at the median                                                                                                                                                       |
 | **NVSentinel MTTR, excluding drain** | **0.091 s**                                      | **0.101 s** | **0.241 s** | **0.529 s** | detect → remediation dispatched with each node's own drain wait subtracted, across 400 nodes at 0.5 nodes/s `[M]`. Detect to cordon is 16 ms and drained to dispatch is 75 ms; everything else is the drain recheck cycle                                                                |
@@ -455,7 +456,7 @@ Drain is 10.09 s of the 10.18 s detect-to-dispatch chain measured in that run, 9
 
 ### Full-chain run, 200-node burst `[M]`
 
-The rows above for remediation and reboot come from a single injection of 200 fatal `SysLogsXIDError` events, one per node, into 200 nodes with no prior remediation history (selected by the absence of the `dgxc.nvidia.com/nvsentinel-state` label, `Ready=True` and schedulable; the five real EC2 nodes were excluded). All 200 reached `faultRemediated: true` within 32 seconds of injection and all 200 subsequently reached `NodeReady=True`. This is the first run in which the whole chain completed end to end, so it supersedes the earlier per-stage figures taken on already-quarantined nodes.
+The rows above for remediation and reboot come from a single injection of 200 fatal `SysLogsXIDError` events, one per node, into 200 nodes with no prior remediation history (selected by the absence of the `dgxc.nvidia.com/nvsentinel-state` label, `Ready=True` and schedulable; the five real EC2 nodes were excluded). All 200 reached `faultRemediated: true` within 32 seconds of injection and all 200 subsequently reached `NodeReady=True`.
 
 
 | Stage                               | p50         | p90         | p99         | max         |
@@ -473,11 +474,7 @@ These are burst figures. Two hundred events arrive in a single insert, so each s
 
 CR-derived rows carry the API server's one-second timestamps; the MongoDB-derived rows are exact.
 
-This run used a fault-remediation build with the Node cache disabled. On `v1.21.0` the first remediation after a restart pays a one-time 43 s informer sync.
-
 The drain figures come from a workload simulator (`--mode=workload` in `k8s-object-scaler`) running against `test-workload`, a namespace outside node-drainer's system-namespace exclusion, with pods carrying no `ownerReferences` so they are not treated as DaemonSet-owned. Jobs arrive at 5/s, 30% as gangs of 8-64 pods on consecutive nodes and the rest as singletons, each living 30 minutes, reaching a counted steady state of 109,000 pods.
-
-That load also gave node-drainer's per-pod memory cost, which A1 previously left open: 2.04 GB with no eligible pods, rising linearly to 2.56 GB at 109,000, or **4.9 KB per drain-eligible pod**. Three independent fits agree within 10%.
 
 ### MTTR decomposition
 
@@ -486,7 +483,7 @@ That load also gave node-drainer's per-pod memory cost, which A1 previously left
 | ----------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Detect → cordon                           | yes `[M]` | 17 ms P50 continuous; 3.47 s P50 under a 500-node burst                                                                                                                                                                     |
 | Cordon → drained                          | yes `[M]` | 10.09 s P50 continuous with one drain-eligible pod per node; 52.06 s P50 under a 500-node burst. One recheck cycle under continuous load, several under a burst                                                             |
-| Drained → remediation CR created          | yes `[M]` | 0.08 s P50 continuous; 3.20 s P50 / 5.77 s P99 under a 200-node burst, which is change-stream queue wait rather than work. On `v1.21.0` the first remediation after a restart also pays a one-time ~43 s Node informer sync |
+| Drained → remediation CR created          | yes `[M]` | 0.08 s P50 continuous; 3.20 s P50 / 5.77 s P99 under a 200-node burst, which is change-stream queue wait rather than work |
 | CR created → signal sent to provider      | yes `[M]` | 13.0 s P50 / 30.0 s P99 over 200 nodes                                                                                                                                                                                      |
 | CR created → provider returns             | no `[S]`  | simulated constant, carries no physical meaning (`simulatedRebootDuration: 5s`)                                                                                                                                             |
 | Provider returns → back in service        | yes `[M]` | CR creation → `NodeReady=True` 46.5 s P50 / 81.0 s P99 over 200 nodes. Dominated by janitor's readiness re-poll, not by the reboot                                                                                          |
@@ -527,30 +524,25 @@ P90 sits within a second of P50 in every continuous row and within eight seconds
 
 Under continuous load a drain costs one node-drainer recheck cycle. It evicts the pod, requeues at its 10 s base backoff, sees the pod gone, and marks the node drained, which is why the whole distribution sits in a 0.8-second band around 10 s rather than spreading out. Under a burst the same cycle repeats while the node waits its turn, giving 52 s for five hundred nodes arriving together.
 
-This supersedes an earlier reading taken at 100,005 nodes that showed 45% of drains in a 10-30 s bucket and 16% between 300 and 600 s. That run was recorded as a histogram rather than per-document timestamps, so it could not resolve a median, and it ran with concurrent fault injection and a workload simulator against the same fleet. Its long tail was queueing behind kwok-controller confirming pod deletion, which the clean runs above do not show at all.
-
 ### Burst absorption
 
-N nodes fail simultaneously. Method: brand-new KWOK nodes that had never existed before (zero quarantine history), 5 pods/node placed by round-robin (not gang/random), no concurrent fault or burst injection during the window.
+N nodes fail at once, on brand-new KWOK nodes with no quarantine history and no pods, so the two stages measured here are fault-quarantine's cordon and fault-remediation's CR creation without drain in between. Each size was injected as a single insert and run in isolation: fresh node names, and nodes, events and CRs deleted before the next size started.
 
-Each burst size was run **once**, so every figure below is a single observation with no run-to-run variance behind it. They show the shape of burst absorption; they are not SLA percentiles in the sense the continuous-load table is, and a repeat run would be needed before quoting them as such.
+![Time to absorb a burst of N simultaneous failures](results/burst-absorption.png)
 
+| Burst | All cordoned | cordon P50 / P99 | All CRs created | CR P50 / P99 |
+| --- | --- | --- | --- | --- |
+| 100 | 1.38 s | 0.74 / 1.44 s | 7.90 s | 4.12 / 8.06 s |
+| 200 | 2.75 s | 1.38 / 2.80 s | 15.78 s | 7.85 / 15.87 s |
+| 400 | 6.07 s | 3.01 / 6.10 s | 33.38 s | 16.53 / 33.37 s |
+| 600 | 9.18 s | 4.37 / 9.16 s | 48.61 s | 24.18 / 48.35 s |
+| 1000 | 16.34 s | 8.51 / 16.33 s | 76.47 s | 38.03 / 75.77 s |
 
-| Burst      | Detect->cordon P50/P99 | Cordon->drained P50/P99 | MTTR P50/P99      |
-| ---------- | ---------------------- | ----------------------- | ----------------- |
-| 100 nodes  | 1.1 s / 2.2 s          | 268.0 s / 271.7 s       | 269.1 s / 273.9 s |
-| 500 nodes  | 5.9 s / 15.7 s         | 215.2 s / 233.5 s       | 221.1 s / 249.2 s |
-| 1000 nodes | 28.0 s / 42.7 s        | 250.3 s / 279.0 s       | 278.3 s / 321.7 s |
+Both stages degrade linearly rather than hitting a cliff, because each consumes its change stream serially: cordon holds 61-73 nodes/s and CR creation 12.0-13.1 nodes/s across a 10x range. P50 sits at half the window and P99 at the window itself, which is what draining a simultaneous arrival at a fixed rate produces. The last node in a 1,000-node burst waits 16 s to be cordoned and 76 s for its CR.
 
+fault-quarantine also stretches the burst for everything downstream. A burst injected in a single insert arrives at fault-remediation spread over the cordon window -- 16 s at N=1000 -- so the components behind it never see the burst as one.
 
-All three bursts reached **100% drain completion**, confirmed by direct tracking every 20 seconds: 100/100 by t=160s, 500/500 by t=200s, 1000/1000 by t=260s, with no further change over the following four minutes of observation.
-
-Those completion times and the cordon-to-drained medians above them are inconsistent: a 100-node burst cannot finish 160 s after injection if its median cordon-to-drain was 268 s, and cordon precedes drain, so no difference in reference point accounts for it. The two sets were not produced by the same measurement, and which run each came from was not recorded, so they should not be read against each other. Completion was polled every 20 seconds, so those figures are upper bounds rounded up to the next poll. Stating a single consistent timeline needs a re-run that takes both from the same per-node records.
-
-Cordon time scales with burst size, 1.1 s to 5.9 s to 28.0 s at the median, because fault-quarantine consumes its change stream serially and absorption is roughly node count times a per-event cost.
-
-Drain wall-clock looks flat across the same range, 268 s to 215 s to 250 s, which is easy to read as insensitivity to burst size. The throughput behind it says the opposite. Completion came at t=160s, t=200s and t=260s, and at 5 pods/node with one API call per evictable pod that works out as:
-
+Drain is excluded above because it depends on what is running on the node and on the namespace's eviction mode, not on burst size alone. Measured separately at 5 pods/node:
 
 | Burst      | Evictions | Time  | Throughput           | Share of the 400 QPS budget |
 | ---------- | --------- | ----- | -------------------- | --------------------------- |
@@ -561,17 +553,7 @@ Drain wall-clock looks flat across the same range, 268 s to 215 s to 250 s, whic
 
 Throughput rises sixfold while wall-clock stays flat, so larger bursts pipeline better. The client-side rate limit is not what stops it: at the largest burst node-drainer uses under 5% of its budget on a one-call-per-pod assumption, or about 15% once the measured 3.0 calls per pod is applied. What holds aggregate drain throughput down is the recheck cadence, not API rate limiting. node-drainer requeues each node at a 10 s base backoff and only marks it drained once it has confirmed the pod is gone, so under continuous load a drain takes exactly one cycle (10.09 s P50 across 400 nodes) and under a burst it takes as many cycles as the queue is deep (52.06 s P50 across 500 nodes arriving together). `[M]`
 
-These numbers come from `node-drainer-bench`, running `--kube-api-qps=400 --kube-api-burst=800`. The `20 / 40` in the QPS table belongs to the `node-drainer` deployment, which was at zero replicas throughout.
-
 The calls-per-pod figure was checked directly. Five evictable pods on one node, one fatal event: all five were evicted, but they took 15 eviction calls rather than 5. node-drainer issues the evictions, logs `immediate eviction completed, requeuing for status verification`, and re-evicts every pod still present on each requeue. Here the pods took about 90 s to disappear, spanning three retry cycles. The multiplier therefore tracks how long a pod takes to terminate rather than how many pods there are, and pods honouring a real `terminationGracePeriodSeconds` will cost more than the zero-grace pods used here. `[M]`
-
-#### Namespace eviction mode governs whether a drain can complete
-
-node-drainer's deployed config maps namespaces to eviction modes: `e2e-pods` is `Immediate`, and the catch-all `*` is `AllowCompletion`, which waits indefinitely for pods to exit on their own.
-
-Any drain measurement must therefore place its pods in an `Immediate` namespace. Pods in a namespace matching `*` are never evicted by node-drainer within the measurement window, so cordon-to-drain times taken there record the harness, not the component.
-
----
 
 ## Appendix
 
@@ -597,33 +579,21 @@ A simulated node has no EC2 instance behind it, and the cloud-controller-manager
 
 Upstream fixed this. `cloud-provider-aws` now skips nodes whose instance ID cannot be valid, with a comment naming KWOK directly, but the CCM in this EKS control plane predates that and returns an error instead. The issue behind it, [cloud-provider-aws#325](https://github.com/kubernetes/cloud-provider-aws/issues/325), was closed `NOT_PLANNED` in 2022.
 
-Meanwhile the node-lifecycle controller deletes the fleet, at 2.3 nodes a second once it gets the chance -- about 72 minutes to clear 10,000 nodes -- because the instances it looks for do not exist.
+The node-lifecycle controller deletes nodes at 2.3 a second -- about 72 minutes to clear 10,000 -- but only when `spec.providerID` parses and names an instance that does not exist. With no providerID it never resolves an instance to check and deletes nothing: a 14,405-node fleet sat unchanged over three hours with the field empty.
 
-The two problems hide each other. At 53,513 nodes the tagging loop saturates the controller and node deletion never runs, so the fleet is stable. At 10,000 there is spare capacity and the fleet quietly decays. **A KWOK fleet on EKS survives only while the control plane is too busy to clean it up.**
+Leaving `providerID` unset therefore avoids the deletion path entirely, at the cost of the tagging loop above, which spins but does not destroy anything.
 
 The control plane also stops publishing its own metrics under load. The AWS/EKS stream stopped four minutes after etcd peaked and stayed down for six days, every metric ending at the same timestamp, then resumed within minutes of rebuilding the fleet at 10,000 nodes. Nothing flagged it -- `describe-cluster` health stayed `null` -- so it is no use as a warning near the tier limit. Audit logging was unaffected, which is why the API attribution in this report was possible at all.
 
 ### NetworkPolicy enforcement broke and stayed broken `[M]`
 
-The AWS VPC CNI expands each `NetworkPolicy` into `PolicyEndpoint` objects, sharded by how many pods the selector matches. The sharding is strictly linear: driving a namespace-wide selector from 1,000 to 51,000 pods produced 1, 6, 21 and 51 shards at those points, exactly **1,000 pod endpoints per shard**, with no deviation. A policy therefore costs one object per thousand pods it selects, and every one of them is rewritten when membership changes.
+The AWS VPC CNI expands each `NetworkPolicy` into `PolicyEndpoint` objects, sharded by how many pods the selector matches. The sharding is strictly linear: driving a namespace-wide selector from 1,000 to 51,000 pods produced 1, 6, 21 and 51 shards at those points, exactly **1,000 pod endpoints per shard**.
 
 ![PolicyEndpoint shards against selected pods](results/policyendpoint-sharding.png)
 
-NVSentinel ships a policy that selects a whole namespace. `metrics-access`, from the top-level chart (`distros/kubernetes/nvsentinel/templates/networkpolicy.yaml`), selects `app.kubernetes.io/name NotIn [incluster-file-server]` -- every pod in the namespace except one. Every per-component chart uses a narrow positive selector; only this one is namespace-wide, written that way because the components share no common label to select on. Alongside only NVSentinel it costs a single shard, so nothing is visibly wrong until something large shares the namespace.
+NVSentinel's `metrics-access` policy selects every pod in its namespace, and the benchmark put roughly 158,000 pods there. Eighty-three shards existed and no more appeared, and the CNI went on enforcing what it had last programmed: MongoDB was refused on 27017 by a source-IP list naming pods that no longer existed, and policies deleted by `helm uninstall` sat `Terminating` for three days while still isolating their pods. Deleting the 83 stale shards restored connectivity in about two minutes.
 
-The benchmark put roughly 158,000 pods there. Eighty-three shards existed and no more appeared, and the policies stayed in that state until they were deleted by hand. Whether the controller stopped, and why, was never established: it runs inside the EKS managed control plane, its logs are not exported, and the node agent containers are distroless, so nothing on either side could be read.
-
-Whatever the cause, enforcement continued from what had last been programmed. `mongodb-networkpolicy` held a source-IP list of three pods that no longer existed, so every mongod created afterwards was denied on port 27017. Two policies deleted by `helm uninstall` sat `Terminating` on a finalizer for three days, still isolating the pods they selected while programming no rules. A replacement policy allowing 27017 never received a `PolicyEndpoint` at all.
-
-That took a long time to diagnose, because the symptom looks like an application bug. Port 9216 on the same pods stayed reachable, since its rule granted `0.0.0.0/0` and had no source list to go stale. Enforcement itself was correct throughout, and MongoDB, TLS, DNS and the CNI agent were all investigated first. A partial discriminator is that a port with no listener usually returns a RST while a port blocked by policy times out, but a timeout on its own is inconclusive -- routing and security-group filtering produce one too. Test a port with a known listener, and read the `PolicyEndpoint` source-IP rules before attributing a timeout to policy enforcement.
-
-Deleting the 83 stale shards restored connectivity in about two minutes, by leaving the mongod pods selected by no policy at all. That is a fail-open step and should be treated as one: between the deletion and the replacement policies taking effect, MongoDB's 27017 was reachable from anywhere the network allowed, with no policy-level restriction. Anyone repeating it should put a replacement allowlist in place first or concurrently, and confirm both that approved sources can reach 27017 and that others cannot, before calling the recovery complete. The namespace was afterwards moved onto narrow policies with no namespace-wide selector.
-
-Where the controller stops keeping up was not found, because it kept up across the whole measured range and rebuilt shards correctly at 51,000 selected pods. The stall therefore begins somewhere between that and the 158,000 that broke it, and pushing further risks reproducing it on a control plane that cannot be restarted. The ratio is the useful figure rather than a breaking point.
-
-Two details from AWS's own documentation bear on this. A known bug leaves `PolicyEndpoints` uncleaned after pods are deleted, but it is specific to VPC CNI 1.19.3-eksbuild.1 and this cluster ran **v1.21.1-eksbuild.3** with network-policy-agent v1.3.1, so it is not the explanation. More relevant, AWS states that the network policy agent [only supports pods created by a Deployment or ReplicaSet](https://docs.aws.amazon.com/eks/latest/userguide/network-policies-troubleshooting.html) and that behaviour with standalone pods may be inconsistent. The benchmark scaler creates pods directly, standalone or DaemonSet-owned, so the population that triggered the sharding sat outside the supported configuration. That does not explain a controller that never recovers, but it does mean this was not a clean reproduction of a production workload.
-
-The exposure is not confined to the benchmark. NVSentinel's own DaemonSets -- `platform-connectors`, `metadata-collector` and one of the two `gpu-health-monitor` DCGM variants -- put three pods per node in this namespace by default, so a clean install at 100,000 nodes selects roughly 300,000 pods and needs about 300 shards, well past the 83 seen here. AWS has open reports of chunked `PolicyEndpoint` sets degrading as that count rises, from clusters far smaller than this one. What the right change is on our side is not settled, and is tracked in [#1792](https://github.com/NVIDIA/NVSentinel/issues/1792).
+The exposure is not confined to the benchmark: NVSentinel's own DaemonSets put three pods per node in that namespace, so a clean install at 100,000 nodes selects roughly 300,000 pods and needs about 300 shards. Whether the controller stops keeping up somewhere between the 51,000 pods it handled here and the 158,000 that broke it was not established, and the cause was never captured -- the controller runs in the EKS managed control plane and its logs are not exported. [#1792](https://github.com/NVIDIA/NVSentinel/issues/1792) carries the detail, the upstream reports it matches, and the open question of what to change.
 
 ### The EBS CSI provisioner runs out of memory at fleet scale `[M]`
 
@@ -664,9 +634,9 @@ Node size was chosen to match production GPU workers (53.6 KB, measured in #1718
 
 **Driving faults.** Health events are inserted directly into MongoDB, bypassing platform-connector. The document shape is unforgiving and fails silently when wrong: the event nests under `healthevent`, field names are their Go names lowercased, `generatedtimestamp` must be a `{seconds, nanos}` subdocument, `recommendedaction` is the enum integer, `errorcode` is an **array**, and `healtheventstatus.userpodsevictionstatus` must be an empty document rather than null. `agent` must match the deployed fault-quarantine ruleset.
 
-**Timing the chain.** Percentiles come from per-document timestamps (`generatedtimestamp`, `quarantinefinishtimestamp`, `drainfinishtimestamp`, `lastremediationtimestamp`), which are exact. CR-derived timings inherit the API server's one-second granularity. `faultRemediated: true` marks **dispatch, not recovery** — join to the maintenance CR's `NodeReady` condition for end-to-end figures.
+**Timing the chain.** Percentiles come from per-document timestamps (`generatedtimestamp`, `quarantinefinishtimestamp`, `drainfinishtimestamp`, `lastremediationtimestamp`), which are exact. CR-derived timings inherit the API server's one-second granularity. End-to-end figures join to the maintenance CR's `NodeReady` condition, since `faultRemediated: true` marks dispatch.
 
-**Reading API load.** Per-component `rest_client_requests_total` differenced against an idle control of comparable length. fault-quarantine, labeler and preflight register no client-go metrics, so those come from EKS audit logs via CloudWatch Logs Insights. Wait for the workload to complete before sampling — sampling mid-burst understated these figures ~4x.
+**Reading API load.** Per-component `rest_client_requests_total` differenced against an idle control of comparable length. fault-quarantine, labeler and preflight register no client-go metrics, so those come from EKS audit logs via CloudWatch Logs Insights. Sampling happened after the workload completed; a mid-burst sample of the same run read ~4x lower.
 
 **Reading MongoDB.** Two counters mislead. `stats().count` is an estimate that lags badly -- it reported 0 documents against 38,178 actual -- so any document delta must come from `countDocuments`. And the oplog carries about 2.5 entries/s of background traffic on an idle cluster, so a burst's cost has to be measured against an identical quiet window; without that subtraction a 100-node burst reads 9.8 oplog entries per node instead of 6.1.
 
@@ -748,7 +718,7 @@ name = "e2e-pods";  mode = "Immediate"
 name = "*";  mode = "AllowCompletion"
 ```
 
-`drainGPUPods = false` means a pod requesting `nvidia.com/gpu` is never evicted, so drain-latency measurements must place pods that request none.
+`drainGPUPods = false` means a pod requesting `nvidia.com/gpu` is never evicted, and the catch-all `*` namespace maps to `AllowCompletion`, which waits for pods to exit on their own rather than evicting them. Drain-latency measurements therefore need pods that request no GPU, in a namespace mapped to `Immediate`.
 
 **Client rate limits, as deployed.** These are the values behind the QPS table:
 
@@ -765,7 +735,7 @@ name = "*";  mode = "AllowCompletion"
 | health-events-analyzer    | `--processing-strategy=EXECUTE_REMEDIATION`, no QPS flags                             |
 
 
-A component with no QPS flag and a controller-runtime client gets that library's `GetConfig` default, which sets `cfg.QPS = -1` when the loaded value is zero, disabling client-side rate limiting and leaving the API server's own fairness rules as the only limit. Every module here builds against controller-runtime v0.25.0. This applies to the controller-runtime path only; a component constructing a client-go client directly would take client-go's defaults instead, and the effective values per component were not enumerated.
+fault-remediation, janitor and kubernetes-object-monitor have no client-side rate limit at all: controller-runtime v0.25.0's `GetConfig` sets `cfg.QPS = -1` when the value is unset, so the API server's own fairness rules are the only limit.
 
 **labeler** takes no resync flag; the period is hard-coded to 30 seconds at `labeler/pkg/initializer/init.go:61`, which is what sets the two-cycle time-to-label in A3.
 
