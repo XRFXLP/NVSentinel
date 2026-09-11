@@ -2648,6 +2648,40 @@ func TestAdaptEvents_QueuesDocumentIDAndToken(t *testing.T) {
 		"queueing an event must not checkpoint it: the worker checkpoints once it is finalised")
 }
 
+// TestAdaptEvents_SameDocumentQueuesEveryToken proves two updates to one document stay two
+// items, each carrying its own change-stream position. Keying the item by document ID alone
+// would collapse them and leave one token unacknowledged, so this pins the distinction.
+func TestAdaptEvents_SameDocumentQueuesEveryToken(t *testing.T) {
+	ctx := t.Context()
+
+	watcher := NewMockChangeStreamWatcher()
+	out, _ := AdaptEvents(ctx, watcher)
+
+	documentID := "507f1f77bcf86cd799439011"
+	for _, token := range []string{"resume-token-1", "resume-token-2"} {
+		watcher.EventsChan <- datastore.EventWithToken{
+			Event:       testRawHealthEvent(documentID, "node-1", protos.RecommendedAction_RESTART_BM),
+			ResumeToken: []byte(token),
+		}
+	}
+
+	var queued []reconcileRequest
+
+	for range 2 {
+		select {
+		case forwarded := <-out:
+			queued = append(queued, forwarded.Object)
+		case <-time.After(2 * time.Second):
+			t.Fatal("both updates to the same document must be forwarded")
+		}
+	}
+
+	assert.Equal(t, []reconcileRequest{
+		{documentID: documentID, resumeToken: "resume-token-1"},
+		{documentID: documentID, resumeToken: "resume-token-2"},
+	}, queued, "each update must keep its own resume token so neither position is lost")
+}
+
 // TestReconcileRoundTripsResumeToken proves the []byte-to-string-to-[]byte trip the workqueue's
 // comparable key forces on the token is lossless, including for bytes that are not valid UTF-8.
 // A corrupted token would resume the change stream from the wrong position.
