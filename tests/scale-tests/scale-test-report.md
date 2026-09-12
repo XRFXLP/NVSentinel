@@ -10,11 +10,10 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
   - [fault-quarantine](#fault-quarantine)
   - [labeler](#labeler)
   - [node-drainer](#node-drainer)
-  - [preflight](#preflight)
   - [fault-remediation](#fault-remediation)
+  - [preflight](#preflight)
   - [health-events-analyzer](#health-events-analyzer)
   - [janitor](#janitor)
-  - [Queue memory](#queue-memory)
   - [QPS](#qps)
 - [A2. Load on external components](#a2-load-on-external-components)
   - [Kubernetes API](#kubernetes-api)
@@ -47,15 +46,15 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
 
 NVSentinel has been tested upto 100k nodes, resource consumption grows predictably with fleet size and stays within ordinary limits with reasonable throughputs.
 
-The whole control plane costs about 235 GB of memory at 100,000 nodes. NVSentinel's own components are 65 GB of that and MongoDB is the remaining 170 GB combined across all replicas, which it spends on per-node database connections rather than on data. [ADR-052](../../docs/designs/052-deployment-platform-connector.md) removes those connections, and once it lands the same fleet is projected at about 75 GB.
+The whole control plane costs about 235 GB of memory at 100,000 nodes. NVSentinel's own components are 65 GB of that and MongoDB is the remaining 170 GB combined across all replicas, which it spends on per-node database connections rather than on data. [ADR-052](../../docs/designs/052-deployment-platform-connector.md) removes those connections, and once it lands the same fleet is projected at about 78 GB.
 
 Two components are most of the component total. At 100,000 nodes with a pod on every node, kubernetes-object-monitor is 33.9 GB and fault-quarantine 17.9 GB; labeler is 6.6 GB, janitor 4.9 GB, node-drainer 1.0 GB, and nothing else exceeds 0.6 GB.
 
 CPU was never a constraint. The busiest component peaked at 2.00 cores, four cores each is sufficient with headroom, and nothing recorded a single throttled CFS period.
 
-Cordon completes in 26 ms P50 and 165 ms P99 under continuous load, and a node carrying one evictable pod is drained about ten seconds after that, which is one of node-drainer's recheck cycles. Detection to drained is 10.11 s P50 and 10.29 s P99; five hundred nodes failing at once stretches that to 55.5 s with every node completing.
+Under continuous load, time to cordon is 26 ms P50 and 165 ms P99, and time to remediate -- drained to the remediation CR being created -- is 0.08 s P50 and 0.17 s P99. Everything NVSentinel does outside the drain totals 91 ms P50. The drain itself is the one term that does not belong to NVSentinel's speed: a node carrying one evictable pod takes about ten seconds, which is one of node-drainer's recheck cycles rather than eviction time, and five hundred nodes failing at once stretches it to 52 s with every node completing.
 
-What broke during testing was the infrastructure around NVSentinel, not NVSentinel: the AWS VPC CNI stopped rebuilding `PolicyEndpoint` objects and went on enforcing stale rules, the EBS CSI provisioner ran out of memory and stopped attaching volumes cluster-wide, and etcd's 16 GB threshold put the cluster into read-only. Each took MongoDB down with it. The first two are described in the appendix; etcd's budget is in A2.
+What broke during testing was the infrastructure around NVSentinel, not NVSentinel. The AWS VPC CNI stopped rebuilding `PolicyEndpoint` objects and went on enforcing stale rules, and the EBS CSI provisioner ran out of memory and stopped attaching volumes cluster-wide; both took MongoDB down with them, one by blocking its traffic and the other by stranding its volumes. Separately, etcd crossing its 16 GB threshold put the cluster into read-only, which blocked writes everywhere rather than failing MongoDB itself. The first two are described in the appendix; etcd's budget is in A2.
 
 ---
 
@@ -73,16 +72,16 @@ What broke during testing was the infrastructure around NVSentinel, not NVSentin
 | 50,000  | ~113 GB       | ~85 GB `[M]`  | 27.5 GB `[M]`         |
 | 100,000 | **~235 GB**   | ~170 GB `[M]` | **64.9 GB** `[M]`     |
 
-<img width="1330" height="770" alt="Image" src="https://github.com/user-attachments/assets/7e472dc9-8b7b-40f8-b141-3a59091fe00b" />
+![Control-plane memory by component](results/control-plane-memory.png)
 
 
 
 
 Each component column is the sum of the per-component tables below at that fleet size. The 100,000-node row is the loaded fleet, with a pod on every node; the smaller rows carry 731 pods. labeler is measured with two pods per node throughout, because the DCGM and driver DaemonSets scale with the fleet.
 
-After the deployment-model platform connector lands, MongoDB stops holding a connection per node, and the same 100,000-node fleet is projected at about 75 GB rather than 235 GB.
+After the deployment-model platform connector lands, MongoDB stops holding a connection per node, and the same 100,000-node fleet is projected at about **78 GB** rather than 235 GB. The projection is the measured component total of 64.9 GB, plus about 12 GB of gRPC read and write buffers in the platform-connector deployment -- three monitor connections per node at tens of kilobytes each, per ADR-052 -- plus MongoDB's fixed pool of roughly 70 connections. The connection cost does not disappear; it moves out of the database and shrinks by an order of magnitude.
 
-<img width="1330" height="770" alt="Image" src="https://github.com/user-attachments/assets/fdcfa365-68f1-4e96-b6b9-02c4cd121448" />
+![What ADR-052 removes](results/adr-052-projection.png)
 
 
 
@@ -100,21 +99,21 @@ Similar things happened with the pods:
 
 | Component                 | settled B/pod | peak B/pod | computed B from transform            |
 | ------------------------- | ------------- | ---------- | ------------------------------------ |
-| kubernetes-object-monitor | ~3,700        | ~4,400     | ~175                                 |
+| kubernetes-object-monitor | ~3,700        | ~4,400     | **~175**                             |
 | node-drainer              | ~4,900        | ~6,200     | 599 if drain eligible, 205 otherwise |
 | preflight                 | ~4,200        | ~5,200     | ~110                                 |
 
 
 Lets walk over component by component:
 
-<img width="1260" height="770" alt="Image" src="https://github.com/user-attachments/assets/ceadafc2-b5c8-49ea-8d3b-a1a2fea86ba1" />
-
 ### kubernetes-object-monitor
 
-Node + Pod watches, one per enabled policy; CEL-derived transform (#1720). Per-node cost 174,175 B/node. Per pod cost: ~3,700 B/pod settled, 4,400 B at peak
+Node + Pod watches, one per enabled policy; CEL-derived transform (#1720). The Pod policy is cluster-wide, so the pods it watches are every pod on the cluster. Per-node cost 174,175 B/node. Per pod cost: ~3,700 B/pod settled, 4,400 B at peak.
+
+**The Pod transform throws away almost the whole object.** A pod arrives at 40,644 B on the wire and the CEL-derived transform keeps eight fields of it -- `apiVersion`, `kind`, five pieces of `metadata`, `spec.nodeName` and `status.phase` -- which is **~175 B, under half a percent of what was sent**. Everything else, and in a production pod that is mostly container spec and env, is dropped before it reaches the cache.
 
 
-| Nodes   | Pods     | CPU med/peak `[M]` | Working set med/peak `[M]` | Rec. request | Rec. limit |
+| Nodes   | Pods watched | CPU med/peak `[M]` | Working set med/peak `[M]` | Rec. request | Rec. limit |
 | ------- | -------- | ------------------ | -------------------------- | ------------ | ---------- |
 | 4,933   | 731      | 0.06 / 0.09        | 1.12 / 1.13 G              | 2 Gi         | 4 Gi       |
 | 9,990   | 731      | 0.10 / 0.13        | 1.84 / 1.84 G              | 4 Gi         | 8 Gi       |
@@ -180,21 +179,12 @@ Now the scale sweep:
 | 100,005 | ~100,000 | 0.10 / 0.38        | 1.04 G                 | 2 Gi         | 4 Gi       |
 
 
-These figures are with an empty queue; see queue memory below.
+Those figures are with an empty queue. node-drainer holds one entry per pending event, so a backlog is memory they do not include. It queues a node name, event ID and document ID whichever path the event arrives on, and the two runs agree:
 
-### preflight
-
-Pod informer only; no Node cache.
-
-
-| Nodes   | Pods     | CPU med/peak `[M]` | Working set peak `[M]` | Rec. request | Rec. limit |
-| ------- | -------- | ------------------ | ---------------------- | ------------ | ---------- |
-| 4,933   | 731      | 0.01 / 0.01        | 0.24 G                 | 512 Mi       | 1 Gi       |
-| 10,000  | 364,217  | 0.01 / 0.02        | 1.92 G                 | 1 Gi         | 2 Gi       |
-| 25,005  | 731      | 0.01 / 0.01        | 0.24 G                 | 512 Mi       | 1 Gi       |
-| 75,005  | ~100,000 | **0.02 / 0.04**    | **0.44 G**             | 1 Gi         | 2 Gi       |
-| 100,005 | ~100,000 | **0.03 / 0.16**    | **0.54 G**             | 1 Gi         | 2 Gi       |
-
+| Backlog source | Queued events | Working set | Per event `[M]` |
+| --- | --- | --- | --- |
+| replay | ~200,000 | 182 → 315 MB | 0.67 KB |
+| replay | 1,048,415 | 255.7 → 979.7 MB | 0.69 KB |
 
 ### fault-remediation
 
@@ -211,9 +201,32 @@ No Kubernetes watches, and Node reads bypass the cache (`Client.Cache.DisableFor
 
 The flat profile is the point: this component is sized by its remediation rate, not by fleet size.
 
-These figures are with an empty queue; see queue memory below.
+Those figures are with an empty queue, and the queue is where this component's memory actually goes. It holds one entry per pending event, and what that entry retains differs by path: a document ID on cold start, the whole decoded event on the live stream.
+
+| Backlog source | Queued events | Working set | Per event `[M]` |
+| --- | --- | --- | --- |
+| cold start | 1,037,329 | 73.2 → 643.0 MB | 0.55 KB |
+| live stream | +1,113,804 (275,332 → 1,389,136) | 791 → 9,463 MB | 7.79 KB |
+
+That is the 14x difference between the two paths. Each per-event figure is the working-set increase over that run's own baseline divided by the events queued, and the same axes put node-drainer's two paths beside them:
+
+![Memory held by a queued backlog](results/queue-memory.png)
 
 Recommended **2 Gi / 4 Gi**. The working set is a rounding error, but a queued backlog is not: 4 Gi covers roughly half a million events on the live path.
+
+### preflight
+
+Pod informer only; no Node cache.
+
+
+| Nodes   | Pods     | CPU med/peak `[M]` | Working set peak `[M]` | Rec. request | Rec. limit |
+| ------- | -------- | ------------------ | ---------------------- | ------------ | ---------- |
+| 4,933   | 731      | 0.01 / 0.01        | 0.24 G                 | 512 Mi       | 1 Gi       |
+| 10,000  | 364,217  | 0.01 / 0.02        | 1.92 G                 | 1 Gi         | 2 Gi       |
+| 25,005  | 731      | 0.01 / 0.01        | 0.24 G                 | 512 Mi       | 1 Gi       |
+| 75,005  | ~100,000 | **0.02 / 0.04**    | **0.44 G**             | 1 Gi         | 2 Gi       |
+| 100,005 | ~100,000 | **0.03 / 0.16**    | **0.54 G**             | 1 Gi         | 2 Gi       |
+
 
 ### health-events-analyzer
 
@@ -251,23 +264,6 @@ Per scale point, for the triggered case. An untriggered janitor reads 0.022-0.05
 | 100,005 | ~100,000 | 0.10 / 0.36        | 4.90 G                           | 6 Gi         | 12 Gi      |
 
 
-### Queue memory
-
-Both components hold one entry per pending event, so a backlog is memory the sizing tables above do not include.
-
-![Memory held by a queued backlog](results/queue-memory.png)
-
-Two points each:
-
-| Component | Backlog source | Queued events | Working set | Per event `[M]` |
-| --- | --- | --- | --- | --- |
-| node-drainer | replay | ~200,000 | 182 → 315 MB | 0.67 KB |
-| node-drainer | replay | 1,048,415 | 255.7 → 979.7 MB | 0.69 KB |
-| fault-remediation | cold start | 1,037,329 | 73.2 → 643.0 MB | 0.55 KB |
-| fault-remediation | live stream | +1,113,804 (275,332 → 1,389,136) | 791 → 9,463 MB | 7.79 KB |
-
-node-drainer queues a node name, event ID and document ID on either path, and its two points agree at 0.67 and 0.69 KB. fault-remediation queues a document ID on cold start and the whole decoded event on the live path, which is the 14x difference between its two rows. Each per-event figure is the working-set increase over that row's own baseline divided by the events queued.
-
 ### QPS
 
 The last column is the one to compare across rows: a client limit only means something once it is divided by what that component spends per node. A component with a high limit and an expensive path can be the bottleneck while one with a low limit and a single call is not.
@@ -291,27 +287,36 @@ Normalised this way the two rate-limited stages of the fault path are close to b
 
 *Measured at 50,021 nodes carrying 642,243 pods*
 
-The three columns are conditions on that fleet, not scale points -- idle, continuous load at 0.47 nodes/s, and a 100-node burst. 
+Where a table below shows three columns they are conditions on that fleet, not scale points -- idle, continuous load at 0.47 nodes/s, and a 100-node burst.
+
+**Why 50,000 nodes and not 100,000.** etcd, not NVSentinel, set this ceiling. A fleet of 100,000 nodes carrying a pod each already sits close to the 16 GB threshold of the 4XL control-plane tier, and the run that carried 203,411 pods crossed it: etcd refused every write, including the deletes needed to recover, and only came back after compaction aged the churn out. Shrinking the simulated node would not have bought much room, because the bytes in etcd's five-minute revision window are overwhelmingly simulated-kubelet churn rather than anything NVSentinel writes. A 50,000-node fleet carrying 642,243 pods runs well clear of that edge, so the measurements are taken on a stable cluster rather than one on the verge of going read-only.
+
+**Extrapolating to 100,000.** The quantities in this section are per-node or per-event costs, and those are the things that hold. A remediation costs a fixed number of API requests regardless of fleet size, and the two instantaneous stages scale linearly with how many nodes fail at once -- cordon holds 61-71 nodes/s and CR creation 11.9-13.0 nodes/s across a 10x range of burst sizes ([Burst absorption](#burst-absorption)). So at the same fault rate, doubling the fleet doubles the external load, and the difference between continuous and burst conditions is the event rate rather than the fleet size. What does not extrapolate is anything bounded by the 16 GB etcd threshold, which is a cliff rather than a slope: at 100,000 nodes the usable pod budget is roughly 100,000 at the 50 KB object size, and beyond it the cluster stops rather than slows.
+
+**Almost none of this traffic is NVSentinel's.** Over a five-minute idle window the API server handled 585,415 audited requests and 568,470 of them -- **97.1%** -- came from `kwok` simulating kubelets. Broken down by resource on a 10,005-node fleet, 78% of PUTs are `pods/status`, written periodically by the kwok controller for every simulated pod, and the rest is lease renewal. Every NVSentinel component combined sits in the noise beside it: node-drainer at 1.85 requests/s and fault-remediation at 0.49/s, the latter entirely leader-election lease renewal, with the rest below the reporting threshold. That matters twice over. It means the API server and etcd figures here are dominated by the harness and bound NVSentinel's cost from above rather than measuring it, and it means a real cluster of the same size sees the same kubelet traffic from real kubelets, so the etcd budget is not an artifact. The full breakdown is in [API server load produced by the simulation harness](#api-server-load-produced-by-the-simulation-harness-m).
 
 ### Kubernetes API
 
-Rates per second. Idle and continuous differ mainly in KWOK lease traffic, not in NVSentinel's own load.
+NVSentinel's own request rate against the API server, measured from each component's `rest_client_requests_total` and from EKS audit logs for the three that register no client-go metrics:
 
 
-|                    | Idle  | Continuous | Burst (med / peak) |
-| ------------------ | ----- | ---------- | ------------------ |
-| GET                | 172   | 81         | 78 / 185           |
-| PUT                | 2,965 | 1,664      | 1,657 / 2,930      |
-| PATCH              | 1,462 | 1,427      | 1,457 / 1,513      |
-| LIST               | 7.5   | 8.0        | 7.8                |
-| WATCH              | 6.0   | 6.7        | 6.6 / 8.6          |
-| APF seats of 1,085 | 92    | 55         | 64 / **116**       |
-| APF rejections     | **0** | **0**      | **0**              |
+| Component                 | Steady-state rate `[M]` | Per remediated node `[M]` | What it spends it on                       |
+| ------------------------- | ----------------------- | ------------------------- | ------------------------------------------ |
+| node-drainer              | 1.85/s                  | 3.7 + 3.0 per evictable pod | pod GETs on each recheck, plus a POST to the pod's `eviction` subresource (`PolicyV1().Evictions().Evict`) |
+| fault-remediation         | 0.49/s                  | 9                         | 5 get, 3 update, 1 create                  |
+| janitor                   | below threshold         | 6                         | 2 get, 2 update, 1 create, 1 delete        |
+| janitor-provider          | below threshold         | 2.2                       | get                                        |
+| fault-quarantine          | below threshold         | 1                         | 1 patch, the cordon                        |
+| kubernetes-object-monitor | below threshold         | not per node              | 1 PUT per policy-match transition          |
+| labeler                   | below threshold         | 0                         | 1 PATCH per relevant event                 |
+| preflight                 | below threshold         | 0                         | per pod admission                          |
 
 
-PUT is almost entirely simulated-node lease renewal and pod status rather than anything NVSentinel does; the breakdown is in [Node heartbeats and pod status](#node-heartbeats-and-pod-status). `[S]` APF never exceeded 11% of its seats and rejected nothing, so the API server is far from a limit at this size. 
+fault-remediation's steady-state 0.49/s is entirely leader-election lease renewal; it does no work until an event arrives. The per-node column is the burst measurement broken down in [What a remediation costs the API server](#what-a-remediation-costs-the-api-server-m), and it totals about 22 requests per remediated node on nodes with nothing to evict.
 
-Per node in a 100-node burst: fault-remediation 9, janitor 6, node-drainer 3.7, janitor-provider 2.2, fault-quarantine 1, labeler and preflight. Taken from EKS audit logs, which cover the three components that register no client-go metrics; cross-checked against `rest_client_requests_total` where both exist and they agree (0.49 vs 0.50/s, 9 calls/node from both). `[M]`
+node-drainer is the one row that does not stay fixed, because it evicts. Its 3.7 is the baseline on a node with no drain-eligible pods; each evictable pod adds 3.0 calls, not one, because node-drainer re-evicts every pod still present on each recheck rather than waiting -- five pods on one node took 15 eviction calls over three retry cycles. A fleet at 5 evictable pods per node therefore costs 18.7 calls per node, which is what makes node-drainer the binding stage in the QPS table above.
+
+Flow control has headroom that the fleet size does not threaten. APF peaked at **116 of 1,085 seats**, 11%, and rejected nothing in any window. That seat figure is whole-cluster, so it includes the simulation harness, which generates 97% of the requests on this cluster -- NVSentinel's own share of those seats is correspondingly smaller, and the 11% is an upper bound rather than NVSentinel's cost.
 
 ### etcd
 
@@ -349,19 +354,7 @@ A remediated node costs **6.1 oplog entries, about 4 KB, and 1.96 stored documen
 
 ### What etcd actually holds `[M]`
 
-etcd holds the live objects plus every revision written in the last five minutes, so its size is live data plus five minutes of churn. At 25,000 nodes that churn is about 2 GB:
-
-
-| Source                         | Rate      | Bytes per 5 min | Share   |
-| ------------------------------ | --------- | --------------- | ------- |
-| `leases/update`                | 1,114.6/s | 290 MB          | 14%     |
-| `nodes/patch` + `nodes/update` | 97.9/s    | **1.62 GB**     | **79%** |
-| `pods/patch`                   | 42.1/s    | 122 MB          | 6%      |
-| `events/create`                | 24.5/s    | ~7 MB           | <1%     |
-| **total**                      | 1,285/s   | **~2.04 GB**    |         |
-
-
-Node size is the lever. A lease is 869 B and a node 55 KB, so node heartbeats are 8% of the writes and 79% of the bytes.
+etcd holds the live objects plus every revision written in the last five minutes, so its size is live data plus five minutes of churn. None of that churn is NVSentinel's -- at 25,000 nodes it is about 2 GB of simulated kubelet traffic, broken down in [Node heartbeats and pod status](#node-heartbeats-and-pod-status). NVSentinel's own contribution is the remediation cost above: 1.96 stored documents per remediated node, which does not move allocated storage at this size.
 
 Bulk changes inflate this badly, because their revisions sit in the window too. 140,000 node creates and 90,000 deletes in an hour took the in-use size to a CloudWatch-reported **14.59 GB, about 91% of the 4XL tier's threshold** -- a figure from the unreliable source noted above, so treat it as indicative -- against a settled floor of 2.33 GB at 10,000 nodes. Measure after churn has aged out, not during.
 
@@ -374,19 +367,9 @@ What a remediation costs, per node, during a 100-node burst:
 ![API calls per remediated node, by verb](results/api-calls-per-node.png)
 
 
-| Component          | Requests per node | Breakdown                                                                                                   |
-| ------------------ | ----------------- | ----------------------------------------------------------------------------------------------------------- |
-| fault-remediation  | **9**             | 5 get, 3 update, 1 create                                                                                   |
-| janitor            | **6**             | 2 get, 2 update, 1 create, 1 delete                                                                         |
-| node-drainer       | 3.7               | get                                                                                                         |
-| janitor-provider   | 2.2               | get                                                                                                         |
-| fault-quarantine   | **1**             | 1 patch, the cordon                                                                                         |
-| labeler, preflight | **0**             | not on the remediation path; labeler's cost is 1 PATCH per relevant event, preflight's is per pod admission |
+kubernetes-object-monitor is absent from the per-node column in A2 because its cost is per policy-match transition, not per remediated node. Each transition writes one PUT of a full Node object (`pkg/annotations/manager.go`); a conflict retry adds another, and a reconcile that changes nothing costs nothing.
 
-
-kubernetes-object-monitor is not in that table because its cost is per policy-match transition, not per remediated node. Each transition writes one PUT of a full Node object (`pkg/annotations/manager.go`); a conflict retry adds another, and a reconcile that changes nothing costs nothing.
-
-Those add up to about 22 requests per node, so remediating an entire 53,513-node fleet costs roughly 1.2 million requests. Compressed into ten minutes that is 2,000 requests a second -- about what the simulation harness already generates on its own, and well inside APF, which peaked at 116 of 1,085 seats.
+The per-component figures add up to about 22 requests per node, so remediating an entire 53,513-node fleet costs roughly 1.2 million requests. Compressed into ten minutes that is 2,000 requests a second -- about what the simulation harness already generates on its own, and well inside APF, which peaked at 116 of 1,085 seats.
 
 The costs hold within 20% under sustained load at 0.50 nodes/s: fault-remediation 11 requests per node against 9 in the burst, janitor 5.9 against 6, the extra GETs being retries spread over a longer wall clock.
 
@@ -440,19 +423,16 @@ Measured in burst-free windows, so the tails are steady-state rather than burst 
 | Time to label                        | 59 s                                             | 61 s        | 61 s        | 61 s        | driver and DCGM pods appear on a new node → labels on the node object, across 200 nodes `[M]`. The band is tight because labeler applies labels on its 30-second informer resync rather than on the event, so the wall time is two resync cycles; handling itself is 3.8 ms (see A1 QPS) |
 | Time to drain                        | 10.09 s                                          | 10.14 s     | 10.27 s     | 10.92 s     | cordon → drained, 400 nodes at 0.5 nodes/s, one drain-eligible pod each `[M]`. The 10 s is node-drainer's recheck backoff, not eviction time                 |
 | Time to remediate                    | 0.08 s                                           | 0.09 s      | 0.17 s      | 0.24 s      | drained → remediation dispatched across 400 nodes at 0.5 nodes/s `[M]`. Under a 200-node burst the same stage is 3.20 s, essentially all of it change-stream queue wait                                                                                                                  |
-| **NVSentinel MTTR**                  | **10.11 s**                                      | **10.16 s** | **10.29 s** | **10.94 s** | detect → drained, same 400-node run `[M]`. Almost all of it is the drain recheck cycle; detection to cordon is 17 ms at the median                                                                                                                                                       |
-| **NVSentinel MTTR, excluding drain** | **0.091 s**                                      | **0.101 s** | **0.241 s** | **0.529 s** | detect → remediation dispatched with each node's own drain wait subtracted, across 400 nodes at 0.5 nodes/s `[M]`. Detect to cordon is 16 ms and drained to dispatch is 75 ms; everything else is the drain recheck cycle                                                                |
+| **NVSentinel MTTR**                  | **0.091 s**                                      | **0.101 s** | **0.241 s** | **0.529 s** | detect → remediation dispatched, with each node's own drain wait subtracted, across 400 nodes at 0.5 nodes/s `[M]`. Detect to cordon is 16 ms and drained to dispatch is 75 ms. Drain is excluded because it is a policy-dependent wait on the workload, reported separately above      |
 | Simulated reboot wait `[S]`          | 46.5 s                                           | 77.0 s      | 81.0 s      | 82.0 s      | CR created → `NodeReady=True`, across 200 nodes `[M]`. Excluded from MTTR and not physical: the simulated reboot is 5 s, the remainder is janitor's readiness re-poll. Of it, CR → `SignalSent` is p50 13 s / p99 30 s                                                                   |
-| Customer end-to-end MTTR `[I]`       | 10.19 s + R                                      | 10.24 s + R | 10.43 s + R | 11.02 s + R | detect → remediation dispatched across 400 nodes at 0.5 nodes/s `[M]`, plus **R**, the reader's own reboot-to-Ready time. Substituting this harness's R gives 57 s end-to-end at the median `[S]`                                                                                        |
+| Customer end-to-end MTTR `[I]`       | 0.09 s + D + R                                   | 0.10 s + D + R | 0.24 s + D + R | 0.53 s + D + R | the row above plus **D**, the reader's own drain time, and **R**, their reboot-to-Ready time. Substituting this harness's D of 10.09 s and R of 46.5 s gives 57 s end-to-end at the median `[S]`                                                                                |
 | Observed completion rate             | 0.47 nodes/s sustained with no degradation `[M]` |             |             |             | the input rate was not controlled, so this is what the run completed rather than what it could sustain. The capacity figure is in [Burst absorption](#burst-absorption): fault-remediation's CR creation is the slowest instantaneous stage at 11.9-13.0 nodes/s                                                                                                                                                                                                                                                                     |
 | Burst absorption                     | see below                                        |             |             |             |                                                                                                                                                                                                                                                                                          |
 
 
 Percentiles are computed from per-document timestamps, so they are exact rather than snapped to Prometheus histogram buckets.
 
-Drain is 10.09 s of the 10.18 s detect-to-dispatch chain measured in that run, 99.1% of it, and it is a wait rather than work: node-drainer evicts the pod, requeues at its 10 s base backoff, confirms the pod is gone and marks the node drained. Everything NVSentinel does outside that wait totals 91 ms, two orders of magnitude below the backoff constant, so MTTR at this fleet size is set by that constant rather than by anything that grows with node count.
-
-![Where MTTR goes](results/mttr-composition.png)
+Drain is a wait rather than work: node-drainer evicts the pod, requeues at its 10 s base backoff, confirms the pod is gone and marks the node drained. Everything NVSentinel does outside that wait totals 91 ms, two orders of magnitude below the backoff constant.
 
 ### Full-chain run, 200-node burst `[M]`
 
@@ -487,7 +467,7 @@ The drain figures come from a workload simulator (`--mode=workload` in `k8s-obje
 | CR created → signal sent to provider      | yes `[M]` | 13.0 s P50 / 30.0 s P99 over 200 nodes                                                                                                                                                                                      |
 | CR created → provider returns             | no `[S]`  | simulated constant, carries no physical meaning (`simulatedRebootDuration: 5s`)                                                                                                                                             |
 | Provider returns → back in service        | yes `[M]` | CR creation → `NodeReady=True` 46.5 s P50 / 81.0 s P99 over 200 nodes. Dominated by janitor's readiness re-poll, not by the reboot                                                                                          |
-| **Whole chain, detect → back in service** | yes `[M]` | **70.0 s P50 / 89.0 s P99** under a 200-node burst, correlated per node. Under continuous load the NVSentinel share of that falls to 10.19 s, leaving the reboot as the whole cost                                          |
+| **Whole chain, detect → back in service** | yes `[M]` | **70.0 s P50 / 89.0 s P99** under a 200-node burst, correlated per node. Under continuous load NVSentinel's own share of that is 0.09 s once the drain wait is set aside, leaving drain and reboot as the whole cost                                          |
 
 
 ### Event consumption rate `[M]`
@@ -516,7 +496,6 @@ Two runs, both on brand-new nodes that had never been quarantined, each carrying
 | -------------------------------- | ------------------------------ | ------------------------ |
 | detect → quarantined             | 0.017 s                        | 3.47 s                   |
 | cordon → drained                 | **10.09 s**                    | **52.06 s**              |
-| detect → drained                 | 10.11 s                        | 55.54 s                  |
 | drained → remediation dispatched | 0.08 s                         | 10.52 s                  |
 
 
@@ -563,9 +542,40 @@ product and this one describes the harness and the cloud underneath it.
 
 ### API server load produced by the simulation harness `[M]`
 
-Almost none of the API traffic on this cluster is NVSentinel's. Over a five-minute idle window the API server handled 585,415 audited requests, and **568,470 of them -- 97.1% -- came from `kwok`**. Every component combined sits in the noise beside the harness: node-drainer 1.85/s, fault-remediation 0.49/s and that entirely leader-election lease renewal, and fault-quarantine, labeler, preflight and kubernetes-object-monitor below the reporting threshold.
+The share of API traffic that belongs to the harness rather than to NVSentinel is given in [A2](#a2-load-on-external-components). This section is the breakdown behind it.
+
+Whole-cluster rates per second, for sizing the harness rather than NVSentinel. Idle and continuous differ mainly in simulated-node lease traffic:
+
+
+|                    | Idle  | Continuous | Burst (med / peak) |
+| ------------------ | ----- | ---------- | ------------------ |
+| GET                | 172   | 81         | 78 / 185           |
+| PUT                | 2,965 | 1,664      | 1,657 / 2,930      |
+| PATCH              | 1,462 | 1,427      | 1,457 / 1,513      |
+| LIST               | 7.5   | 8.0        | 7.8                |
+| WATCH              | 6.0   | 6.7        | 6.6 / 8.6          |
+| APF seats of 1,085 | 92    | 55         | 64 / **116**       |
+| APF rejections     | **0** | **0**      | **0**              |
+
+
+PUT is almost entirely simulated-node lease renewal and pod status rather than anything NVSentinel does; the breakdown is in [Node heartbeats and pod status](#node-heartbeats-and-pod-status). `[S]`
 
 #### Node heartbeats and pod status
+
+The five-minute revision window etcd retains is filled almost entirely by simulated kubelets, standing in for what real kubelets would write. At 25,000 nodes it comes to about 2 GB:
+
+
+| Source                         | Rate      | Bytes per 5 min | Share   |
+| ------------------------------ | --------- | --------------- | ------- |
+| `leases/update`                | 1,114.6/s | 290 MB          | 14%     |
+| `nodes/patch` + `nodes/update` | 97.9/s    | **1.62 GB**     | **79%** |
+| `pods/patch`                   | 42.1/s    | 122 MB          | 6%      |
+| `events/create`                | 24.5/s    | ~7 MB           | <1%     |
+| **total**                      | 1,285/s   | **~2.04 GB**    |         |
+
+
+Node size is the lever. A lease is 869 B and a node 55 KB, so node heartbeats are 8% of the writes and 79% of the bytes.
+
 
 Heartbeats are most of the write traffic, and their volume is set by fleet size rather than by activity. Across 50,021 nodes the API server sees 247 node PATCHes a second idle and 193 under load -- roughly one per node every three and a half minutes -- alongside 1,600 to 2,900 lease PUTs a second. A simulated node renews its lease every 30.6 seconds where a real kubelet on the same cluster renews every 10.3, because KWOK sets `leaseDurationSeconds` to 120 against the kubelet's 40.
 
@@ -614,7 +624,7 @@ How every number in this report was produced, and what it was produced on.
 
 | Object        | Serialised size | Composition                                                                          |
 | ------------- | --------------- | ------------------------------------------------------------------------------------ |
-| Node          | 55,138 B        | ~~40,650 B padding in an annotation, ~172 labels (~~8.6 KB), taints, standard status |
+| Node          | 55,138 B        | 45,650 B padding in an annotation, 181 labels (~9.6 KB), 2 taints, kwok-generated status with no images |
 | Pod           | 9,626 B         | DaemonSet-owned, no padding                                                          |
 | Lease         | 869 B           | one per node                                                                         |
 | RebootNode CR | 993 B           | one per remediation                                                                  |
@@ -622,7 +632,7 @@ How every number in this report was produced, and what it was produced on.
 
 Node size was chosen to match production GPU workers (53.6 KB, measured in #1718). Padding sits in an annotation deliberately: transforms that drop annotations should show a slope of zero against it, which doubles as a transform-correctness check.
 
-**Fleet control.** `tests/scale-tests/cmd/k8s-object-scaler` run in-cluster from the `e2e-runner` pod, using the service-account token. It creates ~2,500 nodes/s and deletes ~12,000/s. Never run bulk operations through `kubectl` per object: the kubeconfig uses a Teleport exec credential plugin, so every invocation spawns a credential fetch and 53k of them will saturate it.
+**Fleet control.** `tests/scale-tests/cmd/k8s-object-scaler` run in-cluster from the `e2e-runner` pod, using the service-account token, as `-kind=node -mode=ramp -node-labels=181 -pad-retained-bytes=40650`. That flag yields a 45,650 B annotation, 5,000 B above the value passed, and the serialised size above is the POST body: the stored object is about 62 KB once the API server adds `managedFields` and kwok adds status. It creates ~2,500 nodes/s and deletes ~12,000/s. Never run bulk operations through `kubectl` per object: the kubeconfig uses a Teleport exec credential plugin, so every invocation spawns a credential fetch and 53k of them will saturate it.
 
 **Reading memory.** Container working set from cAdvisor via Prometheus is the number to provision against. Live heap (`go_memstats_heap_alloc_bytes`) sawtooths between collections, so only the trough across a window approximates the live set — a 2-minute window over a 10 GB heap read 47% high against a 16-minute one.
 
@@ -632,7 +642,7 @@ Node size was chosen to match production GPU workers (53.6 KB, measured in #1718
 
 **Restart the component before you measure it, or the number is wrong.** Reading the same six components at 50,000 nodes without restarting them — after the fleet had been reduced from 100,000 — gave 31.2 GB against 24.7 GB restarted, because none of them returns memory when the fleet shrinks.
 
-**Driving faults.** Health events are inserted directly into MongoDB, bypassing platform-connector. The document shape is unforgiving and fails silently when wrong: the event nests under `healthevent`, field names are their Go names lowercased, `generatedtimestamp` must be a `{seconds, nanos}` subdocument, `recommendedaction` is the enum integer, `errorcode` is an **array**, and `healtheventstatus.userpodsevictionstatus` must be an empty document rather than null. `agent` must match the deployed fault-quarantine ruleset.
+**Driving faults.** Health events are inserted directly into MongoDB, bypassing platform-connector. Two reasons. Injecting straight into the datastore is faster and more controllable once the document shape is known, which matters when a run needs a million events at a chosen rate. And platform-connector is the one component on the write path due to be replaced: [ADR-052](../../docs/designs/052-deployment-platform-connector.md) moves it from a per-node DaemonSet to a central deployment, so measuring today's ingest would size something that is about to change, and it will be re-measured against the new shape. The consequence for these numbers is that platform-connector's own ingest cost is not in them. Everything downstream is unaffected, because fault-quarantine and the components behind it read from the datastore's change stream and cannot tell how a document arrived. The document shape is unforgiving and fails silently when wrong: the event nests under `healthevent`, field names are their Go names lowercased, `generatedtimestamp` must be a `{seconds, nanos}` subdocument, `recommendedaction` is the enum integer, `errorcode` is an **array**, and `healtheventstatus.userpodsevictionstatus` must be an empty document rather than null. `agent` must match the deployed fault-quarantine ruleset.
 
 **Timing the chain.** Percentiles come from per-document timestamps (`generatedtimestamp`, `quarantinefinishtimestamp`, `drainfinishtimestamp`, `lastremediationtimestamp`), which are exact. CR-derived timings inherit the API server's one-second granularity. End-to-end figures join to the maintenance CR's `NodeReady` condition, since `faultRemediated: true` marks dispatch.
 
