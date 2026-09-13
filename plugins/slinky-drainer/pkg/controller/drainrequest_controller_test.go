@@ -205,10 +205,13 @@ func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 	cfg, err := te.Start()
 	require.NoError(t, err, "failed to start envtest")
 
+	cacheOptions, err := cacheconfig.Build(testSlinkyNamespace)
+	require.NoError(t, err, "failed to build cache options")
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
-		Cache:   cacheconfig.Build(testSlinkyNamespace),
+		Cache:   cacheOptions,
 	})
 	require.NoError(t, err, "failed to create manager")
 
@@ -255,7 +258,7 @@ func setupTestEnv(t *testing.T, controllerName string) *testEnvContext {
 	require.NoError(t, err, "failed to create API client")
 
 	ns := &corev1.Namespace{Name: testSlinkyNamespace}
-	_ = apiClient.Create(ctx, ns)
+	require.NoError(t, apiClient.Create(ctx, ns), "failed to create namespace %s", testSlinkyNamespace)
 
 	t.Cleanup(func() {
 		cancel()

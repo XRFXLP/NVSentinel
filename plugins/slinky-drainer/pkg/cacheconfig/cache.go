@@ -16,6 +16,7 @@
 package cacheconfig
 
 import (
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -31,7 +32,15 @@ import (
 //
 // Pruned objects must never be written back with Update, because the dropped
 // fields would be sent as empty. Node writes use a merge patch for this reason.
-func Build(slinkyNamespace string) cache.Options {
+//
+// slinkyNamespace must not be empty. The cache reads an empty namespace as
+// cache.AllNamespaces, so an empty value would silently restore the
+// cluster-wide Pod informer this function exists to avoid.
+func Build(slinkyNamespace string) (cache.Options, error) {
+	if slinkyNamespace == "" {
+		return cache.Options{}, errors.New("slinky namespace must not be empty")
+	}
+
 	return cache.Options{
 		ByObject: map[client.Object]cache.ByObject{
 			&corev1.Pod{}: {
@@ -42,7 +51,7 @@ func Build(slinkyNamespace string) cache.Options {
 				Transform: transformNodeForCache,
 			},
 		},
-	}
+	}, nil
 }
 
 // transformNodeForCache keeps the labels that gate annotation removal and the

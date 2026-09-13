@@ -65,11 +65,17 @@ func main() {
 	flag.StringVar(&slinkyNamespace, "slinky-namespace", "slinky", "Namespace where Slinky workload pods run")
 	flag.Parse()
 
+	cacheOptions, err := cacheconfig.Build(slinkyNamespace)
+	if err != nil {
+		slog.Error("Unable to build cache options", "slinkyNamespace", slinkyNamespace, "error", err)
+		os.Exit(1)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
-		Cache:                  cacheconfig.Build(slinkyNamespace),
+		Cache:                  cacheOptions,
 	})
 	if err != nil {
 		slog.Error("Unable to create manager", "error", err)
