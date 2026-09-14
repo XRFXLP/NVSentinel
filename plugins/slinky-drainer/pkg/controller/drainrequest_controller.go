@@ -35,14 +35,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	drainv1alpha1 "github.com/nvidia/nvsentinel/plugins/slinky-drainer/api/v1alpha1"
+	"github.com/nvidia/nvsentinel/plugins/slinky-drainer/pkg/nodemeta"
 )
 
 const (
 	drainCompleteConditionType       = "DrainComplete"
 	slurmNodeStateDrainConditionType = "SlurmNodeStateDrain"
-	annotationKey                    = "nodeset.slinky.slurm.net/node-cordon-reason"
+	annotationKey                    = nodemeta.CordonReasonAnnotationKey
 	annotationPrefix                 = "[T] [NVSentinel]"
-	nvsentinelStateLabelKey          = "dgxc.nvidia.com/nvsentinel-state"
+	nvsentinelStateLabelKey          = nodemeta.StateLabelKey
 	drainRequestFinalizer            = "nvsentinel.nvidia.com/slinky-drainer"
 
 	// Slurm base-state conditions that indicate the node still has running work.

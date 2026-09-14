@@ -142,9 +142,17 @@ func TestReconcile_DrainingPodNotDeleted(t *testing.T) {
 func TestReconcile_NodeAnnotationWrites_PreserveNodeSpec(t *testing.T) {
 	tc := setupTestEnv(t, "drain-node-spec")
 
-	node := createNode(t, tc, "test-node-spec-preserved", nil, map[string]string{
-		nvsentinelStateLabelKey: "draining",
-	})
+	// The cache prunes every label and annotation except the two the reconciler
+	// uses, and both writes patch from that pruned object. Foreign metadata
+	// must therefore survive untouched.
+	node := createNode(t, tc,
+		"test-node-spec-preserved",
+		map[string]string{"csi.volume.kubernetes.io/nodeid": "keep-me"},
+		map[string]string{
+			nvsentinelStateLabelKey:  "draining",
+			"nvidia.com/gpu.product": "keep-me",
+		},
+	)
 	taint := cordonNode(t, tc, node.Name)
 
 	createDrainRequest(t, tc, "drain-node-spec", drainv1alpha1.DrainRequestSpec{
@@ -155,11 +163,13 @@ func TestReconcile_NodeAnnotationWrites_PreserveNodeSpec(t *testing.T) {
 
 	assertNodeAnnotation(t, tc, node.Name, "[T] [NVSentinel] 79 - GPU has fallen off the bus")
 	assertNodeCordoned(t, tc, node.Name, taint)
+	assertForeignMetadataIntact(t, tc, node.Name)
 
 	removeNodeLabel(t, tc, node.Name, nvsentinelStateLabelKey)
 
 	waitForAnnotationRemoved(t, tc, node.Name)
 	assertNodeCordoned(t, tc, node.Name, taint)
+	assertForeignMetadataIntact(t, tc, node.Name)
 }
 
 // TestCache_PodsOutsideSlinkyNamespace_AreNotCached is the regression test for
@@ -488,6 +498,18 @@ func assertDrainNotComplete(t *testing.T, tc *testEnvContext, drName, drNamespac
 			t.Fatalf("DrainRequest %s/%s should NOT have DrainComplete=True while pods are still draining", drNamespace, drName)
 		}
 	}
+}
+
+// assertForeignMetadataIntact checks the labels and annotations the drainer
+// does not own, which the cache drops and the patches must not disturb.
+func assertForeignMetadataIntact(t *testing.T, tc *testEnvContext, nodeName string) {
+	t.Helper()
+
+	node := &corev1.Node{}
+	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: nodeName}, node))
+
+	assert.Equal(t, "keep-me", node.Labels["nvidia.com/gpu.product"])
+	assert.Equal(t, "keep-me", node.Annotations["csi.volume.kubernetes.io/nodeid"])
 }
 
 func assertNodeCordoned(t *testing.T, tc *testEnvContext, nodeName string, taint corev1.Taint) {

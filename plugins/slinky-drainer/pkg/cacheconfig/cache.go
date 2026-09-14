@@ -23,6 +23,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/nvidia/nvsentinel/plugins/slinky-drainer/pkg/nodemeta"
 )
 
 // Build returns cache options that limit the Pod cache to slinkyNamespace and
@@ -54,26 +56,49 @@ func Build(slinkyNamespace string) (cache.Options, error) {
 	}, nil
 }
 
-// transformNodeForCache keeps the labels that gate annotation removal and the
-// annotations the reconciler adds and removes. Node spec and status are dropped.
+// transformNodeForCache keeps node identity, the one label that gates
+// annotation removal, and the one annotation the reconciler writes. Node spec
+// and status go, as does every other label and annotation.
+//
+// Dropping the rest of the labels also quietens the controller. The Node watch
+// filters on predicate.LabelChangedPredicate, which compares the cached label
+// maps, so retaining the full set would wake the reconciler every time an
+// unrelated label changed. GPU nodes carry large Node Feature Discovery and GPU
+// Feature Discovery label sets that churn independently of remediation.
 func transformNodeForCache(obj any) (any, error) {
 	node, ok := obj.(*corev1.Node)
 	if !ok {
 		return nil, fmt.Errorf("node cache transform expected *v1.Node, got %T", obj)
 	}
 
+	// Identity is kept for the client machinery rather than the reconciler:
+	// Name addresses the object, and UID and ResourceVersion keep a cached Node
+	// usable as the base of a patch.
 	node.TypeMeta = metav1.TypeMeta{}
 	node.ObjectMeta = metav1.ObjectMeta{
 		Name:            node.Name,
 		UID:             node.UID,
 		ResourceVersion: node.ResourceVersion,
-		Labels:          node.Labels,
-		Annotations:     node.Annotations,
+		Labels:          retainKey(node.Labels, nodemeta.StateLabelKey),
+		Annotations:     retainKey(node.Annotations, nodemeta.CordonReasonAnnotationKey),
 	}
 	node.Spec = corev1.NodeSpec{}
 	node.Status = corev1.NodeStatus{}
 
 	return node, nil
+}
+
+// retainKey returns a map holding key alone, or nil when source does not have
+// it. Nil rather than an empty map matters: the reconciler treats a missing
+// state label as the signal that remediation finished, and a merge patch
+// computed from an empty map would still be correct but noisier.
+func retainKey(source map[string]string, key string) map[string]string {
+	value, found := source[key]
+	if !found {
+		return nil
+	}
+
+	return map[string]string{key: value}
 }
 
 // transformPodForCache keeps the node-name index key and the conditions that

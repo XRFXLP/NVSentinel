@@ -26,11 +26,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/nvidia/nvsentinel/plugins/slinky-drainer/pkg/nodemeta"
 )
 
 const (
-	testStateLabel       = "dgxc.nvidia.com/nvsentinel-state"
-	testCordonAnnotation = "nodeset.slinky.slurm.net/node-cordon-reason"
+	testStateLabel       = nodemeta.StateLabelKey
+	testCordonAnnotation = nodemeta.CordonReasonAnnotationKey
 )
 
 func TestBuild_ScopesEachKindToWhatTheDrainerReads(t *testing.T) {
@@ -87,15 +89,24 @@ func TestTransformNodeForCache_RetainsDrainerFieldsOnly(t *testing.T) {
 		want *corev1.Node
 	}{
 		{
-			name: "drops spec, status and managed fields",
+			name: "drops spec, status, managed fields and unrelated metadata",
 			node: &corev1.Node{
 				Kind: "Node", APIVersion: "v1",
 				Name:            "node-a",
 				UID:             types.UID("node-uid"),
 				ResourceVersion: "node-rv",
-				Labels:          map[string]string{testStateLabel: "draining"},
-				Annotations:     map[string]string{testCordonAnnotation: "[T] [NVSentinel] 79"},
-				ManagedFields:   []metav1.ManagedFieldsEntry{{Manager: "drop-manager"}},
+				Labels: map[string]string{
+					testStateLabel: "draining",
+					// Node Feature Discovery labels are numerous on GPU nodes
+					// and churn independently of remediation.
+					"feature.node.kubernetes.io/cpu-model.id": "drop",
+					"nvidia.com/gpu.product":                  "drop",
+				},
+				Annotations: map[string]string{
+					testCordonAnnotation: "[T] [NVSentinel] 79",
+					"kubectl.kubernetes.io/last-applied-configuration": "drop-large-blob",
+				},
+				ManagedFields: []metav1.ManagedFieldsEntry{{Manager: "drop-manager"}},
 				Spec: corev1.NodeSpec{
 					ProviderID:    "drop-provider",
 					Unschedulable: true,
@@ -123,6 +134,18 @@ func TestTransformNodeForCache_RetainsDrainerFieldsOnly(t *testing.T) {
 				Spec: corev1.NodeSpec{Unschedulable: true},
 			},
 			want: &corev1.Node{Name: "node-b"},
+		},
+		{
+			// A node carrying only foreign metadata must come out with nil
+			// maps, so it is indistinguishable from a node NVSentinel has
+			// never touched.
+			name: "drops metadata down to nil when no retained key is present",
+			node: &corev1.Node{
+				Name:        "node-c",
+				Labels:      map[string]string{"nvidia.com/gpu.count": "8"},
+				Annotations: map[string]string{"csi.volume.kubernetes.io/nodeid": "drop"},
+			},
+			want: &corev1.Node{Name: "node-c"},
 		},
 	}
 
