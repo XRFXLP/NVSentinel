@@ -49,9 +49,9 @@ NVSentinel has been tested upto 100k nodes, resource consumption grows predictab
 
 The whole control plane costs about 221 GB of memory at 100,000 nodes. NVSentinel's own components are 51 GB of that and MongoDB is the remaining 170 GB combined across all replicas, which it spends on per-node database connections rather than on data. [ADR-052](../../docs/designs/052-deployment-platform-connector.md) removes those connections, and once it lands the same fleet is projected at about 63 GB.
 
-Two components are most of the component total. At 100,000 nodes with a pod on every node, kubernetes-object-monitor is 19.8 GB and fault-quarantine 17.9 GB; labeler is 6.6 GB, janitor 4.9 GB, node-drainer 1.0 GB, and nothing else exceeds 0.6 GB.
+Two components are most of the component total. At 100,000 nodes with a pod on every node, kubernetes-object-monitor is 19.8 GB (15 GB with minimal pods) and fault-quarantine 17.9 GB; labeler is 6.6 GB, janitor 4.9 GB, node-drainer 1.0 GB, and nothing else exceeds 0.6 GB.
 
-CPU is a constraint for exactly one component. kubernetes-object-monitor reaches its 2-core limit at 75,000 nodes and stays there, sitting at 1.90 of 2 cores whatever it is watching and throttled on 11-12% of CFS periods, so it needs four cores at that scale. Every other component peaked well inside its limit with no throttling.
+CPU is a constraint for exactly one component. kubernetes-object-monitor needs four cores at 75,005 nodes, where it draws 0.99 to 3.24 depending on how many pods it watches, and eight at 100,005, where it draws 4.09 to 5.48. Sized that way it is throttled on 0.9-6.2% of CFS periods at 75,005 and 2.0-5.2% at 100,005, each throttled period costing 0.3-0.5 ms, which is under a millisecond of stall per second. Every other component peaked well inside its limit with no throttling.
 
 Under continuous load, time to cordon is 26 ms P50 and 165 ms P99, and time to remediate -- drained to the remediation CR being created -- is 0.08 s P50 and 0.17 s P99. Everything NVSentinel does outside the drain totals 91 ms P50. The drain itself is the one term that does not belong to NVSentinel's speed: a node carrying one evictable pod takes about ten seconds, which is one of node-drainer's recheck cycles rather than eviction time, and five hundred nodes failing at once stretches it to 52 s with every node completing.
 
@@ -157,8 +157,6 @@ So the live cost of a watched pod is about **20 KB**, matching the 20,039 B of a
 
 The practical consequence for sizing is that the limit has to cover the sync peak, and sync happens on every restart, rollout and leader change rather than only at install. Provisioning from a settled steady-state figure under-provisions for the event that occurs most often.
 
-An earlier series measured these scale points piecemeal over several weeks and read about a third higher wherever pods were watched, 33.90 G at 100,005 nodes where this table reads 24.44 G. Those figures have been dropped: they were taken under varying pod shapes and some predate the KWOK liveness check described in the appendix.
-
 ### fault-quarantine
 
 Per-node cost **161,516 B/node**; retained bytes/node `33,144-34,337` `[I]`. Events sent at 0.1 events per second per node with 1:4 ratio of fatal and non-fatal.
@@ -177,7 +175,7 @@ Per-node cost **161,516 B/node**; retained bytes/node `33,144-34,337` `[I]`. Eve
 
 ### labeler
 
-Eager informers: one for Nodes with a fixed field projection, and **four pod informers**, each label-scoped -- `app in (dcgm, driver)`, the driver-component label excluding that app, `k8s-app=<gke-installer>`, and ResourceSlice objects.
+Eager informers, five in total: one for Nodes with a fixed field projection, **three pod informers**, each label-scoped -- `app in (dcgm, driver)`, the driver-component label excluding that app, and `k8s-app=<gke-installer>` -- and one for ResourceSlice objects.
 
 
 | Nodes   | Labelled pods           | Settled    | Sync peak  | CPU med/peak | Rec. request | Rec. limit |
@@ -703,7 +701,7 @@ Node size was chosen to match production GPU workers (53.6 KB, measured in #1718
 
 **Reading CPU.** `rate(container_cpu_usage_seconds_total{namespace="nvsentinel",pod="<pod>",container!="",container!="POD"}[5m])`, which reads directly in cores and is the same counter the CFS quota enforces a limit against. The `container!=""` filter matters: cAdvisor also exports a pod-level roll-up with an empty container label, and summing without it double-counts. The A1 med/peak columns are the median and maximum of that rate across a sampling window at each scale point. Two companions are worth reading alongside it: `container_cpu_cfs_throttled_seconds_total` shows whether a limit is actually biting, which a usage figure alone cannot; and the component's own `process_cpu_seconds_total` from `/metrics` isolates the Go process from any sidecar in the same pod, and should track the container rate closely when it does not have one. For per-event attribution rather than steady state, `usageCoreNanoSeconds` from the kubelet summary API is a cumulative counter that can be differenced across a burst window — with the noise-floor caveat in A2.
 
-**Component measurement protocol.** For each scale point: set the fleet, restart every measured component, wait for rollouts to complete, wait for informers to sync, then sample. The restart is essential — Go does not return freed heap promptly, so a component measured at 5k straight after 25k still reports the larger figure. Pods are held constant across points so the node term is isolated.
+**Component measurement protocol.** For each scale point: set the fleet, restart every measured component, wait for rollouts to complete, wait for informers to sync, then sample. The restart is essential — Go does not return freed heap promptly, so a component measured at 5k straight after 25k still reports the larger figure. Pods are held constant across points during the node sweep, which is the measurement that isolates the node term. The kubernetes-object-monitor grid is the exception and varies watched pods from 0 to 100,000 at each node scale, on purpose, to separate the pod term from the node one.
 
 **Restart the component before you measure it, or the number is wrong.** Reading the same six components at 50,000 nodes without restarting them — after the fleet had been reduced from 100,000 — gave 31.2 GB against 24.7 GB restarted, because none of them returns memory when the fleet shrinks.
 
