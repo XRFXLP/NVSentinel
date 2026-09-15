@@ -38,6 +38,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
 
@@ -385,7 +386,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 			}()
 
-			nodeInformer, err := informer.NewNodeInformer(testClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue)
+			nodeInformer, err := informer.NewNodeInformer(testClient, 0, informer.GPUNodeLabel, informer.GPUNodeLabelValue, nodecache.Keys{})
 			if err != nil {
 				t.Fatalf("Failed to create NodeInformer: %v", err)
 			}

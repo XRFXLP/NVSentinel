@@ -25,25 +25,30 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 )
 
-func TestStripNodeStatus(t *testing.T) {
+func TestNodeCacheTransform_RetainAll_StripsOnlyStatus(t *testing.T) {
 	input := testFullNode()
 	wantMetadata := input.ObjectMeta.DeepCopy()
 	wantSpec := input.Spec.DeepCopy()
 
-	transformed, err := stripNodeStatus(input)
+	// The zero value retains every key, so this is the status-only transform
+	// the informer used before the retained set was derived from the rules.
+	transformed, err := nodecache.Keys{}.Transform()(input)
 	if err != nil {
-		t.Fatalf("stripNodeStatus() error = %v", err)
+		t.Fatalf("Transform() error = %v", err)
 	}
 
 	node, ok := transformed.(*v1.Node)
 	if !ok {
-		t.Fatalf("stripNodeStatus() returned %T", transformed)
+		t.Fatalf("Transform() returned %T", transformed)
 	}
 
 	if node != input {
-		t.Fatal("stripNodeStatus() returned a copy instead of mutating in place")
+		t.Fatal("Transform() returned a copy instead of mutating in place")
 	}
 	if !reflect.DeepEqual(node.ObjectMeta, *wantMetadata) {
 		t.Fatalf("cached node metadata changed:\n got: %#v\nwant: %#v", node.ObjectMeta, *wantMetadata)
@@ -56,9 +61,15 @@ func TestStripNodeStatus(t *testing.T) {
 	}
 }
 
-func TestNewNodeInformerStripsStatus(t *testing.T) {
+func TestNewNodeInformer_DerivedKeys_CachesOnlyRetainedEntries(t *testing.T) {
 	client := fake.NewClientset(testFullNode())
-	nodeInformer, err := NewNodeInformer(client, 0, GPUNodeLabel, GPUNodeLabelValue)
+
+	retained := nodecache.Derive(testRuleConfig(), nodecache.Operational{
+		GPUNodeLabelKey: GPUNodeLabel,
+		LabelPrefix:     "k8saas.nvidia.com/",
+	})
+
+	nodeInformer, err := NewNodeInformer(client, 0, GPUNodeLabel, GPUNodeLabelValue, retained)
 	if err != nil {
 		t.Fatalf("NewNodeInformer() error = %v", err)
 	}
@@ -78,21 +89,68 @@ func TestNewNodeInformerStripsStatus(t *testing.T) {
 	if !reflect.DeepEqual(node.Status, v1.NodeStatus{}) {
 		t.Fatalf("cached node retained status: %#v", node.Status)
 	}
-	if node.Labels["label"] != "value" || node.Spec.PodCIDR != "10.0.0.0/24" {
-		t.Fatal("cached node is missing metadata or spec fields")
+
+	// The rule reads this key, so it survives.
+	if node.Labels["opt-out"] != "false" {
+		t.Fatalf("cached node dropped a label the rules read: %#v", node.Labels)
+	}
+
+	// The circuit breaker selects on this key, so it survives even though no
+	// rule mentions it.
+	if node.Labels[GPUNodeLabel] != GPUNodeLabelValue {
+		t.Fatalf("cached node dropped the GPU label the breaker selects on: %#v", node.Labels)
+	}
+
+	// Nothing reads this one.
+	if _, present := node.Labels["label"]; present {
+		t.Fatalf("cached node retained a label nothing reads: %#v", node.Labels)
+	}
+	if _, present := node.Annotations["annotation"]; present {
+		t.Fatalf("cached node retained an annotation nothing reads: %#v", node.Annotations)
+	}
+
+	// Spec is never pruned: the cordon path and untaint detection read it.
+	if node.Spec.PodCIDR != "10.0.0.0/24" || !node.Spec.Unschedulable {
+		t.Fatalf("cached node is missing spec fields: %#v", node.Spec)
 	}
 }
 
-func BenchmarkStripNodeStatus(b *testing.B) {
+// testRuleConfig is a ruleset of the shape the chart ships: one Node rule that
+// guards a label read with `in`, so that an operator can opt a node out.
+func testRuleConfig() config.TomlConfig {
+	return config.TomlConfig{
+		LabelPrefix: "k8saas.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{{
+			RuleSetMeta: config.RuleSetMeta{
+				Enabled: true,
+				Name:    "test",
+				Match: config.Match{
+					All: []config.Rule{{
+						Kind:       "Node",
+						Expression: `!('opt-out' in node.metadata.labels && node.metadata.labels['opt-out'] == "false")`,
+					}},
+				},
+			},
+		}},
+	}
+}
+
+func BenchmarkNodeCacheTransform(b *testing.B) {
 	fullNode := testFullNode()
 	fullJSON, err := json.Marshal(fullNode)
 	if err != nil {
 		b.Fatalf("json.Marshal(full node) error = %v", err)
 	}
 
-	transformed, err := stripNodeStatus(fullNode)
+	retained := nodecache.Derive(testRuleConfig(), nodecache.Operational{
+		GPUNodeLabelKey: GPUNodeLabel,
+		LabelPrefix:     "k8saas.nvidia.com/",
+	})
+	transform := retained.Transform()
+
+	transformed, err := transform(fullNode)
 	if err != nil {
-		b.Fatalf("stripNodeStatus() error = %v", err)
+		b.Fatalf("Transform() error = %v", err)
 	}
 	slimJSON, err := json.Marshal(transformed)
 	if err != nil {
@@ -102,7 +160,7 @@ func BenchmarkStripNodeStatus(b *testing.B) {
 	b.ResetTimer()
 
 	for b.Loop() {
-		if _, err := stripNodeStatus(fullNode); err != nil {
+		if _, err := transform(fullNode); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -117,7 +175,11 @@ func testFullNode() *v1.Node {
 		Name:            "test-node",
 		UID:             types.UID("test-uid"),
 		ResourceVersion: "42",
-		Labels:          map[string]string{"label": "value", GPUNodeLabel: GPUNodeLabelValue},
+		Labels: map[string]string{
+			"label":      "value",
+			"opt-out":    "false",
+			GPUNodeLabel: GPUNodeLabelValue,
+		},
 		Annotations:     map[string]string{"annotation": "value"},
 		OwnerReferences: []metav1.OwnerReference{{Name: "owner"}},
 		ManagedFields:   []metav1.ManagedFieldsEntry{{Manager: "manager"}},
