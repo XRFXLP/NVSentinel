@@ -51,7 +51,7 @@ The whole control plane costs about 221 GB of memory at 100,000 nodes. NVSentine
 
 Two components are most of the component total. At 100,000 nodes with a pod on every node, kubernetes-object-monitor is 19.8 GB (15 GB with minimal pods) and fault-quarantine 17.9 GB; labeler is 6.6 GB, janitor 4.9 GB, node-drainer 1.0 GB, and nothing else exceeds 0.6 GB.
 
-CPU is a constraint for exactly one component. kubernetes-object-monitor needs four cores at 75,005 nodes, where it draws 0.99 to 3.24 depending on how many pods it watches, and eight at 100,005, where it draws 4.09 to 5.48. Sized that way it is throttled on 0.9-6.2% of CFS periods at 75,005 and 2.0-5.2% at 100,005, each throttled period costing 0.3-0.5 ms, which is under a millisecond of stall per second. Every other component peaked well inside its limit with no throttling.
+CPU constrains one component. kubernetes-object-monitor uses 0.99 to 3.24 cores at 75,005 nodes and 4.09 to 5.48 at 100,005, so it needs four cores and eight respectively. Every other component stayed well inside its limit with no throttling.
 
 Under continuous load, time to cordon is 26 ms P50 and 165 ms P99, and time to remediate -- drained to the remediation CR being created -- is 0.08 s P50 and 0.17 s P99. Everything NVSentinel does outside the drain totals 91 ms P50. The drain itself is the one term that does not belong to NVSentinel's speed: a node carrying one evictable pod takes about ten seconds, which is one of node-drainer's recheck cycles rather than eviction time, and five hundred nodes failing at once stretches it to 52 s with every node completing.
 
@@ -140,7 +140,7 @@ Every row is a restarted process left to converge, with the benchmark Pod policy
 | 100,005 | 50,000       | 8         | 5.28 / 5.41        | 5.2%            | 14.84 G                | 14 Gi        | 21 Gi      |
 | 100,005 | 100,000      | 8         | 5.48 / 6.12        | 2.0%            | 19.81 G                | 19 Gi        | 29 Gi      |
 
-CPU has to be sized with the fleet: the process draws 0.06 cores at 10,005 nodes, 0.36 at 50,005, one to 3.24 at 75,005 depending on watched pods and 4.09 to 5.48 at 100,005, so size it at 2 cores to 50,000 nodes, 4 to 75,000 and 8 at 100,000. Undersizing costs memory rather than latency -- the identical 100,005-node, zero-pod configuration reads 19.33 G under a 2-core limit and 14.70 G under 8, because a process that cannot run its collector lets the heap run ahead of it -- and it shows up as a CPU figure that stops moving with the workload, not as throttling, which sits at a few percent of periods costing 0.3-0.5 ms each even with ample headroom.
+CPU has to be sized with the fleet: the process uses 0.06 cores at 10,005 nodes, 0.36 at 50,005, one to 3.24 at 75,005 depending on watched pods and 4.09 to 5.48 at 100,005, so size it at 2 cores to 50,000 nodes, 4 to 75,000 and 8 at 100,000. Undersizing costs memory rather than latency -- the identical 100,005-node, zero-pod configuration reads 19.33 G under a 2-core limit and 14.70 G under 8, because a process that cannot run its collector lets the heap run ahead of it -- and it shows up as a CPU figure that stops moving with the workload, not as throttling, which sits at a few percent of periods costing 0.3-0.5 ms each even with ample headroom.
 
 **Working set is a high-water mark, not a measure of retained data.** It is set by the initial informer sync and then held: `heap_sys` reaches ~12.25 GB while syncing 50,005 nodes and `heap_released` stays at 0.26 GB, so the container keeps ~12.26 GB whatever happens afterwards. That is why the 50,005-node rows are flat at 12.2-12.5 GB across a 100,000-pod range -- the pod data fits inside slack the process already held. Where the node cache is small there is no slack to hide in, and the same pods are fully visible: at 10,005 nodes the first 50,000 pods cost 2.29 GB of working set.
 
@@ -186,6 +186,10 @@ Eager informers, five in total: one for Nodes with a fixed field projection, **t
 | 25,005  | 50,000 (DCGM + driver)  | 1.96 G | 2.58 G | 0.05 / 0.33  | 3 Gi         | 5 Gi       |
 | 10,005  | 20,000 (DCGM + driver)  | 0.59 G | 0.59 G | 0.01 / 0.19  | 768 Mi       | 2 Gi       |
 
+
+The bootstrap sweep is serial, and that is what sets labeling time rather than any rate limit. `labeler/pkg/labeler/labeler.go:580` iterates the fleet one node at a time, each iteration ending in a PATCH round trip, with no workqueue and no concurrency: labeler runs raw client-go informers rather than a controller-runtime manager, so it has no `MaxConcurrentReconciles` equivalent. Measured, it labelled 53,513 nodes in 18.3 minutes, which is 48.7 nodes/s or **20.5 ms per node** -- one API round trip. At that rate a 100,005-node fleet takes **34 minutes** to label, and the sweep runs on every restart and leader election, not only at install.
+
+Its `--kube-api-qps=500` is therefore dead configuration. A caller that issues one request at a time cannot exceed 48.7 requests/s, so the limiter's bucket is always full when the loop asks and removing the limit would change nothing. The two ceilings only swap places under concurrency: with N workers at 20.5 ms each the sweep runs at N x 48.7, so the 500 QPS limit starts binding at about 10 workers and caps the fleet sweep at 500 nodes/s, or 3.3 minutes for 100,005 nodes. Parallelising the sweep is the change that would matter, and it is the same shape as the fix #1817 applied to health-events-analyzer: a serial loop over a per-item round trip, resolved with partitioned workers rather than a larger limit.
 
 ### node-drainer
 
@@ -271,24 +275,18 @@ Not a Kubernetes API consumer; it reads the event stream from MongoDB, so its co
 | 36.9 events/s | 0.214      | 19.6-20.1 MB      | 128 Mi       | 256 Mi     |
 
 
-Wall time per event held between 17.5 and 19.4 ms across measured rates from 1.8 to 55 events/s, so the ceiling is flat rather than degrading with load.
+Memory is a fixed cost of about 25 MB at any rate, and CPU is not a sizing lever: the component spends most of each event blocked on a MongoDB aggregation, so it uses about 0.2 cores at saturation against a 2-core limit and records zero throttled CFS periods. Recommended **256 Mi / 512 Mi**; the deployed 500m CPU request already covers the saturated draw and raising it does not raise throughput.
 
-Memory is a fixed cost of about 25 MB at any rate. Throughput is set by wall time per event, not by CPU: the component spends most of each event blocked on a MongoDB aggregation, so the **17.6 ms** its own `health_event_analyzer_event_handling_duration_seconds` histogram reports per event gives a serial ceiling near **55 events/s**. CPU is about 5.8 ms of that 17.6 ms, which is why the container draws 0.2 cores at saturation and why more cores do not raise the ceiling. A 100,000-node fleet at 0.1 events per node per second offers 10,000 events/s.
+Throughput is set by that per-event round trip and by how many run at once. The component's `health_event_analyzer_event_handling_duration_seconds` histogram reports **17.6 ms** per event, about 5.8 ms of it CPU, and per-event wall time held between 17.5 and 19.4 ms from 1.8 to 55 events/s, so cost per event is flat under load. One worker tops out near 55 events/s regardless of fleet size. `--workers` partitions events by node across concurrent workers and defaults to 1.
 
-**Concurrency lifts the ceiling, and it is off by default** `[M]`. Until #1817 the stream was consumed in a single serial loop. That PR partitions events by node name across FIFO worker channels, so events for different nodes run concurrently while per-node order is preserved, with a low-water-mark tracker so out-of-order completion cannot skip an unresolved event across a restart. The knob is `--workers`, and both the Helm value and the binary still default to **1**, so a stock deployment behaves exactly as measured above.
-
-Measured by injecting a 20,000-event backlog onto a live change stream and reading the drain rate from the handling-duration histogram, at 100,010 nodes:
+Measured by injecting a 20,000-event backlog onto a live change stream at 100,010 nodes and reading the drain rate from that histogram:
 
 | Workers | Sustained throughput `[M]` | Speedup |
 | ------- | -------------------------- | ------- |
 | 1       | 54.3 events/s              | --      |
 | 8       | 308.8 events/s             | 5.7x    |
 
-Both arms drained the full backlog, so these are sustained rates rather than peaks. The serial arm independently reproduces the 55 events/s above on a fleet twenty times larger, which confirms the ceiling is a property of the per-event round trip and not of fleet size. Eight workers return 5.7x rather than 8x because the per-event cost is a database round trip and MongoDB becomes the shared bottleneck, so the useful worker count is bounded by what the datastore will absorb rather than by CPU on this container.
-
-**The ceiling depends entirely on the `HealthEvents` indexes.** The per-event aggregation is scoped to the incoming event's node, and the deployment's Mongo init creates the compound indexes it needs, including `{healthevent.agent, componentclass, checkname, nodename, version, createdAt, _id}` and `{healthevent.nodename, entitiesimpacted.*, generatedtimestamp.seconds}`. Measured on the same component with those indexes absent, the aggregation degrades to a collection scan and serial throughput collapses from 54.3 to **4.4 events/s**, a 12x loss, at 224 ms per event against 9.6 ms healthy. Nothing in the component reports this; it simply runs slowly. Any operational procedure that recreates the collection has to recreate the indexes with it.
-
-Recommended **256 Mi / 512 Mi**, and CPU is not a sizing lever here. At saturation the container draws about 0.2 cores against a 2-core limit and records **zero** throttled CFS periods, so it is blocked on MongoDB rather than short of CPU. The deployed 500m request already covers the saturated draw; raising it does not raise throughput.
+Both arms drained the full backlog, so these are sustained rates rather than peaks. Eight workers return 5.7x rather than 8x because the per-event cost is a database round trip and MongoDB becomes the shared bottleneck, so the useful worker count is bounded by what the datastore absorbs rather than by CPU on this container. A 100,000-node fleet at 0.1 events per node per second offers 10,000 events/s, which is well above either figure, so the worker count has to be sized against the expected event rate rather than left at its default.
 
 ### janitor
 
@@ -378,7 +376,7 @@ All growth under continuous load is RebootNode CRs at 993 B median; pods and nod
 
 ### MongoDB
 
-Every figure below is from **Percona Server for MongoDB 8.0.12-4**, operator `crVersion` 1.21.1, a three-member replica set with each member limited to 8 cores and 96 Gi on a 32 Gi volume. That is the datastore NVSentinel is moving to. The chart still ships Bitnami MongoDB 8.0.3 as the default because the migration has not landed yet, so these runs set `mongodb-store.useBitnami` to `false` and measure the incoming default rather than the outgoing one. Both are MongoDB 8.0 on the same storage engine, and the quantities in this section -- connections per node, oplog volume and one change stream per consumer -- are generated by the client side, so they carry across either bundled option and across an external MongoDB. How a given server absorbs that load is a function of its own sizing rather than of which distribution it is.
+Every figure below is from **Percona Server for MongoDB 8.0.12-4**, operator `crVersion` 1.21.1, a three-member replica set with each member limited to 8 cores and 96 Gi on a 32 Gi volume. That is the datastore NVSentinel is moving to. The chart still ships Bitnami MongoDB 8.0.3 as the default because the migration has not landed yet, so these runs set `mongodb-store.useBitnami` to `false` and measure the incoming default rather than the outgoing one. [#1516](https://github.com/NVIDIA/NVSentinel/issues/1516) benchmarked the two against each other and found write throughput identical, 500.0/s against 499.9/s sustained and 1,382/s against 1,361/s on an uncapped burst. Its connection-memory fit of 0.651 MB per connection on Percona does not hold at this scale: taken over 0-2,000 connections on members limited to 2 Gi, it predicts roughly twice what the per-member table below measures at 150,066 connections on 96 Gi members, where thread stacks are largely not resident. Encryption at rest is enabled here and makes no visible difference to it.
 
 |             | Idle                                                       | Continuous                                                    | Burst, 100 nodes                                           |
 | ----------- | ---------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------- |
@@ -546,6 +544,12 @@ Two runs, both on brand-new nodes that had never been quarantined, each carrying
 P90 sits within a second of P50 in every continuous row and within eight seconds in every burst row; all 500 burst nodes and all 400 continuous nodes completed.
 
 Under continuous load a drain costs one node-drainer recheck cycle. It evicts the pod, requeues at its 10 s base backoff, sees the pod gone, and marks the node drained, which is why the whole distribution sits in a 0.8-second band around 10 s rather than spreading out. Under a burst the same cycle repeats while the node waits its turn, giving 52 s for five hundred nodes arriving together.
+
+The backoff is a compiled-in constant, not a setting. `node-drainer/pkg/queue/queue.go` builds the workqueue with `NewTypedItemExponentialFailureRateLimiter[NodeEvent](10*time.Second, 2*time.Minute)`, so the first retry lands at 10 s and each subsequent one doubles to a 2-minute ceiling, resetting only when the node drains. Nothing exposes the base, so the 10 s floor applies to every deployment.
+
+Lowering it trades eviction calls for latency, and the exchange rate is set by the doubling rather than by the base. Reaching a given pod termination time takes roughly log2(T/base) attempts, so a 90-second termination costs 4 attempts at a 10 s base and 6 at 2 s, against the measured 3.0 eviction calls per pod. A 2 s base therefore cuts the drain from 10.09 s to about 2.1 s, a 4.8x improvement, for about 1.4x the eviction calls, taking node-drainer from roughly 15% of its 400 QPS budget at a 1,000-node burst to 21%. A 1 s base gives 9x for 2.3x the calls and 35% of budget. Below that the base falls under the time a pod needs to terminate, and every retry scheduled before the pod can possibly be gone re-evicts pods that are still terminating, which is where the 3.0 multiplier comes from in the first place. The useful floor is the workload's own termination time: about a second for the zero-grace pods used here, and at least 30 s for a pod carrying `terminationGracePeriodSeconds: 30`, where termination dominates and the requeue interval stops being the binding term.
+
+This applies only to namespaces in `Immediate` mode. `AllowCompletion` and `DeleteAfterTimeout` wait on the workload, so the backoff is not what governs them. Exposing the base as a setting is development work that has not been done, and it should land with a test that measures the eviction call rate, since that is the cost the change spends.
 
 ### Burst absorption
 
