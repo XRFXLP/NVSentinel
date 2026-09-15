@@ -3,7 +3,7 @@ module github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor
 go 1.27.0
 
 require (
-	cloud.google.com/go/compute v1.67.0
+	cloud.google.com/go/compute v1.68.0
 	cloud.google.com/go/logging v1.19.1
 	github.com/BurntSushi/toml v1.6.0
 	github.com/aws/aws-sdk-go-v2 v1.47.0
