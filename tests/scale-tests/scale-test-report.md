@@ -187,9 +187,23 @@ Eager informers, five in total: one for Nodes with a fixed field projection, **t
 | 10,005  | 20,000 (DCGM + driver)  | 0.59 G | 0.59 G | 0.01 / 0.19  | 768 Mi       | 2 Gi       |
 
 
-The bootstrap sweep is serial, and that is what sets labeling time rather than any rate limit. `labeler/pkg/labeler/labeler.go:580` iterates the fleet one node at a time, each iteration ending in a PATCH round trip, with no workqueue and no concurrency: labeler runs raw client-go informers rather than a controller-runtime manager, so it has no `MaxConcurrentReconciles` equivalent. Measured, it labelled 53,513 nodes in 18.3 minutes, which is 48.7 nodes/s or **20.5 ms per node** -- one API round trip. At that rate a 100,005-node fleet takes **34 minutes** to label, and the sweep runs on every restart and leader election, not only at install.
+The bootstrap sweep is serial, one node and one PATCH at a time, and labeler runs raw client-go informers rather than a controller-runtime manager, so there is no concurrency setting to raise.
 
-Its `--kube-api-qps=500` is therefore dead configuration. A caller that issues one request at a time cannot exceed 48.7 requests/s, so the limiter's bucket is always full when the loop asks and removing the limit would change nothing. The two ceilings only swap places under concurrency: with N workers at 20.5 ms each the sweep runs at N x 48.7, so the 500 QPS limit starts binding at about 10 workers and caps the fleet sweep at 500 nodes/s, or 3.3 minutes for 100,005 nodes. Parallelising the sweep is the change that would matter, and it is the same shape as the fix #1817 applied to health-events-analyzer: a serial loop over a per-item round trip, resolved with partitioned workers rather than a larger limit.
+![Labeler cold-start sweep against fleet size](results/labeler-cold-start.png)
+
+Measured as a first-install cold start: a freshly created fleet carrying none of labeler's labels, a Ready DCGM pod and a Ready driver pod on every node so the full label path runs, and KWOK verified renewing node leases throughout. Timed from container start to the `Completed initial node label reconciliation` line, so informer sync is included. `[M]`
+
+| Nodes   | Cold start | Per node |
+| ------- | ---------- | -------- |
+| 10,005  | 100.6 s    | 10.06 ms |
+| 25,005  | 270 s      | 10.80 ms |
+| 50,005  | 535 s      | 10.70 ms |
+
+Cost per node is flat across a 5x change in fleet size, which puts a 100,000-node first install at roughly **18 minutes**. That point is extrapolated: it needs 200,010 pods, and the harness could not keep that many consistently Running and Ready. Each node costs one PATCH whatever changes, and the sweep writes four labels.
+
+The sweep repeats on every restart and leader election, but only a first install pays that price. Restarting against an already-labelled fleet costs **0.50 ms per node** -- 5.0 s for the same 10,005 nodes that took 100.6 s cold, with no writes at all -- because the patcher drops an empty patch and skips the API call. A restart at 100,000 nodes is therefore seconds rather than the 18 minutes a first install costs. `[M]`
+
+`--kube-api-qps=500` is slack throughout. At 10.5 ms per node a serial sweep issues under 100 PATCHes per second, a fifth of the limit, and the steady-state path writes only on relevant events.
 
 ### node-drainer
 
@@ -316,7 +330,7 @@ The last column is the one to compare across rows: a client limit only means som
 | ------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------- |
 | fault-quarantine          | 100 / 200                | 1 PATCH per cordon                                                                                                                           | 100                                              | 41.2 cordons/s (100-node burst)                    |
 | node-drainer              | 400 / 800                | 3.7 mean per node over a 100-node burst (audit logs, mostly nodes with nothing to evict), plus 3.0 per evictable pod, so 18.7 at 5 pods/node | 108 with nothing to evict, 21 at 5 pods/node | 19.2 evictions/s = 3.85 nodes/s (1,000-node burst) |
-| labeler                   | 500 / 1000               | 1 PATCH per relevant event                                                                                                                   | 500                                              | 53,513 nodes labelled in 18.3 min                  |
+| labeler                   | 500 / 1000               | 1 PATCH per relevant event                                                                                                                   | 500                                              | 50,005-node cold start in 535 s                  |
 | fault-remediation         | unset, so unlimited      | 9 per remediated node: 5 GET, 3 PUT, 1 POST                                                                                                  | unbounded client-side                                | 1.1 nodes/s at 10.4 req/s                          |
 | janitor                   | unset, so unlimited      | >=5.7 per reboot: 2 GET, 1.8 PUT, 1 POST, 0.8 DELETE                                                                                         | unbounded client-side                                | —                                                  |
 | kubernetes-object-monitor | unset, so unlimited      | 1 PUT per policy-match transition, cache-served read                                                                                         | —                                                    | —                                                  |
