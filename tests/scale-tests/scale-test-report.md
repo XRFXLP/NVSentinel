@@ -251,18 +251,18 @@ No Kubernetes watches, and Node reads bypass the cache (`Client.Cache.DisableFor
 
 The flat profile is the point: this component is sized by its remediation rate, not by fleet size.
 
-Those figures are with an empty queue, and the queue is where this component's memory actually goes. It holds one entry per pending event, and what that entry retains differs by path: a document ID on cold start, the whole decoded event on the live stream.
+Those figures are with an empty queue, and the queue is where this component's memory actually goes. It holds one entry per pending event, retaining a document ID rather than the decoded event on either path.
 
-| Backlog source | Queued events | Working set | Per event `[M]` |
-| --- | --- | --- | --- |
-| cold start | 1,037,329 | 73.2 → 643.0 MB | 0.55 KB |
-| live stream | +1,113,804 (275,332 → 1,389,136) | 791 → 9,463 MB | 7.79 KB |
+| Backlog source | Queued events | Per event `[M]` |
+| --- | --- | --- |
+| cold start | 1,037,329 | 0.55 KB |
+| live stream | 1,113,804 | 1.40 KB |
 
-That is the 14x difference between the two paths. Each per-event figure is the working-set increase over that run's own baseline divided by the events queued, and the same axes put node-drainer's two paths beside them:
+Each per-event figure is the working-set increase over that run's own baseline divided by the events queued, and the same axes put node-drainer's two paths beside them:
 
 ![Memory held by a queued backlog](results/queue-memory.png)
 
-Recommended **2 Gi / 4 Gi**. The working set is a rounding error, but a queued backlog is not: 4 Gi covers roughly half a million events on the live path.
+Recommended **2 Gi / 4 Gi**. The working set is a rounding error, but a queued backlog is not: 4 Gi covers roughly three million events on the live path.
 
 ### preflight
 
