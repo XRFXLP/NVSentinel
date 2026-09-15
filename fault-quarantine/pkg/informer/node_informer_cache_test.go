@@ -16,10 +16,10 @@ package informer
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,27 +38,15 @@ func TestNodeCacheTransform_RetainAll_StripsOnlyStatus(t *testing.T) {
 	// The zero value retains every key, so this is the status-only transform
 	// the informer used before the retained set was derived from the rules.
 	transformed, err := nodecache.Keys{}.Transform()(input)
-	if err != nil {
-		t.Fatalf("Transform() error = %v", err)
-	}
+	require.NoError(t, err)
 
 	node, ok := transformed.(*v1.Node)
-	if !ok {
-		t.Fatalf("Transform() returned %T", transformed)
-	}
+	require.True(t, ok, "Transform() returned %T", transformed)
 
-	if node != input {
-		t.Fatal("Transform() returned a copy instead of mutating in place")
-	}
-	if !reflect.DeepEqual(node.ObjectMeta, *wantMetadata) {
-		t.Fatalf("cached node metadata changed:\n got: %#v\nwant: %#v", node.ObjectMeta, *wantMetadata)
-	}
-	if !reflect.DeepEqual(node.Spec, *wantSpec) {
-		t.Fatalf("cached node spec changed:\n got: %#v\nwant: %#v", node.Spec, *wantSpec)
-	}
-	if !reflect.DeepEqual(node.Status, v1.NodeStatus{}) {
-		t.Fatalf("cached node retained status: %#v", node.Status)
-	}
+	require.Same(t, input, node, "Transform() returned a copy instead of mutating in place")
+	require.Equal(t, *wantMetadata, node.ObjectMeta, "cached node metadata changed")
+	require.Equal(t, *wantSpec, node.Spec, "cached node spec changed")
+	require.Equal(t, v1.NodeStatus{}, node.Status, "cached node retained status")
 }
 
 func TestNewNodeInformer_DerivedKeys_CachesOnlyRetainedEntries(t *testing.T) {
@@ -70,49 +58,33 @@ func TestNewNodeInformer_DerivedKeys_CachesOnlyRetainedEntries(t *testing.T) {
 	})
 
 	nodeInformer, err := NewNodeInformer(client, 0, GPUNodeLabel, GPUNodeLabelValue, retained)
-	if err != nil {
-		t.Fatalf("NewNodeInformer() error = %v", err)
-	}
+	require.NoError(t, err)
 
 	stopCh := make(chan struct{})
 	t.Cleanup(func() { close(stopCh) })
 
-	if err := nodeInformer.Run(stopCh); err != nil {
-		t.Fatalf("NodeInformer.Run() error = %v", err)
-	}
+	require.NoError(t, nodeInformer.Run(stopCh))
 
 	node, err := nodeInformer.GetNode("test-node")
-	if err != nil {
-		t.Fatalf("GetNode() error = %v", err)
-	}
+	require.NoError(t, err)
 
-	if !reflect.DeepEqual(node.Status, v1.NodeStatus{}) {
-		t.Fatalf("cached node retained status: %#v", node.Status)
-	}
+	require.Equal(t, v1.NodeStatus{}, node.Status, "cached node retained status")
 
 	// The rule reads this key, so it survives.
-	if node.Labels["opt-out"] != "false" {
-		t.Fatalf("cached node dropped a label the rules read: %#v", node.Labels)
-	}
+	require.Equal(t, "false", node.Labels["opt-out"], "cached node dropped a label the rules read")
 
 	// The circuit breaker selects on this key, so it survives even though no
 	// rule mentions it.
-	if node.Labels[GPUNodeLabel] != GPUNodeLabelValue {
-		t.Fatalf("cached node dropped the GPU label the breaker selects on: %#v", node.Labels)
-	}
+	require.Equal(t, GPUNodeLabelValue, node.Labels[GPUNodeLabel],
+		"cached node dropped the GPU label the breaker selects on")
 
 	// Nothing reads this one.
-	if _, present := node.Labels["label"]; present {
-		t.Fatalf("cached node retained a label nothing reads: %#v", node.Labels)
-	}
-	if _, present := node.Annotations["annotation"]; present {
-		t.Fatalf("cached node retained an annotation nothing reads: %#v", node.Annotations)
-	}
+	require.NotContains(t, node.Labels, "label", "cached node retained a label nothing reads")
+	require.NotContains(t, node.Annotations, "annotation", "cached node retained an annotation nothing reads")
 
 	// Spec is never pruned: the cordon path and untaint detection read it.
-	if node.Spec.PodCIDR != "10.0.0.0/24" || !node.Spec.Unschedulable {
-		t.Fatalf("cached node is missing spec fields: %#v", node.Spec)
-	}
+	require.Equal(t, "10.0.0.0/24", node.Spec.PodCIDR, "cached node is missing a spec field")
+	require.True(t, node.Spec.Unschedulable, "cached node is missing a spec field")
 }
 
 // testRuleConfig is a ruleset of the shape the chart ships: one Node rule that
@@ -136,33 +108,35 @@ func testRuleConfig() config.TomlConfig {
 }
 
 func BenchmarkNodeCacheTransform(b *testing.B) {
-	fullNode := testFullNode()
-	fullJSON, err := json.Marshal(fullNode)
-	if err != nil {
-		b.Fatalf("json.Marshal(full node) error = %v", err)
-	}
-
 	retained := nodecache.Derive(testRuleConfig(), nodecache.Operational{
 		GPUNodeLabelKey: GPUNodeLabel,
 		LabelPrefix:     "k8saas.nvidia.com/",
 	})
 	transform := retained.Transform()
 
-	transformed, err := transform(fullNode)
-	if err != nil {
-		b.Fatalf("Transform() error = %v", err)
-	}
+	// Each measurement gets its own node. The transform mutates in place, so
+	// one shared fixture would be pruned by the first call and every later
+	// call would measure re-pruning an already-empty status and map.
+	fullJSON, err := json.Marshal(testFullNode())
+	require.NoError(b, err)
+
+	transformed, err := transform(testFullNode())
+	require.NoError(b, err)
+
 	slimJSON, err := json.Marshal(transformed)
-	if err != nil {
-		b.Fatalf("json.Marshal(slim node) error = %v", err)
-	}
+	require.NoError(b, err)
 
 	b.ResetTimer()
 
 	for b.Loop() {
-		if _, err := transform(fullNode); err != nil {
-			b.Fatal(err)
-		}
+		b.StopTimer()
+
+		node := testFullNode()
+
+		b.StartTimer()
+
+		_, err := transform(node)
+		require.NoError(b, err)
 	}
 
 	b.ReportMetric(float64(len(fullJSON)), "full-json-bytes")
