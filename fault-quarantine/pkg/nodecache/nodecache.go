@@ -320,11 +320,14 @@ func (k Keys) Transform() toolscache.TransformFunc {
 }
 
 // appliedLabelKeys returns the label keys named by the applied-labels
-// annotation, which manual unquarantine cleanup removes from the node.
+// annotation, which unquarantine cleanup removes from the node.
 //
-// The keys are operator-chosen and recorded on the node itself, so they are
-// not knowable when the retained set is derived. They are read per object
-// instead. Only an already-quarantined node carries this annotation, so the
+// addOperational already retains the label each configured rule set applies,
+// so this covers the ones configuration no longer mentions: a rule set renamed,
+// edited or removed since the node was quarantined leaves a label whose key
+// survives only in this annotation. Cleanup still has to remove it, and a
+// removal cannot diff against a key the cache dropped, so it is read per
+// object. Only an already-quarantined node carries the annotation, so the
 // unquarantined majority that drives the cache size still prunes fully.
 //
 // known is false when the annotation is present but does not parse, in which
