@@ -45,7 +45,7 @@ const shippedPredicate = `
 `
 
 func testOperational() Operational {
-	return Operational{GPUNodeLabelKey: testGPULabelKey, LabelPrefix: testLabelPrefix}
+	return Operational{GPUNodeLabelKey: testGPULabelKey}
 }
 
 // nodeRuleConfig returns a config carrying one Node rule with expression.

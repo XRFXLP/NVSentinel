@@ -174,7 +174,7 @@ func TestNodeRuleEvaluator_PrunedNodeKeepsNoRetainedKeys_EvaluatesOptOutGuards(t
 				},
 			},
 		}},
-	}, nodecache.Operational{LabelPrefix: "k8saas.nvidia.com/"})
+	}, nodecache.Operational{})
 
 	transformed, err := retained.Transform()(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -200,6 +200,30 @@ func TestNodeRuleEvaluator_PrunedNodeKeepsNoRetainedKeys_EvaluatesOptOutGuards(t
 	require.NoError(t, err)
 	require.Equal(t, common.RuleEvaluationSuccess, result,
 		"a node that opted out of nothing must match the opt-out guards")
+}
+
+// Restoring the pruned maps must not invent one the node never carried, or a
+// rule asking whether a node has any annotations at all would read the cache
+// instead of the node.
+func TestNodeRuleEvaluator_NodeWithNoAnnotations_ReportsThemAbsent(t *testing.T) {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	require.NoError(t, indexer.Add(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "bare-node",
+			Labels: map[string]string{"kubernetes.io/hostname": "bare-node"},
+		},
+	}))
+
+	evaluator, err := NewNodeRuleEvaluator(
+		`!has(node.metadata.annotations) && has(node.metadata.labels)`,
+		corelisters.NewNodeLister(indexer),
+	)
+	require.NoError(t, err)
+
+	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "bare-node"})
+	require.NoError(t, err)
+	require.Equal(t, common.RuleEvaluationSuccess, result,
+		"a nil annotations map must stay absent while a populated labels map stays present")
 }
 
 func TestNodeRuleEvaluator_RecoveryRead_UsesCurrentNode(t *testing.T) {

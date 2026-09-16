@@ -281,7 +281,6 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 	// fails here.
 	retained := nodecache.Derive(cfg.TomlConfig, nodecache.Operational{
 		GPUNodeLabelKey: informer.GPUNodeLabel,
-		LabelPrefix:     cfg.TomlConfig.LabelPrefix,
 	})
 
 	nodeInformer, err := informer.NewNodeInformer(

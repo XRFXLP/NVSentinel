@@ -86,7 +86,6 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	// synced, which is far too late to decide what the cache keeps.
 	retained := nodecache.Derive(tomlCfg, nodecache.Operational{
 		GPUNodeLabelKey: params.GPUNodeLabelKey,
-		LabelPrefix:     tomlCfg.LabelPrefix,
 	})
 
 	k8sClient, err := informer.NewFaultQuarantineClient(

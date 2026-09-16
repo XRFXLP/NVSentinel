@@ -54,7 +54,6 @@ func TestNewNodeInformer_DerivedKeys_CachesOnlyRetainedEntries(t *testing.T) {
 
 	retained := nodecache.Derive(testRuleConfig(), nodecache.Operational{
 		GPUNodeLabelKey: GPUNodeLabel,
-		LabelPrefix:     "k8saas.nvidia.com/",
 	})
 
 	nodeInformer, err := NewNodeInformer(client, 0, GPUNodeLabel, GPUNodeLabelValue, retained)
@@ -110,13 +109,9 @@ func testRuleConfig() config.TomlConfig {
 func BenchmarkNodeCacheTransform(b *testing.B) {
 	retained := nodecache.Derive(testRuleConfig(), nodecache.Operational{
 		GPUNodeLabelKey: GPUNodeLabel,
-		LabelPrefix:     "k8saas.nvidia.com/",
 	})
 	transform := retained.Transform()
 
-	// Each measurement gets its own node. The transform mutates in place, so
-	// one shared fixture would be pruned by the first call and every later
-	// call would measure re-pruning an already-empty status and map.
 	fullJSON, err := json.Marshal(testFullNode())
 	require.NoError(b, err)
 
@@ -126,18 +121,26 @@ func BenchmarkNodeCacheTransform(b *testing.B) {
 	slimJSON, err := json.Marshal(transformed)
 	require.NoError(b, err)
 
+	// The transform replaces these three fields rather than mutating what they
+	// point at, so holding the originals is enough to hand it a whole node
+	// again. Restoring them costs three assignments inside the measurement,
+	// which is far less than stopping the timer would, and without it every
+	// iteration after the first would prune an already pruned node.
+	node := testFullNode()
+	fullStatus, fullLabels, fullAnnotations := node.Status, node.Labels, node.Annotations
+
+	var transformErr error
+
 	b.ResetTimer()
 
 	for b.Loop() {
-		b.StopTimer()
+		node.Status, node.Labels, node.Annotations = fullStatus, fullLabels, fullAnnotations
 
-		node := testFullNode()
-
-		b.StartTimer()
-
-		_, err := transform(node)
-		require.NoError(b, err)
+		_, transformErr = transform(node)
 	}
+
+	b.StopTimer()
+	require.NoError(b, transformErr)
 
 	b.ReportMetric(float64(len(fullJSON)), "full-json-bytes")
 	b.ReportMetric(float64(len(slimJSON)), "cached-json-bytes")

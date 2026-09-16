@@ -46,10 +46,10 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 )
 
-// nodeObjKey is the CEL variable the Node rules are evaluated against. It
-// matches the binding in pkg/evaluator, which is what makes the paths derived
-// here describe the same reads the rules perform.
-const nodeObjKey = "node"
+// nodeObjKey is the CEL variable the Node rules are evaluated against. Taking
+// it from common is what makes the paths derived here describe the same reads
+// the rules perform, because pkg/evaluator binds the node under the same name.
+const nodeObjKey = common.NodeCELVar
 
 // nodeRuleKind is the Rule.Kind whose expressions read the cached node.
 const nodeRuleKind = "Node"
@@ -69,10 +69,6 @@ type Operational struct {
 	// lister, so the key has to be present on the cached object or the
 	// selector matches nothing and the breaker sees an empty fleet.
 	GPUNodeLabelKey string
-	// LabelPrefix builds the cordon and uncordon bookkeeping label keys.
-	// handleUncordon reads the cordon-reason key, and manual cleanup removes
-	// the rest.
-	LabelPrefix string
 }
 
 // Keys names the label and annotation keys a cached node retains.
@@ -175,6 +171,9 @@ func (k *Keys) addOperational(cfg config.TomlConfig, operational Operational) {
 		k.labels[operational.GPUNodeLabelKey] = struct{}{}
 	}
 
+	// The prefix comes from cfg because that is what the reconciler builds these
+	// keys from. Taking it from anywhere else would retain keys under one prefix
+	// while fault-quarantine reads and removes them under another.
 	for _, suffix := range []string{
 		cordonlabels.CordonedBySuffix,
 		cordonlabels.CordonedReasonSuffix,
@@ -183,7 +182,7 @@ func (k *Keys) addOperational(cfg config.TomlConfig, operational Operational) {
 		cordonlabels.UncordonedReasonSuffix,
 		cordonlabels.UncordonedTimestampSuffix,
 	} {
-		k.labels[cordonlabels.Key(operational.LabelPrefix, suffix)] = struct{}{}
+		k.labels[cordonlabels.Key(cfg.LabelPrefix, suffix)] = struct{}{}
 	}
 
 	for _, ruleSet := range cfg.RuleSets {
