@@ -278,6 +278,24 @@ Pod informer only; no Node cache.
 | 100,005 | ~100,000 | 0.03 / 0.16    | 0.54 G             | 768 Mi       | 2 Gi       |
 
 
+Preflight is the only component on the Pod admission path, so its cost is per admission rather than per node. The webhook's own handling is cheap and does not saturate: pods created into a selected namespace were admitted at **3 ms P50 and 5 ms P99, flat to 380 admissions/s** on one replica, with no rejections. `[M]`
+
+Gang coordination is the expensive path and the only one that calls the Kubernetes API, doing one peer discovery and one ConfigMap write per gang member. Each gang was created as one burst from 64 concurrent writers into a namespace of its own, with the three shipped checks configured, on one replica; the rate is gang members admitted per second, since every CREATE blocks on the webhook:
+
+| Gang size | Admitted in | Members/s | Admission P50 | Admission P99 | `fail_open` | Peers registered |
+| --------- | ----------- | --------- | ------------- | ------------- | ----------- | ---------------- |
+| 512       | 5.1 s       | 99.9      | 14.8 ms       | 24.9 ms       | 0           | 512 of 512       |
+| 1,028     | 8.4 s       | 122.8     | 15 ms         | 25 ms         | 0           | 1,028 of 1,028   |
+| 2,048     | 14.2 s      | 143.8     | 14.6 ms       | 24.8 ms       | 0           | 2,048 of 2,048   |
+
+![Preflight gang admission against gang size](results/preflight-gang.png)
+
+Per-member admission cost does not move across a 4x change in gang size, and every gang registered all of its peers with no fail-open. Gang size is therefore not a scaling axis for preflight: a gang costs what its members cost, and the ConfigMap write per member does not get more expensive as the file grows. Whole-gang time fits 2.2 s + 5.9 ms per member across the three points, but that slope belongs to the API server and the 64-writer harness, not to preflight, whose share is 15 ms spread across 64 concurrent admissions.
+
+Members/s is not a preflight ceiling, which is why it rises with gang size rather than falling. Client-observed CREATE latency sits at 0.37-0.43 s P50 against 15 ms of webhook time, so almost all of it is the API server and the writers rather than preflight, and the larger gangs simply amortise the harness ramp better. At 15 ms per admission, 64 concurrent writers would have to reach roughly 4,000/s before preflight itself became the constraint.
+
+Preflight carries no client-side rate limit and no setting to impose one, which is what makes this work. It is synchronous on admission, so a limit becomes latency against the webhook's fixed 10 s deadline rather than queueing: the 1,028 gang run against a build limited to 5 QPS took 167.0 s, sat at 17,500 ms admission P50, failed the API server open 1,006 times, and left the gang stuck at 51 registered peers out of 1,028, a count that had not moved five minutes later. That is a permanently incomplete gang advertising a quorum that never existed, which is worse than none. `[M]`
+
 ### health-events-analyzer
 
 Not a Kubernetes API consumer; it reads the event stream from MongoDB, so its cost follows event rate rather than fleet size.
@@ -334,9 +352,12 @@ The last column is the one to compare across rows: a client limit only means som
 | fault-remediation         | unset, so unlimited      | 9 per remediated node: 5 GET, 3 PUT, 1 POST                                                                                                  | unbounded client-side                                | 1.1 nodes/s at 10.4 req/s                          |
 | janitor                   | unset, so unlimited      | >=5.7 per reboot: 2 GET, 1.8 PUT, 1 POST, 0.8 DELETE                                                                                         | unbounded client-side                                | —                                                  |
 | kubernetes-object-monitor | unset, so unlimited      | 1 PUT per policy-match transition, cache-served read                                                                                         | —                                                    | —                                                  |
+| preflight                 | unset, so unlimited      | per gang admission, not per node: 1 peer discovery and 1 ConfigMap write per gang member                                                     | unbounded client-side                                | 143.8 members/s admitting a 2,048-pod gang         |
 
 
 health-events-analyzer is absent from the table because it makes no Kubernetes API calls at all.
+
+The limits in the first column are this cluster's values rather than what the chart ships. The templates for fault-quarantine, node-drainer and labeler all fall back to 5 QPS and a burst of 10 when no value is supplied, so a stock install runs those three far tighter than the rows above. For background controllers that is queueing and survivable. Preflight carries no client-side limit and is not configurable to take one, because it sits synchronously on the Pod admission path where throttling becomes admission latency against a fixed webhook deadline.
 
 Normalised this way the two rate-limited stages of the fault path are close to balanced -- fault-quarantine at 100 nodes/s and node-drainer at 108 -- which is the right shape, since a cordon that outruns the drain behind it only builds a queue. That balance holds only at the measured 3.7 calls per node. node-drainer's cost adds 3.0 calls per evictable pod on top of that baseline, so a fleet running 5 evictable pods per node costs 18.7 calls and puts it at 21 nodes/s, making it the binding stage at roughly a fifth of fault-quarantine's budget.
 
@@ -846,6 +867,95 @@ gpuResetController:      {enabled: true, timeout: 25m}
 ```
 
 **fault-remediation** maps recommended actions onto janitor CRs. `COMPONENT_RESET`, `RESTART_BM` and `RESTART_VM` all create a `RebootNode` completing on `NodeReady`; `REPLACE_VM` creates a `TerminateNode` completing on `NodeTerminated`. Both templates carry a 336-hour TTL annotation. Since 62% of production events recommend `COMPONENT_RESET`, the reboot path is the one that matters for MTTR.
+
+**preflight** is a mutating webhook on `CREATE pods`, and these are the settings every gang figure in A1 was measured against:
+
+```yaml
+# MutatingWebhookConfiguration/preflight
+failurePolicy: Ignore
+timeoutSeconds: 10
+reinvocationPolicy: Never
+namespaceSelector:
+  matchLabels:
+    nvsentinel.nvidia.com/preflight: enabled
+rules:
+- apiGroups: [""]
+  apiVersions: ["v1"]
+  operations: ["CREATE"]
+  resources: ["pods"]
+  scope: Namespaced
+```
+
+```yaml
+# ConfigMap/preflight, config.yaml
+gangDiscovery:
+  annotationKeys:
+  - scheduling.k8s.io/group-name
+  labelKeys: []
+  minCountExpr: podGroup.spec.minMember
+  name: volcano
+  podGroupGVR:
+    group: scheduling.volcano.sh
+    resource: podgroups
+    version: v1beta1
+gangCoordination:
+  enabled: true
+  timeout: 10m
+  masterPort: 29500
+  configMapMountPath: /etc/gang
+initContainerPlacement: append
+initContainers:
+- env:
+  - name: DCGM_HOSTENGINE_ADDR
+    value: nvidia-dcgm.gpu-operator.svc:5555
+  - name: DCGM_DIAG_LEVEL
+    value: '2'
+  - name: DCGM_DIAG_STATUS_RETRY_MAX_ATTEMPTS
+    value: '10'
+  - name: DCGM_DIAG_STATUS_RETRY_INTERVAL_SECONDS
+    value: '10'
+  image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:1.0.0
+  inheritUserEnv: true
+  inheritUserVolumeMounts: true
+  name: preflight-dcgm-diag
+  volumeMounts:
+  - mountPath: /var/run
+    name: nvsentinel-socket
+- env:
+  - name: BW_THRESHOLD_GBPS
+    value: '150'
+  - name: TEST_SIZE_MB
+    value: '256'
+  image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:1.0.0
+  inheritUserEnv: true
+  inheritUserVolumeMounts: true
+  name: preflight-nccl-loopback
+  volumeMounts:
+  - mountPath: /var/run
+    name: nvsentinel-socket
+- env:
+  - name: BW_THRESHOLD_GBPS
+    value: '100'
+  - name: MESSAGE_SIZES
+    value: 4G
+  - name: NCCL_DEBUG
+    value: INFO
+  - name: NCCL_DEBUG_SUBSYS
+    value: INIT,NET
+  image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:1.0.0
+  inheritUserEnv: true
+  inheritUserVolumeMounts: true
+  name: preflight-nccl-allreduce
+  securityContext:
+    capabilities:
+      add:
+      - IPC_LOCK
+  volumeMounts:
+  - mountPath: /var/run
+    name: nvsentinel-socket
+```
+
+The 10-second webhook deadline is the constraint the gang numbers are measured against, and `failurePolicy: Ignore` decides the failure mode: a webhook that misses it leaves the checks silently skipped rather than failing Pod creation, which is what production's documented `Fail` would do instead. The namespace selector means a pod created anywhere else never reaches preflight at all, so a gang benchmark run in an unlabelled namespace measures nothing while still looking successful. The three init containers above are appended to every admitted pod and are most of the per-member admission work, so a gang measured with no checks configured is not comparable to these numbers.
 
 **health-events-analyzer** runs 8 rule sets covering 20 named rules, all correlation rules over the event history: `MultipleRemediations`, `RepeatedXIDErrorOnSameGPU`, `RepeatedXID31OnSameGPU`, `RepeatedXID31OnDifferentGPU`, `RepeatedXID13OnSameGPCAndTPC`, `RepeatedXID13OnDifferentGPCAndTPC`, `XIDErrorSoloNoBurst`, and thirteen XID74 register-decoding and NIC rules. Each incoming event is evaluated against all of them, which is where its 5.8 ms per event goes.
 
