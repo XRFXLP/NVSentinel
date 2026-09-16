@@ -215,7 +215,13 @@ func (ni *NodeInformer) GetNode(name string) (*v1.Node, error) {
 }
 
 // GetNodeDirect retrieves current node metadata and spec from the API server.
-// Status is stripped to keep the Node CEL contract identical to the informer view.
+//
+// Status is stripped, as it is on the cached view, so a rule sees the same
+// shape either way. The label and annotation maps are not pruned here, so what
+// this returns is a superset of what the cache holds. That is deliberate on the
+// recovery path this serves, where the cache may be stale, and it cannot change
+// a rule's answer: the retained set is derived from the rules, so the two views
+// agree on every key a rule reads.
 func (ni *NodeInformer) GetNodeDirect(ctx context.Context, name string) (*v1.Node, error) {
 	node, err := ni.clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
