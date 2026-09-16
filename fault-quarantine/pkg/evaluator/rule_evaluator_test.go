@@ -202,6 +202,69 @@ func TestNodeRuleEvaluator_PrunedNodeKeepsNoRetainedKeys_EvaluatesOptOutGuards(t
 		"a node that opted out of nothing must match the opt-out guards")
 }
 
+// Recovery reads the node from the API server rather than the cache, so it has
+// to see an opt-out the cache does not hold. Pruning narrows the cache as well
+// as ageing it, so this drives both paths of the same evaluator against a cache
+// pruned by the shipped rules.
+func TestNodeRuleEvaluator_RecoveryRead_PrunedCacheDoesNotHideOptOut(t *testing.T) {
+	const optOutGuard = `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && ` +
+		`node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")`
+
+	retained := nodecache.Derive(config.TomlConfig{
+		LabelPrefix: "k8saas.nvidia.com/",
+		RuleSets: []config.QuarantineRuleSet{{
+			RuleSetMeta: config.RuleSetMeta{
+				Enabled: true,
+				Name:    "shipped",
+				Match: config.Match{
+					All: []config.Rule{{Kind: "Node", Expression: optOutGuard}},
+				},
+			},
+		}},
+	}, nodecache.Operational{GPUNodeLabelKey: "nvidia.com/gpu.present"})
+
+	// The cached entry predates the opt-out, and pruning has stripped the rest.
+	cached, err := retained.Transform()(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "recovering-node",
+			Labels: map[string]string{"kubernetes.io/hostname": "recovering-node"},
+		},
+	})
+	require.NoError(t, err)
+
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	require.NoError(t, indexer.Add(cached))
+
+	// The live node carries the opt-out its owner has since set.
+	reader := &directNodeReaderStub{node: &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "recovering-node",
+			Labels: map[string]string{
+				"kubernetes.io/hostname":                "recovering-node",
+				"k8saas.nvidia.com/ManagedByNVSentinel": "false",
+			},
+		},
+	}}
+
+	evaluator, err := newNodeRuleEvaluator(optOutGuard, corelisters.NewNodeLister(indexer), reader)
+	require.NoError(t, err)
+
+	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "recovering-node"})
+	require.NoError(t, err, "the pruned cache must still evaluate, not error")
+	require.Equal(t, common.RuleEvaluationSuccess, result,
+		"the cache does not hold the opt-out, so the steady-state path matches")
+	require.Zero(t, reader.calls, "the steady-state path must not read the API server")
+
+	result, err = evaluator.Evaluate(
+		coldstart.WithRecoveryContext(context.Background()),
+		&protos.HealthEvent{NodeName: "recovering-node"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, common.RuleEvaluationFailed, result,
+		"recovery must honour the opt-out on the live node, whatever the pruned cache holds")
+	require.Equal(t, 1, reader.calls, "recovery must read the API server")
+}
+
 // Restoring the pruned maps must not invent one the node never carried, or a
 // rule asking whether a node has any annotations at all would read the cache
 // instead of the node.
