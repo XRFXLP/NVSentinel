@@ -193,7 +193,7 @@ func (w *fieldWalker) record(base ast.Expr, path []string, chain ast.Expr) bool 
 // isObjectVar reports whether base is the object variable itself rather than a
 // comprehension binding that shadows its name.
 func (w *fieldWalker) isObjectVar(base ast.Expr) bool {
-	return base.Kind() == ast.IdentKind && base.AsIdent() == w.objectVar && w.shadowed == 0
+	return base.Kind() == ast.IdentKind && base.AsIdent() == w.objectVar
 }
 
 // recordLookup records one field path taken off the object call returned. A

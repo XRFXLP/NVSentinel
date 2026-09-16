@@ -272,8 +272,7 @@ func (k *Keys) retainAllAnnotations() {
 	k.pruneAnnotations = false
 }
 
-// log reports what the cache will keep. An operator who edits a ruleset needs
-// to see the effect without reading the code.
+// log reports what the cache will keep
 func (k *Keys) log() {
 	slog.Info("Node cache transform derived from rule CEL",
 		"retainedLabels", retainedForLog(k.labels, k.pruneLabels),

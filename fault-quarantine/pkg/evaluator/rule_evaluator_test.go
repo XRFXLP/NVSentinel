@@ -240,8 +240,8 @@ func TestNodeRuleEvaluator_RecoveryRead_PrunedCacheDoesNotHideOptOut(t *testing.
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "recovering-node",
 			Labels: map[string]string{
-				"kubernetes.io/hostname":                "recovering-node",
-				"k8saas.nvidia.com/ManagedByNVSentinel": "false",
+				"kubernetes.io/hostname":                  "recovering-node",
+				"k8saas.nvidia.com/ManagedByNVSentinel":   "false",
 			},
 		},
 	}}
