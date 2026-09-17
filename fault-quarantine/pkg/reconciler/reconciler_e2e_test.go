@@ -255,6 +255,15 @@ type E2EReconcilerConfig struct {
 	CircuitBreakerConfig *breaker.CircuitBreakerConfig
 	DryRun               bool
 	HealthEventStore     datastore.HealthEventStore
+	// OnEventProcessed, when set, is called with the event ID once the worker
+	// has finished an event and recorded its status.
+	//
+	// A test asserting that an event produced no status needs this, because the
+	// status getter cannot tell an event that produced none from one the worker
+	// has not reached: both read as a missing map entry. It fires only on the
+	// path that records a status, so an event that failed to process times the
+	// waiting test out rather than reading as "no quarantine".
+	OnEventProcessed func(eventID string)
 }
 
 // setupE2EReconciler creates a test reconciler with mock watcher
@@ -441,6 +450,10 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 			statusMu.Lock()
 			eventStatuses[eventID] = status
 			statusMu.Unlock()
+
+			if cfg.OnEventProcessed != nil {
+				cfg.OnEventProcessed(eventID)
+			}
 		}
 	}()
 
@@ -4550,7 +4563,20 @@ func TestE2E_PrunedCacheRespectsOptOutOnNodeWithManyLabels(t *testing.T) {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
 
-	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, optOutRuleSet(), nil)
+	// The status getter reads the same empty entry for an event that produced no
+	// status and one the worker has not reached yet, so wait to be told the
+	// event is done rather than reading its absence as a decision.
+	processed := make(chan string, 1)
+
+	_, mockWatcher, getStatus, _ := setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
+		TomlConfig: optOutRuleSet(),
+		OnEventProcessed: func(eventID string) {
+			select {
+			case processed <- eventID:
+			default:
+			}
+		},
+	})
 
 	eventID := generateTestID()
 	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
@@ -4563,9 +4589,14 @@ func TestE2E_PrunedCacheRespectsOptOutOnNodeWithManyLabels(t *testing.T) {
 		model.StatusInProgress,
 	)}
 
-	require.Eventually(t, func() bool {
-		return getStatus(eventID) == nil
-	}, statusCheckTimeout, statusCheckPollInterval, "Opted-out node should produce no quarantine status")
+	select {
+	case got := <-processed:
+		require.Equal(t, eventID, got, "the worker finished an event this test did not send")
+	case <-time.After(statusCheckTimeout):
+		require.FailNow(t, "the worker never finished the opt-out event")
+	}
+
+	require.Nil(t, getStatus(eventID), "Opted-out node should produce no quarantine status")
 
 	require.Never(t, func() bool {
 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
