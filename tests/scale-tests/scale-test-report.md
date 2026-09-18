@@ -34,6 +34,7 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
   - [Drain latency with real pods](#drain-latency-with-real-pods-m)
   - [Burst absorption](#burst-absorption)
   - [Circuit breaker](#circuit-breaker-m)
+  - [Rolling upgrade during a burst](#rolling-upgrade-during-a-burst-m)
 - [Appendix](#appendix)
   - [API server load produced by the simulation harness](#api-server-load-produced-by-the-simulation-harness-m)
     - [Node heartbeats and pod status](#node-heartbeats-and-pod-status)
@@ -744,6 +745,34 @@ That is a 22% reduction at 10,000 nodes. The work per event is proportional to f
 ## Appendix
 
 The material here is either how the measurements were taken, or behaviour of the environment they were taken in rather than of NVSentinel. It is separated so that the sections above describe the product and this one describes the harness and the cloud underneath it.
+
+### Rolling upgrade during a burst `[M]`
+
+Upgrade here means a rollout restart and nothing beyond it: a real upgrade may also carry a backward-incompatible change, a datastore migration, or the replacement of persistent volumes, and none of that is covered below. Nothing coordinates a rollout with whatever the fault path is processing, so this was measured by injecting a burst and then rolling the fault-path components while it was still being processed.
+
+A 2,000-event burst with fault-quarantine, node-drainer and fault-remediation all restarted mid-flight finished with 2,000 cordoned, 2,000 drained and 2,000 remediated, no duplicate node entries, and no stall: remediation climbed straight through the restart and the burst completed in 325 s. The components resume from their stored change-stream position and their cold-start sweeps recover whatever the stream did not redeliver.
+
+Memory roughly doubles for the duration, and the per-pod figure does not move. The rolling update runs the old and new pods concurrently and each holds a full node cache, so the cluster, not the component, pays. Working set summed across every pod of fault-quarantine, node-drainer and fault-remediation, of which fault-quarantine is the large majority:
+
+| Fleet | Before | During rollout | After |
+| --- | --- | --- | --- |
+| 50,010 | 2.34 GB | 4.28 GB | 2.06 GB |
+| 100,010 | 3.98 GB | 7.75 GB | 3.77 GB |
+
+The overlap is guaranteed by the deployment strategy rather than incidental. All three run `RollingUpdate` with `maxSurge: 25%` and `maxUnavailable: 25%`, which at one replica rounds up to a surge of one and down to zero unavailable, so the new pod must be Ready before the old one is removed. Inverting that to `maxSurge: 0` with `maxUnavailable: 1` removes the doubling, at the cost of a window in which no replica is running.
+
+API load does not spike. 3,626 requests/s before the rollout, 3,630 during, 3,620 after. Each restarted informer re-lists the fleet, but that is a handful of large paginated reads rather than many small ones, so the cost lands in bytes rather than in request rate.
+
+The circuit breaker does not survive the restart. Its sliding window is an in-memory ring buffer: `NewSlidingWindowBreaker` builds `buckets`, `nodeToIndex` and `indexToNodes` fresh and sets `startTime` to now, restoring only the CLOSED/TRIPPED state from its ConfigMap. Accumulated cordon counts are therefore lost on every restart, while the window itself restarts too, so cordons from just before the restart count toward nothing.
+
+| Run | Burst | Restart | Outcome |
+| --- | --- | --- | --- |
+| undisturbed | 4,000 | none | tripped at 2,001 cordons |
+| rolling upgrade | 3,000 | at 1,617 cordons | never tripped; all 3,000 cordoned |
+
+The breaker's guarantee is that no more than a set share of the fleet is cordoned within a window. A restart breaks it: the second run cordoned 50% more nodes than the threshold with the breaker reporting CLOSED throughout, because the new pod needed the full count again within a window beginning at its own start and only ever saw 1,383. A breaker that has already tripped does stay tripped, since that state is in the ConfigMap; it is only progress toward tripping that is discarded.
+
+Both runs used a 5% threshold rather than the shipped 50%, to keep the bursts small enough to repeat. The threshold lands near 2,000 rather than 2,501 because the denominator is the GPU-labelled node count of about 40,000, not the whole fleet.
 
 ### API server load produced by the simulation harness `[M]`
 
