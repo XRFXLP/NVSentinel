@@ -8,7 +8,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/aws/aws-sdk-go-v2 v1.47.1
 	github.com/aws/aws-sdk-go-v2/config v1.33.6
-	github.com/aws/aws-sdk-go-v2/service/health v1.47.0
+	github.com/aws/aws-sdk-go-v2/service/health v1.48.0
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
@@ -16,7 +16,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/sync v0.23.0
-	google.golang.org/api v0.299.0
+	google.golang.org/api v0.300.0
 	google.golang.org/genproto v0.0.0-20260819154853-08b0e4226688
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260921155816-b14227669459
@@ -30,9 +30,9 @@ require (
 
 require (
 	cloud.google.com/go v0.123.0 // indirect
-	cloud.google.com/go/auth v0.23.3 // indirect
-	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
-	cloud.google.com/go/compute/metadata v0.9.1 // indirect
+	cloud.google.com/go/auth v0.24.0 // indirect
+	cloud.google.com/go/auth/oauth2adapt v0.3.0 // indirect
+	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	cloud.google.com/go/iam v1.13.0 // indirect
 	cloud.google.com/go/longrunning v1.2.0 // indirect
 	cloud.google.com/go/monitoring v1.30.0 // indirect
