@@ -27,7 +27,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	coordinationv1 "k8s.io/api/coordination/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -35,6 +36,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -47,7 +49,6 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/internal/controller"
 	"github.com/nvidia/nvsentinel/lifecycle-manager/pkg/config"
@@ -177,21 +178,20 @@ func setupControllers(
 		validation = cfg.Validation
 	}
 
+	nodeClaim := distributedlock.NewNodeLock(
+		mgr.GetClient(), mgr.GetScheme(), namespace, nil,
+		distributedlock.WithLeaseName(controller.ClaimLeaseName),
+	)
+
 	if err := webhookv1alpha1.SetupWebhookWithManager(
-		mgr, validation, enableValidationController, enableMaintenanceController,
+		mgr, validation, enableValidationController, enableMaintenanceController, nodeClaim,
 	); err != nil {
 		return fmt.Errorf("failed to set up webhook: %w", err)
 	}
 
 	if enableValidationController {
-		reconciler, err := controller.NewValidationRequestReconciler(mgr.GetClient(), mgr.GetAPIReader(),
-			mgr.GetScheme(), cfg, namespace)
-		if err != nil {
-			return fmt.Errorf("failed to create ValidationRequest reconciler: %w", err)
-		}
-
-		if err := reconciler.SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("failed to create ValidationRequest controller: %w", err)
+		if err := setupValidationController(mgr, cfg, validation, namespace); err != nil {
+			return err
 		}
 	}
 
@@ -203,6 +203,7 @@ func setupControllers(
 			NodeLock: distributedlock.NewNodeLock(
 				mgr.GetClient(), mgr.GetScheme(), namespace, nil,
 			),
+			NodeClaim: nodeClaim,
 		}).SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("failed to create MaintenanceRequest controller: %w", err)
 		}
@@ -212,12 +213,75 @@ func setupControllers(
 	return nil
 }
 
-// newPublisher creates a healthpub.Publisher backed by a gRPC connection
-// to the platform-connector socket. Returns (nil, nil) when the
+func setupValidationController(
+	mgr ctrl.Manager, cfg *config.Config, validation *v1alpha1.ValidationConfiguration, namespace string,
+) error {
+	reconciler, err := controller.NewValidationRequestReconciler(mgr.GetClient(), mgr.GetAPIReader(),
+		mgr.GetScheme(), cfg, namespace)
+	if err != nil {
+		return fmt.Errorf("failed to create ValidationRequest reconciler: %w", err)
+	}
+
+	nodeReconciler, err := newNodeValidationReconciler(mgr, cfg, validation)
+	if err != nil {
+		return fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
+	}
+
+	if reconciler.ResourceSliceWatch.Enabled || (nodeReconciler != nil && nodeReconciler.ResourceSliceWatch.Enabled) {
+		if err := controller.SetupResourceSliceIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
+			return fmt.Errorf("failed to set up ResourceSlice index: %w", err)
+		}
+	}
+
+	if err := reconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to create ValidationRequest controller: %w", err)
+	}
+
+	if nodeReconciler != nil {
+		if err := nodeReconciler.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("failed to create NodeValidation controller: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func newNodeValidationReconciler(
+	mgr ctrl.Manager,
+	cfg *config.Config,
+	validation *v1alpha1.ValidationConfiguration,
+) (*controller.NodeValidationReconciler, error) {
+	if validation.Spec.NewNodeValidation == nil {
+		return nil, nil
+	}
+
+	reconciler, err := controller.NewNodeValidationReconciler(
+		mgr.GetClient(), mgr.GetAPIReader(), mgr.GetScheme(), cfg,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create NodeValidation reconciler: %w", err)
+	}
+
+	return reconciler, nil
+}
+
+// closePublisher closes the publisher's connection on shutdown; nil when the
 // maintenance controller is disabled.
+func closePublisher(publisher *healthpub.Publisher) {
+	if publisher != nil {
+		publisher.CloseOrWarn()
+	}
+}
+
+// newPublisher creates the MaintenanceRequest controller's health event
+// publisher. Returns (nil, nil) when the maintenance controller is disabled.
+//
+// The HEALTH_PUBLISH_* environment selects a direct TLS connection to the
+// deployment platform connector; otherwise the node-local socket is dialed
+// as before. The publisher owns the connection and closes it in Close.
 //
 // A MaintenanceRequest names any node in the cluster, but this component
-// is a Deployment running on one. platform-connector therefore scopes it
+// is a Deployment running on one. The platform connector therefore scopes it
 // to its own node unless it presents a projected ServiceAccount token
 // whose identity is on the cross-node allowlist, so tokenPath must be set
 // wherever node-binding auth is enabled. An empty tokenPath contributes no
@@ -229,26 +293,19 @@ func newPublisher(
 		return nil, nil
 	}
 
-	opts := append(
-		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
-		grpcclient.DialOptions(tokenPath)...,
-	)
+	_, client, pubOpt, err := healthpub.DialFromEnvOr(func() (*grpc.ClientConn, error) {
+		slog.Info("Dialing platform-connector",
+			"socket", socketTarget, "tokenAuthEnabled", tokenPath != "")
 
-	slog.Info("Dialing platform-connector",
-		"socket", socketTarget, "tokenAuthEnabled", tokenPath != "")
-
-	conn, err := grpc.NewClient(socketTarget, opts...)
+		return grpc.NewClient(socketTarget, grpcclient.InsecureDialOptions(tokenPath)...)
+	})
 	if err != nil {
 		slog.Error("Failed to create gRPC client for platform-connector", "error", err)
 
 		return nil, fmt.Errorf("create platform-connector gRPC client: %w", err)
 	}
 
-	return healthpub.New(
-		pb.NewPlatformConnectorClient(conn),
-		socketTarget,
-		"maintenance-controller",
-	), nil
+	return healthpub.New(client, socketTarget, "maintenance-controller", pubOpt), nil
 }
 
 func run() error {
@@ -298,7 +355,8 @@ func run() error {
 		"Enable the MaintenanceRequest controller and webhook.")
 	flag.StringVar(&platformConnectorSocket, "platform-connector-socket",
 		"unix:///var/run/nvsentinel.sock",
-		"gRPC target for the platform-connector socket used by the MaintenanceRequest controller.")
+		"gRPC target for the platform-connector socket used by the MaintenanceRequest controller. "+
+			"HEALTH_PUBLISH_TARGET, when set, points the controller at the deployment platform connector instead.")
 	flag.StringVar(&platformConnectorTokenPath, "platform-connector-token-path", "",
 		"Path to a projected ServiceAccount token presented to platform-connector. "+
 			"A MaintenanceRequest names any node in the cluster, so this is required for "+
@@ -322,6 +380,8 @@ func run() error {
 
 			return err
 		}
+
+		slog.Info("Loaded validation configuration", "spec", cfg.Validation.Spec)
 	}
 
 	setup, err := setupTLSAndServers(enableHTTP2, webhookCertPath, webhookCertName, webhookCertKey, metricsAddr,
@@ -345,7 +405,18 @@ func run() error {
 		LeaseDuration:          &leaseDuration,
 		RenewDeadline:          &renewDeadline,
 		RetryPeriod:            &retryPeriod,
-		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}},
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{namespace: {}},
+			// Readiness CEL can read any ResourceSlice spec or metadata field, so only managedFields is dropped.
+			ByObject: map[client.Object]cache.ByObject{
+				&resourcev1.ResourceSlice{}: {Transform: cache.TransformStripManagedFields()},
+			},
+		},
+		// Node lock leases are created and deleted within one reconcile; a
+		// cached read can miss a lease just created and leave it held.
+		Client: client.Options{Cache: &client.CacheOptions{
+			DisableFor: []client.Object{&coordinationv1.Lease{}},
+		}},
 	})
 	if err != nil {
 		slog.Error("Failed to start manager", "error", err)
@@ -365,6 +436,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	defer closePublisher(publisher)
 
 	if err := setupControllers(
 		mgr, cfg, enableValidationController, enableMaintenanceController, publisher, namespace,

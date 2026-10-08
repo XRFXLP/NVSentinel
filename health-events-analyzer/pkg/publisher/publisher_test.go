@@ -21,14 +21,20 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthpub"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 type fakePlatformConnectorClient struct {
 	events *protos.HealthEvents
+	err    error
 }
 
 func (f *fakePlatformConnectorClient) HealthEventOccurredV1(
@@ -36,7 +42,16 @@ func (f *fakePlatformConnectorClient) HealthEventOccurredV1(
 ) (*emptypb.Empty, error) {
 	f.events = events
 
-	return &emptypb.Empty{}, nil
+	return &emptypb.Empty{}, f.err
+}
+
+func TestPublishRecovery_WrappedErrorPreservesRejection(t *testing.T) {
+	client := &fakePlatformConnectorClient{err: status.Error(codes.InvalidArgument, "rejected test event")}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+	event, err := pub.PublishRecovery(t.Context(), sourceEvent(time.Now()), config.HealthEventsAnalyzerRule{Name: "RecoveryTest"})
+	require.Nil(t, event)
+	require.ErrorContains(t, err, `publish health event for rule "RecoveryTest"`)
+	require.ErrorIs(t, err, healthpub.ErrPublishRejected)
 }
 
 // sourceEvent is a detector event from the past, standing in for one replayed off a lagging
@@ -146,4 +161,31 @@ func TestPublish_AnySourceEvent_DoesNotMutateCaller(t *testing.T) {
 	require.True(t, src.GetGeneratedTimestamp().AsTime().Equal(sourceTime))
 	require.Equal(t, "syslog-health-monitor", src.GetAgent())
 	require.NotContains(t, src.GetMetadata(), sourceGeneratedTimestampMetadataKey)
+}
+
+// TestPublish_SourceWithIdempotencyKey_DropsTheIngestionKey: a source read
+// back from the datastore carries the key the deployment platform connector
+// stamped on it. The derived event must not inherit it: on the socket path
+// the stored copy would collide with the source's document and be dropped
+// after the analyzer was already acknowledged.
+func TestPublish_SourceWithIdempotencyKey_DropsTheIngestionKey(t *testing.T) {
+	client := &fakePlatformConnectorClient{}
+	pub := NewPublisher(client, protos.ProcessingStrategy_EXECUTE_REMEDIATION)
+
+	src := sourceEvent(time.Date(2026, 8, 21, 8, 27, 36, 0, time.UTC))
+	src.Metadata = map[string]string{
+		datastore.HealthEventIdempotencyKeyMetadataField: "pod-uid#client-key#0",
+		"providerID": "aws:///us-east-1a/i-123",
+	}
+
+	err := pub.Publish(context.Background(), src,
+		protos.RecommendedAction_NONE, "XIDErrorSoloNoBurst", "no action", nil)
+	require.NoError(t, err)
+
+	published := client.events.GetEvents()[0]
+	require.NotContains(t, published.GetMetadata(), datastore.HealthEventIdempotencyKeyMetadataField,
+		"the source document's key would collide with the derived event on the socket path")
+	require.Equal(t, "aws:///us-east-1a/i-123", published.GetMetadata()["providerID"], "other metadata is kept")
+	require.Equal(t, "pod-uid#client-key#0", src.GetMetadata()[datastore.HealthEventIdempotencyKeyMetadataField],
+		"the caller's event is untouched")
 }

@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -89,7 +90,7 @@ func TestK8sConnector_WithEnvtest_NodeConditionUpdate(t *testing.T) {
 		},
 	}
 
-	err = k8sConn.processHealthEvents(ctx, healthEvents)
+	err = k8sConn.ProcessBatch(ctx, healthEvents)
 	require.NoError(t, err, "failed to process health events")
 
 	updatedNode, err := cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
@@ -169,7 +170,7 @@ func TestK8sConnector_WithEnvtest_NodeConditionClear(t *testing.T) {
 		},
 	}
 
-	err = k8sConn.processHealthEvents(ctx, healthEvents)
+	err = k8sConn.ProcessBatch(ctx, healthEvents)
 	require.NoError(t, err, "failed to process health events")
 
 	updatedNode, err := cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
@@ -186,6 +187,94 @@ func TestK8sConnector_WithEnvtest_NodeConditionClear(t *testing.T) {
 		}
 	}
 	assert.True(t, conditionFound, "node condition was not cleared")
+}
+
+func TestK8sConnector_WithEnvtest_LegacyGPUConditionClears(t *testing.T) {
+	ctx := context.Background()
+	testEnv, cli := setupEnvtest(t)
+	defer testEnv.Stop()
+
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test-node"}}
+	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+	require.NoError(t, err, "failed to create node")
+
+	node.Status.Conditions = []corev1.NodeCondition{
+		{
+			Type:               "GpuNvlinkWatch",
+			Status:             corev1.ConditionTrue,
+			LastHeartbeatTime:  metav1.Now(),
+			LastTransitionTime: metav1.Now(),
+			Reason:             "GpuNvlinkWatchIsNotHealthy",
+			Message: "ErrorCode:48 GPU:0 fault Recommended Action=RESTART_VM;" +
+				"ErrorCode:48 GPU:1 fault Recommended Action=RESTART_VM;",
+		},
+	}
+	_, err = cli.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
+	require.NoError(t, err, "failed to update node status")
+
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
+
+	err = k8sConn.ProcessBatch(ctx, &protos.HealthEvents{
+		Version: 1,
+		Events: []*protos.HealthEvent{
+			{
+				CheckName: "GpuNvlinkWatch",
+				IsHealthy: true,
+				Message:   "No errors",
+				EntitiesImpacted: []*protos.Entity{
+					{EntityType: "GPU", EntityValue: "0"},
+					{EntityType: "PCI", EntityValue: "0000:0f:00.0"},
+					{EntityType: "GPU_UUID", EntityValue: "GPU-abc"},
+				},
+				GeneratedTimestamp: timestamppb.New(time.Now()),
+				ComponentClass:     "GPU",
+				RecommendedAction:  protos.RecommendedAction_NONE,
+				NodeName:           "test-node",
+			},
+		},
+	})
+	require.NoError(t, err, "failed to process health events")
+
+	updatedNode, err := cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
+	require.NoError(t, err, "failed to get node")
+
+	condition, _, found := findNodeCondition(updatedNode, "GpuNvlinkWatch")
+	require.True(t, found)
+	assert.Equal(t, corev1.ConditionTrue, condition.Status)
+	assert.NotContains(t, condition.Message, "GPU:0 ")
+	assert.Contains(t, condition.Message, "GPU:1 ")
+
+	err = k8sConn.ProcessBatch(ctx, &protos.HealthEvents{
+		Version: 1,
+		Events: []*protos.HealthEvent{
+			{
+				CheckName: "GpuNvlinkWatch",
+				IsHealthy: true,
+				Message:   "No errors",
+				EntitiesImpacted: []*protos.Entity{
+					{EntityType: "GPU", EntityValue: "1"},
+					{EntityType: "PCI", EntityValue: "0000:1a:00.0"},
+				},
+				GeneratedTimestamp: timestamppb.New(time.Now()),
+				ComponentClass:     "GPU",
+				RecommendedAction:  protos.RecommendedAction_NONE,
+				NodeName:           "test-node",
+			},
+		},
+	})
+	require.NoError(t, err, "failed to process health events")
+
+	updatedNode, err = cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
+	require.NoError(t, err, "failed to get node")
+
+	condition, _, found = findNodeCondition(updatedNode, "GpuNvlinkWatch")
+	require.True(t, found)
+	assert.Equal(t, corev1.ConditionFalse, condition.Status)
+	assert.Equal(t, "GpuNvlinkWatchIsHealthy", condition.Reason)
+	assert.Equal(t, "No Health Failures", condition.Message)
 }
 
 func TestK8sConnector_WithEnvtest_NodeEventCreation(t *testing.T) {
@@ -224,7 +313,7 @@ func TestK8sConnector_WithEnvtest_NodeEventCreation(t *testing.T) {
 		},
 	}
 
-	err = k8sConn.processHealthEvents(ctx, healthEvents)
+	err = k8sConn.ProcessBatch(ctx, healthEvents)
 	require.NoError(t, err, "failed to process health events")
 
 	events, err := cli.CoreV1().Events("").List(ctx, metav1.ListOptions{
@@ -398,7 +487,7 @@ func TestK8sConnector_WithEnvtest_MultipleEventsForSameNode(t *testing.T) {
 		},
 	}
 
-	err = connector.processHealthEvents(ctx, healthEventsProto)
+	err = connector.ProcessBatch(ctx, healthEventsProto)
 	require.NoError(t, err)
 
 	node, err = cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
@@ -572,7 +661,7 @@ func TestK8sConnector_WithEnvtest_EventDedupeCacheRecovery(t *testing.T) {
 				return nodeEvents
 			}
 
-			require.NoError(t, connector.processHealthEvents(ctx, healthEventsProto))
+			require.NoError(t, connector.ProcessBatch(ctx, healthEventsProto))
 
 			events := listNodeEvents()
 			require.Len(t, events, 1, "first health event did not create exactly one Kubernetes event")
@@ -590,7 +679,11 @@ func TestK8sConnector_WithEnvtest_EventDedupeCacheRecovery(t *testing.T) {
 				connector = NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 			}
 
-			require.NoError(t, connector.processHealthEvents(ctx, healthEventsProto))
+			// This is a later report of the fault, rather than a replay of the
+			// already persisted occurrence after a restart.
+			previousTime := healthEventsProto.Events[0].GeneratedTimestamp.AsTime()
+			healthEventsProto.Events[0].GeneratedTimestamp = timestamppb.New(previousTime.Add(time.Minute))
+			require.NoError(t, connector.ProcessBatch(ctx, healthEventsProto))
 
 			events = listNodeEvents()
 			require.Len(t, events, tt.expectedEvents, tt.description)
@@ -631,7 +724,7 @@ func TestK8sConnector_WithEnvtest_NodeNotFound(t *testing.T) {
 		},
 	}
 
-	err := k8sConn.processHealthEvents(ctx, healthEvents)
+	err := k8sConn.ProcessBatch(ctx, healthEvents)
 	if err != nil {
 		assert.Contains(t, err.Error(), "not found")
 	}
@@ -660,7 +753,7 @@ func TestK8sConnector_WithEnvtest_EmptyHealthEvents(t *testing.T) {
 		Events:  []*protos.HealthEvent{},
 	}
 
-	err = k8sConn.processHealthEvents(ctx, healthEvents)
+	err = k8sConn.ProcessBatch(ctx, healthEvents)
 	require.NoError(t, err, "should handle empty events list")
 }
 
@@ -705,7 +798,7 @@ func TestK8sConnector_WithEnvtest_MultipleEntities(t *testing.T) {
 		},
 	}
 
-	err = k8sConn.processHealthEvents(ctx, healthEvents)
+	err = k8sConn.ProcessBatch(ctx, healthEvents)
 	require.NoError(t, err, "failed to process health events")
 
 	updatedNode, err := cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
@@ -762,7 +855,7 @@ func TestK8sConnector_WithEnvtest_SpecialCharactersInMessage(t *testing.T) {
 		},
 	}
 
-	err = k8sConn.processHealthEvents(ctx, healthEvents)
+	err = k8sConn.ProcessBatch(ctx, healthEvents)
 	require.NoError(t, err, "failed to process health events with special characters")
 
 	updatedNode, err := cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
@@ -1064,7 +1157,7 @@ func TestK8sConnector_WithEnvtest_MultipleCheckTypes(t *testing.T) {
 		},
 	}
 
-	err = k8sConn.processHealthEvents(ctx, healthEvents)
+	err = k8sConn.ProcessBatch(ctx, healthEvents)
 	require.NoError(t, err, "failed to process multiple health events")
 
 	updatedNode, err := cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
@@ -1278,6 +1371,69 @@ func TestUpdateOnChange_NewFaultJoiningIsAChange(t *testing.T) {
 
 	require.NoError(t, connector.ProcessBatch(ctx, batch(second)))
 	require.Equal(t, afterSecond, nodeVersion(t, cli, node))
+}
+
+// TestProcessBatch_ConcurrentReplicasKeepEveryFault: several faults on one
+// node that arrive together reach different deployment platform connector
+// replicas, which then update the same node at once. Every write must land:
+// a single pass gives up after the client's few quick conflict retries, and
+// the losing faults never reach the condition although their batches are
+// acknowledged.
+func TestProcessBatch_ConcurrentReplicasKeepEveryFault(t *testing.T) {
+	const faults = 16
+
+	cfg := K8sConnectorConfig{MaxNodeConditionMessageLength: 4096, CompactedHealthEventMsgLen: 72}
+	first, cli, node := envtestConnector(t, cfg)
+	// Three replicas: separate connectors against one API server.
+	replicas := []*K8sConnector{
+		first,
+		NewK8sConnector(cli, nil, nil, context.Background(), cfg),
+		NewK8sConnector(cli, nil, nil, context.Background(), cfg),
+	}
+
+	now := time.Now()
+	start := make(chan struct{})
+	errs := make([]error, faults)
+
+	var wg sync.WaitGroup
+
+	for gpu := range faults {
+		fault := xidEvent(node, now, false)
+		fault.EntitiesImpacted = []*protos.Entity{{EntityType: "GPU", EntityValue: fmt.Sprint(gpu)}}
+		fault.Message = fmt.Sprintf("XID 79 on GPU %d", gpu)
+
+		wg.Go(func() {
+			// The deployment platform connector bounds each batch the same way.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			<-start
+
+			errs[gpu] = replicas[gpu%len(replicas)].ProcessBatch(ctx, batch(fault))
+		})
+	}
+
+	close(start)
+	wg.Wait()
+
+	for gpu, err := range errs {
+		require.NoErrorf(t, err, "the write for GPU %d", gpu)
+	}
+
+	got, err := cli.CoreV1().Nodes().Get(context.Background(), node, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	var message string
+
+	for _, condition := range got.Status.Conditions {
+		if condition.Type == "GpuXidError" {
+			message = condition.Message
+		}
+	}
+
+	for gpu := range faults {
+		assert.Containsf(t, message, fmt.Sprintf("XID 79 on GPU %d ", gpu), "GPU %d is missing from the condition", gpu)
+	}
 }
 
 // thermalEvent is a non-fatal fault, the kind that is announced as a

@@ -37,11 +37,13 @@ data:
     [dcgmfieldsmonitoring]
     gputemplimitmonitoringenabled = {{ .Values.dcgmFieldsMonitoring.gpuTempLimitMonitoringEnabled }}
     gputemplimitstoreonly = {{ .Values.dcgmFieldsMonitoring.gpuTempLimitStoreOnly }}
+    gputemplimitminconsecutivepolls = {{ .Values.dcgmFieldsMonitoring.gpuTempLimitMinConsecutivePolls }}
     gpupowerbrakemonitoringenabled = {{ .Values.dcgmFieldsMonitoring.gpuPowerBrakeMonitoringEnabled }}
     gpupowerbrakestoreonly = {{ .Values.dcgmFieldsMonitoring.gpuPowerBrakeStoreOnly }}
     gpupowerbrakeminconsecutivepolls = {{ .Values.dcgmFieldsMonitoring.gpuPowerBrakeMinConsecutivePolls }}
 
     [dcgmhealthcheck]
+    ImexMonitoringEnabled = {{ .Values.dcgmHealthCheck.imexMonitoringEnabled }}
     SuppressedErrorCodes = {{ .Values.dcgmHealthCheck.suppressedErrorCodes | join "," }}
     ConnectivityFailureEscalationThreshold = {{ .Values.dcgmHealthCheck.connectivityFailureEscalationThreshold }}
 {{- $debounce := list }}

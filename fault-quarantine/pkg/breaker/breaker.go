@@ -192,40 +192,100 @@ const (
 	// boundFleetSize is reported when a configured bound exceeded the fleet size and was
 	// clamped to it.
 	boundFleetSize Bound = "fleetSize"
+	// boundMaxCordonedNodes is reported when the standing count of quarantined nodes, rather
+	// than the rate inside Window, is what tripped the breaker.
+	boundMaxCordonedNodes Bound = "maxCordonedNodes"
+	// boundMaxCordonedPercentage is the percentage form of boundMaxCordonedNodes.
+	boundMaxCordonedPercentage Bound = "maxCordonedPercentage"
 )
 
-// tripThreshold returns the recent-cordon count that trips the breaker for the given GPU
-// node count, along with the bound that produced it. When both bounds are configured the
-// lower one binds, so growing the fleet cannot silently raise the effective limit.
-func (b *slidingWindowBreaker) tripThreshold(totalNodes int) (int, Bound) {
+// resolveThreshold turns a percentage bound and an absolute bound into a single node count,
+// along with the bound that produced it. Shared by the rate pair and the standing pair so both
+// resolve identically: when both are configured the lower one binds, so growing the fleet
+// cannot silently raise the effective limit. Returns boundNone when neither is configured.
+//
+// Scaling a percentage above 100 is clamped to the fleet size here because the int conversion
+// is the unsafe part, not because the result is unreachable; callers decide separately whether
+// an absolute bound above the fleet size should be clamped.
+func resolveThreshold(
+	totalNodes int, percentage float64, percentageBound Bound, maxNodes int, maxNodesBound Bound,
+) (int, Bound) {
 	threshold, bound := 0, boundNone
 
-	if b.cfg.TripPercentage > 0 {
+	if percentage > 0 {
 		// Compared as a float before converting: a percentage large enough to exceed
 		// math.MaxInt makes the int conversion implementation-defined per the Go spec, and
-		// a negative result would slip past the clamp below and trip on every evaluation.
-		scaled := math.Ceil(float64(totalNodes) * b.cfg.TripPercentage / 100)
+		// a negative result would slip past the comparisons above and trip immediately.
+		scaled := math.Ceil(float64(totalNodes) * percentage / 100)
 		if scaled > float64(totalNodes) {
 			threshold, bound = totalNodes, boundFleetSize
 		} else {
-			threshold, bound = int(scaled), boundPercentage
+			threshold, bound = int(scaled), percentageBound
 		}
 	}
 
-	if b.cfg.TripMaxNodes > 0 && (threshold == 0 || b.cfg.TripMaxNodes < threshold) {
-		threshold = b.cfg.TripMaxNodes
-		bound = boundMaxNodes
+	if maxNodes > 0 && (threshold == 0 || maxNodes < threshold) {
+		threshold = maxNodes
+		bound = maxNodesBound
 	}
 
-	// A threshold above the fleet size can never be reached, which would turn either
-	// bound into an off switch for the breaker. Clamp so a too-large value degrades to
-	// "every node" instead of "never trip"; the bound label reports when this happens.
+	return threshold, bound
+}
+
+// tripThreshold returns the recent-cordon count that trips the breaker for the given GPU
+// node count, along with the bound that produced it.
+func (b *slidingWindowBreaker) tripThreshold(totalNodes int) (int, Bound) {
+	threshold, bound := resolveThreshold(totalNodes, b.cfg.TripPercentage, boundPercentage,
+		b.cfg.TripMaxNodes, boundMaxNodes)
+
+	// A threshold above the fleet size can never be reached, which would turn either bound
+	// into an off switch for the breaker. Clamp so a too-large value degrades to "every node"
+	// instead of "never trip"; the bound label reports when this happens. Safe here because
+	// the window counter only ever counts cordon events this breaker recorded for GPU nodes,
+	// so it cannot exceed the GPU fleet size.
 	if threshold > totalNodes {
 		threshold = totalNodes
 		bound = boundFleetSize
 	}
 
 	return threshold, bound
+}
+
+// standingThreshold returns the standing quarantined-node count that trips the breaker for the
+// given GPU node count, along with the bound that produced it. Resolved like tripThreshold but
+// from the standing pair.
+//
+// Deliberately NOT clamped to the fleet size, unlike tripThreshold. The quarantined count comes
+// from the annotation index over every watched node, while totalNodes counts only GPU-labelled
+// ones (see NodeInformer.GetNodeCounts, which keeps watching all nodes so a quarantined node
+// whose GPU label is temporarily absent stays recoverable). The count can therefore legitimately
+// exceed totalNodes, and clamping would trip the breaker spuriously whenever it did.
+func (b *slidingWindowBreaker) standingThreshold(totalNodes int) (int, Bound) {
+	return resolveThreshold(totalNodes, b.cfg.TripMaxCordonedPercentage, boundMaxCordonedPercentage,
+		b.cfg.TripMaxCordonedNodes, boundMaxCordonedNodes)
+}
+
+// standingBoundReached reports whether the number of nodes NVSentinel currently holds
+// quarantined has reached the given standing threshold, and returns that count for logging.
+// The threshold and bound come from standingThreshold.
+//
+// The window bounds limit the rate of cordoning, not the total, so a rate that stays under
+// the threshold still cordons without limit given enough windows. This bound is the only
+// one that caps how many nodes are held at once. Opt-in: boundNone skips the lookup entirely,
+// so a deployment configuring neither standing bound makes no extra API call.
+func (b *slidingWindowBreaker) standingBoundReached(
+	ctx context.Context, threshold int, bound Bound,
+) (int, bool, error) {
+	if bound == boundNone {
+		return -1, false, nil
+	}
+
+	cordonedNodes, err := b.cfg.K8sClient.GetCordonedNodes(ctx)
+	if err != nil {
+		return -1, false, fmt.Errorf("failed to get cordoned node count: %w", err)
+	}
+
+	return cordonedNodes, cordonedNodes >= threshold, nil
 }
 
 // IsTripped checks if the circuit breaker should prevent further node cordoning.
@@ -264,15 +324,44 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	b.slideWindow(now)
 	recentCordonedNodes := b.sumBuckets()
 	threshold, bindingBound := b.tripThreshold(totalNodes)
-	shouldTrip := recentCordonedNodes >= threshold
+	// A threshold of 0 means no window bound is configured. Comparing against it with >=
+	// would trip on every evaluation with no cordons at all, so the rate check only
+	// applies when a window bound actually exists.
+	shouldTrip := bindingBound != boundNone && recentCordonedNodes >= threshold
 
 	b.mu.Unlock()
 
+	// Only consulted when the window bounds have not already tripped. The standing bound can
+	// add a reason to trip but must never remove one: a lookup failure here would otherwise
+	// return early and leave a breaker unlatched that the window bounds had already earned.
+	cordonedNodes := -1
+
+	if !shouldTrip {
+		standingLimit, standingBound := b.standingThreshold(totalNodes)
+
+		var reached bool
+
+		cordonedNodes, reached, err = b.standingBoundReached(ctx, standingLimit, standingBound)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to get cordoned node count", "error", err)
+
+			return false, err
+		}
+
+		if reached {
+			threshold, bindingBound = standingLimit, standingBound
+			shouldTrip = true
+		}
+	}
+
 	slog.DebugContext(ctx, "Recent cordoned nodes status",
 		"recentCordonedNodes", recentCordonedNodes,
+		"cordonedNodes", cordonedNodes,
 		"totalNodes", totalNodes,
 		"tripPercentage", b.cfg.TripPercentage,
 		"tripMaxNodes", b.cfg.TripMaxNodes,
+		"tripMaxCordonedNodes", b.cfg.TripMaxCordonedNodes,
+		"tripMaxCordonedPercentage", b.cfg.TripMaxCordonedPercentage,
 		"threshold", threshold,
 		"bindingBound", bindingBound)
 

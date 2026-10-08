@@ -45,6 +45,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 )
 
 var customBackoff = wait.Backoff{
@@ -69,18 +70,20 @@ type FaultQuarantineClient struct {
 // configured client-go rate limits.
 func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
 	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string,
-	rateLimits kubeclient.RateLimitConfig) (*FaultQuarantineClient, error) {
+	rateLimits kubeclient.RateLimitConfig, retained nodecache.Keys) (*FaultQuarantineClient, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating Kubernetes config: %w", err)
 	}
 
-	return newFaultQuarantineClient(config, dryRun, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, rateLimits)
+	return newFaultQuarantineClient(
+		config, dryRun, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, rateLimits, retained,
+	)
 }
 
 func newFaultQuarantineClient(config *rest.Config, dryRun bool,
 	resyncPeriod time.Duration, gpuNodeLabelKey, gpuNodeLabelValue string,
-	rateLimits kubeclient.RateLimitConfig) (*FaultQuarantineClient, error) {
+	rateLimits kubeclient.RateLimitConfig, retained nodecache.Keys) (*FaultQuarantineClient, error) {
 	if err := rateLimits.Apply(config); err != nil {
 		return nil, fmt.Errorf("invalid Kubernetes client rate limits: %w", err)
 	}
@@ -99,7 +102,7 @@ func newFaultQuarantineClient(config *rest.Config, dryRun bool,
 		return nil, fmt.Errorf("error creating dynamic client: %w", err)
 	}
 
-	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue)
+	nodeInformer, err := NewNodeInformer(clientset, resyncPeriod, gpuNodeLabelKey, gpuNodeLabelValue, retained)
 	if err != nil {
 		return nil, fmt.Errorf("error creating node informer: %w", err)
 	}
@@ -175,6 +178,20 @@ func (c *FaultQuarantineClient) GetTotalNodes(ctx context.Context) (int, error) 
 	slog.DebugContext(ctx, "Got total nodes from NodeInformer cache", "totalNodes", totalNodes)
 
 	return totalNodes, nil
+}
+
+// GetCordonedNodes returns how many nodes NVSentinel currently holds quarantined, read from
+// the same informer index GetTotalNodes already consults. Nodes cordoned by anything else are
+// not counted, so an unrelated drain or a GPU operator upgrade does not consume the budget.
+func (c *FaultQuarantineClient) GetCordonedNodes(ctx context.Context) (int, error) {
+	_, quarantinedNodes, err := c.NodeInformer.GetNodeCounts()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get node counts from informer: %w", err)
+	}
+
+	slog.DebugContext(ctx, "Got cordoned nodes from NodeInformer cache", "cordonedNodes", len(quarantinedNodes))
+
+	return len(quarantinedNodes), nil
 }
 
 func (c *FaultQuarantineClient) SetLabelKeys(cordonedReasonKey, uncordonedReasonKey string) {
@@ -324,6 +341,12 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 	updateFn := func(node *v1.Node) error {
 		alreadyQuarantined = hasNonEmptyQuarantineHealthEvent(node)
 
+		// A live quarantine is real, so a dry-run marker left on the node (for example
+		// after a rollback to a version that does not know it) must not survive it.
+		if !c.DryRunMode {
+			delete(node.Annotations, common.QuarantineHealthEventDryRunAnnotationKey)
+		}
+
 		if len(taints) > 0 {
 			if err := c.applyTaints(ctx, node, taints, nodename); err != nil {
 				return fmt.Errorf("failed to apply taints to node %s: %w", nodename, err)
@@ -441,11 +464,14 @@ func (c *FaultQuarantineClient) handleCordon(ctx context.Context, node *v1.Node,
 
 		slog.InfoContext(ctx, "Node is cordoned manually; applying FQM taints/annotations", "node", nodename)
 	} else {
+		if c.DryRunMode {
+			slog.InfoContext(ctx, "Would cordon node (dry run)", "node", nodename)
+			return
+		}
+
 		slog.InfoContext(ctx, "Cordoning node", "node", nodename)
 
-		if !c.DryRunMode {
-			node.Spec.Unschedulable = true
-		}
+		node.Spec.Unschedulable = true
 	}
 }
 
@@ -785,9 +811,11 @@ func (c *FaultQuarantineClient) removeTaints(
 func (c *FaultQuarantineClient) handleUncordon(
 	ctx context.Context, node *v1.Node, labels map[string]string, nodename string,
 ) {
-	slog.InfoContext(ctx, "Uncordoning node", "node", nodename)
+	if c.DryRunMode {
+		slog.InfoContext(ctx, "Would uncordon node (dry run)", "node", nodename)
+	} else {
+		slog.InfoContext(ctx, "Uncordoning node", "node", nodename)
 
-	if !c.DryRunMode {
 		node.Spec.Unschedulable = false
 	}
 
@@ -806,6 +834,18 @@ func (c *FaultQuarantineClient) handleUncordon(
 	}
 }
 
+// ConditionalLabelRemoval removes Keys from a Node only while that Node still
+// has GuardKey set to GuardValue. It is evaluated inside the update callback so
+// the ownership check is re-run against the freshly fetched Node on every
+// conflict retry, rather than being decided once from a possibly stale cache.
+// This prevents a concurrent owner change from causing a retry to strip another
+// controller's labels.
+type ConditionalLabelRemoval struct {
+	Keys       []string
+	GuardKey   string
+	GuardValue string
+}
+
 // HandleManualUncordonCleanup atomically removes FQ annotations/taints/labels and adds manual uncordon annotation
 // This is used when a node is manually uncordoned while having FQ quarantine state
 func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
@@ -814,6 +854,7 @@ func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 	annotationsToRemove []string,
 	annotationsToAdd map[string]string,
 	labelsToRemove []string,
+	conditionalLabels *ConditionalLabelRemoval,
 ) error {
 	updateFn := func(node *v1.Node) error {
 		if len(annotationsToRemove) > 0 || len(annotationsToAdd) > 0 {
@@ -821,6 +862,14 @@ func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 		}
 
 		c.removeLabels(ctx, node, labelsToRemove, nodename)
+
+		// Re-check ownership against the live Node before removing the cordon
+		// bookkeeping labels. Evaluated here (not by the caller) so it holds on
+		// every conflict-retried invocation with a fresh Node.
+		if conditionalLabels != nil && len(conditionalLabels.Keys) > 0 &&
+			node.Labels[conditionalLabels.GuardKey] == conditionalLabels.GuardValue {
+			c.removeLabels(ctx, node, conditionalLabels.Keys, nodename)
+		}
 
 		return nil
 	}

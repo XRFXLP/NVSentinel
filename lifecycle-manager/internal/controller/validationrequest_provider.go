@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"path/filepath"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,7 +42,7 @@ type TemplateContext struct {
 	Namespace             string
 	TimeoutSeconds        int64
 	Nodes                 []NodeTemplateContext
-	Tests                 []string
+	Tests                 []TestTemplateContext
 	Image                 string
 	Command               []string
 	Env                   []corev1.EnvVar
@@ -50,6 +51,12 @@ type TemplateContext struct {
 
 type NodeTemplateContext struct {
 	NodeName string
+}
+
+type TestTemplateContext struct {
+	Name          string
+	BandwidthGBps *string
+	GoodputRatio  *string
 }
 
 type TolerationTemplateContext struct {
@@ -166,7 +173,8 @@ Each TemplateContext field is populated from the following sources:
 - Namespace             = r.Namespace
 - TimeoutSeconds        = r.Config.Validation.Spec.Providers[group.Provider].Timeout
 - Nodes                 = group.Nodes
-- Tests                 = group.Tests
+- Tests                 = group.Tests, each paired with its BandwidthGBps/GoodputRatio from
+r.Config.Validation.Spec.Tests[name]
 - Image, Command, Env   = r.Config.Validation.Spec.Tests[group.Tests[0]]
 - Tolerations           = a fixed toleration for the unschedulable taint and one per taint in
 r.Config.Validation.Spec.SchedulingGate.Taints
@@ -187,6 +195,16 @@ func (r *ValidationRequestReconciler) renderTestGroupObject(vr *v1alpha1.Validat
 	nodeContext := make([]NodeTemplateContext, len(group.Nodes))
 	for i, n := range group.Nodes {
 		nodeContext[i] = NodeTemplateContext{NodeName: n}
+	}
+
+	testContext := make([]TestTemplateContext, len(group.Tests))
+	for i, name := range group.Tests {
+		testCfg := r.Config.Validation.Spec.Tests[name]
+		testContext[i] = TestTemplateContext{
+			Name:          name,
+			BandwidthGBps: testCfg.BandwidthGBps,
+			GoodputRatio:  testCfg.GoodputRatio,
+		}
 	}
 
 	var (
@@ -232,7 +250,7 @@ func (r *ValidationRequestReconciler) renderTestGroupObject(vr *v1alpha1.Validat
 		Namespace:             r.Namespace,
 		TimeoutSeconds:        providerCfg.TimeoutSeconds,
 		Nodes:                 nodeContext,
-		Tests:                 group.Tests,
+		Tests:                 testContext,
 		Image:                 image,
 		Command:               command,
 		Env:                   env,
@@ -284,6 +302,14 @@ func attemptObjectName(vrName, grpName string, attemptNumber int) string {
 }
 
 func hashTruncate(base string, maxBase int) string {
+	return hashTruncateTrimmed(base, maxBase, "")
+}
+
+// hashTruncateTrimmed is hashTruncate that also strips any trailing cutset
+// characters from the kept prefix, for name formats where a separator directly
+// before the "-<hash>" suffix is invalid. An empty cutset must keep the output
+// identical to hashTruncate: existing ValidationRequest object names depend on it.
+func hashTruncateTrimmed(base string, maxBase int, cutset string) string {
 	if len(base) <= maxBase {
 		return base
 	}
@@ -296,7 +322,7 @@ func hashTruncate(base string, maxBase int) string {
 		return hash[:maxBase]
 	}
 
-	return fmt.Sprintf("%s-%s", base[:maxBase-len(hash)-1], hash)
+	return fmt.Sprintf("%s-%s", strings.TrimRight(base[:maxBase-len(hash)-1], cutset), hash)
 }
 
 func providerGVK(p v1alpha1.ProviderConfig) schema.GroupVersionKind {

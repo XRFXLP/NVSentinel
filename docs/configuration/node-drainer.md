@@ -75,11 +75,24 @@ kubectl -n nvsentinel rollout status deployment/node-drainer --timeout=180s
 
 If enabled, the node-drainer will only drain pods which are leveraging the GPU_UUID impacted entity in COMPONENT_RESET HealthEvents. If disabled, the node-drainer will drain all eligible pods on the impacted node for the configured namespaces regardless of the remediation action. HealthEvents with the COMPONENT_RESET remediation action must include an impacted entity for the unhealthy GPU_UUID or else the drain will fail. 
 
+A partial drain also fails if a pod requests GPUs but has no `dgxc.nvidia.com/devices` annotation, because the metadata-collector is then not working. A pod requests GPUs through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits, or through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. The node-drainer reads ResourceClaims only for pods that have DRA claims and no device annotation.
+
 IMPORTANT: If this setting is enabled, the COMPONENT_RESET action in fault-remediation must map to a custom resource which takes action only against the GPU_UUID. If partial drain was enabled in node-drainer but fault-remediation mapped COMPONENT_RESET to a reboot action, pods which weren't drained would be restarted as part of the reboot.
 ```yaml
 node-drainer:
   partialDrainEnabled: true
 ```
+
+### Partial Drain Entity Metric
+
+Registers `node_drainer_partial_drains_total{node, entity_type, entity_value}`.
+
+```yaml
+node-drainer:
+  partialDrainEntityMetricEnabled: false
+```
+
+Off by default because `entity_value` holds a GPU UUID, which adds one time series per GPU in the fleet. The `drain_scope` label on `node_drainer_events_processed_total` already separates partial drains from full ones without that cardinality. Enable this only when you need per-GPU attribution and your Prometheus can carry the extra series.
 
 ### Eviction Timeout
 
@@ -91,6 +104,21 @@ node-drainer:
 ```
 
 This timeout is passed as the `GracePeriodSeconds` in the Kubernetes eviction API call. Only used for `Immediate` eviction mode. Other modes respect the pod's configured `terminationGracePeriodSeconds`.
+
+### Requeue Backoff Base
+
+Base duration for exponential backoff on drain requeues in `Immediate` mode.
+
+```yaml
+node-drainer:
+  requeueBackoffBase: 10s
+```
+
+When pods cannot be evicted immediately, the node drainer requeues the drain event. Retries use exponential backoff starting at `requeueBackoffBase` and double up to a two-minute maximum.
+
+Configure this setting based on the workload pod termination time:
+- For zero-grace pods (`terminationGracePeriodSeconds: 0`), set a lower base such as `2s` to decrease drain latency.
+- For workloads with standard grace periods (`terminationGracePeriodSeconds: 30`), pod termination dominates drain latency. A short retry interval increases redundant eviction calls.
 
 ### System Namespaces
 
@@ -134,7 +162,7 @@ node-drainer:
   drainGPUPods: false
 ```
 
-The node-drainer detects GPU resource requests through device annotations added to pods by the metadata-collector. Pods with device annotations are identified as GPU workloads and eligible for eviction.
+The node-drainer detects GPU resource requests through device annotations added to pods by the metadata-collector. Pods with device annotations are identified as GPU workloads and eligible for eviction. A pod without the annotation is also a GPU workload if it requests GPUs through `nvidia.com/gpu` or `nvidia.com/pgpu` container limits, or through a DRA ResourceClaim for the `gpu.nvidia.com` DeviceClass. If the node-drainer cannot read a ResourceClaim, the drain stops and retries.
 
 Device annotations are added to pods requesting GPU resources by metadata-collector with the format:
 ```yaml
@@ -144,7 +172,7 @@ annotations:
 
 #### Behavior
 
-- **When enabled (`true`)**: Only pods with GPU device annotations are evicted during drain operations
+- **When enabled (`true`)**: Only pods with GPU device annotations, or that request GPUs through container limits or DRA claims, are evicted during drain operations
 - **When disabled (`false`)**: All eligible pods in configured namespaces are evicted (default behavior)
 - Pods without GPU requests are preserved, maintaining critical infrastructure services
 
@@ -172,11 +200,45 @@ Each policy has a unique, non-empty `name`, a non-empty `podSelector`, and a `mo
 
 Policy order takes precedence over mode: an early `AllowCompletion` match cannot be overridden by a later `Immediate` match. There is no namespace fallback in policy mode. Ensure the selectors cover every workload that should participate in draining. To retain namespace-based draining instead, leave `podDrainPolicies` empty and configure `userNamespaces` as before.
 
-Policies narrow eligible workloads; system namespace exclusions, DaemonSet exclusions, GPU-only filtering and partial GPU drain scope still apply. `DrainOverrides.Force` changes the selected pods' mode to `Immediate` without widening that scope. `DrainOverrides.Skip` retains its existing behavior. Custom drain configuration cannot be combined with pod drain policies.
+Policies narrow eligible workloads; system namespace exclusions, DaemonSet exclusions, GPU-only filtering and partial GPU drain scope still apply. `DrainOverrides.Force` changes the selected pods' mode to `Immediate` without widening that scope. `DrainOverrides.Skip` retains its existing behavior. Custom drain configuration cannot be combined with pod drain policies unless `customDrain.nodeSelector` scopes it to part of the cluster; see [Scoping custom drain to part of the cluster](#scoping-custom-drain-to-part-of-the-cluster).
 
 Pod labels are read from the informer cache on each reconciliation and before eviction or timeout deletion. Changing a relevant label changes the policy on a subsequent observation. API deletion preconditions prevent a stale observation from deleting a relabelled or replaced pod. Configuration changes require restarting node-drainer. Only label keys referenced by policies are retained in its pod cache.
 
 `DeleteAfterTimeout` continues to use `deleteAfterTimeoutMinutes` measured from the health event's creation, including after a restart. Policies do not introduce a new timeout or automatically choose a mode based on workload kind; workload owners opt in through labels.
+
+## Scoping custom drain to part of the cluster
+
+`customDrain.enabled: true` replaces node-drainer's own eviction with a
+[drain plugin](../tutorials/writing-a-drain-plugin.md), for the whole cluster. Set
+`customDrain.nodeSelector` when only some nodes are drained that way — a Slurm or LSF partition
+alongside nodes running ordinary Kubernetes workloads, for example. Nodes matching the selector go
+through the plugin; every other node keeps the built-in eviction path, so `userNamespaces` or
+`podDrainPolicies` must stay configured for them. The selector uses standard
+[Kubernetes label selector syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors).
+
+```yaml
+node-drainer:
+  customDrain:
+    enabled: true
+    nodeSelector: "nvsentinel.example.com/scheduler=slurm"
+    # ... CR template and status condition settings
+  userNamespaces:
+    - name: "*"
+      mode: "AllowCompletion"
+```
+
+An empty or omitted `nodeSelector` keeps the original behavior: every node goes through custom
+drain, and configuring `userNamespaces` or `podDrainPolicies` alongside it is rejected at startup.
+
+A `nodeSelector` with neither `userNamespaces` nor `podDrainPolicies` is rejected at startup as
+well: the unmatched nodes would reach the built-in eviction path with no namespace and no policy to
+act on, and be marked drained while their pods keep running. An invalid selector is also rejected at
+startup.
+
+The drain path is chosen per health event from the node's labels as the informer cache holds them,
+so relabelling a node changes the path taken by subsequent events. A node the cache cannot resolve
+is retried rather than assigned a path. Only the label keys the selector references are retained in
+the node cache.
 
 ## User Namespaces
 

@@ -79,6 +79,19 @@ A consumed `CREATE` request skips cold start and records its creation time. Late
 
 Cold-start activity is exposed through `fault_quarantine_cold_start_events_total{result=...}` and `fault_quarantine_cold_start_duration_seconds`.
 
+### GPU Node Label
+
+Label selector, as `key=value`, that identifies GPU nodes. The node informer watches only matching nodes, and the circuit breaker counts only those nodes when it measures the cordoned percentage.
+
+```yaml
+fault-quarantine:
+  gpuNodeLabel: "nvidia.com/gpu.present=true"
+```
+
+The default matches the label the NVIDIA GPU Operator applies. Override it when your cluster labels GPU nodes differently.
+
+A selector that matches no node gives the circuit breaker a node count of zero. It then logs `Total nodes is still 0 after all retry attempts - cluster may have no GPU nodes` and returns an error instead of a decision, so check this value first when the breaker behaves unexpectedly on a cluster with non-standard labels.
+
 ### Label Prefix
 
 Defines the prefix for all node labels created by the module to track cordon/uncordon lifecycle.
@@ -102,6 +115,8 @@ Labels use the configured `{labelPrefix}` (default `k8saas.nvidia.com/`):
 
 Prevents too many nodes from being quarantined simultaneously, protecting against cluster-wide cascading failures.
 
+The breaker is not created in dry-run mode. Dry run cordons nothing, so it neither counts toward nor is halted by the breaker, and no trip carries over when dry run is switched off.
+
 ### Configuration
 
 ```yaml
@@ -110,6 +125,8 @@ fault-quarantine:
     enabled: true
     percentage: 50
     maxNodes: 0
+    maxCordonedNodes: 0
+    maxCordonedPercentage: 0
     duration: "5m"
 ```
 
@@ -126,14 +143,40 @@ Maximum absolute number of nodes that can be quarantined within the time window,
 
 When both bounds are set, **the lower one binds**. This is the point of the setting: a percentage silently tracks fleet growth, so a limit chosen for a 100 node cluster becomes three times as permissive at 300 nodes, while an absolute bound does not move. Fleet-wide operators can therefore express "no more than X% *and* never more than N nodes" in one config that stays correct as clusters grow.
 
-At least one of `percentage` and `maxNodes` must be positive, and a negative value for either is rejected rather than ignored. The breaker refuses to start otherwise, so it cannot be silently reduced to a no-op while `enabled: true`. For the same reason, a threshold above the fleet size is clamped to the fleet size rather than being left unreachable, and the `bound` label described below reports `fleetSize` when that happens. To turn the breaker off, use `enabled: false` rather than an unreachable threshold.
+#### maxCordonedNodes
+Standing cap on how many nodes NVSentinel holds quarantined **at once**, counting only its own cordons. Defaults to `0`, which disables it.
+
+This is the only bound that limits a total. `percentage` and `maxNodes` both count cordon events inside `duration`, so they limit the *rate* of cordoning and not the number of nodes that end up cordoned: a rate that stays just under the threshold still reaches the whole fleet given enough windows. On a 300 node cluster, `maxNodes: 5` with a `5m` window permits 4 cordons every window indefinitely, which is the entire fleet in about six hours without ever tripping.
+
+Lengthening `duration` is not a substitute. The window is bucketed at one second, so `24h` allocates 86,400 buckets and the sliding-window advance is O(steps x buckets); it also trips on a day's accumulated churn rather than on how many nodes are actually out of service.
+
+Nodes cordoned by anything other than NVSentinel are not counted, so a GPU operator upgrade or an operator's own `kubectl cordon` does not consume this budget.
+
+The two kinds of bound compose rather than compete: keep `percentage` or `maxNodes` to bound a burst, and add `maxCordonedNodes` to bound the standing total. It is evaluated only when the window bounds have not already tripped, so it can add a reason to trip but never remove one.
+
+At least one of `percentage`, `maxNodes`, `maxCordonedNodes` and `maxCordonedPercentage` must be positive, and a negative value for any of them is rejected rather than ignored. The breaker refuses to start otherwise, so it cannot be silently reduced to a no-op while `enabled: true`.
+
+For the same reason, a **window** threshold above the fleet size is clamped to the fleet size rather than being left unreachable, and the `bound` label described below reports `fleetSize` when that happens. This clamp applies to `percentage` and `maxNodes` only.
+
+The standing bounds are **not** clamped to the fleet size, because they are compared against the count of nodes NVSentinel holds quarantined, which is taken from an index over every watched node while the fleet total counts only GPU-labelled ones. That count can legitimately exceed the GPU total, for example when a quarantined node's GPU label is temporarily absent, so clamping would trip the breaker spuriously. `maxCordonedNodes` therefore never reports `fleetSize`. `maxCordonedPercentage` reports it only for a value above `100`, where the scaled result is capped before an unsafe float-to-int conversion.
+
+To turn the breaker off, use `enabled: false` rather than an unreachable threshold.
+
+#### maxCordonedPercentage
+The percentage form of `maxCordonedNodes`: the share of the GPU fleet NVSentinel may hold quarantined at once. Defaults to `0`, which disables it. Rounds up, so `25` on a 12-node cluster is 3 nodes.
+
+It pairs with `maxCordonedNodes` exactly as `percentage` pairs with `maxNodes`: when both are set **the lower one binds**, so growing the fleet cannot silently raise the standing limit.
+
+Prefer this form when the blast radius you care about is a share of the fleet rather than a number of machines. An absolute count silently changes meaning when a cluster is resized: `maxCordonedNodes: 3` is a quarter of a 12-node cluster and 19% once it grows to 16, and nothing fails or warns at the resize. Prefer `maxCordonedNodes` when you genuinely mean a fixed number of machines, or when one value has to be shared across clusters of differing size.
+
+The denominator is the GPU node population, the same one `percentage` uses. The numerator counts only NVSentinel's own cordons, so the bound limits NVSentinel's own standing footprint rather than total out-of-service capacity; an operator cordon or a GPU operator upgrade neither consumes nor relaxes it. To alert on total capacity out of service, watch all unschedulable nodes separately.
 
 #### duration
 Time window for tracking cordon events. The circuit breaker counts unique node cordons within this sliding window.
 
 ### Observability
 
-`fault_quarantine_breaker_threshold_nodes{bound}` reports the effective threshold in nodes, with `bound` naming what produced it: `percentage`, `maxNodes`, or `fleetSize` when a configured bound exceeded the cluster size and was clamped. `fault_quarantine_breaker_utilization` keeps its existing meaning, the recent cordon count as a fraction of GPU nodes, so existing dashboards and alerts are unaffected.
+`fault_quarantine_breaker_threshold_nodes{bound}` reports the effective threshold in nodes, with `bound` naming what produced it: `percentage`, `maxNodes`, `maxCordonedNodes` or `maxCordonedPercentage` when the standing bound is what tripped, or `fleetSize` when a configured bound exceeded the cluster size and was clamped. `fault_quarantine_breaker_utilization` keeps its existing meaning, the recent cordon count as a fraction of GPU nodes, so existing dashboards and alerts are unaffected.
 
 ### Configuration Examples
 
@@ -168,6 +211,26 @@ circuitBreaker:
   enabled: true
   percentage: 0
   maxNodes: 2
+  duration: "5m"
+```
+
+Burst bound plus a standing bound, for "no more than 5 cordons in any 5 minutes, and never more than 20 nodes out of service at once":
+```yaml
+circuitBreaker:
+  enabled: true
+  percentage: 0
+  maxNodes: 5
+  maxCordonedNodes: 20
+  duration: "5m"
+```
+
+The same standing bound as a share of the fleet, so it keeps its meaning as the cluster is resized:
+```yaml
+circuitBreaker:
+  enabled: true
+  percentage: 0
+  maxNodes: 5
+  maxCordonedPercentage: 25
   duration: "5m"
 ```
 
@@ -310,3 +373,21 @@ helm upgrade nvsentinel ./distros/kubernetes/nvsentinel \
 The chart renders the list into the `fault-quarantine` ConfigMap (`config.toml`); a config change triggers a pod restart.
 
 Use `global.dryRun: true` to test without cordoning nodes (see [Dry Run Mode](./README.md#dry-run-mode)). Confirm the rollout with `kubectl -n nvsentinel rollout status deployment/fault-quarantine` and check `kubectl -n nvsentinel logs deployment/fault-quarantine`.
+
+In dry run, fault-quarantine records what it would have done without cordoning, tainting or labelling:
+
+- The quarantine annotations are written as usual, plus `quarantineHealthEventDryRun: "True"`. They are kept across restarts and when something else cordons or uncordons the node.
+- `fault_quarantine_dry_run_actions_total{action="quarantine|unquarantine"}` counts these decisions. The quarantine metrics (`fault_quarantine_cordons_applied_total` and the rest) count only applied actions.
+- Logs read `Would cordon node (dry run)` and `Would uncordon node (dry run)`.
+- The datastore status is still `Quarantined`, so dry-run and real decisions are told apart by when dry run was enabled.
+
+When dry run is switched off, fault-quarantine discards dry-run quarantines on startup: it removes their annotations and cancels their quarantining events, so node-drainer does not act on them. A cordon someone else applied is left in place. The next fault on the node is quarantined for real.
+
+Cancelling the events is best-effort, as on the manual uncordon path. If it fails, fault-quarantine logs `Failed to cancel dry-run quarantining events` with the node name and increments `fault_quarantine_processing_errors_total{error_type="mongodb_cancel_quarantine_error"}`. The annotations are already gone, so a restart does not retry, and that node's events stay `Quarantined`, where node-drainer can still pick them up. After switching dry run off, check that counter. If it moved, set `healtheventstatus.nodequarantined` to `Cancelled` on the node's remaining `Quarantined` events before node-drainer acts on them.
+
+Before switching dry run off on a cluster that ran dry run on an earlier version:
+
+- Check the circuit breaker ConfigMap. Earlier versions counted dry-run cordons, so the breaker may have tripped and persisted `TRIPPED`, which halts fault-quarantine at startup once dry run is off. Reset it as described in [Circuit Breaker](#circuit-breaker).
+- Switch dry run off before upgrading. Annotations written by an earlier version carry no dry-run marker, so after an upgrade a restart in dry run would still report them once as manual uncordons.
+
+Before rolling back to an earlier version, remove the marker from every node with `kubectl annotate nodes --all quarantineHealthEventDryRun-`. Earlier versions do not know it and leave it in place. A real quarantine made by the earlier version would then carry the marker, and after the next upgrade it would be discarded as a dry run, leaving the node cordoned with no record. A real quarantine made by this version removes any leftover marker.
