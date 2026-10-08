@@ -1,4 +1,4 @@
-# pNVSentinel end-to-end scale test — report
+# NVSentinel end-to-end scale test — report
 
 Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied input.
 
