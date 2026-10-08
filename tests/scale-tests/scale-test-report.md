@@ -86,7 +86,7 @@ Those totals are the central modules, paid once for the fleet. The node agents a
 
 **How the recommendations are derived.** Request is the measured working-set peak rounded up to the next whole Gi, and limit is 1.5x the request. Request tracks the peak rather than a steady state because working set here is a high-water mark the process holds for its lifetime: `heap_released` stays at 0.26 GB, so freed memory is never returned to the OS and a request set at steady state would be an overcommit the scheduler cannot see. The limit is headroom against an OOM kill rather than against throttling, since memory is incompressible. Two rows depart from this: fault-remediation and health-events-analyzer are sized for a queued backlog and a triggered path respectively, neither of which an idle pod's working set shows, and both say so in their own sections.
 
-Component working set against fleet size
+![Component working set against fleet size](results/component-memory.png)
 
 
 | Nodes   | Total  | platform-connector | kubernetes-object-monitor | fault handling | other services | MongoDB |
@@ -99,7 +99,7 @@ Component working set against fleet size
 
 Fault handling is fault-quarantine, node-drainer, fault-remediation and janitor; other services is labeler, preflight and health-events-analyzer. Each column sums those services' tables below at that fleet size, with the connector's own figure from the ten-point sweep in A1.7. The 100,000-node row is the loaded fleet, with a pod on every node. labeler is measured with two pods per node throughout, because the DCGM and driver DaemonSets scale with the fleet. MongoDB is measured at 100,000 nodes and repeated down the column because it does not vary with the fleet.
 
-Control-plane memory by component
+![Control-plane memory by component](results/control-plane-memory-deployment.png)
 
 One note should be called here: memories in the graph above were considered to that of peak and not steady state, this sometimes differs by large margin because a module that prunes an object still holds the full one while it does so. As an example:
 
@@ -207,7 +207,7 @@ Eager informers, five in total: one for Nodes with a fixed field projection, **t
 
 The bootstrap sweep is serial, one node and one PATCH at a time, and labeler runs raw client-go informers rather than a controller-runtime manager, so there is no concurrency setting to raise.
 
-Labeler cold-start sweep against fleet size
+![Labeler cold-start sweep against fleet size](results/labeler-cold-start.png)
 
 Measured as a first-install cold start: a freshly created fleet carrying none of labeler's labels, a Ready DCGM pod and a Ready driver pod on every node so the full label path runs, and KWOK verified renewing node leases throughout. Timed from container start to the `Completed initial node label reconciliation` line, so informer sync is included. `[M]`
 
@@ -284,7 +284,7 @@ Those figures are with an empty queue, and the queue is where this component's m
 
 Each per-event figure is the working-set increase over that run's own baseline divided by the events queued, and the same axes put node-drainer's two paths beside them:
 
-Memory held by a queued backlog
+![Memory held by a queued backlog](results/queue-memory.png)
 
 Recommended **2 Gi / 4 Gi**. The working set is a rounding error, but a queued backlog is not: 4 Gi covers roughly three million events on the live path.
 
@@ -325,7 +325,7 @@ Gang coordination is the expensive path and the only one that calls the Kubernet
 | 2,048     | 14.2 s      | 143.8     | 14.6 ms       | 24.8 ms       | 0           | 2,048 of 2,048   |
 
 
-Preflight gang admission against gang size
+![Preflight gang admission against gang size](results/preflight-gang.png)
 
 Per-member admission cost does not move across a 4x change in gang size, and every gang registered all of its peers with no fail-open. Gang size is therefore not a scaling axis for preflight: a gang costs what its members cost, and the ConfigMap write per member does not get more expensive as the file grows. Whole-gang time fits 2.2 s + 5.9 ms per member across the three points, but that slope belongs to the API server and the 64-writer harness, not to preflight, whose share is 15 ms spread across 64 concurrent admissions.
 
@@ -432,7 +432,7 @@ Measured at ten fleet sizes with three connections per node -- one for each heal
 | 100,000 | 299,985     | 22,698 MB         | 7,566 MB    | 1.94                | 8 Gi                | 12 Gi             | 650m             | 1000m          |
 
 
-Connector memory against fleet size
+![Connector memory against fleet size](results/connector-memory-fleet.png)
 
 Memory is proportional to fleet size at about 235 KiB per node, flat to within 6.5% across a fiftyfold range. About 97% of that is the connections a node holds and 3% the labels cached for it, so one publisher fewer per node moves about a third of the cost where emptying `allowedLabels` moves 3%. The measurement is in [Connector memory: connections against label cache](#connector-memory-connections-against-label-cache-m).
 
@@ -493,7 +493,7 @@ Size the pool first and the replica count second:
 | 4    | leave about 30% per-replica headroom                                            | the PodDisruptionBudget permits one down and the survivors absorb its connections: 2,265 MB to 2,851 MB per replica measured |
 
 
-Replicas required, by memory limit
+![Replicas required, by memory limit](results/connector-replicas-needed.png)
 
 At three publishers per node and an unsaturated store, step 2 puts three replicas at 4Gi at about **53,500 nodes**; a 100,000-node fleet needs 7.4 GiB per replica, so it is six replicas at 4Gi or three at 8Gi. Replicas buy throughput as well as memory, so scaling for one moves the other, with nothing in the chart or the metrics saying so, and they are not a free substitute for the reason in [Scaling out](#scaling-out). CPU never binds either way: 1.94 cores across three replicas at 100,000 nodes against the 2 each is allowed.
 
@@ -569,7 +569,7 @@ CPU does not bind at any fleet size measured: 1.94 cores across three replicas a
 
 All growth under continuous load is RebootNode CRs at 993 B median; pods and nodes are unchanged. `apiserver_storage_size_bytes` varies by up to 983 MB between consecutive scrapes, because each API server instance reports its own etcd backend's file size and those files are allocated independently. It also never shrinks, since freed space is reused inside the file rather than returned. The etcd threshold is 16 GB across tiers, but in-use size is published only through CloudWatch, and CloudWatch itself degrades under the load that matters. Its peak reading of 14.59 GB, about 91% of the 4XL tier's 16 GB, is therefore the only signal available rather than an authoritative measurement, and neither that figure nor the 91% derived from it should be used as a margin. The gap is genuine -- no in-cluster metric reports in-use size, since `apiserver_storage_size_bytes` is file-allocated:
 
-etcd blowup
+![etcd blowup](results/etcd-blowup.png)
 
 ### MongoDB
 
@@ -636,7 +636,7 @@ Normalised this way the two rate-limited stages of the fault path are close to b
 
 What a remediation costs, per node, during a 100-node burst:
 
-API calls per remediated node, by verb
+![API calls per remediated node, by verb](results/api-calls-per-node.png)
 
 kubernetes-object-monitor is absent from the per-node column above because its cost is per policy-match transition, not per remediated node. Each transition writes one PUT of a full Node object (`pkg/annotations/manager.go`); a conflict retry adds another, and a reconcile that changes nothing costs nothing.
 
@@ -662,7 +662,7 @@ The capped cache is not free, though it does not cost anything on the write path
 
 ### Cost per event, by component `[M]`
 
-Per-event handling cost by component
+![Per-event handling cost by component](results/cost-per-event.png)
 
 Read from each component's own handling histogram. Lifetime means:
 
@@ -902,7 +902,7 @@ The rollout completed in 31 seconds, ingestion dipped about 4% and recovered, an
 
 N nodes fail at once, on brand-new KWOK nodes with no quarantine history and no pods, so the two stages measured here are fault-quarantine's cordon and fault-remediation's CR creation without drain in between. Each size was injected as a single insert and run in isolation: fresh node names, and nodes, events and CRs deleted before the next size started. Every figure below is a per-node latency from the event's own generation timestamp, so the completion columns are that run's slowest node rather than a separately polled bound.
 
-Time to absorb a burst of N simultaneous failures
+![Time to absorb a burst of N simultaneous failures](results/burst-absorption.png)
 
 
 | Burst | Last node cordoned | cordon P50 / P99 | Last CR created | CR P50 / P99    |
@@ -1153,7 +1153,7 @@ The control plane also stops publishing its own metrics under load. The AWS/EKS 
 
 The AWS VPC CNI expands each `NetworkPolicy` into `PolicyEndpoint` objects, sharded by how many pods the selector matches. The sharding is strictly linear: driving a namespace-wide selector from 1,000 to 51,000 pods produced 1, 6, 21 and 51 shards at those points, exactly **1,000 pod endpoints per shard**.
 
-PolicyEndpoint shards against selected pods
+![PolicyEndpoint shards against selected pods](results/policyendpoint-sharding.png)
 
 NVSentinel's `metrics-access` policy selects every pod in its namespace, and the benchmark put roughly 158,000 pods there. Eighty-three shards existed and no more appeared, and the CNI went on enforcing what it had last programmed: MongoDB was refused on 27017 by a source-IP list naming pods that no longer existed, and policies deleted by `helm uninstall` sat `Terminating` for three days while still isolating their pods. Deleting the 83 stale shards restored connectivity in about two minutes.
 
