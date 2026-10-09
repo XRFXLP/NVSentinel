@@ -530,9 +530,13 @@ func (ni *NodeInformer) handleDeleteNode(obj any) {
 	}
 }
 
-// isGPUNode reports whether a node counts toward the circuit breaker's denominator.
+// isGPUNode reports whether a node counts toward the circuit breaker's denominator. The
+// label must be present, as the label selector this replaces required: an empty
+// configured value must not match nodes that lack the label.
 func (ni *NodeInformer) isGPUNode(node *v1.Node) bool {
-	return node.Labels[ni.gpuNodeLabelKey] == ni.gpuNodeLabelValue
+	value, ok := node.Labels[ni.gpuNodeLabelKey]
+
+	return ok && value == ni.gpuNodeLabelValue
 }
 
 // countAddedNode counts a node entering the cache, including every node of the initial list.

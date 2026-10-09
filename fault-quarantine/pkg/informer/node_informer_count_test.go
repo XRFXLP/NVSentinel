@@ -166,3 +166,14 @@ func TestGetNodeCounts_MatchesRecountAfterMixedChanges(t *testing.T) {
 	requireGPUTotal(t, ni, 10)
 	require.Equal(t, recountGPUNodes(t, ni), 10, "counter and a full recount disagree")
 }
+
+func TestIsGPUNode_EmptyValueRequiresTheLabel(t *testing.T) {
+	ni := &NodeInformer{gpuNodeLabelKey: GPUNodeLabel, gpuNodeLabelValue: ""}
+
+	unlabelled := countTestNode("cpu-1", false)
+	require.False(t, ni.isGPUNode(unlabelled), "a node without the label must not match an empty value")
+
+	labelled := countTestNode("gpu-1", false)
+	labelled.Labels[GPUNodeLabel] = ""
+	require.True(t, ni.isGPUNode(labelled), "a node carrying the label with an empty value must match")
+}
