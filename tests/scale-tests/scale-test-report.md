@@ -68,13 +68,15 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
 
 NVSentinel has been tested upto 100k nodes, resource consumption grows predictably with fleet size and stays within ordinary limits with reasonable throughputs.
 
-At 100,000 nodes with a pod on every node, the whole control plane needs about 187 GB of memory in deployment mode: 84 GB of NVSentinel modules and 103 GB (32 Gi per member) for MongoDB's three members at 0.01 events per node per second. The platform connector is the largest module at 47.7 GB across three replicas, 15.9 GB in each with the store backed up (7.6 GB when it keeps up), then kubernetes-object-monitor at 19.8 GB (15 GB with minimal pods), labeler at 6.6 GB, janitor 4.9 GB, fault-quarantine 3.3 GB, node-drainer 1.0 GB, and nothing else above 0.6 GB. MongoDB is sized by event rate, not connections: its members need 4 Gi at 10,000 nodes, 12 Gi at 25,000, 24 Gi at 50,000 and 32 Gi at 100,000 (see [Sizing the WiredTiger cache](#sizing-the-wiredtiger-cache)).
+At 100,000 nodes with a pod on every node, the whole control plane needs about 187 GB of memory in deployment mode: 84 GB of NVSentinel modules and 103 GB (32 Gi per member) for MongoDB's three members at 0.01 events per node per second. The platform connector is the largest module at 47.7 GB across three replicas, 15.9 GB in each when MongoDB accepts events more slowly than they arrive and every publisher connection holds a waiting request (7.6 GB each when MongoDB keeps up), then kubernetes-object-monitor at 19.8 GB (15 GB with minimal pods), labeler at 6.6 GB, janitor 4.9 GB, fault-quarantine 3.3 GB, node-drainer 1.0 GB, and nothing else above 0.6 GB. MongoDB is sized by event rate, not connections: its members need 4 Gi at 10,000 nodes, 12 Gi at 25,000, 24 Gi at 50,000 and 32 Gi at 100,000 (see [Sizing the WiredTiger cache](#sizing-the-wiredtiger-cache)).
 
 CPU constrains one component. kubernetes-object-monitor uses 0.99 to 3.24 cores at 75,005 nodes and 4.09 to 5.48 at 100,005, so it needs four cores and eight respectively. Every other component stayed well inside its limit with no throttling.
 
 Under continuous load, time to cordon is 26 ms P50 and 165 ms P99, and time to remediate -- drained to the remediation CR being created -- is 0.08 s P50 and 0.17 s P99. Everything NVSentinel does outside the drain totals 91 ms P50. The drain itself is the one term that does not belong to NVSentinel's speed: a node carrying one evictable pod takes about ten seconds, which is one of node-drainer's recheck cycles rather than eviction time, and five hundred nodes failing at once stretches it to 52 s with every node completing.
 
 What broke during testing was the infrastructure around NVSentinel, not NVSentinel. Two failures took MongoDB down with them. The AWS VPC CNI stopped rebuilding `PolicyEndpoint` objects and went on enforcing stale rules, which blocked MongoDB's traffic; the EBS CSI provisioner ran out of memory and stopped attaching volumes cluster-wide, which stranded MongoDB's volumes. A third failure did not touch MongoDB: etcd crossing its 16 GB threshold put the cluster into read-only, so the Kubernetes API refused writes while the running database carried on serving. The first two are described in the appendix; etcd's budget is in A2.
+
+**DaemonSet or Deployment platform connector.** Either works below a few thousand nodes; from about 10,000 nodes, use the Deployment. The DaemonSet opens 7 MongoDB connections per node, which costs MongoDB about 1.7 MB per node (85 GB measured at 50,000 nodes); the Deployment's replicas cost about 0.5 MB per node. The Deployment gives up burst capacity (a fixed ceiling of about 3,500 events/s at 100,000 nodes) and adds about 1,700-2,000 TokenReviews/s to the API server.
 
 ---
 
@@ -97,7 +99,7 @@ Those totals are the central modules, paid once for the fleet. The node agents a
 | 100,000 | ~187 GB | 47.7 GB            | 19.8 GB                   | 9.2 GB         | 7.2 GB         | 103.1 GB |
 
 
-Fault handling is fault-quarantine, node-drainer, fault-remediation and janitor; other services is labeler, preflight and health-events-analyzer. Each column sums those services' tables below at that fleet size, with the connector's saturated figure (store backed up) from the ten-point sweep in A1.7. The 100,000-node row is the loaded fleet, with a pod on every node. labeler is measured with two pods per node throughout, because the DCGM and driver DaemonSets scale with the fleet. MongoDB is the recommended container limit across its three members at 0.01 events per node per second (4, 12, 24 and 32 Gi per member), from [Sizing the WiredTiger cache](#sizing-the-wiredtiger-cache).
+Fault handling is fault-quarantine, node-drainer, fault-remediation and janitor; other services is labeler, preflight and health-events-analyzer. Each column sums those services' tables below at that fleet size, with the connector's figure for when MongoDB falls behind, from the ten-point sweep in A1.7. The 100,000-node row is the loaded fleet, with a pod on every node. labeler is measured with two pods per node throughout, because the DCGM and driver DaemonSets scale with the fleet. MongoDB is the recommended container limit across its three members at 0.01 events per node per second (4, 12, 24 and 32 Gi per member), from [Sizing the WiredTiger cache](#sizing-the-wiredtiger-cache).
 
 ![Control-plane memory by component](results/control-plane-memory-deployment.png)
 
@@ -418,18 +420,18 @@ Against the DaemonSet arrangement, which opens seven connections per node -- thr
 Measured at ten fleet sizes with three connections per node -- one for each health-monitor DaemonSet a GPU node runs -- over nodes carrying the label set the chart ships. Each connection publishes 0.3 events a minute, about 1,500 events/s at the 100,000-node point, which is well inside the ingest ceiling, so nothing here is waiting on the store. What a blocked connection costs instead is in [Ingest rate and sizing](#ingest-rate-and-sizing).
 
 
-| Nodes   | Connections | Total working set | Per replica | Per replica, saturated | CPU, three replicas | Rec. memory request | Rec. memory limit | Rec. CPU request | Rec. CPU limit |
-| ------- | ----------- | ----------------- | ----------- | ---------------------- | ------------------- | ------------------- | ----------------- | ---------------- | -------------- |
-| 2,000   | 6,000       | 515 MB            | 172 MB      | 361 MB                 | 0.04                | 1 Gi                | 2 Gi              | 50m              | 100m           |
-| 5,000   | 15,000      | 1,231 MB          | 410 MB      | 861 MB                 | 0.08                | 1 Gi                | 2 Gi              | 50m              | 100m           |
-| 7,500   | 22,500      | 1,842 MB          | 625 MB      | 1,313 MB               | 0.12                | 1 Gi                | 2 Gi              | 50m              | 100m           |
-| 10,000  | 30,000      | 2,441 MB          | 814 MB      | 1,709 MB               | 0.15                | 1 Gi                | 2 Gi              | 50m              | 100m           |
-| 15,000  | 45,000      | 3,621 MB          | 1,214 MB    | 2,549 MB               | 0.22                | 2 Gi                | 3 Gi              | 100m             | 150m           |
-| 25,000  | 75,000      | 6,009 MB          | 2,003 MB    | 4,206 MB               | 0.35                | 2 Gi                | 4 Gi              | 150m             | 250m           |
-| 35,000  | 105,000     | 8,346 MB          | 2,784 MB    | 5,846 MB               | 0.46                | 3 Gi                | 6 Gi              | 200m             | 300m           |
-| 50,000  | 150,000     | 11,863 MB         | 3,954 MB    | 8,303 MB               | 0.74                | 4 Gi                | 8 Gi              | 250m             | 400m           |
-| 75,000  | 224,985     | 17,797 MB         | 5,945 MB    | 12,485 MB              | 1.70                | 6 Gi                | 12 Gi             | 600m             | 900m           |
-| 100,000 | 299,985     | 22,698 MB         | 7,566 MB    | 15,889 MB              | 1.94                | 8 Gi                | 15 Gi             | 650m             | 1000m          |
+| Nodes   | Connections | Total working set | Per replica | Per replica, MongoDB behind | CPU, three replicas | Rec. memory request | Rec. memory limit | Rec. CPU request | Rec. CPU limit |
+| ------- | ----------- | ----------------- | ----------- | --------------------------- | ------------------- | ------------------- | ----------------- | ---------------- | -------------- |
+| 2,000   | 6,000       | 515 MB            | 172 MB      | 361 MB                      | 0.04                | 1 Gi                | 2 Gi              | 50m              | 100m           |
+| 5,000   | 15,000      | 1,231 MB          | 410 MB      | 861 MB                      | 0.08                | 1 Gi                | 2 Gi              | 50m              | 100m           |
+| 7,500   | 22,500      | 1,842 MB          | 625 MB      | 1,313 MB                    | 0.12                | 1 Gi                | 2 Gi              | 50m              | 100m           |
+| 10,000  | 30,000      | 2,441 MB          | 814 MB      | 1,709 MB                    | 0.15                | 1 Gi                | 2 Gi              | 50m              | 100m           |
+| 15,000  | 45,000      | 3,621 MB          | 1,214 MB    | 2,549 MB                    | 0.22                | 2 Gi                | 3 Gi              | 100m             | 150m           |
+| 25,000  | 75,000      | 6,009 MB          | 2,003 MB    | 4,206 MB                    | 0.35                | 2 Gi                | 4 Gi              | 150m             | 250m           |
+| 35,000  | 105,000     | 8,346 MB          | 2,784 MB    | 5,846 MB                    | 0.46                | 3 Gi                | 6 Gi              | 200m             | 300m           |
+| 50,000  | 150,000     | 11,863 MB         | 3,954 MB    | 8,303 MB                    | 0.74                | 4 Gi                | 8 Gi              | 250m             | 400m           |
+| 75,000  | 224,985     | 17,797 MB         | 5,945 MB    | 12,485 MB                   | 1.70                | 6 Gi                | 12 Gi             | 600m             | 900m           |
+| 100,000 | 299,985     | 22,698 MB         | 7,566 MB    | 15,889 MB                   | 1.94                | 8 Gi                | 15 Gi             | 650m             | 1000m          |
 
 
 ![Connector memory against fleet size](results/connector-memory-fleet.png)
@@ -438,7 +440,7 @@ Memory is proportional to fleet size at about 235 KiB per node, flat to within 6
 
 Requests and limits are per replica, with the CPU figures the measured usage divided by three.
 
-The working-set columns are from the **quiet** sweep: the datastore kept up, so almost nothing was in flight and a connection cost about 79 KiB. When the store backs up, each connection also holds a waiting request, and measured with the store backed up a connection costs 165-171 KiB, about 2.1x quiet. The saturated column is the quiet per-replica figure times 2.1, and the memory limit is set to cover it, rounded up to the next whole Gi. The 1.5x rule the rest of this report uses does not apply to this component, because its memory tracks requests in flight and the quiet sweep has none. Requests stay as measured; a limit costs nothing until it is used.
+The working-set columns are from the **quiet** sweep: MongoDB kept up, so almost no request was waiting and a connection cost about 79 KiB. MongoDB falls behind when it accepts events more slowly than publishers send them. Each connection then also holds a request waiting for its write, and costs 165-171 KiB, about 2.1x quiet. The "MongoDB behind" column is the quiet per-replica figure times 2.1, and the memory limit is set to cover it, rounded up to the next whole Gi. The 1.5x rule the rest of this report uses does not apply to this component, because its memory tracks requests in flight and the quiet sweep has none. Requests stay as measured; a limit costs nothing until it is used.
 
 #### Ingest rate and sizing
 
@@ -465,9 +467,9 @@ Writing to the primary alone costs 0.8 ms and scales to 26,667 inserts/s, so Mon
 
 Dividing through with the range measured here: 30 pooled connections at 4,925 events/s implies 6.1 ms per operation, and 90 at 10,525 implies 8.5 ms, both inside the band above. A pooled connection spends under 4% of its time writing and the rest waiting for a second member, so the pool is a concurrency budget for waiting, and the chart sets it to 10 per replica.
 
-The acknowledgement these numbers depend on is a property of the replica set and its placement -- three members in one cluster on local NVMe here, where members spread across zones or regions would be slower again -- so a value tuned in one environment does not transfer.
+The acknowledgement these numbers depend on is a property of the replica set and its placement -- three members in one cluster on gp3 EBS volumes here, where members spread across zones or regions would be slower again -- so a value tuned in one environment does not transfer.
 
-The remedy is to raise `DATASTORE_MAX_CONNECTIONS` rather than add replicas, which cost memory and TokenReviews both (see [Scaling out](#scaling-out)). MongoDB can absorb far more concurrency than three pools of ten give it. Lowering the write concern would raise the ceiling severalfold and should not be done, because the majority acknowledgement is what makes a stored fault event durable.
+The remedy is to raise `DATASTORE_MAX_CONNECTIONS` rather than add replicas, which cost memory (see [Scaling out](#scaling-out)). MongoDB can absorb far more concurrency than three pools of ten give it. Lowering the write concern would raise the ceiling severalfold and should not be done, because the majority acknowledgement is what makes a stored fault event durable.
 
 **Recommended default: `DATASTORE_MAX_CONNECTIONS=30`.** It is the measured setting. It more than doubles the ceiling, to 10,525 events/s, and the connector uses less memory than at 10 because fewer publishers sit blocked. The primary does not notice the extra concurrency: it accepts 26,667 inserts/s when it does not wait for a second member.
 
@@ -501,11 +503,11 @@ Size the pool first and the replica count second:
 
 ![Replicas required, by memory limit](results/connector-replicas-needed.png)
 
-At three publishers per node and a backed-up store, step 2 puts three replicas at 4Gi at about **26,000 nodes**, or 17,000 with one replica down (53,500 if the store never falls behind). A 100,000-node fleet needs about 15 GiB per replica, so it is three replicas at 15Gi or twelve at 4Gi. Replicas buy throughput as well as memory, so scaling for one moves the other, with nothing in the chart or the metrics saying so, and they are not a free substitute for the reason in [Scaling out](#scaling-out). CPU never binds either way: 1.94 cores across three replicas at 100,000 nodes against the 2 each is allowed.
+At three publishers per node and MongoDB falling behind, step 2 puts three replicas at 4Gi at about **26,000 nodes**, or 17,000 with one replica down. A 100,000-node fleet needs about 15 GiB per replica, so it is three replicas at 15Gi or twelve at 4Gi. Replicas buy throughput as well as memory, so scaling for one moves the other, with nothing in the chart or the metrics saying so, and they are not a free substitute for the reason in [Scaling out](#scaling-out). CPU never binds either way: 1.94 cores across three replicas at 100,000 nodes against the 2 each is allowed.
 
 #### Scaling out
 
-Adding a replica rebalances on its own in about twelve minutes -- nothing moves a connection except the client redialling, and `MaxConnectionAge` is 10m -- so scale out before the ceiling, not on crossing it. Each replica also keeps its own verdict cache, so the TokenReview rate rose from about 250/s to 280/s going from three replicas to four ([run](#scale-out-rebalancing-m)).
+Adding a replica rebalances on its own in about twelve minutes -- nothing moves a connection except the client redialling, and `MaxConnectionAge` is 10m -- so scale out before the ceiling, not on crossing it. Each replica keeps its own verdict cache, but with one token per publisher that does not add TokenReviews (see [Health-monitor authentication](#health-monitor-authentication-m)).
 
 ## A2. Load on external components
 
@@ -546,21 +548,22 @@ Flow control has headroom that the fleet size does not threaten. APF peaked at *
 
 Authentication costs the API server a TokenReview on most events, and that cost is set by the fleet rather than by the fault rate. The check runs in a unary interceptor, so it is on the path of every RPC, and a positive verdict is held for a fixed two minutes rather than until the token expires -- TokenReview is the only check that notices the bound pod being deleted, so that TTL is also the window in which a deleted pod's token still works.
 
-The cache is keyed by token and the fixture mints one per node, so `TokenCacheSize: 500000` is five times what a 100,000-node fleet needs: it never fills, and every miss is an entry that expired rather than one evicted. Holding 40,000 connections over 20,000 nodes and varying only the publish rate across that two-minute boundary:
+The cache is keyed by token. In production every publisher has its own token on its own connection, so a token is only checked by the replica that its connection lands on. Measured with one token per connection, 5,000 connections each sending one event per minute:
 
 
-| Events per connection per minute | RPC/s | TokenReviews/s | Cache hit | Publish latency |
-| -------------------------------- | ----- | -------------- | --------- | --------------- |
-| 0.3                              | 196   | 145            | 26%       | 16.9 ms         |
-| 1.2                              | 800   | 228            | 71%       | 8.0 ms          |
-| 3.0                              | 1,970 | 248            | 87%       | 6.6 ms          |
+| Replicas | TokenReviews/s | Publish P50 | Publish P99 |
+| -------- | -------------- | ----------- | ----------- |
+| 3        | 17.2           | 4.6 ms      | 53 ms       |
+| 5        | 19.8           | 4.5 ms      | 47 ms       |
 
 
-Request rate rises tenfold while TokenReview rate rises 1.7x and flattens near 250/s. The ceiling is the number of distinct (token, replica) pairs divided by the TTL: each replica keeps its own cache, so a node whose publishers land on several replicas is reviewed once per replica per two minutes. Twenty thousand nodes with two connections apiece predicts about 278/s, against 248/s measured.
+Adding replicas barely changes the TokenReview rate. What extra replicas add is budget: each replica may send up to `TokenReviewQps` (1,000) reviews per second. A 100,000-node fleet with five publishers per node has 500,000 tokens, 100 times the measured run, so it needs about 1,700-2,000 TokenReviews/s. On three replicas that is about 570-660 per replica, under the budget.
 
-A publisher quieter than the TTL has always expired by the time it returns, so it misses every time: at 0.3 events per minute three of four RPCs paid a full round trip to the API server. That is the rate a healthy fleet sits at, so the cache does least where the fleet spends most of its time. It also runs the latency column backwards -- 16.9 ms at 0.3 events per connection per minute against 6.6 ms at 3.0 -- so a latency figure for this path needs its event rate beside it.
+A publisher that sends less often than the two-minute TTL needs a fresh review on every send. Timed from the publisher side, at 1,000 events/s through 40,000 connections, publishers sending every 200 seconds saw 12.7 ms P50 and 127 ms P99, against 10.5 ms and 65 ms for publishers that hit the cache.
 
-A 100,000-node fleet with five publishers per node across three replicas is roughly 300,000 pairs, about 2,500 TokenReviews/s continuously, or 833 per replica against the 1,000 `TokenReviewQps` each is allowed. Negative verdicts are not cached, so a publisher presenting a bad token is reviewed once per RPC with no ceiling at all.
+Over the budget, publishes are not queued. Each review has 8 seconds to complete (`DefaultTokenReviewRetryWindow`). When the rate limiter cannot fit a review into that window, the connector answers `Unavailable` at once and the publisher retries. In steady state the budget is not reached. After a connector restart, every publisher needs a fresh review at once. Each replica admits about 8,000 reviews in the window, so at 100,000 nodes most first publishes are refused and retried, and the fleet is reviewed again in about three minutes at 1,000 per second per replica. That is inside the publisher's five-minute retry window. The three minutes is derived from the measured behaviour, not measured at 100,000 nodes.
+
+Negative verdicts are not cached, so every request with a bad token costs a review, and it uses the same per-replica budget as good publishers. To show this, the budget was lowered to 15 reviews per second across three replicas and 500 publishers with bad tokens were added. The good publishers' successful sends fell from 16 to 5 per second, 2,565 of their publishes failed in 204 seconds, and their P90 rose from 37 ms to 5.4 s.
 
 CPU does not bind at any fleet size measured: 1.94 cores across three replicas at 100,000 nodes, against the six they are allowed. Per event the marginal cost is about 0.2 ms, and raising the event rate tenfold at fixed fleet size raised CPU 2.5x, most of it the fixed cost of holding connections rather than per-event work.
 
@@ -662,9 +665,9 @@ Sustained load also surfaced something the burst did not: **7 `POST 409` conflic
 | mongodb-rs0-2 | secondary | 41          | 2.13 GB  | 1.18 of 1.50 GB  | 0.94 GB   | 1.32 h       |
 
 
-7.1 GB resident across the three members, and it does not scale with node count. Most of each member is cache, which the 4 Gi limit bounds at 1.50 GB; what is left after cache is about 1 GB per member and barely moves between idle and load. No member restarted or was OOM-killed across the run.
+7.1 GB resident across the three members at a 4 Gi limit per member; [Sizing the WiredTiger cache](#sizing-the-wiredtiger-cache) gives the limit a fleet needs. Most of each member is cache, which the 4 Gi limit bounds at 1.50 GB; what is left after cache is about 1 GB per member and barely moves between idle and load. No member restarted or was OOM-killed across the run.
 
-The capped cache is not free, though it does not cost anything on the write path. Application threads evicted 406 pages on the primary and none on either secondary over the 617-second window, so no writer stalled waiting for space. Pages read into cache over the same window were 5,312,670 on the primary, about 8,600 per second against a 1.50 GB bound -- the churn a 10 GB dataset produces when the cache cannot hold it. Writes do not care; a read-heavy workload against the same dataset would.
+The capped cache is not free. Application threads evicted 406 pages on the primary and none on either secondary over the 617-second window, so no writer stalled waiting for space. Pages read into cache over the same window were 5,312,670 on the primary, about 8,600 per second against a 1.50 GB bound -- the churn a 10 GB dataset produces when the cache cannot hold it. At this fleet size that churn slows writes; the sizing section below measures by how much.
 
 ### Sizing the WiredTiger cache
 
@@ -695,7 +698,9 @@ Publish time and the volume's queue depth showed when a limit started to slow th
 
 **Disk.** At 100,000 nodes the volume serves about 2,500 write IOPS for 1,000 events/s, at any memory limit. That is close to the gp3 baseline of 3,000. If the volume turns out to be IOPS-constrained for a given usage pattern, provision more IOPS.
 
-**Conditions.** The sweep used a time-ordered idempotency key ([#1995](https://github.com/NVIDIA/NVSentinel/issues/1995)) and a collection of about 100 million events.
+**Conditions.** The sweep used a time-ordered idempotency key ([#1995](https://github.com/NVIDIA/NVSentinel/issues/1995)) and a collection of about 100 million events. 100,000 nodes at 32 Gi passes with the recommended pool of 30: 20 ms publish, nothing lost.
+
+**Ceiling.** At 100,000 nodes with 32 Gi and the recommended pool of 30, MongoDB falls behind at about 3,500 events/s (3,464 measured), about 3.5 times the steady rate. The ceiling at the smaller recommended limits was not measured; a smaller cache is expected to fall behind at a lower rate.
 
 **Why memory follows the event rate.** The cache must hold the index pages that new entries go to. Consumers read the change stream, not the collection, so only writes use the cache. An index whose keys increase with time writes to one page, which stays in the cache. An index whose keys spread out writes to pages across the index, and each write reads a page from disk if it is not cached. Measured per index on the primary at 2,000 nodes and 1,000 events/s, with the cache held at 3,500 MB and the idempotency key still random:
 
@@ -863,7 +868,19 @@ Publish latency is 7 ms in the median and seconds in the tail, and neither figur
 
 The typical publish is fast and stays fast: P50 holds between 6.18 and 7.42 ms across a 35% increase in collection size, and the tail does not widen with it.
 
-Some writes stall for seconds well short of saturation: P99 ran from 223 ms to 3.97 s while throughput held constant at 2,000 inserts/s against the 4,925 ceiling. The stalls are cyclic and sit in the store write path rather than in authentication; the cause is not established here.
+Some writes stall for seconds well short of saturation: P99 ran from 223 ms to 3.97 s while throughput held constant at 2,000 inserts/s against the 4,925 ceiling. The stalls are cyclic and happened with the working set fully cached. That pattern points at WiredTiger's 60-second checkpoint flushes, but this run did not measure them directly.
+
+At half that rate the stalls do not appear. In a rerun at 1,000 events/s through 40,000 connections, timed from the publisher side as well, none of about 643,000 publishes took longer than 1 second. Half the publishers sent healthy events and half sent unhealthy non-fatal events. MongoDB had 96 Gi per member and about 100 million stored events.
+
+
+|                                | P50     | P90     | P99    |
+| ------------------------------ | ------- | ------- | ------ |
+| Publisher, healthy events      | 15.4 ms | 48.1 ms | 198 ms |
+| Publisher, unhealthy non-fatal | 13.9 ms | 52.6 ms | 192 ms |
+| Connector histogram            | 15.6 ms | 49.5 ms | 223 ms |
+
+
+The token check's cost is in [Health-monitor authentication](#health-monitor-authentication-m). Healthy events that only read the node took about 1.5 ms longer at the median. Fatal events, and healthy events that clear a condition, also write the node condition, which took 17 ms P50 and 73 ms P99. P99 rose and fell at the same moments for healthy and unhealthy publishers, so the tail comes from the MongoDB write, not the node update.
 
 For the customer-facing numbers in [MTTR decomposition](#mttr-decomposition), publish latency sits in front of detect → cordon. In the median it is invisible. In the tail it is the largest part of that stage, a fault that lands in a stall is cordoned seconds after it is reported rather than milliseconds, but it is still a few percent of detect → back in service, 70 s P50 and 89 s P99, which drain and reboot dominate.
 
