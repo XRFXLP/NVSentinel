@@ -408,7 +408,7 @@ Two limits on these numbers. Per-pod network and CFS throttling are not included
 
 ### platform-connector, deployment mode `[M]`
 
-The platform connector runs as a central Deployment that publishers reach over gRPC, enabled by `platformConnector.deployment.enabled`. Measured on upstream main at commit `30a06240`, three replicas. Each publisher holds one gRPC connection and each node runs three, so a fleet-shaped run carries three per node -- 299,985 of them at 100,000 nodes. Runs that use a different connection count say so.
+The platform connector runs as a central Deployment that publishers reach over gRPC, enabled by `platformConnector.deployment.enabled`. Measured on upstream main, three replicas. Each publisher holds one gRPC connection and each node runs three, so a fleet-shaped run carries three per node -- 299,985 of them at 100,000 nodes. Runs that use a different connection count say so.
 
 #### Connections to the datastore
 
@@ -699,7 +699,7 @@ Publish time and the volume's queue depth showed when a limit started to slow th
 
 **Disk.** At 100,000 nodes the volume serves about 2,500 write IOPS for 1,000 events/s, at any memory limit. That is close to the gp3 baseline of 3,000. If the volume turns out to be IOPS-constrained for a given usage pattern, provision more IOPS.
 
-**Conditions.** The sweep used a time-ordered idempotency key ([#1995](https://github.com/NVIDIA/NVSentinel/issues/1995)) and a collection of about 100 million events. 100,000 nodes at 32 Gi passes with the recommended pool of 30: 20 ms publish, nothing lost.
+**Conditions.** The sweep ran against a collection of about 100 million events. 100,000 nodes at 32 Gi passes with the recommended pool of 30: 20 ms publish, nothing lost.
 
 **Ceiling.** At 100,000 nodes with 32 Gi and the recommended pool of 30, MongoDB falls behind at about 3,500 events/s (3,464 measured), about 3.5 times the steady rate. The ceiling at the smaller recommended limits was not measured; a smaller cache is expected to fall behind at a lower rate.
 
@@ -718,7 +718,7 @@ Publish time and the volume's queue depth showed when a limit started to slow th
 | `createdAt` (TTL)                                      | 0.000            | one point, time-ordered |
 
 
-The time-ordered indexes cost almost nothing. Each spread-out index costs about one page read per insert, whatever its size: 53 MB and 157 MB indexes both cost about 0.7. So the number of spread-out indexes sets the memory needed, not their size. With the time-ordered key from #1995, the idempotency key index costs 0.008 reads per insert instead of 0.801.
+The time-ordered indexes cost almost nothing. Each spread-out index costs about one page read per insert, whatever its size: 53 MB and 157 MB indexes both cost about 0.7. So the number of spread-out indexes sets the memory needed, not their size. The idempotency key is now time-ordered, so its index costs 0.008 reads per insert instead of 0.801.
 
 ### Cost per event, by component `[M]`
 
@@ -1235,7 +1235,7 @@ The exposure is not confined to the benchmark: NVSentinel's own DaemonSets put f
 
 ### The EBS CSI provisioner runs out of memory at fleet scale `[M]`
 
-`csi-provisioner` in `kube-system/ebs-csi-controller` watches PersistentVolumeClaims and PersistentVolumes cluster-wide, and its cache grows with the objects on the cluster rather than with the volumes it manages. At this node count it exceeded its 10 GiB limit and was OOM-killed repeatedly -- 267 restarts -- after which no `VolumeAttachment` was created for any new pod.
+`csi-provisioner` in `kube-system/ebs-csi-controller` runs with `--feature-gates=Topology=true`, so it caches every Node and CSINode in the cluster to place volumes by zone. The cluster holds only 8 PersistentVolumeClaims; its memory grows with node count. At this node count it exceeded its 10 GiB limit and was OOM-killed repeatedly -- 267 restarts -- after which no `VolumeAttachment` was created for any new pod.
 
 MongoDB is the visible casualty. Its pods are a StatefulSet with EBS-backed volumes, so a mongod whose restart requires a new `VolumeAttachment` cannot get its volume back and remains in `PodInitializing` until that attachment is created and fulfilled; the fault-handling components then fail their datastore connection and the pipeline stops. Nothing in that chain names the provisioner, which is what makes it slow to diagnose.
 
@@ -1243,17 +1243,19 @@ Raising the limit to 24 GiB resolved it, and MongoDB recovered 112 seconds later
 
 ### Component versions
 
-The commit each component was measured on, with the commit's date.
+The commit each component was first measured on, with the commit's date, and what was rechecked on `aea32ab6` (upstream main, 2026-10-09, images `main-aea32ab`) on the 100,000-node fleet.
 
 
-| Component                                                             | Commit     | Commit date | Commit subject                                                                                 |
-| --------------------------------------------------------------------- | ---------- | ----------- | ---------------------------------------------------------------------------------------------- |
-| fault-quarantine                                                      | `22fe67ce` | 2026-09-18  | perf(fault-quarantine): prune the node cache to the keys the rules read (#1842)                |
-| fault-remediation                                                     | `00582ef5` | 2026-09-15  | perf(fault-remediation): lazy fetch events during changeStreamProcessing instead of storing them into queue (#1811) |
-| health-events-analyzer                                                | `85708e3b` | 2026-09-17  | feat: add opt-in rule_matched_entity_total (#1812)                                             |
-| platform-connector, deployment mode                                   | `30a06240` | 2026-10-05  | upstream main                                                                                  |
-| node-drainer, janitor, labeler, kubernetes-object-monitor, preflight  | `791cd679` | 2026-09-07  | `v1.22.0`                                                                                      |
-| MongoDB                                                               | --         | --          | Percona Server for MongoDB 8.0.12-4, operator `crVersion` 1.21.1                               |
+| Component | Commit | Commit date | Commit subject | Rechecked on `aea32ab6` |
+| --- | --- | --- | --- | --- |
+| fault-quarantine | `22fe67ce` | 2026-09-18 | perf(fault-quarantine): prune the node cache to the keys the rules read (#1842) | memory; cordon throughput and per-event handling (A/B against the earlier build, unchanged) |
+| fault-remediation | `00582ef5` | 2026-09-15 | perf(fault-remediation): lazy fetch events during changeStreamProcessing instead of storing them into queue (#1811) | memory |
+| health-events-analyzer | `85708e3b` | 2026-09-17 | feat: add opt-in rule_matched_entity_total (#1812) | not rechecked; throughput predates #1901 and #1913 |
+| platform-connector, deployment mode | `3ec0b630` | 2026-10-09 | perf(platform-connectors): time-ordered idempotency key and datastore pool default of 30 (#1999) | -- |
+| node-drainer | `791cd679` | 2026-09-07 | `v1.22.0` | memory |
+| kubernetes-object-monitor | `791cd679` | 2026-09-07 | `v1.22.0` | memory |
+| janitor, labeler, preflight | `791cd679` | 2026-09-07 | `v1.22.0` | memory, idle only (janitor untriggered; labeler without its DaemonSet pods) |
+| MongoDB | -- | -- | Percona Server for MongoDB 8.0.12-4, operator `crVersion` 1.21.1 | -- |
 
 
 ### Methodology
