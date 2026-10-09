@@ -58,6 +58,7 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
   - [Simulated nodes and the AWS cloud-controller-manager](#simulated-nodes-and-the-aws-cloud-controller-manager-m)
   - [NetworkPolicy enforcement broke and stayed broken](#networkpolicy-enforcement-broke-and-stayed-broken-m)
   - [The EBS CSI provisioner runs out of memory at fleet scale](#the-ebs-csi-provisioner-runs-out-of-memory-at-fleet-scale-m)
+  - [Component versions](#component-versions)
   - [Methodology](#methodology)
     - [Deployed configuration](#deployed-configuration)
     - [Traps](#traps)
@@ -1240,11 +1241,26 @@ MongoDB is the visible casualty. Its pods are a StatefulSet with EBS-backed volu
 
 Raising the limit to 24 GiB resolved it, and MongoDB recovered 112 seconds later without further intervention. The controller still shows the restart history from that period.
 
+### Component versions
+
+The commit each component was measured on, with the commit's date.
+
+
+| Component                                                             | Commit     | Commit date | Commit subject                                                                                 |
+| --------------------------------------------------------------------- | ---------- | ----------- | ---------------------------------------------------------------------------------------------- |
+| fault-quarantine                                                      | `22fe67ce` | 2026-09-18  | perf(fault-quarantine): prune the node cache to the keys the rules read (#1842)                |
+| fault-remediation                                                     | `00582ef5` | 2026-09-15  | perf(fault-remediation): lazy fetch events during changeStreamProcessing instead of storing them into queue (#1811) |
+| health-events-analyzer                                                | `85708e3b` | 2026-09-17  | feat: add opt-in rule_matched_entity_total (#1812)                                             |
+| platform-connector, deployment mode                                   | `30a06240` | 2026-10-05  | upstream main                                                                                  |
+| node-drainer, janitor, labeler, kubernetes-object-monitor, preflight  | `791cd679` | 2026-09-07  | `v1.22.0`                                                                                      |
+| MongoDB                                                               | --         | --          | Percona Server for MongoDB 8.0.12-4, operator `crVersion` 1.21.1                               |
+
+
 ### Methodology
 
 How every number in this report was produced, and what it was produced on.
 
-**Cluster.** AWS EKS, control-plane scaling tier 4XL. Five real EC2 nodes carry the NVSentinel control plane and MongoDB; the fleet is KWOK-simulated. All components run `v1.22.0` except `janitor-provider`, which is on a bench build supplying a simulated-reboot CSP.
+**Cluster.** AWS EKS, control-plane scaling tier 4XL. Five real EC2 nodes carry the NVSentinel control plane and MongoDB; the fleet is KWOK-simulated. Component versions are listed in [Component versions](#component-versions); `janitor-provider` is a bench build supplying a simulated-reboot CSP.
 
 **Reference object profile.** `retained_bytes` in A1 is computed by applying each component's transform to this shape, so a reader substituting their own object shape re-derives those columns:
 
