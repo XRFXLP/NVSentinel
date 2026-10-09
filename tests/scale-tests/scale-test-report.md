@@ -68,7 +68,7 @@ Markers: `[M]` measured, `[S]` simulated harness constant, `[I]` reader-supplied
 
 NVSentinel has been tested upto 100k nodes, resource consumption grows predictably with fleet size and stays within ordinary limits with reasonable throughputs.
 
-At 100,000 nodes with a pod on every node, the whole control plane costs about 66 GB of memory in deployment mode: 59 GB of NVSentinel modules and 7 GB of MongoDB across its three members. The platform connector is the largest module at 22.7 GB across three replicas, 7.6 GB in each, then kubernetes-object-monitor at 19.8 GB (15 GB with minimal pods), labeler at 6.6 GB, janitor 4.9 GB, fault-quarantine 3.3 GB, node-drainer 1.0 GB, and nothing else above 0.6 GB. Only the modules grow with the fleet: MongoDB holds 166 connections for the whole replica set, so its cost follows the 4 Gi its members are limited to rather than node count.
+At 100,000 nodes with a pod on every node, the whole control plane needs about 187 GB of memory in deployment mode: 84 GB of NVSentinel modules and 103 GB (32 Gi per member) for MongoDB's three members at 0.01 events per node per second. The platform connector is the largest module at 47.7 GB across three replicas, 15.9 GB in each with the store backed up (7.6 GB when it keeps up), then kubernetes-object-monitor at 19.8 GB (15 GB with minimal pods), labeler at 6.6 GB, janitor 4.9 GB, fault-quarantine 3.3 GB, node-drainer 1.0 GB, and nothing else above 0.6 GB. MongoDB is sized by event rate, not connections: its members need 4 Gi at 10,000 nodes, 12 Gi at 25,000, 24 Gi at 50,000 and 32 Gi at 100,000 (see [Sizing the WiredTiger cache](#sizing-the-wiredtiger-cache)).
 
 CPU constrains one component. kubernetes-object-monitor uses 0.99 to 3.24 cores at 75,005 nodes and 4.09 to 5.48 at 100,005, so it needs four cores and eight respectively. Every other component stayed well inside its limit with no throttling.
 
@@ -80,7 +80,7 @@ What broke during testing was the infrastructure around NVSentinel, not NVSentin
 
 ## A1. Component sizing
 
-**Memory at a glance.** The control plane costs about 0.66 MB per node, with no meaningful fixed term, and the marginal cost from 25,000 to 100,000 nodes is 0.56 GB per 1,000 nodes. The table below gives the split, and the sections after it take each module in turn.
+**Memory at a glance.** The control plane costs about 1.87 MB per node, with no meaningful fixed term, and the marginal cost from 25,000 to 100,000 nodes is 1.66 GB per 1,000 nodes. The table below gives the split, and the sections after it take each module in turn.
 
 Those totals are the central modules, paid once for the fleet. The node agents are paid per node instead: a GPU node runs gpu-health-monitor, syslog-health-monitor and metadata-collector for about 0.002 cores and 84 MB, measured on real A100 hardware rather than on the simulated fleet. The chart reserves far more than that, 300m CPU and 384Mi per node, which is the number that multiplies by fleet size.
 
@@ -89,15 +89,15 @@ Those totals are the central modules, paid once for the fleet. The node agents a
 ![Component working set against fleet size](results/component-memory.png)
 
 
-| Nodes   | Total  | platform-connector | kubernetes-object-monitor | fault handling | other services | MongoDB |
-| ------- | ------ | ------------------ | ------------------------- | -------------- | -------------- | ------- |
-| 10,000  | ~14 GB | 2.4 GB             | 2.9 GB                    | 0.5 GB         | 0.9 GB         | 7.1 GB  |
-| 25,000  | ~24 GB | 6.0 GB             | 7.2 GB                    | 1.5 GB         | 2.2 GB         | 7.1 GB  |
-| 50,000  | ~40 GB | 11.9 GB            | 12.3 GB                   | 4.8 GB         | 4.1 GB         | 7.1 GB  |
-| 100,000 | ~66 GB | 22.7 GB            | 19.8 GB                   | 9.2 GB         | 7.2 GB         | 7.1 GB  |
+| Nodes   | Total   | platform-connector | kubernetes-object-monitor | fault handling | other services | MongoDB  |
+| ------- | ------- | ------------------ | ------------------------- | -------------- | -------------- | -------- |
+| 10,000  | ~22 GB  | 5.1 GB             | 2.9 GB                    | 0.5 GB         | 0.9 GB         | 12.9 GB  |
+| 25,000  | ~62 GB  | 12.6 GB            | 7.2 GB                    | 1.5 GB         | 2.2 GB         | 38.7 GB  |
+| 50,000  | ~123 GB | 24.9 GB            | 12.3 GB                   | 4.8 GB         | 4.1 GB         | 77.3 GB  |
+| 100,000 | ~187 GB | 47.7 GB            | 19.8 GB                   | 9.2 GB         | 7.2 GB         | 103.1 GB |
 
 
-Fault handling is fault-quarantine, node-drainer, fault-remediation and janitor; other services is labeler, preflight and health-events-analyzer. Each column sums those services' tables below at that fleet size, with the connector's own figure from the ten-point sweep in A1.7. The 100,000-node row is the loaded fleet, with a pod on every node. labeler is measured with two pods per node throughout, because the DCGM and driver DaemonSets scale with the fleet. MongoDB is measured at 100,000 nodes and repeated down the column because it does not vary with the fleet.
+Fault handling is fault-quarantine, node-drainer, fault-remediation and janitor; other services is labeler, preflight and health-events-analyzer. Each column sums those services' tables below at that fleet size, with the connector's saturated figure (store backed up) from the ten-point sweep in A1.7. The 100,000-node row is the loaded fleet, with a pod on every node. labeler is measured with two pods per node throughout, because the DCGM and driver DaemonSets scale with the fleet. MongoDB is the recommended container limit across its three members at 0.01 events per node per second (4, 12, 24 and 32 Gi per member), from [Sizing the WiredTiger cache](#sizing-the-wiredtiger-cache).
 
 ![Control-plane memory by component](results/control-plane-memory-deployment.png)
 
@@ -405,7 +405,7 @@ Two limits on these numbers. Per-pod network and CFS throttling are not included
 
 ### platform-connector, deployment mode `[M]`
 
-The platform connector runs as a central Deployment that publishers reach over gRPC, enabled by `platformConnector.deployment.enabled` and described in [ADR-052](../../docs/designs/052-deployment-platform-connector.md). Measured on upstream main at commit `30a06240`, three replicas. Each publisher holds one gRPC connection and each node runs three, so a fleet-shaped run carries three per node -- 299,985 of them at 100,000 nodes. Runs that use a different connection count say so.
+The platform connector runs as a central Deployment that publishers reach over gRPC, enabled by `platformConnector.deployment.enabled`. Measured on upstream main at commit `30a06240`, three replicas. Each publisher holds one gRPC connection and each node runs three, so a fleet-shaped run carries three per node -- 299,985 of them at 100,000 nodes. Runs that use a different connection count say so.
 
 #### Connections to the datastore
 
@@ -418,18 +418,18 @@ Against the DaemonSet arrangement, which opens seven connections per node -- thr
 Measured at ten fleet sizes with three connections per node -- one for each health-monitor DaemonSet a GPU node runs -- over nodes carrying the label set the chart ships. Each connection publishes 0.3 events a minute, about 1,500 events/s at the 100,000-node point, which is well inside the ingest ceiling, so nothing here is waiting on the store. What a blocked connection costs instead is in [Ingest rate and sizing](#ingest-rate-and-sizing).
 
 
-| Nodes   | Connections | Total working set | Per replica | CPU, three replicas | Rec. memory request | Rec. memory limit | Rec. CPU request | Rec. CPU limit |
-| ------- | ----------- | ----------------- | ----------- | ------------------- | ------------------- | ----------------- | ---------------- | -------------- |
-| 2,000   | 6,000       | 515 MB            | 172 MB      | 0.04                | 1 Gi                | 2 Gi              | 50m              | 100m           |
-| 5,000   | 15,000      | 1,231 MB          | 410 MB      | 0.08                | 1 Gi                | 2 Gi              | 50m              | 100m           |
-| 7,500   | 22,500      | 1,842 MB          | 625 MB      | 0.12                | 1 Gi                | 2 Gi              | 50m              | 100m           |
-| 10,000  | 30,000      | 2,441 MB          | 814 MB      | 0.15                | 1 Gi                | 2 Gi              | 50m              | 100m           |
-| 15,000  | 45,000      | 3,621 MB          | 1,214 MB    | 0.22                | 2 Gi                | 3 Gi              | 100m             | 150m           |
-| 25,000  | 75,000      | 6,009 MB          | 2,003 MB    | 0.35                | 2 Gi                | 3 Gi              | 150m             | 250m           |
-| 35,000  | 105,000     | 8,346 MB          | 2,784 MB    | 0.46                | 3 Gi                | 5 Gi              | 200m             | 300m           |
-| 50,000  | 150,000     | 11,863 MB         | 3,954 MB    | 0.74                | 4 Gi                | 6 Gi              | 250m             | 400m           |
-| 75,000  | 224,985     | 17,797 MB         | 5,945 MB    | 1.70                | 6 Gi                | 9 Gi              | 600m             | 900m           |
-| 100,000 | 299,985     | 22,698 MB         | 7,566 MB    | 1.94                | 8 Gi                | 12 Gi             | 650m             | 1000m          |
+| Nodes   | Connections | Total working set | Per replica | Per replica, saturated | CPU, three replicas | Rec. memory request | Rec. memory limit | Rec. CPU request | Rec. CPU limit |
+| ------- | ----------- | ----------------- | ----------- | ---------------------- | ------------------- | ------------------- | ----------------- | ---------------- | -------------- |
+| 2,000   | 6,000       | 515 MB            | 172 MB      | 361 MB                 | 0.04                | 1 Gi                | 2 Gi              | 50m              | 100m           |
+| 5,000   | 15,000      | 1,231 MB          | 410 MB      | 861 MB                 | 0.08                | 1 Gi                | 2 Gi              | 50m              | 100m           |
+| 7,500   | 22,500      | 1,842 MB          | 625 MB      | 1,313 MB               | 0.12                | 1 Gi                | 2 Gi              | 50m              | 100m           |
+| 10,000  | 30,000      | 2,441 MB          | 814 MB      | 1,709 MB               | 0.15                | 1 Gi                | 2 Gi              | 50m              | 100m           |
+| 15,000  | 45,000      | 3,621 MB          | 1,214 MB    | 2,549 MB               | 0.22                | 2 Gi                | 3 Gi              | 100m             | 150m           |
+| 25,000  | 75,000      | 6,009 MB          | 2,003 MB    | 4,206 MB               | 0.35                | 2 Gi                | 4 Gi              | 150m             | 250m           |
+| 35,000  | 105,000     | 8,346 MB          | 2,784 MB    | 5,846 MB               | 0.46                | 3 Gi                | 6 Gi              | 200m             | 300m           |
+| 50,000  | 150,000     | 11,863 MB         | 3,954 MB    | 8,303 MB               | 0.74                | 4 Gi                | 8 Gi              | 250m             | 400m           |
+| 75,000  | 224,985     | 17,797 MB         | 5,945 MB    | 12,485 MB              | 1.70                | 6 Gi                | 12 Gi             | 600m             | 900m           |
+| 100,000 | 299,985     | 22,698 MB         | 7,566 MB    | 15,889 MB              | 1.94                | 8 Gi                | 15 Gi             | 650m             | 1000m          |
 
 
 ![Connector memory against fleet size](results/connector-memory-fleet.png)
@@ -437,6 +437,8 @@ Measured at ten fleet sizes with three connections per node -- one for each heal
 Memory is proportional to fleet size at about 235 KiB per node, flat to within 6.5% across a fiftyfold range. About 97% of that is the connections a node holds and 3% the labels cached for it, so one publisher fewer per node moves about a third of the cost where emptying `allowedLabels` moves 3%. The measurement is in [Connector memory: connections against label cache](#connector-memory-connections-against-label-cache-m).
 
 Requests and limits are per replica, with the CPU figures the measured usage divided by three.
+
+The working-set columns are from the **quiet** sweep: the datastore kept up, so almost nothing was in flight and a connection cost about 79 KiB. When the store backs up, each connection also holds a waiting request, and measured with the store backed up a connection costs 165-171 KiB, about 2.1x quiet. The saturated column is the quiet per-replica figure times 2.1, and the memory limit is set to cover it, rounded up to the next whole Gi. The 1.5x rule the rest of this report uses does not apply to this component, because its memory tracks requests in flight and the quiet sweep has none. Requests stay as measured; a limit costs nothing until it is used.
 
 #### Ingest rate and sizing
 
@@ -467,6 +469,10 @@ The acknowledgement these numbers depend on is a property of the replica set and
 
 The remedy is to raise `DATASTORE_MAX_CONNECTIONS` rather than add replicas, which cost memory and TokenReviews both (see [Scaling out](#scaling-out)). MongoDB can absorb far more concurrency than three pools of ten give it. Lowering the write concern would raise the ceiling severalfold and should not be done, because the majority acknowledgement is what makes a stored fault event durable.
 
+**Recommended default: `DATASTORE_MAX_CONNECTIONS=30`.** It is the measured setting. It more than doubles the ceiling, to 10,525 events/s, and the connector uses less memory than at 10 because fewer publishers sit blocked. The primary does not notice the extra concurrency: it accepts 26,667 inserts/s when it does not wait for a second member.
+
+**Pool or replicas.** They fix different limits. The pool sets throughput: raise it when the event rate you need is above the ceiling. Replicas set how many connections the deployment can hold: add one when connections per replica exceed what the memory limit allows, step 2 of the recipe below. Scaling out to buy throughput works, but spends a replica's memory on what a larger pool gives without it.
+
 In proportion: a 50,000-node fleet at the 0.3 events/node/minute used elsewhere in this report is 250 events/s, against 4,925 at the shipped default, so the default is ample for steady state. It binds during a burst, and when it does the path does not drop events -- it blocks publishers.
 
 A blocked publisher is memory the connector holds, which is how the pool comes to set memory as well as the ceiling. Events in flight on a replica are its throughput times the time a write takes, capped by the connection count, so raising the pool from 10 to 30 cut memory 14% across the same 40,000 connections, 7.4 GB down to 6.4 GB, while doubling throughput. The [sweep](#resources-against-fleet-size) measures the quiet case, so sizing from its slope leaves nothing for a slow store: a blocked connection costs about 1.85x a quiet one, roughly 89 KB per held event.
@@ -495,7 +501,7 @@ Size the pool first and the replica count second:
 
 ![Replicas required, by memory limit](results/connector-replicas-needed.png)
 
-At three publishers per node and an unsaturated store, step 2 puts three replicas at 4Gi at about **53,500 nodes**; a 100,000-node fleet needs 7.4 GiB per replica, so it is six replicas at 4Gi or three at 8Gi. Replicas buy throughput as well as memory, so scaling for one moves the other, with nothing in the chart or the metrics saying so, and they are not a free substitute for the reason in [Scaling out](#scaling-out). CPU never binds either way: 1.94 cores across three replicas at 100,000 nodes against the 2 each is allowed.
+At three publishers per node and a backed-up store, step 2 puts three replicas at 4Gi at about **26,000 nodes**, or 17,000 with one replica down (53,500 if the store never falls behind). A 100,000-node fleet needs about 15 GiB per replica, so it is three replicas at 15Gi or twelve at 4Gi. Replicas buy throughput as well as memory, so scaling for one moves the other, with nothing in the chart or the metrics saying so, and they are not a free substitute for the reason in [Scaling out](#scaling-out). CPU never binds either way: 1.94 cores across three replicas at 100,000 nodes against the 2 each is allowed.
 
 #### Scaling out
 
@@ -660,6 +666,54 @@ Sustained load also surfaced something the burst did not: **7 `POST 409` conflic
 
 The capped cache is not free, though it does not cost anything on the write path. Application threads evicted 406 pages on the primary and none on either secondary over the 617-second window, so no writer stalled waiting for space. Pages read into cache over the same window were 5,312,670 on the primary, about 8,600 per second against a 1.50 GB bound -- the churn a 10 GB dataset produces when the cache cannot hold it. Writes do not care; a read-heavy workload against the same dataset would.
 
+### Sizing the WiredTiger cache
+
+Size MongoDB by event rate. Each member needs this container memory limit at 0.01 events per node per second:
+
+
+| Fleet   | Events/s | Memory limit | Cache   | Publish mean | Volume IOPS | Queue depth |
+| ------- | -------- | ------------ | ------- | ------------ | ----------- | ----------- |
+| 10,000  | ~100     | 4 Gi         | 1.5 GB  | 11 ms        | 1,474       | 2.2         |
+| 25,000  | ~250     | 12 Gi        | 5.5 GB  | 11 ms        | 2,013       | 4.3         |
+| 50,000  | ~500     | 24 Gi        | 11.5 GB | 14 ms        | 2,539       | 6.7         |
+| 100,000 | ~1,000   | 32 Gi        | 15.5 GB | 19.8 ms      | 2,739       | 6.9         |
+
+
+The operator sets the WiredTiger cache to `(limit - 1Gi) / 2`, so choosing the limit also chooses the cache. Do not set the cache higher than that: a 10.25 GB cache in a 12 Gi container was OOM-killed.
+
+**How the limits were measured.** Each fleet size ran at its production event rate while the limit was stepped down. A limit passed when:
+
+- every publish succeeded, and the store took in what the fleet sent
+- no member restarted or was OOM-killed
+- the secondaries kept up
+
+Publish time and the volume's queue depth showed when a limit started to slow the store. The recommended limit is the smallest that passed without slowing it, on a default gp3 volume (3,000 IOPS).
+
+**One step lower.** Nothing is lost, but publishing is slower: 15 ms at 8 Gi for 25,000 nodes, 17 ms at 16 Gi for 50,000, and 24.4 ms at 16 Gi for 100,000, where the volume also went past 3,000 IOPS with a queue depth of 11.3.
+
+**Too low.** The store falls behind before it runs out of memory. At 8 Gi for 100,000 nodes, each write took about 33 ms. The connector's pool of ten per replica could then carry about 900 events/s, against the 973 the fleet sent. The backlog grew until 91,000 publishes failed. No limit in the sweep was OOM-killed.
+
+**Disk.** At 100,000 nodes the volume serves about 2,500 write IOPS for 1,000 events/s, at any memory limit. That is close to the gp3 baseline of 3,000. If the volume turns out to be IOPS-constrained for a given usage pattern, provision more IOPS.
+
+**Conditions.** The sweep used a time-ordered idempotency key ([#1995](https://github.com/NVIDIA/NVSentinel/issues/1995)) and a collection of about 100 million events.
+
+**Why memory follows the event rate.** The cache must hold the index pages that new entries go to. Consumers read the change stream, not the collection, so only writes use the cache. An index whose keys increase with time writes to one page, which stays in the cache. An index whose keys spread out writes to pages across the index, and each write reads a page from disk if it is not cached. Measured per index on the primary at 2,000 nodes and 1,000 events/s, with the cache held at 3,500 MB and the idempotency key still random:
+
+
+| Index                                                 | Reads per insert | Where new entries go    |
+| ----------------------------------------------------- | ---------------- | ----------------------- |
+| `healthevent.metadata.idempotencyKey` (unique)         | 0.801            | anywhere in the index   |
+| `nodename + entitiesimpacted + gts`                    | 0.738            | per node, per entity    |
+| `nodename + ishealthy + gts`                           | 0.659            | per node                |
+| `nodename + faultremediated + isfatal + gts`           | 0.651            | per node                |
+| `agent + componentclass + checkname + nodename + ...`  | 0.607            | per node, per check     |
+| `_id_`                                                 | 0.001            | one point, time-ordered |
+| `createdAt + _id`                                      | 0.000            | one point, time-ordered |
+| `createdAt` (TTL)                                      | 0.000            | one point, time-ordered |
+
+
+The time-ordered indexes cost almost nothing. Each spread-out index costs about one page read per insert, whatever its size: 53 MB and 157 MB indexes both cost about 0.7. So the number of spread-out indexes sets the memory needed, not their size. With the time-ordered key from #1995, the idempotency key index costs 0.008 reads per insert instead of 0.801.
+
 ### Cost per event, by component `[M]`
 
 ![Per-event handling cost by component](results/cost-per-event.png)
@@ -751,7 +805,7 @@ The reboot-after-drain ordering got a stronger test than intended. 129 of the 20
 
 Outside that envelope there are three scenarios in which a module acts against its own stated intent, and none of them is closed by configuration.
 
-1. **A consumer that falls behind the oplog skips events that are already stored.** The failure is on the read side: `ChangeStreamHistoryLost` is classified with corrupt-token errors, so the resume token is deleted and the stream reopens at the current cluster time, never delivering what came between. A skipped fatal event is a node never quarantined; a skipped healthy event is a node cordoned until someone runs `kubectl uncordon`. Only node-drainer and fault-remediation re-find part of their own gap, through status-filtered cold-start queries. There is no knob: the chart sets no `oplogSizeMB`, and `change_stream_resume_token_recoveries_total` carries only `(client, phase)`, so loss cannot be told from a corrupt token. [ADR-052](../../docs/designs/052-deployment-platform-connector.md) does not close it — that acknowledgement change is on the write path.
+1. **A consumer that falls behind the oplog skips events that are already stored.** The failure is on the read side: `ChangeStreamHistoryLost` is classified with corrupt-token errors, so the resume token is deleted and the stream reopens at the current cluster time, never delivering what came between. A skipped fatal event is a node never quarantined; a skipped healthy event is a node cordoned until someone runs `kubectl uncordon`. Only node-drainer and fault-remediation re-find part of their own gap, through status-filtered cold-start queries. There is no knob: the chart sets no `oplogSizeMB`, and `change_stream_resume_token_recoveries_total` carries only `(client, phase)`, so loss cannot be told from a corrupt token. The deployment platform connector does not close it: it changes how writes are acknowledged, and this failure is on the read side, in the consumer.
 2. **The circuit breaker limits a rate, not a level.** It trips when unique nodes cordoned inside the sliding window reach `percentage` of the GPU fleet, so cordoning slower than the window never trips it however far it goes, and the required rate grows with fleet size while consumption does not. `percentage` and `duration` cannot express "at most this share of the fleet cordoned at once" at any value; the currently-cordoned set is computed on every check by `GetNodeCounts` and discarded.
 3. **Resetting a tripped breaker re-cordons the nodes just released.** Deleting the ConfigMap recreates it with `cursor: RESUME`, so fault-quarantine replays the accumulated backlog, and because it watches inserts only, the `Cancelled` status written during a manual uncordon is invisible while `applyQuarantine` clears the manual-uncordon annotation. An intact backlog converges; one truncated by the oplog above leaves those nodes cordoned with nothing left to release them. The knob is `cursor: CREATE`, which skips the backlog — but deleting the ConfigMap is what resets it to `RESUME`.
 
@@ -803,13 +857,15 @@ Publish latency is 7 ms in the median and seconds in the tail, and neither figur
 | ---- | --------- | ----------------- | ----------- |
 | P50  | 6.18 ms   | 7.06 ms           | 7.42 ms     |
 | P90  | 9.63 ms   | 43.81 ms          | 266.71 ms   |
-| P99  | 222.80 ms | 2,312.26 ms       | 3,968.39 ms |
+| P99  | 222.80 ms | 2.31 s            | 3.97 s      |
 | Mean | 11.93 ms  | 101.83 ms         | 182.10 ms   |
 
 
 The typical publish is fast and stays fast: P50 holds between 6.18 and 7.42 ms across a 35% increase in collection size, and the tail does not widen with it.
 
 Some writes stall for seconds well short of saturation: P99 ran from 223 ms to 3.97 s while throughput held constant at 2,000 inserts/s against the 4,925 ceiling. The stalls are cyclic and sit in the store write path rather than in authentication; the cause is not established here.
+
+For the customer-facing numbers in [MTTR decomposition](#mttr-decomposition), publish latency sits in front of detect → cordon. In the median it is invisible. In the tail it is the largest part of that stage, a fault that lands in a stall is cordoned seconds after it is reported rather than milliseconds, but it is still a few percent of detect → back in service, 70 s P50 and 89 s P99, which drain and reboot dominate.
 
 ### Against the DaemonSet
 
@@ -1204,7 +1260,7 @@ A note on measuring this, because two earlier attempts in this section produced 
 
 **Restart the component before you measure it, or the number is wrong.** Reading the same six components at 50,000 nodes without restarting them — after the fleet had been reduced from 100,000 — gave 31.2 GB against 24.7 GB restarted, because none of them returns memory when the fleet shrinks.
 
-**Driving faults.** Health events are inserted directly into MongoDB, bypassing platform-connector. Two reasons. Injecting straight into the datastore is faster and more controllable once the document shape is known, which matters when a run needs a million events at a chosen rate. And platform-connector is the one component on the write path due to be replaced: [ADR-052](../../docs/designs/052-deployment-platform-connector.md) moves it from a per-node DaemonSet to a central deployment, so measuring today's ingest would size something that is about to change, and it will be re-measured against the new shape. The consequence for these numbers is that platform-connector's own ingest cost is not in them. Everything downstream is unaffected, because fault-quarantine and the components behind it read from the datastore's change stream and cannot tell how a document arrived. The document shape is unforgiving and fails silently when wrong: the event nests under `healthevent`, field names are their Go names lowercased, `generatedtimestamp` must be a `{seconds, nanos}` subdocument, `recommendedaction` is the enum integer, `errorcode` is an **array**, and `healtheventstatus.userpodsevictionstatus` must be an empty document rather than null. `agent` must match the deployed fault-quarantine ruleset.
+**Driving faults.** Health events are inserted directly into MongoDB, bypassing platform-connector. Two reasons. Injecting straight into the datastore is faster and more controllable once the document shape is known, which matters when a run needs a million events at a chosen rate. It also keeps platform-connector out of these numbers; its ingest is measured on its own in [platform-connector, deployment mode](#platform-connector-deployment-mode-m). Everything downstream is unaffected, because fault-quarantine and the components behind it read from the datastore's change stream and cannot tell how a document arrived. The document shape is unforgiving and fails silently when wrong: the event nests under `healthevent`, field names are their Go names lowercased, `generatedtimestamp` must be a `{seconds, nanos}` subdocument, `recommendedaction` is the enum integer, `errorcode` is an **array**, and `healtheventstatus.userpodsevictionstatus` must be an empty document rather than null. `agent` must match the deployed fault-quarantine ruleset.
 
 **Timing the chain.** Percentiles come from per-document timestamps (`generatedtimestamp`, `quarantinefinishtimestamp`, `drainfinishtimestamp`, `lastremediationtimestamp`), which are exact. CR-derived timings inherit the API server's one-second granularity. End-to-end figures join to the maintenance CR's `NodeReady` condition, since `faultRemediated: true` marks dispatch.
 
