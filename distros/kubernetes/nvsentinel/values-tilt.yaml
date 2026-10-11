@@ -277,6 +277,7 @@ fault-quarantine:
 
   validation:
     enabled: true
+    partialDrainEnabled: true
 
   affinity:
     podAntiAffinity:
@@ -388,6 +389,9 @@ node-drainer:
 
 
 health-events-analyzer:
+  # The MongoDB annotation recovery E2E test supplies its rule at runtime.
+  nodeRecovery:
+    enabled: true
   logLevel: debug
 
   ruleConcurrency: 8

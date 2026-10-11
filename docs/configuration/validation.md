@@ -27,8 +27,10 @@ lifecycle-manager:
     readinessCriteria:
       - name: gpu-allocatable
         expression: >-
-          has(node.status.allocatable) && "nvidia.com/gpu" in node.status.allocatable &&
-          quantity(node.status.allocatable["nvidia.com/gpu"]) > 0
+          (has(node.status.allocatable) && "nvidia.com/gpu" in node.status.allocatable &&
+          quantity(node.status.allocatable["nvidia.com/gpu"]) > 0) ||
+          resourceSlices.exists(s, s.spec.driver == "gpu.nvidia.com" && has(s.spec.devices) &&
+          size(s.spec.devices) > 0)
       - name: not-under-quarantine
         expression: >-
           !(has(node.metadata.annotations) &&
@@ -58,13 +60,20 @@ lifecycle-manager:
         command:
           - sh
           - -c
-          - dcgmi diag --host "nvidia-dcgm.gpu-operator.svc:5555" --run 2 --json
+          - |
+            # One DCGM Service exists per cluster: nvidia-dcgm-dra in GPU Operator GPUCluster (DRA) mode,
+            # nvidia-dcgm otherwise. Use the first name that resolves.
+            for h in nvidia-dcgm-dra.gpu-operator.svc nvidia-dcgm.gpu-operator.svc; do
+              getent hosts "$h" >/dev/null 2>&1 && exec dcgmi diag --host "$h:5555" --run 2 --json
+            done
+            echo "no DCGM hostengine Service resolved" >&2
+            exit 1
         supportsBatchingNodes: false
         minimumNodesPerBatch: 1
         batchFailurePolicy: fail
 ```
 
-This configuration allows a client to create a ValidationRequest that runs dcgm-diag-test as a Kubernetes Job via the k8s-job-provider. Before the test group starts, the targeted node must report allocatable GPU capacity and not be under quarantine, as enforced by readinessCriteria. If the ValidationRequest does not specify spec.tests, defaultTests provides which tests to run in the request.
+This configuration allows a client to create a ValidationRequest that runs dcgm-diag-test as a Kubernetes Job via the k8s-job-provider. Before the test group starts, the targeted node must report allocatable GPU capacity and not be under quarantine, as enforced by readinessCriteria. The gpu-allocatable criterion accepts either source of GPU capacity: the device plugin, which sets `nvidia.com/gpu` in the node allocatable resources, or the `gpu.nvidia.com` DRA driver, which publishes the GPUs in ResourceSlices in GPU Operator GPUCluster mode. If the ValidationRequest does not specify spec.tests, defaultTests provides which tests to run in the request.
 
 ## Enabling New Node Validation
 
@@ -117,6 +126,8 @@ fault-quarantine:
 ```
 
 The default ruleset creates a ValidationRequest which runs dcgm-diag-test against any unquarantined node that had an unhealthy event requiring a VM or BM restart remediation during its quarantine session.
+
+A ValidationRequest is only created if at least one event from the quarantine session completed a full drain, so validation tests do not run while workloads that node-drainer would evict are still on the node. `fault-quarantine.validation.partialDrainEnabled` tells fault-quarantine whether node-drainer drains COMPONENT_RESET events partially (only the pods using the impacted GPU). It defaults to `false`, the same as `node-drainer.partialDrainEnabled`, so a completed drain of a COMPONENT_RESET event counts as a full drain and can trigger validation; a validation ruleset must also match the event, and the default ruleset does not match COMPONENT_RESET. If partial drain is enabled in node-drainer, set `fault-quarantine.validation.partialDrainEnabled: true` as well (or set `global.partialDrainEnabled: true`, which overrides both), so a partial drain never counts as a full drain. Change this together with node-drainer's setting, after open quarantine sessions finish: fault-quarantine judges each event by the current value, so an event drained partially before the change may count as a full drain after it. See [Partial Drain](node-drainer.md#partial-drain).
 
 ## Enabling NVCRE Validation
 
@@ -281,7 +292,7 @@ status:
 | Key | Type | Purpose |
 |---|---|---|
 | defaultTests | []string | The default set of tests run against ValidationRequests which do not include any tests |
-| readinessCriteria | []CriteriaSpec | A set of CEL expressions which must all evaluate to true before a validation test can be started on a given node. Each entry is evaluated against an environment containing the node being validated. If an operator is externally applying a node cordon or taint and would like to block validation until these are applied, they can add these properties to readinessCriteria. If not met, this blocks a node from starting validation and fails validation if the criteria were initially met and then reverted |
+| readinessCriteria | []CriteriaSpec | A set of CEL expressions which must all evaluate to true before a validation test can be started on a given node. Each entry is evaluated against an environment containing the node being validated (`node`) and the ResourceSlices whose `spec.nodeName` is that node (`resourceSlices`). When a criterion reads `resourceSlices`, the lifecycle-manager watches ResourceSlices so a slice published after the last node update still unblocks a pending request. It derives the drivers to watch from the expressions: slice events are filtered to the `spec.driver` values compared with string literals, as `s.spec.driver == "gpu.nvidia.com"` or `s.spec.driver in [...]`. A criterion that reads `spec.driver` any other way, or reads slices without testing the driver, turns the filter off and every driver's slice events are processed (logged at startup). Filtering only affects which events wake the controller; the `resourceSlices` variable always holds all of the node's slices. If an operator is externally applying a node cordon or taint and would like to block validation until these are applied, they can add these properties to readinessCriteria. If not met, this blocks a node from starting validation and fails validation if the criteria were initially met and then reverted |
 | maxConcurrentGroups | int | The maximum number of test groups that may run concurrently. Groups are additionally constrained by node overlap. Two groups that share a node never run at the same time regardless of this setting |
 | templateMountPath | string | The directory from which templateFile paths are resolved |
 | providers | map[string]ProviderConfig | Test provider settings that apply to all tests using this provider, keyed by the name tests[].provider references (see below) |
@@ -321,7 +332,7 @@ status:
 | Key | Type | Purpose |
 |---|---|---|
 | condition | string | The name of the node condition the controller uses to track whether a node has already been validated. For a node to be targeted, this condition must be absent or false and every criteria expression must evaluate to true. Once a ValidationRequest is created, the controller sets this condition to True on the node so that subsequent evaluations no longer match |
-| criteria | []CriteriaSpec | A set of CEL expressions evaluated against each node to determine whether it requires new node validation. All expressions must evaluate to true, along with the condition check above. The CEL environment exposes the node being validated |
+| criteria | []CriteriaSpec | A set of CEL expressions evaluated against each node to determine whether it requires new node validation. All expressions must evaluate to true, along with the condition check above. The CEL environment exposes the node being validated (`node`) and its node-local ResourceSlices (`resourceSlices`), the same as readinessCriteria |
 | newNodeTests | []string | The list of tests to run for new nodes. These take precedence over defaultTests when a ValidationRequest is created for a new node |
 | batchPeriodSeconds | int64 | The window during which the controller collects eligible new nodes before creating ValidationRequests for them as a batch. Only applies to new node validation |
 
@@ -343,6 +354,9 @@ status:
 | templateFileName | string | The filename of the Go text/template, resolved from templates, rendered to build the ValidationRequest |
 | templates | map[string]string | Inline template content, keyed by filename |
 | ruleSets | []RuleSet | Maps HealthEvents from a quarantine session to the tests they require |
+| partialDrainEnabled | bool | Must match node-drainer partialDrainEnabled. When false, a completed drain of a COMPONENT_RESET event counts as a full drain. Defaults to false. Set both with global.partialDrainEnabled |
+
+When fault-quarantine creates a ValidationRequest, it keeps the cordon and every taint it applied during the quarantine session, and it stops tracking them. lifecycle-manager releases them when validation passes. Every taint that a fault-quarantine rule-set applies must therefore be listed in lifecycle-manager schedulingGate.taints with remove set to true. A taint that is not listed is not tolerated by the test pods, so validation cannot run on the node, and it is never removed. Keep the not-under-quarantine readiness criterion so a new quarantine fails the pending validation instead of releasing the node. Use remove set to true only for taints that fault-quarantine alone applies: lifecycle-manager matches on key, value, and effect, so it also lifts a matching taint that was on the node before the quarantine. When no ValidationRequest is created, fault-quarantine removes its taints itself.
 
 ### fault-quarantine.validation.ruleSets
 
