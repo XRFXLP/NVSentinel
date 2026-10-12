@@ -64,14 +64,24 @@ jobs:
           export BUILD_DATE
           ko build -B --sbom=none --platform=linux/amd64 --tags="${VERSION}" ./janitor
 
+      # Publish without the shared publish-container action: it signs and attests the image,
+      # which a throwaway test tag does not need.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef  # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Publish gpu-reset image
-        uses: ./.github/actions/publish-container
+        shell: bash
         env:
           CI_COMMIT_REF_NAME: ${{ env.PR_IMAGE_TAG }}
-        with:
-          make_command: 'make -C gpu-reset docker-publish'
-          registry_password: ${{ secrets.GITHUB_TOKEN }}
-          container_name: 'nvsentinel/gpu-reset'
+          DISABLE_REGISTRY_CACHE: 'true'
+        run: make -C gpu-reset docker-publish
 
   integration-test-gcp:
     # TEMP (#2013): wait for build-pr-images, which is skipped on every other ref. Restore
