@@ -177,7 +177,39 @@ janitor:
   config:
     controllers:
       gpuReset:
+        # TEMP (#2013): the GPU Operator container-toolkit holds every GPU on this setup, so stop it
+        # during the reset as well. An inline spec replaces the built-in gpu-operator list, so the
+        # built-in device plugin mode apps are repeated here.
+        serviceManager:
+          name: "gpu-operator"
+          spec:
+            namespace: "gpu-operator"
+            teardownTimeout: "5m"
+            restoreTimeout: "10m"
+            apps:
+              - appSelector: {app: "nvidia-device-plugin-daemonset", app.kubernetes.io/managed-by: "gpu-operator"}
+                nodeLabel: "nvidia.com/gpu.deploy.device-plugin"
+                enabledValue: "true"
+                disabledValue: "false"
+              - appSelector: {app: "nvidia-dcgm", app.kubernetes.io/managed-by: "gpu-operator"}
+                nodeLabel: "nvidia.com/gpu.deploy.dcgm"
+                enabledValue: "true"
+                disabledValue: "false"
+              - appSelector: {app: "nvidia-dcgm-exporter", app.kubernetes.io/managed-by: "gpu-operator"}
+                nodeLabel: "nvidia.com/gpu.deploy.dcgm-exporter"
+                enabledValue: "true"
+                disabledValue: "false"
+              - appSelector: {app: "gpu-feature-discovery", app.kubernetes.io/managed-by: "gpu-operator"}
+                nodeLabel: "nvidia.com/gpu.deploy.gpu-feature-discovery"
+                enabledValue: "true"
+                disabledValue: "false"
+              - appSelector: {app: "nvidia-container-toolkit-daemonset", app.kubernetes.io/managed-by: "gpu-operator"}
+                nodeLabel: "nvidia.com/gpu.deploy.container-toolkit"
+                enabledValue: "true"
+                disabledValue: "false"
         resetJob:
+          # TEMP (#2013): stopping the toolkit removes the nvidia runtime, so the reset Job uses none.
+          runtimeClassName: ""
           hostDriverRootPath: "/"
           driverBinPath: "/home/kubernetes/bin/nvidia/bin"
           driverLibPath: "/home/kubernetes/bin/nvidia/lib64"
