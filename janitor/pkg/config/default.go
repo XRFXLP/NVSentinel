@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -40,6 +41,8 @@ const (
 	WriteSyslogEventEnvVar    = "WRITE_SYSLOG_EVENT"
 	NodeNameEnvVar            = "NODE_NAME"
 	UploadURLBaseEnvVar       = "UPLOAD_URL_BASE"
+	DriverBinPathEnvVar       = "DRIVER_BIN_PATH"
+	DriverLibPathEnvVar       = "DRIVER_LIB_PATH"
 	// ContainerDriverRoot is the driverRoot that makes the reset command chroot into the reset
 	// container itself instead of into the mounted driver filesystem.
 	ContainerDriverRoot = "/"
@@ -342,4 +345,38 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 	}
 
 	return job, nil
+}
+
+// applyDriverSearchPaths passes driverBinPath and driverLibPath to the reset container. Both are
+// paths inside driverRoot that the reset command searches for the driver binaries and libraries,
+// for drivers installed outside the default search paths. An empty value adds nothing, so the
+// Job is unchanged.
+func applyDriverSearchPaths(job *batchv1.JobTemplateSpec, driverBinPath, driverLibPath string) error {
+	searchPaths := []struct {
+		key    string
+		envVar string
+		value  string
+	}{
+		{key: "resetJob.driverBinPath", envVar: DriverBinPathEnvVar, value: driverBinPath},
+		{key: "resetJob.driverLibPath", envVar: DriverLibPathEnvVar, value: driverLibPath},
+	}
+
+	container := &job.Spec.Template.Spec.Containers[0]
+
+	for _, searchPath := range searchPaths {
+		if searchPath.value == "" {
+			continue
+		}
+
+		// Reject at janitor startup, as for driverRoot. The value is joined into PATH or
+		// LD_LIBRARY_PATH, so a relative path or a ":" would add an unintended search entry.
+		if !filepath.IsAbs(searchPath.value) || filepath.Clean(searchPath.value) != searchPath.value ||
+			strings.Contains(searchPath.value, ":") {
+			return fmt.Errorf("%s %q must be an absolute, clean path without ':'", searchPath.key, searchPath.value)
+		}
+
+		container.Env = append(container.Env, corev1.EnvVar{Name: searchPath.envVar, Value: searchPath.value})
+	}
+
+	return nil
 }

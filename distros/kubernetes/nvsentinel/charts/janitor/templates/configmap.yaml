@@ -105,6 +105,12 @@ data:
         {{- with .Values.config.controllers.gpuReset.resetJob.driverRoot }}
         driverRoot: {{ . | quote }}
         {{- end }}
+        {{- with .Values.config.controllers.gpuReset.resetJob.driverBinPath }}
+        driverBinPath: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.config.controllers.gpuReset.resetJob.driverLibPath }}
+        driverLibPath: {{ . | quote }}
+        {{- end }}
         {{- if $gpuResetUploadURL }}
         uploadURL: {{ $gpuResetUploadURL | quote }}
         {{- end }}

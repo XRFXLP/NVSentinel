@@ -236,6 +236,8 @@ janitor:
           runtimeClassName: "nvidia"
           hostDriverRootPath: "/run/nvidia/driver"
           driverRoot: "/run/nvidia/driver"
+          driverBinPath: ""
+          driverLibPath: ""
           image:
             repository: ghcr.io/nvidia/nvsentinel/gpu-reset
             tag: ""
@@ -303,6 +305,32 @@ Keep the default `/run/nvidia/driver`. The GPU Operator driver container bind-mo
 Set `driverRoot` to `/` when the driver root holds only driver files and not a complete filesystem. A chroot into a partial driver root fails before `nvidia-smi` starts. With `/`, the chroot is a no-op and the reset command uses the `nvidia-smi` in the reset container image. The Job then does not mount `hostDriverRootPath`, and it mounts the host `/sys` at `/sys`.
 
 The value must be an absolute, clean path. The janitor rejects any other value at startup.
+
+### resetJob.driverBinPath
+Directory inside `resetJob.driverRoot` that holds `nvidia-smi` and `nvidia-bug-report.sh`. The reset command adds it to the front of `PATH` for every command it runs in the chroot. Leave it empty when these files are on the default `PATH`, for example with the GPU Operator driver container.
+
+### resetJob.driverLibPath
+Directory inside `resetJob.driverRoot` that holds the driver libraries, such as `libnvidia-ml.so.1`. The reset command adds it to the front of `LD_LIBRARY_PATH` for every command it runs in the chroot. Leave it empty when the dynamic loader in the chroot already finds the driver libraries.
+
+Both values must be absolute, clean paths without `:`. The janitor rejects any other value at startup.
+
+#### Example: host-installed driver on GKE
+
+The GKE driver installer puts the driver in `/home/kubernetes/bin/nvidia` on the host, and no GPU Operator driver container publishes `/run/nvidia/driver`. Chroot into the host root and point the reset command at the driver directories:
+
+```yaml
+janitor:
+  config:
+    controllers:
+      gpuReset:
+        resetJob:
+          hostDriverRootPath: "/"
+          driverRoot: "/run/nvidia/driver"
+          driverBinPath: "/home/kubernetes/bin/nvidia/bin"
+          driverLibPath: "/home/kubernetes/bin/nvidia/lib64"
+```
+
+The reset fails while any process holds the GPU open. Make sure `serviceManager` stops every GPU client on the node, including clients that the `gpu-operator` default does not cover.
 
 ### resetJob.image
 Container image for the GPU reset Job. Leave `tag` empty to use the chart default.
