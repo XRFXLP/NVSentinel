@@ -118,7 +118,9 @@ variable "gpu_driver_version" {
 variable "image_type" {
   description = "Node image type"
   type        = string
-  default     = "UBUNTU_CONTAINERD"
+  # TEMP (#2013): COS, so the GKE driver installer puts the whole driver in /home/kubernetes/bin/nvidia,
+  # as in issue #1681 and AICR. Revert after the test.
+  default     = "COS_CONTAINERD"
 }
 
 # Resource labels
