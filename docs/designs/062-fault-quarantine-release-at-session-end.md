@@ -16,10 +16,7 @@ Fault-quarantine applies the taints and the cordon that each event in a session 
 
 ## Implementation
 
-- **Apply the actions of later events.** When an event arrives for a node that is already quarantined, `handleQuarantinedNode` (`fault-quarantine/pkg/reconciler/reconciler.go`) evaluates the event's rule sets and applies the taints and the cordon that they require, in the same node update that adds the rule labels:
-  - A taint that the session already recorded is not applied again. A taint that the node already has is recorded as pre-existing, so the release does not remove it.
-  - The node is cordoned only if no action already cordoned it. If the node is already unschedulable, the cordon is recorded as pre-existing.
-  - The circuit breaker counts a new cordon, and dry run records the actions without applying them, as for the event that starts a session.
+- **Apply the actions of later events.** When an event arrives for a node that is already quarantined, `handleQuarantinedNode` (`fault-quarantine/pkg/reconciler/reconciler.go`) applies the taints and the cordon that its rule sets require. It records them in the session annotations as for the event that starts a session, so the release at session end removes them and keeps pre-existing ones.
 - **Release at session end.** This is the current behaviour. When a healthy event leaves other events in the session, `handleQuarantinedNode` removes the recovered entities and keeps the node quarantined. When the last event recovers, it removes the taints, the cordon, and the rule labels, sets the event status to `UnQuarantined`, and creates the post-remediation `ValidationRequest` if validation is enabled.
 - Update the fault-quarantine configuration reference (`docs/configuration/fault-quarantine.md`) to state that the taints and the cordon of a session are released only when the session ends.
 
@@ -32,7 +29,6 @@ The node must stay unschedulable for the whole session, because node-drainer and
 - **Node-drainer trusts an earlier drain.** When a later event arrives, node-drainer marks it `AlreadyDrained` if another event in the session already finished a drain (`IsNodeDrained` in `commons/pkg/drain/drain.go`). If a release lets pods land, the later event evicts nothing, and fault-remediation then reboots or resets the node with those pods on it.
 - **Work for a recovered event can still run.** A drain that started for an event continues after the event recovers, and fault-remediation remediates the event when the drain finishes. If the cordon comes off during this, new pods land and are then evicted or interrupted by the reboot.
 - **A GPU reset needs a GPU that no process holds.** Pods that land after a release can open the device, so the reset fails and fault-remediation escalates to a reboot.
-- **Cancelling the recovered event does not solve this.** Fault-remediation treats `Cancelled` as the end of the session: `handleCancellationEvent` clears all remediation state of the node, which is correct for a manual uncordon, the only writer of `Cancelled` today. A per-event cancellation needs a new event status in node-drainer and fault-remediation and a time-aware drain proof. It still cannot stop a reset or reboot that has started. That changes the contract of three modules to return capacity on a node that still has an active fault.
 - **The session end is a safe release point.** When the last event recovers, fault-quarantine sets the `UnQuarantined` status. Node-drainer then cancels every drain in progress for the node, and fault-remediation closes the events that wait behind a maintenance CR. No work remains for the session, so the node can accept pods. A recovery in the middle of a session has no such signal.
 - **One release point keeps the session simple.** The node returns to service at one point in time, and ADR-049 validates it once, at that point.
 
@@ -58,19 +54,15 @@ The node must stay unschedulable for the whole session, because node-drainer and
 
 ### Release a recovered event's actions on partial recovery
 
-When an event recovers, fault-quarantine evaluates the rule sets against the remaining events and removes each taint and the cordon that no remaining event requires, behind an opt-in setting.
+Remove each taint and the cordon that no remaining event requires, behind an opt-in setting.
 
-**Rejected** because: removing the cordon in the middle of a session lets pods land while node-drainer and fault-remediation still act on the node, as described in the Rationale. Keeping the cordon whenever a remaining event will be drained or remediated would avoid this, but then the release helps only sessions whose remaining events need no drain or remediation.
+**Rejected** because: it lets pods land while node-drainer and fault-remediation still act on the node (see Rationale).
 
 ### Release on partial recovery and cancel the recovered event
 
-Fault-quarantine marks the recovered event `Cancelled`, as a manual uncordon does. Node-drainer stops its drain, fault-remediation skips it, and node-drainer stops trusting an earlier drain after a release.
+Mark the recovered event `Cancelled`, as a manual uncordon does, and make node-drainer stop trusting an earlier drain after a release.
 
-**Rejected** because: fault-remediation treats `Cancelled` as the end of the session, so the remaining events would lose their remediation state. A new per-event status would change node-drainer and fault-remediation, and a reset or reboot that has started cannot be cancelled. A drain would no longer mean that the node stays empty until remediation, which makes its intent unclear.
-
-### Record the owners of each action in a new annotation
-
-**Rejected** because: owners are needed only to release actions per event, which this record rejects. The annotation would also be a new public interface that every later version must read.
+**Rejected** because: fault-remediation treats `Cancelled` as the end of the session (`handleCancellationEvent` clears all remediation state of the node), so the remaining events would lose theirs. A per-event status would change node-drainer and fault-remediation, and it still cannot stop a reset or reboot that has started.
 
 ## Notes
 
