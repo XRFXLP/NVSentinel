@@ -187,17 +187,6 @@ install_gpu_operator() {
     helm repo update
     
     if [[ "$CSP" == "gcp" ]]; then
-        # TEMP (#2013): the GKE driver installer puts the driver in /home/kubernetes/bin/nvidia,
-        # and the GPU Operator installs no driver. Revert after the test.
-        log "Installing the GKE NVIDIA driver installer DaemonSet..."
-        if ! kubectl apply -f "$GCP_COS_GPU_DS"; then
-            error "Failed to apply the GKE NVIDIA driver installer DaemonSet"
-        fi
-        if ! kubectl rollout status daemonset/nvidia-driver-installer -n kube-system --timeout=20m; then
-            error "GKE NVIDIA driver installer DaemonSet did not become ready"
-        fi
-        log "GKE NVIDIA driver installer is ready ✓"
-
         log "Applying resource quota for GPU Operator on GCP..."
         kubectl create namespace gpu-operator --dry-run=client -o yaml | kubectl apply -f -
         if ! kubectl apply -f "$RESOURCE_QUOTA_RESOURCE" -n gpu-operator; then

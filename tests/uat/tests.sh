@@ -753,63 +753,6 @@ test_xid_monitoring_syslog() {
     log "Test 2 PASSED ✓"
 }
 
-# TEMP (#2013): list the processes that hold a GPU device file on the node while the GPU reset
-# Job runs, to find what blocks the reset ("In use by another client"). Revert after the test.
-log_gpu_device_holders() {
-    local node=$1
-    local waited=0
-
-    log "TEMP (#2013): waiting for the GPU reset Job pod on $node..."
-    until kubectl get pods -n nvsentinel --field-selector "spec.nodeName=$node" -o name | grep -q reset-job; do
-        sleep 5
-        waited=$((waited + 5))
-        if [[ $waited -ge 300 ]]; then
-            log "TEMP (#2013): no GPU reset Job pod on $node after 300s; skipping the device holder list"
-            return 0
-        fi
-    done
-
-    local pod="gpu-device-holders-$RANDOM"
-    kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: $pod
-  namespace: nvsentinel
-spec:
-  nodeName: $node
-  hostPID: true
-  restartPolicy: Never
-  tolerations:
-    - operator: Exists
-  containers:
-    - name: holders
-      image: public.ecr.aws/docker/library/debian:trixie-slim
-      securityContext:
-        privileged: true
-      command:
-        - sh
-        - -c
-        - |
-          for i in 1 2 3 4 5 6; do
-            echo "--- \$(date -u +%H:%M:%S)"
-            for p in /proc/[0-9]*; do
-              if ls -l "\$p/fd" 2>/dev/null | grep -q ' /dev/nvidia'; then
-                echo "pid=\${p#/proc/} files=\$(ls -l "\$p/fd" 2>/dev/null | grep -o '/dev/nvidia[^ ]*' | sort -u | tr '\n' ' ')"
-                echo "  cmd=\$(tr '\0' ' ' < "\$p/cmdline" | cut -c1-200)"
-                echo "  cgroup=\$(tail -n 1 "\$p/cgroup")"
-              fi
-            done
-            sleep 10
-          done
-EOF
-
-    kubectl wait -n nvsentinel --for=jsonpath='{.status.phase}'=Succeeded "pod/$pod" --timeout=180s || true
-    log "TEMP (#2013): processes holding /dev/nvidia* on $node:"
-    kubectl logs -n nvsentinel "$pod" || true
-    kubectl delete pod -n nvsentinel "$pod" --wait=false || true
-}
-
 test_xid_monitoring_syslog_gpu_reset() {
     log "=========================================================="
     log "Test 3: XID monitoring via syslog triggers COMPONENT_RESET"
@@ -862,9 +805,6 @@ test_xid_monitoring_syslog_gpu_reset() {
     wait_for_node_condition "$gpu_node" "SysLogsXIDError" "119"
 
     wait_for_node_quarantine "$gpu_node"
-
-    # TEMP (#2013): find what holds the GPU during the reset. Revert after the test.
-    log_gpu_device_holders "$gpu_node"
 
     log "Waiting for node to GPU reset and recover..."
     wait_for_gpu_reset "$gpu_node" "$uuid" "$current_ts"
@@ -991,16 +931,14 @@ main() {
     JUNIT_SUITE=nvsentinel-uat
     JUNIT_CLEANUP=cleanup_uat
 
-    # TEMP (#2013): run only the GPU reset test against the host-installed GKE driver.
-    # Restore test_gpu_monitoring_dcgm and test_xid_monitoring_syslog after the test.
-    # junit_test test_gpu_monitoring_dcgm
+    junit_test test_gpu_monitoring_dcgm
 
     if [[ "${NVSENTINEL_DRY_RUN:-false}" != "true" ]]; then
         log "Waiting for syslog-health-monitor to initialize (60s)..."
         sleep 60
     fi
 
-    # junit_test test_xid_monitoring_syslog
+    junit_test test_xid_monitoring_syslog
 
     junit_test test_xid_monitoring_syslog_gpu_reset
 
