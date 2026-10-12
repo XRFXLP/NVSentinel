@@ -24,14 +24,29 @@ dcgmExporter:
   enabled: true
   serviceMonitor:
     enabled: true
+# TEMP (#2013): host-installed driver from the GKE driver installer, as in AICR's
+# recipes/components/gpu-operator/values-gke-cos.yaml. Revert after the test.
+cdi:
+  enabled: true
+  default: true
+hostPaths:
+  driverInstallDir: /home/kubernetes/bin/nvidia
 devicePlugin:
   enabled: true
+  env:
+  - name: DP_DISABLE_HEALTHCHECKS
+    value: "x"
+  - name: DEVICE_LIST_STRATEGY
+    value: cdi-cri,cdi-annotations,volume-mounts
 driver:
-  enabled: true
+  enabled: false
+gdrcopy:
+  enabled: false
 gfd:
   enabled: true
 toolkit:
   enabled: true
+  installDir: /home/kubernetes/bin/nvidia
   env:
   - name: RUNTIME_CONFIG_SOURCE
     value: file

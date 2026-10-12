@@ -168,3 +168,18 @@ platformConnector:
   logLevel: debug
   nodeMetadata:
     enabled: true
+
+# TEMP (#2013): test the janitor GPU reset against the host-installed GKE driver, with the
+# janitor and gpu-reset images built from the PR branch. Revert after the test.
+janitor:
+  image:
+    tag: "pull-request-2013-test"
+  config:
+    controllers:
+      gpuReset:
+        resetJob:
+          hostDriverRootPath: "/"
+          driverBinPath: "/home/kubernetes/bin/nvidia/bin"
+          driverLibPath: "/home/kubernetes/bin/nvidia/lib64"
+          image:
+            tag: "pull-request-2013-test"

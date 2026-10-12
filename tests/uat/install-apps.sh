@@ -47,6 +47,8 @@ NVSENTINEL_VALUES="${VALUES_DIR}/nvsentinel-values.yaml"
 NVSENTINEL_CHART="${REPO_ROOT}/distros/kubernetes/nvsentinel"
 RESOURCE_QUOTA_RESOURCE="${VALUES_DIR}/resource-quota.yaml"
 GCP_COS_GPU_DS="https://raw.githubusercontent.com/GoogleCloudPlatform/container-engine-accelerators/master/nvidia-driver-installer/cos/daemonset-preloaded.yaml"
+# TEMP (#2013): GKE driver installer for UBUNTU_CONTAINERD GPU nodes. Revert after the test.
+GCP_UBUNTU_GPU_DS="https://raw.githubusercontent.com/GoogleCloudPlatform/container-engine-accelerators/master/nvidia-driver-installer/ubuntu/daemonset-preloaded.yaml"
 
 # AWS
 AWS_REGION="${AWS_REGION:-us-east-1}"
@@ -187,6 +189,17 @@ install_gpu_operator() {
     helm repo update
     
     if [[ "$CSP" == "gcp" ]]; then
+        # TEMP (#2013): the GKE driver installer puts the driver in /home/kubernetes/bin/nvidia,
+        # and the GPU Operator installs no driver. Revert after the test.
+        log "Installing the GKE NVIDIA driver installer DaemonSet..."
+        if ! kubectl apply -f "$GCP_UBUNTU_GPU_DS"; then
+            error "Failed to apply the GKE NVIDIA driver installer DaemonSet"
+        fi
+        if ! kubectl rollout status daemonset/nvidia-driver-installer -n kube-system --timeout=20m; then
+            error "GKE NVIDIA driver installer DaemonSet did not become ready"
+        fi
+        log "GKE NVIDIA driver installer is ready ✓"
+
         log "Applying resource quota for GPU Operator on GCP..."
         kubectl create namespace gpu-operator --dry-run=client -o yaml | kubectl apply -f -
         if ! kubectl apply -f "$RESOURCE_QUOTA_RESOURCE" -n gpu-operator; then

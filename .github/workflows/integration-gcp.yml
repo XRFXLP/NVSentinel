@@ -21,6 +21,8 @@ on:
   push:
     branches:
       - main
+      # TEMP (#2013): test the GPU reset against a host-installed GKE driver. Revert after the test.
+      - "pull-request/2013"
 
 permissions:
   contents: read
@@ -28,8 +30,54 @@ permissions:
   id-token: write
 
 jobs:
+  # TEMP (#2013): publish the janitor and gpu-reset images from the PR branch under a fixed test
+  # tag that tests/uat/gcp/nvsentinel-values.yaml points at. Revert after the test.
+  build-pr-images:
+    if: github.repository == 'nvidia/nvsentinel' && github.ref == 'refs/heads/pull-request/2013'
+    runs-on: linux-amd64-cpu32
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PR_IMAGE_TAG: "pull-request-2013-test"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
+
+      - name: Authenticate to GHCR
+        shell: bash
+        run: echo ${{ secrets.GITHUB_TOKEN }} | ko login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Publish janitor image
+        shell: bash
+        env:
+          KO_DOCKER_REPO: ghcr.io/nvidia/nvsentinel
+          VERSION: ${{ env.PR_IMAGE_TAG }}
+          GIT_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          BUILD_DATE=$(date -u +%FT%TZ)
+          export BUILD_DATE
+          ko build -B --sbom=none --platform=linux/amd64 --tags="${VERSION}" ./janitor
+
+      - name: Publish gpu-reset image
+        uses: ./.github/actions/publish-container
+        env:
+          CI_COMMIT_REF_NAME: ${{ env.PR_IMAGE_TAG }}
+        with:
+          make_command: 'make -C gpu-reset docker-publish'
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
+          container_name: 'nvsentinel/gpu-reset'
+
   integration-test-gcp:
-    if: github.repository == 'nvidia/nvsentinel'
+    # TEMP (#2013): wait for build-pr-images, which is skipped on every other ref. Restore
+    # `if: github.repository == 'nvidia/nvsentinel'` and drop `needs` after the test.
+    needs: [build-pr-images]
+    if: github.repository == 'nvidia/nvsentinel' && !failure() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
@@ -54,7 +102,8 @@ jobs:
       TF_VAR_resource_labels: '{"environment":"test","team":"nvsentinel","managed_by":"terraform"}'
       # Debug
       SKIP_DELETE: "false"  # skip cluster deletion
-      TEST_TAG: "main-33c1d03"
+      # TEMP (#2013): images from the main commit that pull-request/2013 is based on.
+      TEST_TAG: "main-25b77d3"
       
     steps:
       # Checkout

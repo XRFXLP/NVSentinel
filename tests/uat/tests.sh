@@ -931,14 +931,16 @@ main() {
     JUNIT_SUITE=nvsentinel-uat
     JUNIT_CLEANUP=cleanup_uat
 
-    junit_test test_gpu_monitoring_dcgm
+    # TEMP (#2013): run only the GPU reset test against the host-installed GKE driver.
+    # Restore test_gpu_monitoring_dcgm and test_xid_monitoring_syslog after the test.
+    # junit_test test_gpu_monitoring_dcgm
 
     if [[ "${NVSENTINEL_DRY_RUN:-false}" != "true" ]]; then
         log "Waiting for syslog-health-monitor to initialize (60s)..."
         sleep 60
     fi
 
-    junit_test test_xid_monitoring_syslog
+    # junit_test test_xid_monitoring_syslog
 
     junit_test test_xid_monitoring_syslog_gpu_reset
 
