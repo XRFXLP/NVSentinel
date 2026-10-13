@@ -1554,7 +1554,7 @@ func (r *Reconciler) applyRuleActionsForEvent(
 	if shouldDeferRecoveryActions(ctx, evaluationErr) {
 		// As on the fresh-node path, apply nothing until every transient evaluation succeeds. The event is
 		// already tracked, so the retry reaches this function again and applies the complete set.
-		return evaluationErr
+		return errors.Join(evaluationErr, errQuarantinedNodeNotUpdated)
 	}
 
 	node, err := r.getNode(ctx, event.NodeName)

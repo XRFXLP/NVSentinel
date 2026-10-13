@@ -32,6 +32,7 @@ import (
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/evaluator"
@@ -539,6 +540,7 @@ func TestHandleAlreadyQuarantinedNode_NodeUpdateFails_WritesNoStatus(t *testing.
 		name           string
 		event          *protos.HealthEvent
 		failNodeWrites bool
+		deferRecovery  bool
 		expectNoStatus bool
 	}{
 		{
@@ -551,6 +553,12 @@ func TestHandleAlreadyQuarantinedNode_NodeUpdateFails_WritesNoStatus(t *testing.
 			name:           "the session actions update fails",
 			event:          trackedEvent,
 			failNodeWrites: true,
+			expectNoStatus: true,
+		},
+		{
+			name:           "cold start defers the session actions after a transient evaluation error",
+			event:          trackedEvent,
+			deferRecovery:  true,
 			expectNoStatus: true,
 		},
 		{
@@ -595,8 +603,17 @@ func TestHandleAlreadyQuarantinedNode_NodeUpdateFails_WritesNoStatus(t *testing.
 				&informer.FaultQuarantineClient{Clientset: clientset, NodeInformer: nodeInformer}, nil)
 			r.SetLabelKeys(sessionTestLabelPrefix)
 
-			status, err := r.handleAlreadyQuarantinedNode(ctx, tc.event,
-				[]evaluator.RuleSetEvaluatorIface{&stubRuleSetEvaluator{name: "all", result: common.RuleEvaluationSuccess}},
+			evaluators := []evaluator.RuleSetEvaluatorIface{
+				&stubRuleSetEvaluator{name: "all", result: common.RuleEvaluationSuccess},
+			}
+			if tc.deferRecovery {
+				ctx = coldstart.WithRecoveryContext(ctx)
+				evaluators = append(evaluators, &stubRuleSetEvaluator{
+					name: "flaky", result: common.RuleEvaluationFailed, err: errors.New("transient evaluation error"),
+				})
+			}
+
+			status, err := r.handleAlreadyQuarantinedNode(ctx, tc.event, evaluators,
 				rulesetsConfig{CordonConfigMap: map[string]bool{"all": true}})
 
 			if tc.expectNoStatus {
