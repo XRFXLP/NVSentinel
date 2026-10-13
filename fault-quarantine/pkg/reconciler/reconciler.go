@@ -129,6 +129,8 @@ var (
 
 	// Sentinel errors for better error handling
 	errNoQuarantineAnnotation = fmt.Errorf("no quarantine annotation")
+	// errQuarantinedNodeNotUpdated marks an event on an already-quarantined node whose node update did not happen.
+	errQuarantinedNodeNotUpdated = errors.New("quarantined node was not updated")
 
 	manualUnquarantineAnnotationKeys = []string{
 		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
@@ -842,6 +844,12 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 	// Event will modify FQ annotations, proceed with quarantine handling
 	stayQuarantined, processingErr := r.handleQuarantinedNode(ctx, event, ruleSetEvals, rulesetsConfig)
 
+	// As when the first quarantine fails, write no status, so that cold start replays the event and applies it
+	// again. A replay is safe: the event is skipped where it is already tracked or its actions already applied.
+	if errors.Is(processingErr, errQuarantinedNodeNotUpdated) {
+		return nil, errors.Join(eligibilityErr, processingErr)
+	}
+
 	return r.resolveAlreadyQuarantinedStatus(ctx, event, stayQuarantined), errors.Join(eligibilityErr, processingErr)
 }
 
@@ -1501,7 +1509,7 @@ func (r *Reconciler) handleUnhealthyEventOnQuarantinedNode(
 		if err := r.addEventToAnnotation(ctx, event); err != nil {
 			slog.ErrorContext(ctx, "Failed to update health events annotation", "error", err)
 
-			return true, errors.Join(evaluationErr, err)
+			return true, errors.Join(evaluationErr, fmt.Errorf("%w: %w", errQuarantinedNodeNotUpdated, err))
 		}
 	} else {
 		slog.DebugContext(ctx, "All entities already tracked for check on node",
@@ -1551,12 +1559,13 @@ func (r *Reconciler) applyRuleActionsForEvent(
 
 	node, err := r.getNode(ctx, event.NodeName)
 	if err != nil {
-		return errors.Join(evaluationErr, fmt.Errorf("get node %s: %w", event.NodeName, err))
+		return errors.Join(evaluationErr,
+			fmt.Errorf("%w: get node %s: %w", errQuarantinedNodeNotUpdated, event.NodeName, err))
 	}
 
 	update, err := r.buildSessionActionUpdate(ctx, node, required)
 	if err != nil {
-		return errors.Join(evaluationErr, err)
+		return errors.Join(evaluationErr, fmt.Errorf("%w: %w", errQuarantinedNodeNotUpdated, err))
 	}
 
 	if update.isEmpty() {
@@ -1570,7 +1579,8 @@ func (r *Reconciler) applyRuleActionsForEvent(
 	if _, err := r.k8sClient.QuarantineNodeAndSetAnnotations(
 		ctx, event.NodeName, update.taints, update.cordon, update.annotations, update.labels,
 	); err != nil {
-		return errors.Join(evaluationErr, fmt.Errorf("apply session actions to node %s: %w", event.NodeName, err))
+		return errors.Join(evaluationErr, fmt.Errorf("%w: apply session actions to node %s: %w",
+			errQuarantinedNodeNotUpdated, event.NodeName, err))
 	}
 
 	r.updateSessionActionMetrics(update)

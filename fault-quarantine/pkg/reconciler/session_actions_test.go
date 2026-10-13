@@ -16,6 +16,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"testing"
 	"time"
@@ -24,13 +25,20 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	cordonlabels "github.com/nvidia/nvsentinel/commons/pkg/labels"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/evaluator"
+	healthEventsAnnotation "github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/nodecache"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
 
@@ -511,4 +519,96 @@ func TestE2E_LaterEventOnQuarantinedNode_PreExistingTaintAndCordon_SurviveRecove
 	node := getNode()
 	assert.True(t, node.Spec.Unschedulable, "The cordon that existed before the session should remain")
 	assert.True(t, nodeHasTaint(node, userTaint.Key), "The taint that existed before the session should remain")
+}
+
+// A later event whose node update fails must keep no status, as the first quarantine does, so that cold start
+// replays it. With an AlreadyQuarantined status, the replay skips it and its actions are never applied.
+func TestHandleAlreadyQuarantinedNode_NodeUpdateFails_WritesNoStatus(t *testing.T) {
+	trackedEvent := &protos.HealthEvent{
+		Version: 1, Agent: "test-monitor", ComponentClass: "GPU", CheckName: "GpuFault", NodeName: "node",
+		IsFatal: true, ErrorCode: []string{"79"},
+		EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+	}
+	newEvent := &protos.HealthEvent{
+		Version: 1, Agent: "test-monitor", ComponentClass: "GPU", CheckName: "GpuFault", NodeName: "node",
+		IsFatal: true, ErrorCode: []string{"79"},
+		EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
+	}
+
+	testCases := []struct {
+		name           string
+		event          *protos.HealthEvent
+		failNodeWrites bool
+		expectNoStatus bool
+	}{
+		{
+			name:           "the health events annotation update fails",
+			event:          newEvent,
+			failNodeWrites: true,
+			expectNoStatus: true,
+		},
+		{
+			name:           "the session actions update fails",
+			event:          trackedEvent,
+			failNodeWrites: true,
+			expectNoStatus: true,
+		},
+		{
+			name:  "the node update succeeds",
+			event: newEvent,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			annotation := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+			require.True(t, annotation.AddOrUpdateEvent(trackedEvent))
+			annotationJSON, err := json.Marshal(annotation)
+			require.NoError(t, err)
+
+			clientset := fake.NewSimpleClientset(&corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "node",
+					Labels:      map[string]string{informer.GPUNodeLabel: informer.GPUNodeLabelValue},
+					Annotations: map[string]string{common.QuarantineHealthEventAnnotationKey: string(annotationJSON)},
+				},
+			})
+			if tc.failNodeWrites {
+				failWrite := func(k8stesting.Action) (bool, runtime.Object, error) {
+					return true, nil, errors.New("API server unavailable")
+				}
+				clientset.PrependReactor("update", "nodes", failWrite)
+				clientset.PrependReactor("patch", "nodes", failWrite)
+			}
+
+			nodeInformer, err := informer.NewNodeInformer(clientset, 0, informer.GPUNodeLabel,
+				informer.GPUNodeLabelValue,
+				nodecache.Derive(config.TomlConfig{}, nodecache.Operational{GPUNodeLabelKey: informer.GPUNodeLabel}))
+			require.NoError(t, err)
+			go func() { _ = nodeInformer.Run(ctx.Done()) }()
+			require.True(t, nodeInformer.WaitForSync(ctx))
+
+			r := NewReconciler(ReconcilerConfig{},
+				&informer.FaultQuarantineClient{Clientset: clientset, NodeInformer: nodeInformer}, nil)
+			r.SetLabelKeys(sessionTestLabelPrefix)
+
+			status, err := r.handleAlreadyQuarantinedNode(ctx, tc.event,
+				[]evaluator.RuleSetEvaluatorIface{&stubRuleSetEvaluator{name: "all", result: common.RuleEvaluationSuccess}},
+				rulesetsConfig{CordonConfigMap: map[string]bool{"all": true}})
+
+			if tc.expectNoStatus {
+				require.ErrorIs(t, err, errQuarantinedNodeNotUpdated)
+				assert.Nil(t, status, "an event whose node update failed must stay unprocessed")
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, status)
+			assert.Equal(t, model.AlreadyQuarantined, *status)
+		})
+	}
 }
