@@ -312,7 +312,7 @@ Directory inside `resetJob.driverRoot` that holds `nvidia-smi` and `nvidia-bug-r
 ### resetJob.driverLibPath
 Directory inside `resetJob.driverRoot` that holds the driver libraries, such as `libnvidia-ml.so.1`. The reset command adds it to the front of `LD_LIBRARY_PATH` for every command it runs in the chroot. Leave it empty when the dynamic loader in the chroot already finds the driver libraries.
 
-Both values must be absolute, clean paths without `:`. The janitor rejects any other value at startup.
+Both values are empty by default. A value that is set must be an absolute, clean path without `:`. The janitor rejects any other value at startup.
 
 #### Example: host-installed driver on GKE
 
