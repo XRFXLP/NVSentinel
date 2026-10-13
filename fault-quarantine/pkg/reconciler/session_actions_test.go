@@ -17,7 +17,6 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
-	"sync"
 	"testing"
 	"time"
 
@@ -249,12 +248,12 @@ func TestBuildSessionActionUpdate(t *testing.T) {
 				Spec:       corev1.NodeSpec{Unschedulable: tc.nodeUnschedulable},
 			}
 
-			labels := &sync.Map{}
+			labels := map[string]string{}
 			if tc.requiresCordon {
-				labels.Store(cordonedReason, "nic-fault")
+				labels[cordonedReason] = "nic-fault"
 			}
 
-			update, err := r.buildSessionActionUpdate(context.Background(), node, sessionActions{
+			update, err := r.buildSessionActionUpdate(context.Background(), node, sessionActionUpdate{
 				taints: []config.Taint{taintB},
 				cordon: tc.requiresCordon,
 				labels: labels,
