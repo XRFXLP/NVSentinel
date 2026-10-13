@@ -1771,7 +1771,8 @@ func (r *Reconciler) updateSessionActionMetrics(update sessionActionUpdate) {
 		metrics.TaintsApplied.WithLabelValues(taint.Key, taint.Effect).Inc()
 	}
 
-	if _, cordonRecorded := update.annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; cordonRecorded {
+	// A pre-existing cordon is recorded in the annotations but was not applied by fault-quarantine.
+	if update.cordon {
 		metrics.CordonsApplied.Inc()
 	}
 }

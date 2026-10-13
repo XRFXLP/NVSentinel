@@ -31,8 +31,45 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
+
+func TestUpdateSessionActionMetrics_CountsOnlyCordonsThatFaultQuarantineApplied(t *testing.T) {
+	cordonRecorded := map[string]string{
+		common.QuarantineHealthEventIsCordonedAnnotationKey: common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
+	}
+
+	testCases := []struct {
+		name          string
+		update        sessionActionUpdate
+		expectedDelta float64
+	}{
+		{
+			name:          "cordon applied by fault-quarantine",
+			update:        sessionActionUpdate{cordon: true, annotations: cordonRecorded},
+			expectedDelta: 1,
+		},
+		{
+			name: "pre-existing cordon is recorded but not applied",
+			update: sessionActionUpdate{annotations: map[string]string{
+				common.QuarantineHealthEventIsCordonedAnnotationKey: common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
+				common.QuarantineHealthEventCordonPreExistingAnnotationKey: common.QuarantineHealthEventCordonPreExistingAnnotationValue,
+			}},
+			expectedDelta: 0,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := counterValue(t, metrics.CordonsApplied)
+
+			(&Reconciler{}).updateSessionActionMetrics(tc.update)
+
+			assert.InDelta(t, tc.expectedDelta, counterValue(t, metrics.CordonsApplied)-before, 0)
+		})
+	}
+}
 
 const sessionTestLabelPrefix = "k8s.nvidia.com/"
 
