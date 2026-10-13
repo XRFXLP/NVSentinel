@@ -1526,7 +1526,8 @@ type sessionActions struct {
 	appliedLabels []config.AppliedLabel
 }
 
-// sessionActionUpdate is the change that applyRuleActionsForEvent makes to a node that is already quarantined.
+// sessionActionUpdate is what applyRuleActionsForEvent writes to a node that is already quarantined: the taints and
+// the cordon to apply, and the annotations and labels to set.
 type sessionActionUpdate struct {
 	taints      []config.Taint
 	cordon      bool
@@ -1538,9 +1539,9 @@ func (u sessionActionUpdate) isEmpty() bool {
 	return len(u.taints) == 0 && !u.cordon && len(u.annotations) == 0 && len(u.labels) == 0
 }
 
-// applyRuleActionsForEvent applies the taints, cordon, and rule labels that an unhealthy event requires on a node
-// that is already quarantined. It only adds actions. A taint or a cordon that the quarantine session already records
-// stays as it is, and nothing is removed, so the node is at least as isolated as each active event requires.
+// applyRuleActionsForEvent applies the taints, the cordon, and the rule labels that a later unhealthy event requires on
+// a node that is already quarantined. It only adds: a taint or a cordon that the session annotations already list is
+// left as it is, and nothing is removed before the session ends.
 func (r *Reconciler) applyRuleActionsForEvent(
 	ctx context.Context,
 	event *protos.HealthEvent,
@@ -1618,8 +1619,8 @@ func (r *Reconciler) evaluateSessionActions(
 	}, evaluationErr
 }
 
-// buildSessionActionUpdate works out which of the event's actions the node does not have yet. The node must not be
-// modified, because it can come from the informer cache.
+// buildSessionActionUpdate returns the event's actions that the node does not have yet. node can come from the
+// informer cache, so it must not be modified.
 func (r *Reconciler) buildSessionActionUpdate(
 	ctx context.Context,
 	node *corev1.Node,
@@ -1627,9 +1628,9 @@ func (r *Reconciler) buildSessionActionUpdate(
 ) (sessionActionUpdate, error) {
 	update := sessionActionUpdate{annotations: map[string]string{}}
 
-	// On a live session in dry run, a recorded taint or cordon that was never applied reads as a manual untaint or
-	// uncordon after the next restart, and that ends the session. A dry-run session carries its own marker and is
-	// exempt from those checks, as on the fresh-node path.
+	// In dry run, write taint and cordon annotations only on a dry-run session, which carries its own marker. On a
+	// live session, an annotation for a taint or a cordon that was never applied looks like a manual untaint or
+	// uncordon after the next restart, and that would end the session.
 	_, dryRunSession := node.Annotations[common.QuarantineHealthEventDryRunAnnotationKey]
 	recordActions := !r.config.DryRun || dryRunSession
 
@@ -1666,10 +1667,11 @@ func (r *Reconciler) buildSessionActionUpdate(
 	return update, nil
 }
 
-// sessionTaintsToAdd returns the taints that the session does not record yet. A taint that the session records with
-// the same key and effect is left as it is. A taint that is already on the node with the same value is recorded as
-// pre-existing, so fault-quarantine never removes it. A taint that is already on the node with a different value
-// belongs to someone else and is skipped, so that its value is not overwritten.
+// sessionTaintsToAdd returns the desired taints whose key and effect are not in the
+// quarantineHealthEventAppliedTaints annotation yet:
+//   - If the node already has the same taint, it is returned marked PreExisting, so the session-end release keeps it.
+//   - If the node has the same key and effect with a different value, it is skipped, so the other value is not
+//     overwritten.
 func (r *Reconciler) sessionTaintsToAdd(
 	ctx context.Context,
 	node *corev1.Node,
@@ -1718,8 +1720,9 @@ func (r *Reconciler) sessionTaintsToAdd(
 	return taints, nil
 }
 
-// addSessionCordon adds the cordon to the update when the event requires one and the session does not record one yet.
-// A node that someone else already cordoned is recorded as pre-existing, so fault-quarantine never uncordons it.
+// addSessionCordon adds a cordon to update when the event's rule sets require one and the
+// quarantineHealthEventIsCordoned annotation is not set yet. If the node is already unschedulable, the cordon is
+// marked pre-existing, so the session-end release does not uncordon the node.
 func (r *Reconciler) addSessionCordon(
 	node *corev1.Node,
 	actions sessionActions,
@@ -1730,7 +1733,8 @@ func (r *Reconciler) addSessionCordon(
 		common.QuarantineHealthEventIsCordonedAnnotationValueTrue
 
 	if !actions.cordon || sessionCordoned || !recordActions {
-		// The cordon labels describe the cordon that started the session, so leave them unchanged.
+		// This event adds no cordon, so drop the cordon labels from its evaluation. Any cordon labels already on the
+		// node stay as they are.
 		r.deleteCordonLabels(actions.labels)
 
 		return
@@ -1760,8 +1764,8 @@ func (r *Reconciler) deleteCordonLabels(labels *sync.Map) {
 	labels.Delete(r.cordonedTimestampLabelKey)
 }
 
-// updateSessionActionMetrics counts the taints and the cordon that a later event added to a quarantine session. The
-// node was already counted as quarantined when the session started.
+// updateSessionActionMetrics counts the taints and the cordon that applyRuleActionsForEvent applied. The node itself
+// was counted as quarantined when the session started.
 func (r *Reconciler) updateSessionActionMetrics(update sessionActionUpdate) {
 	if r.config.DryRun {
 		return
