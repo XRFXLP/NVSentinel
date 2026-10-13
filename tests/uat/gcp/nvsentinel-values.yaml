@@ -168,15 +168,3 @@ platformConnector:
   logLevel: debug
   nodeMetadata:
     enabled: true
-
-# TEMP (#2013): regression run with the janitor and gpu-reset images built from the PR branch.
-# Every other setting stays as on main. Revert after the test.
-janitor:
-  image:
-    tag: "pull-request-2013-test"
-  config:
-    controllers:
-      gpuReset:
-        resetJob:
-          image:
-            tag: "pull-request-2013-test"
