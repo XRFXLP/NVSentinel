@@ -237,7 +237,6 @@ janitor:
           hostDriverRootPath: "/run/nvidia/driver"
           driverRoot: "/run/nvidia/driver"
           driverBinPath: ""
-          driverLibPath: ""
           image:
             repository: ghcr.io/nvidia/nvsentinel/gpu-reset
             tag: ""
@@ -311,10 +310,7 @@ The value must be an absolute, clean path. The janitor rejects any other value a
 ### resetJob.driverBinPath
 Directory inside `resetJob.driverRoot` that holds `nvidia-smi` and `nvidia-bug-report.sh`. The reset command adds it to the front of `PATH` for every command it runs in the chroot. Leave it empty when these files are on the default `PATH`, for example with the GPU Operator driver container.
 
-### resetJob.driverLibPath
-Directory inside `resetJob.driverRoot` that holds the driver libraries, such as `libnvidia-ml.so.1`. The reset command adds it to the front of `LD_LIBRARY_PATH` for every command it runs in the chroot. Leave it empty when the dynamic loader in the chroot already finds the driver libraries.
-
-Both values are empty by default. A value that is set must be an absolute, clean path without `:`. The janitor rejects any other value at startup.
+The value is empty by default. A value that is set must be an absolute, clean path without `:`. The janitor rejects any other value at startup.
 
 #### Example: host-installed driver on GKE
 
@@ -322,7 +318,7 @@ The GKE driver installer on Container-Optimized OS (COS) nodes puts the driver i
 
 This setup needs three changes:
 
-- Chroot into the host root, and point the reset command at the driver directories with `driverBinPath` and `driverLibPath`.
+- Chroot into the host root, and point the reset command at the driver binaries with `driverBinPath`. The installer adds `/home/kubernetes/bin/nvidia/lib64` to the host's dynamic loader configuration, so the chroot finds the driver libraries without further settings.
 - Stop the GPU Operator container toolkit during the reset. In this setup, the toolkit process keeps every GPU device open, and the reset fails with `In use by another client`. The built-in `gpu-operator` entry does not stop the toolkit, so set `serviceManager.spec` with the device plugin mode operands and the toolkit.
 - Set `runtimeClassName` to `""`. When the toolkit stops, it removes the `nvidia` runtime from containerd, so a reset Job that requests that RuntimeClass cannot start.
 
@@ -363,7 +359,6 @@ janitor:
           hostDriverRootPath: "/"
           driverRoot: "/run/nvidia/driver"
           driverBinPath: "/home/kubernetes/bin/nvidia/bin"
-          driverLibPath: "/home/kubernetes/bin/nvidia/lib64"
 ```
 
 The reset fails while any process holds the GPU open. If another GPU client runs on the node, for example a DRA kubelet plugin, add its operand to the spec as well.

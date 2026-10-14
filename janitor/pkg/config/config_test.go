@@ -674,7 +674,7 @@ gpuResetController:
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 }
 
-func TestLoadConfig_GPUResetHostInstalledDriverSearchPaths(t *testing.T) {
+func TestLoadConfig_GPUResetHostInstalledDriverBinPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
 
@@ -688,7 +688,6 @@ gpuResetController:
   resetJob:
     hostDriverRootPath: "/"
     driverBinPath: "/home/kubernetes/bin/nvidia/bin"
-    driverLibPath: "/home/kubernetes/bin/nvidia/lib64"
     imageConfig:
       image: "alpine:latest"
 `
@@ -703,13 +702,11 @@ gpuResetController:
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
 		ResourceRequirements{}, "/", DriverRootMountPath, "", true, "")
 	require.NoError(t, err)
-	require.NoError(t, applyDriverSearchPaths(expectedJobTemplate,
-		"/home/kubernetes/bin/nvidia/bin", "/home/kubernetes/bin/nvidia/lib64"))
+	require.NoError(t, applyDriverBinPath(expectedJobTemplate, "/home/kubernetes/bin/nvidia/bin"))
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
 	env := config.GPUReset.ResolvedJobTemplate.Spec.Template.Spec.Containers[0].Env
 	assert.Contains(t, env, corev1.EnvVar{Name: DriverBinPathEnvVar, Value: "/home/kubernetes/bin/nvidia/bin"})
-	assert.Contains(t, env, corev1.EnvVar{Name: DriverLibPathEnvVar, Value: "/home/kubernetes/bin/nvidia/lib64"})
 }
 
 func TestLoadConfig_GPUResetInvalidDriverBinPath_ReturnsError(t *testing.T) {

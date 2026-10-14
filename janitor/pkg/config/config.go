@@ -116,7 +116,6 @@ type ResetJobConfig struct {
 	HostDriverRootPath string               `mapstructure:"hostDriverRootPath" json:"hostDriverRootPath"`
 	DriverRoot         string               `mapstructure:"driverRoot" json:"driverRoot"`
 	DriverBinPath      string               `mapstructure:"driverBinPath" json:"driverBinPath"`
-	DriverLibPath      string               `mapstructure:"driverLibPath" json:"driverLibPath"`
 	WriteSysLogEvent   *bool                `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
 	UploadURL          string               `mapstructure:"uploadURL" json:"uploadURL"`
 }
@@ -192,8 +191,7 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 			return nil, err
 		}
 
-		if err := applyDriverSearchPaths(jobTemplate, resetJobConfig.DriverBinPath,
-			resetJobConfig.DriverLibPath); err != nil {
+		if err := applyDriverBinPath(jobTemplate, resetJobConfig.DriverBinPath); err != nil {
 			return nil, err
 		}
 

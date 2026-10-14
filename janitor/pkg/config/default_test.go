@@ -144,20 +144,13 @@ func TestGetDefaultGPUResetJobTemplate_InvalidDriverRoot_ReturnsError(t *testing
 	}
 }
 
-func TestApplyDriverSearchPaths_SetsOnlyConfiguredEnv(t *testing.T) {
+func TestApplyDriverBinPath_SetsEnvOnlyWhenConfigured(t *testing.T) {
 	tests := []struct {
 		name          string
 		driverBinPath string
-		driverLibPath string
 	}{
-		{name: "unset paths leave the Job unchanged"},
-		{
-			name:          "host-installed GKE driver sets both paths",
-			driverBinPath: "/home/kubernetes/bin/nvidia/bin",
-			driverLibPath: "/home/kubernetes/bin/nvidia/lib64",
-		},
-		{name: "bin path only", driverBinPath: "/opt/nvidia/bin"},
-		{name: "lib path only", driverLibPath: "/opt/nvidia/lib64"},
+		{name: "unset path leaves the Job unchanged"},
+		{name: "host-installed GKE driver", driverBinPath: "/home/kubernetes/bin/nvidia/bin"},
 	}
 
 	for _, test := range tests {
@@ -168,50 +161,34 @@ func TestApplyDriverSearchPaths_SetsOnlyConfiguredEnv(t *testing.T) {
 
 			envCountBefore := len(template.Spec.Template.Spec.Containers[0].Env)
 
-			require.NoError(t, applyDriverSearchPaths(template, test.driverBinPath, test.driverLibPath))
+			require.NoError(t, applyDriverBinPath(template, test.driverBinPath))
 
 			env := template.Spec.Template.Spec.Containers[0].Env
-			for _, expected := range []struct{ name, value string }{
-				{name: DriverBinPathEnvVar, value: test.driverBinPath},
-				{name: DriverLibPathEnvVar, value: test.driverLibPath},
-			} {
-				envVar := findEnvVar(env, expected.name)
-				if expected.value == "" {
-					assert.Nil(t, envVar)
+			envVar := findEnvVar(env, DriverBinPathEnvVar)
 
-					continue
-				}
+			if test.driverBinPath == "" {
+				assert.Nil(t, envVar)
+				assert.Len(t, env, envCountBefore)
 
-				require.NotNil(t, envVar)
-				assert.Equal(t, expected.value, envVar.Value)
+				return
 			}
 
-			expectedAdded := 0
-			if test.driverBinPath != "" {
-				expectedAdded++
-			}
-
-			if test.driverLibPath != "" {
-				expectedAdded++
-			}
-
-			assert.Len(t, env, envCountBefore+expectedAdded)
+			require.NotNil(t, envVar)
+			assert.Equal(t, test.driverBinPath, envVar.Value)
+			assert.Len(t, env, envCountBefore+1)
 		})
 	}
 }
 
-func TestApplyDriverSearchPaths_InvalidPath_ReturnsError(t *testing.T) {
+func TestApplyDriverBinPath_InvalidPath_ReturnsError(t *testing.T) {
 	tests := []struct {
 		name          string
 		driverBinPath string
-		driverLibPath string
-		expectedKey   string
 	}{
-		{name: "relative bin path", driverBinPath: "home/kubernetes/bin/nvidia/bin", expectedKey: "resetJob.driverBinPath"},
-		{name: "trailing slash bin path", driverBinPath: "/opt/nvidia/bin/", expectedKey: "resetJob.driverBinPath"},
-		{name: "colon in bin path", driverBinPath: "/opt/nvidia/bin:/usr/bin", expectedKey: "resetJob.driverBinPath"},
-		{name: "parent traversal lib path", driverLibPath: "/opt/../nvidia/lib64", expectedKey: "resetJob.driverLibPath"},
-		{name: "colon in lib path", driverLibPath: "/opt/nvidia/lib64:/lib", expectedKey: "resetJob.driverLibPath"},
+		{name: "relative path", driverBinPath: "home/kubernetes/bin/nvidia/bin"},
+		{name: "trailing slash", driverBinPath: "/opt/nvidia/bin/"},
+		{name: "parent traversal", driverBinPath: "/opt/../nvidia/bin"},
+		{name: "colon", driverBinPath: "/opt/nvidia/bin:/usr/bin"},
 	}
 
 	for _, test := range tests {
@@ -220,9 +197,9 @@ func TestApplyDriverSearchPaths_InvalidPath_ReturnsError(t *testing.T) {
 				ResourceRequirements{}, "/", DriverRootMountPath, "", true, "")
 			require.NoError(t, err)
 
-			err = applyDriverSearchPaths(template, test.driverBinPath, test.driverLibPath)
+			err = applyDriverBinPath(template, test.driverBinPath)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), test.expectedKey)
+			assert.Contains(t, err.Error(), "resetJob.driverBinPath")
 		})
 	}
 }
