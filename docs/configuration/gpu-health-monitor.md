@@ -144,6 +144,10 @@ gpu-health-monitor:
 
 This mode does not set the [DCGM version node label](#dcgm-version-node-label) for you. Label every GPU node before you install, or no monitor pod schedules.
 
+In embedded mode the monitor holds the GPUs open, so it can stop the GPU Operator from unloading the driver. Thus the DaemonSet gets the same required node affinity on the `nvidia.com/gpu.deploy.client` label as the metadata collector. The monitor runs when the label is `true` or is not present. It leaves the node for all other values, such as `paused-for-driver-upgrade` and `paused-for-mig-change`. If you set `affinity` or `global.affinity`, the chart uses your value unchanged instead of this rule. See [GPU Operator driver upgrades and MIG changes](metadata-collector.md#gpu-operator-driver-upgrades-and-mig-changes) for the full rules and limits. The other modes connect to DCGM over the network and render your `affinity` unchanged.
+
+The GPU Operator sets the label back to `true` before the new driver loads, so the monitor can start again before the driver is ready. Until the driver is ready, the monitor pod can fail to start or report `GpuDcgmConnectivityFailure`.
+
 ### DCGM Version Node Label
 
 GPU Health Monitor ships one DaemonSet per DCGM major version. Each DaemonSet selects nodes with the `nvsentinel.dgxc.nvidia.com/dcgm.version` label, so every node gets the monitor image that matches its DCGM. All three modes render this `nodeSelector`, but only `operator-service` supplies the label for you.
@@ -402,7 +406,7 @@ Runtime debounce and the startup gate address different phases:
 
 - `startupGate` prevents the monitor from starting and publishing connectivity failures before DCGM has been functional once.
 - `runtimeDebounce` filters short connectivity transitions after the monitor is running.
-- The probe watchdog is not delayed by `failureThreshold`: a DCGM call that has stopped returning may have no later poll from which to build a failure streak.
+- In remote modes, a probe hang is debounced on time instead of cycles: it is published once DCGM has been unreachable for `failureThreshold * pollIntervalSeconds`. A hung call has no later poll to count, and the liveness probe restarts the container before a long deadline elapses, so the start of the unreachable window is persisted under the monitor's state directory and resumed after a restart. Any successful cycle ends the window, and a failure more than ten minutes after the previous one starts a new window, which covers the kubelet's capped restart backoff. With the default `failureThreshold: 1` the hang is published as soon as it is detected. The embedded-mode `GpuDcgmUnresponsive` event is not delayed: its fault is node-local.
 
 `dcgmHealthCheck.connectivityFailureEscalationThreshold` continues to count consecutive failed observations. If its threshold is lower than the debounce failure threshold, the first published unhealthy event may already recommend `RESTART_BM`; configure escalation at or above `failureThreshold` when a preliminary `CONTACT_SUPPORT` event is desired.
 
@@ -435,9 +439,9 @@ gpu-health-monitor:
 
 ### probeStoreOnly
 
-Ships the check in dry-run. While `true` (the default) `GpuDcgmUnresponsive` is emitted with `processingStrategy=STORE_ONLY`, so it is persisted and exported as metrics but excluded from the remediation pipeline — no node condition, no cordon, no reboot. The event still carries `RESTART_BM` so the record shows what the node needs.
+Ships probe-hang checks in dry-run. While `true` (the default), local `GpuDcgmUnresponsive` and remote `DCGM_PROBE_HANG` events are emitted with `processingStrategy=STORE_ONLY`, so they are persisted and exported as metrics but excluded from the remediation pipeline. Remote `DCGM_CONNECTIVITY_ERROR` events continue to use the configured processing strategy. Probe-hang events still carry their recommended action so the record shows what the node needs.
 
-Watch `dcgm_probe_hangs` and the stored events for a release or two, confirm the detections match real on-node hangs on your fleet, then set `probeStoreOnly: false` to let remediation act on them. Both the unhealthy and the clearing event use the same strategy, so fault-quarantine always sees a consistent pair.
+Watch `dcgm_probe_hangs` and the stored events for a release or two, confirm the detections match the hangs on your fleet, then set `probeStoreOnly: false` to let the configured processing strategy act on them. Recovery matches the active event: when a remediable connectivity failure replaces a remote `STORE_ONLY` probe hang, the clearing event uses `EXECUTE_REMEDIATION`, so the original unhealthy event and its clearing event do not always use the same strategy.
 
 ### probeDeadlineSeconds
 
@@ -457,7 +461,7 @@ Enable this only when the configured DCGM endpoint is node-local and repeated un
 
 Defaults to `0`, which disables escalation and keeps every connectivity failure at `CONTACT_SUPPORT`. The counter resets once connectivity is restored, and the escalated event is published once rather than on every subsequent cycle.
 
-> **Note**: Both settings recommend `RESTART_BM`, which fault-remediation maps to a `RebootNode` CR. A reboot is the practical recovery when an on-node DCGM probe will not return — whether the underlying cause is a wedged driver or DCGM userspace holding driver locks. Nodes are drained before the reboot by node-drainer. Note that `probeStoreOnly` gates this for `GpuDcgmUnresponsive`, while `connectivityFailureEscalationThreshold` is opt-in by being `0` by default.
+> **Note**: Probe-hang events can recommend `RESTART_BM`, which fault-remediation maps to a `RebootNode` CR. `probeStoreOnly` gates these events in local and remote modes; `connectivityFailureEscalationThreshold` separately opts into escalating repeated connectivity failures and defaults to `0`.
 
 ### minConsecutivePolls
 
