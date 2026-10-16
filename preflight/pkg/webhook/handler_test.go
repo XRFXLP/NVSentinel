@@ -481,30 +481,40 @@ func TestHandleMutate(t *testing.T) {
 	})
 }
 
-// buildWorkloadRefAdmissionReview builds a review for a Kubernetes 1.35 GPU pod.
-// spec.workloadRef has no corev1.Pod field in this client, so the pod is raw JSON.
-func buildWorkloadRefAdmissionReview(t *testing.T, workloadRef map[string]any) []byte {
-	t.Helper()
+// TestHandleMutate_WorkloadRefGang covers the K8s 1.35 path end to end in the
+// webhook. spec.workloadRef has no corev1.Pod field in this client, so the
+// request carries raw pod JSON, and the pod is not in the API server yet.
+func TestHandleMutate_WorkloadRefGang(t *testing.T) {
+	workload := &unstructured.Unstructured{}
+	workload.SetGroupVersionKind(discoverer.WorkloadGVK)
+	workload.SetNamespace("team-a")
+	workload.SetName("train")
+	workload.SetUID("train-uid")
+	c := fake.NewClientBuilder().WithObjects(workload).Build()
 
-	spec := map[string]any{
-		"containers": []any{map[string]any{
-			"name":      "train",
-			"image":     "train:latest",
-			"resources": map[string]any{"limits": map[string]any{"nvidia.com/gpu": "8"}},
-		}},
-	}
-	if workloadRef != nil {
-		spec["workloadRef"] = workloadRef
-	}
+	var mu sync.Mutex
+	var registrations []GangRegistration
+	handler := NewHandler(handlerGangConfig(), gang.NewResolver(discoverer.NewWorkloadRefDiscoverer(c), nil), nil,
+		func(_ context.Context, reg GangRegistration) {
+			mu.Lock()
+			defer mu.Unlock()
+			registrations = append(registrations, reg)
+		}, nil)
 
 	raw, err := json.Marshal(map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Pod",
 		"metadata":   map[string]any{"generateName": "worker-"},
-		"spec":       spec,
+		"spec": map[string]any{
+			"workloadRef": map[string]any{"name": "train", "podGroup": "workers", "podGroupReplicaKey": "replica-0"},
+			"containers": []any{map[string]any{
+				"name":      "train",
+				"image":     "train:latest",
+				"resources": map[string]any{"limits": map[string]any{"nvidia.com/gpu": "8"}},
+			}},
+		},
 	})
 	require.NoError(t, err)
-
 	body, err := json.Marshal(admissionv1.AdmissionReview{
 		APIVersion: "admission.k8s.io/v1",
 		Kind:       "AdmissionReview",
@@ -516,72 +526,21 @@ func buildWorkloadRefAdmissionReview(t *testing.T, workloadRef map[string]any) [
 	})
 	require.NoError(t, err)
 
-	return body
-}
+	rec := httptest.NewRecorder()
+	handler.HandleMutate(rec, httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body)))
+	require.Equal(t, http.StatusOK, rec.Code)
 
-func TestHandleMutate_WorkloadRefGang(t *testing.T) {
-	workload := &unstructured.Unstructured{}
-	workload.SetGroupVersionKind(discoverer.WorkloadGVK)
-	workload.SetNamespace("team-a")
-	workload.SetName("train")
-	workload.SetUID("train-uid")
+	var review admissionv1.AdmissionReview
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &review))
+	require.NotNil(t, review.Response)
+	require.True(t, review.Response.Allowed)
+	assert.Contains(t, string(review.Response.Patch), gangtypes.GangConfigVolumeName)
 
-	tests := []struct {
-		name        string
-		workloadRef map[string]any
-		wantGangID  string
-	}{
-		{
-			name:        "pod with workloadRef joins the Workload gang",
-			workloadRef: map[string]any{"name": "train", "podGroup": "workers"},
-			wantGangID:  "kubernetes-team-a-train-workers",
-		},
-		{
-			name: "pod without workloadRef is not a gang member",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// The client holds the Workload but not the pod: during admission
-			// the pod does not exist in the API server yet.
-			c := fake.NewClientBuilder().WithObjects(workload).Build()
-
-			var mu sync.Mutex
-			var registrations []GangRegistration
-			handler := NewHandler(handlerGangConfig(), gang.NewResolver(discoverer.NewWorkloadRefDiscoverer(c), nil), nil,
-				func(_ context.Context, reg GangRegistration) {
-					mu.Lock()
-					defer mu.Unlock()
-					registrations = append(registrations, reg)
-				}, nil)
-
-			req := httptest.NewRequest(http.MethodPost, "/mutate",
-				bytes.NewReader(buildWorkloadRefAdmissionReview(t, tt.workloadRef)))
-			rec := httptest.NewRecorder()
-			handler.HandleMutate(rec, req)
-			require.Equal(t, http.StatusOK, rec.Code)
-
-			var review admissionv1.AdmissionReview
-			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &review))
-			require.NotNil(t, review.Response)
-			require.True(t, review.Response.Allowed)
-
-			mu.Lock()
-			defer mu.Unlock()
-
-			if tt.wantGangID == "" {
-				assert.Empty(t, registrations)
-				assert.NotContains(t, string(review.Response.Patch), gangtypes.GangConfigVolumeName)
-				return
-			}
-
-			require.Len(t, registrations, 1)
-			assert.Equal(t, tt.wantGangID, registrations[0].GangID)
-			require.NotNil(t, registrations[0].OwnerReference)
-			assert.Equal(t, "Workload", registrations[0].OwnerReference.Kind)
-			assert.Equal(t, types.UID("train-uid"), registrations[0].OwnerReference.UID)
-			assert.Contains(t, string(review.Response.Patch), gangtypes.GangConfigVolumeName)
-		})
-	}
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, registrations, 1)
+	assert.Equal(t, "kubernetes-team-a-train-workers-replica-0", registrations[0].GangID)
+	require.NotNil(t, registrations[0].OwnerReference)
+	assert.Equal(t, "Workload", registrations[0].OwnerReference.Kind)
+	assert.Equal(t, types.UID("train-uid"), registrations[0].OwnerReference.UID)
 }

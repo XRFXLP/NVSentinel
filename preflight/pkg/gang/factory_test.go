@@ -154,45 +154,35 @@ func TestNewDiscovererFromConfig(t *testing.T) {
 func TestNewDiscovererFromConfig_NativeKubernetesVersionSelection(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().Build()
 
-	t.Run("prefers K8s 1.36 PodGroup API when available", func(t *testing.T) {
-		restMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{
-			{Group: "scheduling.k8s.io", Version: "v1alpha2"},
-			{Group: "scheduling.k8s.io", Version: "v1alpha1"},
+	// The PodGroup version must reach the discoverer, so check the owner
+	// reference it builds, not only the discoverer type.
+	for _, version := range []string{"v1alpha2", "v1beta1"} { // K8s 1.36, K8s 1.37
+		t.Run("prefers PodGroup "+version+" over Workload", func(t *testing.T) {
+			podGroupGVK := discoverer.PodGroupGroupKind.WithVersion(version)
+			restMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{
+				podGroupGVK.GroupVersion(),
+				discoverer.WorkloadGVK.GroupVersion(),
+			})
+			restMapper.Add(podGroupGVK, meta.RESTScopeNamespace)
+			restMapper.Add(discoverer.WorkloadGVK, meta.RESTScopeNamespace)
+
+			podGroup := &unstructured.Unstructured{}
+			podGroup.SetGroupVersionKind(podGroupGVK)
+			podGroup.SetNamespace("default")
+			podGroup.SetName("training")
+			c := fake.NewClientBuilder().WithRuntimeObjects(podGroup).Build()
+
+			got, err := NewDiscovererFromConfig(config.GangDiscoveryConfig{}, c, restMapper)
+			require.NoError(t, err)
+			native, ok := got.(*discoverer.KubernetesDiscoverer)
+			require.True(t, ok, "NewDiscovererFromConfig() = %T, want *discoverer.KubernetesDiscoverer", got)
+
+			ownerRef, err := native.OwnerReference(context.Background(), schedulingGroupPod("default", "training"))
+			require.NoError(t, err)
+			require.NotNil(t, ownerRef)
+			assert.Equal(t, podGroupGVK.GroupVersion().String(), ownerRef.APIVersion)
 		})
-		restMapper.Add(discoverer.PodGroupGroupKind.WithVersion("v1alpha2"), meta.RESTScopeNamespace)
-		restMapper.Add(discoverer.WorkloadGVK, meta.RESTScopeNamespace)
-
-		got, err := NewDiscovererFromConfig(config.GangDiscoveryConfig{}, fakeClient, restMapper)
-		if err != nil {
-			t.Fatalf("NewDiscovererFromConfig() error = %v", err)
-		}
-
-		if _, ok := got.(*discoverer.KubernetesDiscoverer); !ok {
-			t.Fatalf("NewDiscovererFromConfig() = %T, want *discoverer.KubernetesDiscoverer", got)
-		}
-	})
-
-	t.Run("uses K8s 1.37 PodGroup v1beta1 API", func(t *testing.T) {
-		podGroupGVK := discoverer.PodGroupGroupKind.WithVersion("v1beta1")
-		restMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{podGroupGVK.GroupVersion()})
-		restMapper.Add(podGroupGVK, meta.RESTScopeNamespace)
-
-		podGroup := &unstructured.Unstructured{}
-		podGroup.SetGroupVersionKind(podGroupGVK)
-		podGroup.SetNamespace("default")
-		podGroup.SetName("training")
-		c := fake.NewClientBuilder().WithRuntimeObjects(podGroup).Build()
-
-		got, err := NewDiscovererFromConfig(config.GangDiscoveryConfig{}, c, restMapper)
-		require.NoError(t, err)
-		native, ok := got.(*discoverer.KubernetesDiscoverer)
-		require.True(t, ok, "NewDiscovererFromConfig() = %T, want *discoverer.KubernetesDiscoverer", got)
-
-		ownerRef, err := native.OwnerReference(context.Background(), schedulingGroupPod("default", "training"))
-		require.NoError(t, err)
-		require.NotNil(t, ownerRef)
-		assert.Equal(t, "scheduling.k8s.io/v1beta1", ownerRef.APIVersion)
-	})
+	}
 
 	t.Run("falls back to K8s 1.35 Workload API", func(t *testing.T) {
 		restMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{

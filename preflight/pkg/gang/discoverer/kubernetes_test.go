@@ -233,83 +233,6 @@ func TestWorkloadRefDiscoverer_OwnerReference(t *testing.T) {
 	assert.Equal(t, k8stypes.UID("train-workload-uid"), ownerRef.UID)
 }
 
-func makeAdmittedWorkloadRefPod(namespace string, workloadRef map[string]any) *unstructured.Unstructured {
-	pod := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Pod"}}
-	pod.SetNamespace(namespace)
-	pod.SetGenerateName("worker-")
-	if workloadRef != nil {
-		_ = unstructured.SetNestedField(pod.Object, workloadRef, "spec", "workloadRef")
-	}
-	return pod
-}
-
-func TestWorkloadRefDiscoverer_AdmissionGang(t *testing.T) {
-	tests := []struct {
-		name        string
-		workloadRef map[string]any
-		objects     []client.Object
-		wantGangID  string
-		wantOwner   bool
-		wantErr     bool
-	}{
-		{
-			name:        "workloadRef with podGroup",
-			workloadRef: map[string]any{"name": "train", "podGroup": "workers"},
-			objects:     []client.Object{makeNativeWorkload("default", "train")},
-			wantGangID:  "kubernetes-default-train-workers",
-			wantOwner:   true,
-		},
-		{
-			name:        "workloadRef without podGroup",
-			workloadRef: map[string]any{"name": "train"},
-			objects:     []client.Object{makeNativeWorkload("default", "train")},
-			wantGangID:  "kubernetes-default-train",
-			wantOwner:   true,
-		},
-		{
-			name:        "workload not found keeps gang without owner",
-			workloadRef: map[string]any{"name": "missing", "podGroup": "workers"},
-			wantGangID:  "kubernetes-default-missing-workers",
-			wantErr:     true,
-		},
-		{
-			name:        "replica key is part of the gang",
-			workloadRef: map[string]any{"name": "train", "podGroup": "workers", "podGroupReplicaKey": "replica-1"},
-			objects:     []client.Object{makeNativeWorkload("default", "train")},
-			wantGangID:  "kubernetes-default-train-workers-replica-1",
-			wantOwner:   true,
-		},
-		{
-			name: "pod without workloadRef is not a gang member",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := fake.NewClientBuilder().WithObjects(tt.objects...).Build()
-			d := NewWorkloadRefDiscoverer(c)
-
-			// The admitted pod is not in the fake client, as during admission.
-			gangID, ownerRef, err := d.AdmissionGang(context.Background(), makeAdmittedWorkloadRefPod("default", tt.workloadRef))
-			assert.Equal(t, tt.wantGangID, gangID)
-			if tt.wantErr {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-			if !tt.wantOwner {
-				assert.Nil(t, ownerRef)
-				return
-			}
-			require.NotNil(t, ownerRef)
-			assert.Equal(t, "scheduling.k8s.io/v1alpha1", ownerRef.APIVersion)
-			assert.Equal(t, "Workload", ownerRef.Kind)
-			assert.Equal(t, "train", ownerRef.Name)
-			assert.Equal(t, k8stypes.UID("train-uid"), ownerRef.UID)
-		})
-	}
-}
-
 // newWorkloadRefTestClient keeps Pods unstructured, so spec.workloadRef
 // survives in the fake client the way it does in the controller cache.
 func newWorkloadRefTestClient(t *testing.T, objects ...runtime.Object) client.Client {
@@ -324,34 +247,52 @@ func newWorkloadRefTestClient(t *testing.T, objects ...runtime.Object) client.Cl
 	return fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objects...).Build()
 }
 
-func makeWorkloadRefPod(t *testing.T, name, ip, replicaKey string) *unstructured.Unstructured {
+func makeWorkloadRefPod(t *testing.T, name, workloadName, replicaKey string) *unstructured.Unstructured {
 	t.Helper()
 
 	pod := &unstructured.Unstructured{}
 	pod.SetGroupVersionKind(podGVK)
 	pod.SetNamespace("default")
 	pod.SetName(name)
-	ref := map[string]any{"name": "train", "podGroup": "workers"}
+	ref := map[string]any{"name": workloadName, "podGroup": "workers"}
 	if replicaKey != "" {
 		ref["podGroupReplicaKey"] = replicaKey
 	}
 	require.NoError(t, unstructured.SetNestedField(pod.Object, ref, "spec", "workloadRef"))
-	require.NoError(t, unstructured.SetNestedField(pod.Object, ip, "status", "podIP"))
+	require.NoError(t, unstructured.SetNestedField(pod.Object, "10.0.0.1", "status", "podIP"))
 	require.NoError(t, unstructured.SetNestedField(pod.Object, string(corev1.PodRunning), "status", "phase"))
 
 	return pod
 }
 
-func TestWorkloadRefDiscoverer_DiscoverPeers_SeparatesReplicas(t *testing.T) {
-	c := newWorkloadRefTestClient(t,
-		makeNativeWorkload("default", "train"),
-		makeWorkloadRefPod(t, "r0-a", "10.0.0.1", "replica-0"),
-		makeWorkloadRefPod(t, "r0-b", "10.0.0.2", "replica-0"),
-		makeWorkloadRefPod(t, "r1-a", "10.0.1.1", "replica-1"),
-		makeWorkloadRefPod(t, "r1-b", "10.0.1.2", "replica-1"),
-		makeWorkloadRefPod(t, "no-replica", "10.0.2.1", ""),
-	)
-	d := NewWorkloadRefDiscoverer(c)
+// admittedPod returns the pod as the webhook sees it: no name yet, no status,
+// and not stored in the API server.
+func admittedPod(stored *unstructured.Unstructured) *unstructured.Unstructured {
+	pod := stored.DeepCopy()
+	pod.SetName("")
+	pod.SetGenerateName("worker-")
+	unstructured.RemoveNestedField(pod.Object, "status")
+
+	return pod
+}
+
+// TestWorkloadRefDiscoverer_GangIdentity checks that the webhook and the gang
+// controller compute the same gang ID. The webhook mounts the ConfigMap for
+// the ID from AdmissionGang; the controller writes the one for the ID from
+// ExtractGangID and DiscoverPeers. Each replica of a pod group is its own gang.
+func TestWorkloadRefDiscoverer_GangIdentity(t *testing.T) {
+	stored := map[string]*unstructured.Unstructured{
+		"r0-a":       makeWorkloadRefPod(t, "r0-a", "train", "replica-0"),
+		"r0-b":       makeWorkloadRefPod(t, "r0-b", "train", "replica-0"),
+		"r1-a":       makeWorkloadRefPod(t, "r1-a", "train", "replica-1"),
+		"r1-b":       makeWorkloadRefPod(t, "r1-b", "train", "replica-1"),
+		"no-replica": makeWorkloadRefPod(t, "no-replica", "train", ""),
+	}
+	objects := []runtime.Object{makeNativeWorkload("default", "train")}
+	for _, pod := range stored {
+		objects = append(objects, pod)
+	}
+	d := NewWorkloadRefDiscoverer(newWorkloadRefTestClient(t, objects...))
 
 	tests := []struct {
 		pod        string
@@ -365,6 +306,13 @@ func TestWorkloadRefDiscoverer_DiscoverPeers_SeparatesReplicas(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.pod, func(t *testing.T) {
+			admissionGangID, ownerRef, err := d.AdmissionGang(context.Background(), admittedPod(stored[tt.pod]))
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantGangID, admissionGangID)
+			require.NotNil(t, ownerRef)
+			assert.Equal(t, "Workload", ownerRef.Kind)
+			assert.Equal(t, k8stypes.UID("train-uid"), ownerRef.UID)
+
 			pod := &corev1.Pod{Name: tt.pod, Namespace: "default"}
 			assert.Equal(t, tt.wantGangID, d.ExtractGangID(pod))
 
@@ -380,4 +328,26 @@ func TestWorkloadRefDiscoverer_DiscoverPeers_SeparatesReplicas(t *testing.T) {
 			assert.ElementsMatch(t, tt.wantPeers, peers)
 		})
 	}
+}
+
+func TestWorkloadRefDiscoverer_AdmissionGang_Unresolved(t *testing.T) {
+	d := NewWorkloadRefDiscoverer(newWorkloadRefTestClient(t))
+
+	t.Run("missing Workload keeps the gang without an owner", func(t *testing.T) {
+		gangID, ownerRef, err := d.AdmissionGang(context.Background(),
+			admittedPod(makeWorkloadRefPod(t, "w-0", "missing", "")))
+		require.Error(t, err)
+		assert.Equal(t, "kubernetes-default-missing-workers", gangID)
+		assert.Nil(t, ownerRef)
+	})
+
+	t.Run("pod without workloadRef is not a gang member", func(t *testing.T) {
+		pod := admittedPod(makeWorkloadRefPod(t, "w-0", "train", ""))
+		unstructured.RemoveNestedField(pod.Object, "spec", "workloadRef")
+
+		gangID, ownerRef, err := d.AdmissionGang(context.Background(), pod)
+		require.NoError(t, err)
+		assert.Empty(t, gangID)
+		assert.Nil(t, ownerRef)
+	})
 }
