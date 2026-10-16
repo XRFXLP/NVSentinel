@@ -271,6 +271,32 @@ mongodb:
 
   replicaSetHostnames: true
 
+  # Soft open-file limit (RLIMIT_NOFILE) for mongod. mongod uses one file
+  # descriptor per client connection and recommends at least 64000. Some node
+  # images start containers with a soft limit of 1024, for example Ubuntu
+  # images from kubernetes-sigs/image-builder with default settings. mongod
+  # then runs out of descriptors on large clusters and crashes.
+  # The command below raises the soft limit to this value before MongoDB
+  # starts. It never lowers the limit, and it stops at the hard limit, so it
+  # needs no extra privileges. If the hard limit is lower than this value,
+  # raise it on the node (LimitNOFILE for the container runtime).
+  openFileSoftLimit: 64000
+  command:
+    - /bin/bash
+    - -c
+    - |
+      want={{ .Values.openFileSoftLimit | int }}
+      hard=$(ulimit -Hn)
+      if [ "$hard" != "unlimited" ] && [ "$hard" -lt "$want" ]; then
+        echo "WARNING: hard open-file limit $hard is below $want, raising the soft limit to $hard only" >&2
+        want=$hard
+      fi
+      soft=$(ulimit -Sn)
+      if [ "$soft" != "unlimited" ] && [ "$soft" -lt "$want" ]; then
+        ulimit -Sn "$want"
+      fi
+      exec /scripts/setup.sh
+
   extraFlags:
     - "--setParameter"
     - "authenticationMechanisms=MONGODB-X509,SCRAM-SHA-256"

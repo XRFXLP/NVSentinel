@@ -232,6 +232,30 @@ mongodb-store:
       size: "100Gi"
 ```
 
+### Open-file limit (Bitnami)
+
+`mongodb.openFileSoftLimit` (default `64000`). mongod uses one file descriptor for each client connection. Its documentation recommends a soft open-file limit of at least 64000. The number of connections grows with the cluster, because each platform-connectors pod has its own connection pool. If mongod runs out of file descriptors, it crashes and every module that reads the datastore stops.
+
+The container gets its open-file limit from the container runtime on the node. Some node images give a soft limit of 1024, for example Ubuntu images built with `kubernetes-sigs/image-builder` with default settings. Before mongod starts, the chart raises the soft limit to `openFileSoftLimit`. It never lowers the limit, and it stops at the hard limit, so it needs no extra privileges.
+
+If the hard limit on the node is lower than `openFileSoftLimit`, the chart raises the soft limit to the hard limit and logs `WARNING: hard open-file limit ...` in the `mongodb` container. Raise the hard limit on the node: set `LimitNOFILE` in the systemd unit of the container runtime. For image-builder images, build with `containerd_enable_limit_no_file: true`.
+
+To check the limits that mongod runs with:
+
+```bash
+kubectl exec -n nvsentinel mongodb-0 -c mongodb -- bash -c 'grep "Max open files" /proc/$(pgrep -x mongod)/limits'
+```
+
+```yaml
+mongodb-store:
+  mongodb:
+    openFileSoftLimit: 64000
+```
+
+The chart sets `mongodb.command` to apply this limit. If you set your own `mongodb.command`, it replaces the chart's command and the chart does not change the limit.
+
+With the Percona Operator, the operator sets the mongod command, so the chart cannot raise the limit. Set a soft limit of at least 64000 on the nodes that run MongoDB. To check it, run the same command against a `mongodb-rs0-*` pod with `-c mongod`.
+
 ### Oplog size
 
 `oplogSizeMB` (default `990`, MongoDB's minimum) is the replica-set oplog size in megabytes. Helm does **not** compute this from the PVC. `990` is Mongo's floor, not a 24-hour window.
