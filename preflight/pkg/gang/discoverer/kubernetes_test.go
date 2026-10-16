@@ -23,8 +23,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+)
+
+var (
+	podGroupV1alpha2 = PodGroupGroupKind.WithVersion("v1alpha2") // K8s 1.36
+	podGroupV1beta1  = PodGroupGroupKind.WithVersion("v1beta1")  // K8s 1.37
 )
 
 //go:fix inline
@@ -47,7 +53,7 @@ func makePodWithSchedulingGroup(ns, podGroup string) *corev1.Pod {
 }
 
 func TestKubernetesDiscoverer_CanHandle(t *testing.T) {
-	d := NewKubernetesDiscoverer(nil)
+	d := NewKubernetesDiscoverer(nil, podGroupV1alpha2)
 
 	tests := []struct {
 		name     string
@@ -70,7 +76,7 @@ func TestKubernetesDiscoverer_CanHandle(t *testing.T) {
 }
 
 func TestKubernetesDiscoverer_ExtractGangID(t *testing.T) {
-	d := NewKubernetesDiscoverer(nil)
+	d := NewKubernetesDiscoverer(nil, podGroupV1alpha2)
 
 	tests := []struct {
 		name     string
@@ -94,7 +100,7 @@ func TestKubernetesDiscoverer_ExtractGangID(t *testing.T) {
 }
 
 func TestKubernetesDiscoverer_Name(t *testing.T) {
-	d := NewKubernetesDiscoverer(nil)
+	d := NewKubernetesDiscoverer(nil, podGroupV1alpha2)
 
 	if got := d.Name(); got != "kubernetes" {
 		t.Errorf("Name() = %q, want %q", got, "kubernetes")
@@ -103,9 +109,13 @@ func TestKubernetesDiscoverer_Name(t *testing.T) {
 
 // --- DiscoverPeers tests ---
 
-func makeNativePodGroup(namespace, name string, minCount int64) *unstructured.Unstructured {
+func makeNativePodGroup(
+	gvk schema.GroupVersionKind,
+	namespace, name string,
+	minCount int64,
+) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(PodGroupGVK)
+	obj.SetGroupVersionKind(gvk)
 	obj.SetNamespace(namespace)
 	obj.SetName(name)
 	obj.SetUID(k8stypes.UID(name + "-uid"))
@@ -145,35 +155,37 @@ func makeSchedulingGroupPod(name, namespace, podGroup, ip string, phase corev1.P
 }
 
 func TestKubernetesDiscoverer_DiscoverPeers(t *testing.T) {
-	t.Run("discovers peers by schedulingGroup", func(t *testing.T) {
-		podGroup := makeNativePodGroup("default", "train-workers", 3)
-		pods := []runtime.Object{
-			makeSchedulingGroupPod("w-0", "default", "train-workers", "10.0.0.1", corev1.PodRunning),
-			makeSchedulingGroupPod("w-1", "default", "train-workers", "10.0.0.2", corev1.PodRunning),
-			makeSchedulingGroupPod("w-2", "default", "train-workers", "10.0.0.3", corev1.PodPending),
-			makeSchedulingGroupPod("other", "default", "other-podgroup", "10.0.0.4", corev1.PodRunning),
-		}
+	for _, gvk := range []schema.GroupVersionKind{podGroupV1alpha2, podGroupV1beta1} {
+		t.Run("discovers peers by schedulingGroup with PodGroup "+gvk.Version, func(t *testing.T) {
+			podGroup := makeNativePodGroup(gvk, "default", "train-workers", 3)
+			pods := []runtime.Object{
+				makeSchedulingGroupPod("w-0", "default", "train-workers", "10.0.0.1", corev1.PodRunning),
+				makeSchedulingGroupPod("w-1", "default", "train-workers", "10.0.0.2", corev1.PodRunning),
+				makeSchedulingGroupPod("w-2", "default", "train-workers", "10.0.0.3", corev1.PodPending),
+				makeSchedulingGroupPod("other", "default", "other-podgroup", "10.0.0.4", corev1.PodRunning),
+			}
 
-		c := fake.NewClientBuilder().WithRuntimeObjects(append(pods, podGroup)...).Build()
-		d := NewKubernetesDiscoverer(c)
+			c := fake.NewClientBuilder().WithRuntimeObjects(append(pods, podGroup)...).Build()
+			d := NewKubernetesDiscoverer(c, gvk)
 
-		info, err := d.DiscoverPeers(context.Background(), makeSchedulingGroupPod("w-0", "default", "train-workers", "10.0.0.1", corev1.PodRunning))
-		require.NoError(t, err)
-		require.NotNil(t, info)
-		assert.Len(t, info.Peers, 3)
-		assert.Equal(t, 3, info.ExpectedMinCount)
-		assert.Equal(t, "kubernetes-default-train-workers", info.GangID)
-		require.NotNil(t, info.OwnerReference)
-		assert.Equal(t, "scheduling.k8s.io/v1alpha2", info.OwnerReference.APIVersion)
-		assert.Equal(t, "PodGroup", info.OwnerReference.Kind)
-		assert.Equal(t, "train-workers", info.OwnerReference.Name)
-		assert.Equal(t, k8stypes.UID("train-workers-uid"), info.OwnerReference.UID)
-	})
+			info, err := d.DiscoverPeers(context.Background(), makeSchedulingGroupPod("w-0", "default", "train-workers", "10.0.0.1", corev1.PodRunning))
+			require.NoError(t, err)
+			require.NotNil(t, info)
+			assert.Len(t, info.Peers, 3)
+			assert.Equal(t, 3, info.ExpectedMinCount)
+			assert.Equal(t, "kubernetes-default-train-workers", info.GangID)
+			require.NotNil(t, info.OwnerReference)
+			assert.Equal(t, gvk.GroupVersion().String(), info.OwnerReference.APIVersion)
+			assert.Equal(t, "PodGroup", info.OwnerReference.Kind)
+			assert.Equal(t, "train-workers", info.OwnerReference.Name)
+			assert.Equal(t, k8stypes.UID("train-workers-uid"), info.OwnerReference.UID)
+		})
+	}
 
 	t.Run("no matching pods returns nil", func(t *testing.T) {
-		podGroup := makeNativePodGroup("default", "train-workers", 0)
+		podGroup := makeNativePodGroup(podGroupV1alpha2, "default", "train-workers", 0)
 		c := fake.NewClientBuilder().WithRuntimeObjects(podGroup).Build()
-		d := NewKubernetesDiscoverer(c)
+		d := NewKubernetesDiscoverer(c, podGroupV1alpha2)
 
 		info, err := d.DiscoverPeers(context.Background(), makeSchedulingGroupPod("w-0", "default", "train-workers", "10.0.0.1", corev1.PodRunning))
 		require.NoError(t, err)
@@ -186,7 +198,7 @@ func TestKubernetesDiscoverer_DiscoverPeers(t *testing.T) {
 			makeSchedulingGroupPod("w-1", "default", "missing", "10.0.0.2", corev1.PodRunning),
 		}
 		c := fake.NewClientBuilder().WithRuntimeObjects(pods...).Build()
-		d := NewKubernetesDiscoverer(c)
+		d := NewKubernetesDiscoverer(c, podGroupV1alpha2)
 
 		info, err := d.DiscoverPeers(context.Background(), makeSchedulingGroupPod("w-0", "default", "missing", "10.0.0.1", corev1.PodRunning))
 		require.NoError(t, err)
@@ -197,7 +209,7 @@ func TestKubernetesDiscoverer_DiscoverPeers(t *testing.T) {
 
 	t.Run("pod without schedulingGroup returns nil", func(t *testing.T) {
 		c := fake.NewClientBuilder().Build()
-		d := NewKubernetesDiscoverer(c)
+		d := NewKubernetesDiscoverer(c, podGroupV1alpha2)
 
 		pod := &corev1.Pod{Namespace: "default"}
 		info, err := d.DiscoverPeers(context.Background(), pod)

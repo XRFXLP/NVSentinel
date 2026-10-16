@@ -29,11 +29,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// PodGroupGVK is the GroupVersionKind for K8s native PodGroup resources.
-var PodGroupGVK = schema.GroupVersionKind{
-	Group:   "scheduling.k8s.io",
-	Version: "v1alpha2",
-	Kind:    "PodGroup",
+// PodGroupGroupKind identifies K8s native PodGroup resources. The version is
+// resolved from the cluster: v1alpha2 in K8s 1.36, v1beta1 in K8s 1.37.
+var PodGroupGroupKind = schema.GroupKind{
+	Group: "scheduling.k8s.io",
+	Kind:  "PodGroup",
 }
 
 // WorkloadGVK is the GroupVersionKind for K8s 1.35 Workload resources.
@@ -339,13 +339,16 @@ func getUnstructuredWorkloadRef(pod *unstructured.Unstructured) (string, string)
 //	  schedulingGroup:
 //	    podGroupName: training-workers
 type KubernetesDiscoverer struct {
-	client client.Client
+	client      client.Client
+	podGroupGVK schema.GroupVersionKind
 }
 
 // NewKubernetesDiscoverer creates a new native Kubernetes gang discoverer.
-func NewKubernetesDiscoverer(c client.Client) *KubernetesDiscoverer {
+// podGroupGVK is the PodGroup version that the cluster serves.
+func NewKubernetesDiscoverer(c client.Client, podGroupGVK schema.GroupVersionKind) *KubernetesDiscoverer {
 	return &KubernetesDiscoverer{
-		client: c,
+		client:      c,
+		podGroupGVK: podGroupGVK,
 	}
 }
 
@@ -381,7 +384,7 @@ func (w *KubernetesDiscoverer) OwnerReference(ctx context.Context, pod *corev1.P
 		return nil, err
 	}
 
-	return ownerReferenceForUnstructured(podGroup, PodGroupGVK), nil
+	return ownerReferenceForUnstructured(podGroup, w.podGroupGVK), nil
 }
 
 // DiscoverPeers finds all pods with the same schedulingGroup.
@@ -519,7 +522,7 @@ func (w *KubernetesDiscoverer) getPodGroup(
 	namespace, name string,
 ) (*unstructured.Unstructured, error) {
 	podGroup := &unstructured.Unstructured{}
-	podGroup.SetGroupVersionKind(PodGroupGVK)
+	podGroup.SetGroupVersionKind(w.podGroupGVK)
 
 	if err := w.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, podGroup); err != nil {
 		return nil, fmt.Errorf("failed to get PodGroup %s/%s: %w", namespace, name, err)
