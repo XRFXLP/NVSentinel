@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvcr.io/nvidia/cuda:13.4.1-runtime-ubuntu24.04@sha256:cdfca8f2adfd99287ebbd4a86b3ad6470425c731aea023ca1d4c653a0d7fec7b
+FROM nvcr.io/nvidia/cuda:13.4.2-runtime-ubuntu24.04@sha256:6eb1cce4caa426c4aea6c7f05b8c6acbc6972341f18276676d35399975d9fc54
 
 ARG DEBIAN_FRONTEND=noninteractive
 
