@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -230,4 +231,74 @@ func TestWorkloadRefDiscoverer_OwnerReference(t *testing.T) {
 	assert.Equal(t, "Workload", ownerRef.Kind)
 	assert.Equal(t, "train-workload", ownerRef.Name)
 	assert.Equal(t, k8stypes.UID("train-workload-uid"), ownerRef.UID)
+}
+
+func makeAdmittedWorkloadRefPod(namespace string, workloadRef map[string]any) *unstructured.Unstructured {
+	pod := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Pod"}}
+	pod.SetNamespace(namespace)
+	pod.SetGenerateName("worker-")
+	if workloadRef != nil {
+		_ = unstructured.SetNestedField(pod.Object, workloadRef, "spec", "workloadRef")
+	}
+	return pod
+}
+
+func TestWorkloadRefDiscoverer_AdmissionGang(t *testing.T) {
+	tests := []struct {
+		name        string
+		workloadRef map[string]any
+		objects     []client.Object
+		wantGangID  string
+		wantOwner   bool
+		wantErr     bool
+	}{
+		{
+			name:        "workloadRef with podGroup",
+			workloadRef: map[string]any{"name": "train", "podGroup": "workers"},
+			objects:     []client.Object{makeNativeWorkload("default", "train")},
+			wantGangID:  "kubernetes-default-train-workers",
+			wantOwner:   true,
+		},
+		{
+			name:        "workloadRef without podGroup",
+			workloadRef: map[string]any{"name": "train"},
+			objects:     []client.Object{makeNativeWorkload("default", "train")},
+			wantGangID:  "kubernetes-default-train",
+			wantOwner:   true,
+		},
+		{
+			name:        "workload not found keeps gang without owner",
+			workloadRef: map[string]any{"name": "missing", "podGroup": "workers"},
+			wantGangID:  "kubernetes-default-missing-workers",
+			wantErr:     true,
+		},
+		{
+			name: "pod without workloadRef is not a gang member",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithObjects(tt.objects...).Build()
+			d := NewWorkloadRefDiscoverer(c)
+
+			// The admitted pod is not in the fake client, as during admission.
+			gangID, ownerRef, err := d.AdmissionGang(context.Background(), makeAdmittedWorkloadRefPod("default", tt.workloadRef))
+			assert.Equal(t, tt.wantGangID, gangID)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			if !tt.wantOwner {
+				assert.Nil(t, ownerRef)
+				return
+			}
+			require.NotNil(t, ownerRef)
+			assert.Equal(t, "scheduling.k8s.io/v1alpha1", ownerRef.APIVersion)
+			assert.Equal(t, "Workload", ownerRef.Kind)
+			assert.Equal(t, "train", ownerRef.Name)
+			assert.Equal(t, k8stypes.UID("train-uid"), ownerRef.UID)
+		})
+	}
 }

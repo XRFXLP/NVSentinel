@@ -108,6 +108,28 @@ func (w *WorkloadRefDiscoverer) OwnerReference(ctx context.Context, pod *corev1.
 	return w.workloadOwnerReference(ctx, pod.Namespace, workloadName)
 }
 
+// AdmissionGang returns the gang for a pod that is being admitted. The pod
+// does not exist in the API server yet, so spec.workloadRef comes from the
+// admission request instead of a Pod read.
+func (w *WorkloadRefDiscoverer) AdmissionGang(
+	ctx context.Context,
+	pod *unstructured.Unstructured,
+) (string, *metav1.OwnerReference, error) {
+	workloadName, podGroup := getUnstructuredWorkloadRef(pod)
+	if workloadName == "" {
+		return "", nil, nil
+	}
+
+	gangID := formatWorkloadRefGangID(pod.GetNamespace(), workloadName, podGroup)
+
+	ownerReference, err := w.workloadOwnerReference(ctx, pod.GetNamespace(), workloadName)
+	if err != nil {
+		return gangID, nil, err
+	}
+
+	return gangID, ownerReference, nil
+}
+
 func (w *WorkloadRefDiscoverer) workloadOwnerReference(
 	ctx context.Context,
 	namespace, workloadName string,
