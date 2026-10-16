@@ -232,9 +232,9 @@ func (h *Handler) registerGang(ctx context.Context, pod *corev1.Pod, gangCtx *Ga
 
 type admittedPodKey struct{}
 
-// withAdmittedPod keeps the raw pod from the admission request in ctx. The
-// typed Pod drops fields that the client no longer knows, such as the
-// Kubernetes 1.35 spec.workloadRef, and the pod is not in the API server yet.
+// withAdmittedPod keeps the pod JSON from the admission request in ctx.
+// Decoding into corev1.Pod drops fields that this client version does not
+// define, such as spec.workloadRef from Kubernetes 1.35.
 func withAdmittedPod(ctx context.Context, raw []byte) context.Context {
 	return context.WithValue(ctx, admittedPodKey{}, raw)
 }

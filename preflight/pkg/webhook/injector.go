@@ -198,8 +198,9 @@ func (i *Injector) gangContextForPod(ctx context.Context, pod *corev1.Pod) *Gang
 	return newGangContext(pod, gangID, ownerReference, discoverer.Name())
 }
 
-// admissionGangContext resolves the gang from the pod object in the admission
-// request, for discoverers that read fields the typed Pod cannot hold.
+// admissionGangContext resolves the gang from the pod JSON in the admission
+// request. See types.AdmissionGangDiscoverer for why the decoded Pod is not
+// enough.
 func admissionGangContext(
 	ctx context.Context,
 	pod *corev1.Pod,
