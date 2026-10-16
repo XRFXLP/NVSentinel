@@ -273,6 +273,13 @@ func TestWorkloadRefDiscoverer_AdmissionGang(t *testing.T) {
 			wantErr:     true,
 		},
 		{
+			name:        "replica key is part of the gang",
+			workloadRef: map[string]any{"name": "train", "podGroup": "workers", "podGroupReplicaKey": "replica-1"},
+			objects:     []client.Object{makeNativeWorkload("default", "train")},
+			wantGangID:  "kubernetes-default-train-workers-replica-1",
+			wantOwner:   true,
+		},
+		{
 			name: "pod without workloadRef is not a gang member",
 		},
 	}
@@ -299,6 +306,78 @@ func TestWorkloadRefDiscoverer_AdmissionGang(t *testing.T) {
 			assert.Equal(t, "Workload", ownerRef.Kind)
 			assert.Equal(t, "train", ownerRef.Name)
 			assert.Equal(t, k8stypes.UID("train-uid"), ownerRef.UID)
+		})
+	}
+}
+
+// newWorkloadRefTestClient keeps Pods unstructured, so spec.workloadRef
+// survives in the fake client the way it does in the controller cache.
+func newWorkloadRefTestClient(t *testing.T, objects ...runtime.Object) client.Client {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	for _, gvk := range []schema.GroupVersionKind{podGVK, WorkloadGVK} {
+		scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
+		scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
+	}
+
+	return fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objects...).Build()
+}
+
+func makeWorkloadRefPod(t *testing.T, name, ip, replicaKey string) *unstructured.Unstructured {
+	t.Helper()
+
+	pod := &unstructured.Unstructured{}
+	pod.SetGroupVersionKind(podGVK)
+	pod.SetNamespace("default")
+	pod.SetName(name)
+	ref := map[string]any{"name": "train", "podGroup": "workers"}
+	if replicaKey != "" {
+		ref["podGroupReplicaKey"] = replicaKey
+	}
+	require.NoError(t, unstructured.SetNestedField(pod.Object, ref, "spec", "workloadRef"))
+	require.NoError(t, unstructured.SetNestedField(pod.Object, ip, "status", "podIP"))
+	require.NoError(t, unstructured.SetNestedField(pod.Object, string(corev1.PodRunning), "status", "phase"))
+
+	return pod
+}
+
+func TestWorkloadRefDiscoverer_DiscoverPeers_SeparatesReplicas(t *testing.T) {
+	c := newWorkloadRefTestClient(t,
+		makeNativeWorkload("default", "train"),
+		makeWorkloadRefPod(t, "r0-a", "10.0.0.1", "replica-0"),
+		makeWorkloadRefPod(t, "r0-b", "10.0.0.2", "replica-0"),
+		makeWorkloadRefPod(t, "r1-a", "10.0.1.1", "replica-1"),
+		makeWorkloadRefPod(t, "r1-b", "10.0.1.2", "replica-1"),
+		makeWorkloadRefPod(t, "no-replica", "10.0.2.1", ""),
+	)
+	d := NewWorkloadRefDiscoverer(c)
+
+	tests := []struct {
+		pod        string
+		wantGangID string
+		wantPeers  []string
+	}{
+		{pod: "r0-a", wantGangID: "kubernetes-default-train-workers-replica-0", wantPeers: []string{"r0-a", "r0-b"}},
+		{pod: "r1-b", wantGangID: "kubernetes-default-train-workers-replica-1", wantPeers: []string{"r1-a", "r1-b"}},
+		{pod: "no-replica", wantGangID: "kubernetes-default-train-workers", wantPeers: []string{"no-replica"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pod, func(t *testing.T) {
+			pod := &corev1.Pod{Name: tt.pod, Namespace: "default"}
+			assert.Equal(t, tt.wantGangID, d.ExtractGangID(pod))
+
+			info, err := d.DiscoverPeers(context.Background(), pod)
+			require.NoError(t, err)
+			require.NotNil(t, info)
+			assert.Equal(t, tt.wantGangID, info.GangID)
+
+			var peers []string
+			for _, peer := range info.Peers {
+				peers = append(peers, peer.PodName)
+			}
+			assert.ElementsMatch(t, tt.wantPeers, peers)
 		})
 	}
 }
