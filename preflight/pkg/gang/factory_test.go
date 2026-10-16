@@ -257,7 +257,14 @@ func TestNewDiscovererFromConfig_NativeKubernetes137(t *testing.T) {
 	ownerRef, err := native.OwnerReference(ctx, schedulingGroupPod("default", "training"))
 	require.NoError(t, err)
 	require.NotNil(t, ownerRef)
-	assert.Equal(t, "scheduling.k8s.io/v1beta1", ownerRef.APIVersion)
+
+	// The version is whichever one the API server prefers, so it can move to
+	// v1 when PodGroup reaches GA. The UID proves the discoverer read the
+	// PodGroup created above.
+	ownerGV, err := schema.ParseGroupVersion(ownerRef.APIVersion)
+	require.NoError(t, err)
+	assert.Equal(t, discoverer.PodGroupGroupKind.Group, ownerGV.Group)
+	assert.Equal(t, discoverer.PodGroupGroupKind.Kind, ownerRef.Kind)
 	assert.Equal(t, podGroup.GetUID(), ownerRef.UID)
 }
 
