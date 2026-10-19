@@ -280,6 +280,7 @@ mongodb:
   # starts. It never lowers the limit, and it stops at the hard limit, so it
   # needs no extra privileges. If the hard limit is lower than this value,
   # raise it on the node (LimitNOFILE for the container runtime).
+  # Must be a positive integer; Helm fails on any other value.
   openFileSoftLimit: 64000
   command:
     - /bin/bash

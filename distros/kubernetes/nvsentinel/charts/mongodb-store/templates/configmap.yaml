@@ -14,6 +14,7 @@
 
 {{- include "mongodb-store.validateOplogStartup" . }}
 {{- include "mongodb-store.validatePsmdbVersions" . }}
+{{- include "mongodb-store.validateOpenFileSoftLimit" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

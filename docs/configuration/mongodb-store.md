@@ -234,7 +234,7 @@ mongodb-store:
 
 ### Open-file limit (Bitnami)
 
-`mongodb.openFileSoftLimit` (default `64000`). mongod uses one file descriptor for each client connection. Its documentation recommends a soft open-file limit of at least 64000. The number of connections grows with the cluster, because each platform-connectors pod has its own connection pool. If mongod runs out of file descriptors, it crashes and every module that reads the datastore stops.
+`mongodb.openFileSoftLimit` (default `64000`, a positive integer). mongod uses one file descriptor for each client connection. Its documentation recommends a soft open-file limit of at least 64000. The number of connections grows with the cluster, because each platform-connectors pod has its own connection pool. If mongod runs out of file descriptors, it crashes and every module that reads the datastore stops.
 
 The container gets its open-file limit from the container runtime on the node. Some node images give a soft limit of 1024, for example Ubuntu images built with `kubernetes-sigs/image-builder` with default settings. Before mongod starts, the chart raises the soft limit to `openFileSoftLimit`. It never lowers the limit, and it stops at the hard limit, so it needs no extra privileges.
 

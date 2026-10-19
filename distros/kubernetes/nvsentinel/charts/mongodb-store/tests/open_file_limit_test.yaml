@@ -15,11 +15,13 @@
 suite: mongodb open-file limit
 templates:
   - charts/mongodb/templates/replicaset/statefulset.yaml
+  - templates/configmap.yaml
 release:
   name: nvsentinel
   namespace: nvsentinel
 tests:
   - it: raises the soft open-file limit to 64000 before MongoDB starts
+    template: charts/mongodb/templates/replicaset/statefulset.yaml
     asserts:
       - equal:
           path: spec.template.spec.containers[0].name
@@ -35,6 +37,7 @@ tests:
           pattern: "(?m)^exec /scripts/setup.sh$"
 
   - it: uses mongodb.openFileSoftLimit
+    template: charts/mongodb/templates/replicaset/statefulset.yaml
     set:
       mongodb.openFileSoftLimit: 128000
     asserts:
@@ -43,9 +46,36 @@ tests:
           pattern: "(?m)^want=128000$"
 
   - it: keeps a user-set mongodb.command
+    template: charts/mongodb/templates/replicaset/statefulset.yaml
     set:
       mongodb.command: ["/scripts/setup.sh"]
     asserts:
       - equal:
           path: spec.template.spec.containers[0].command
           value: ["/scripts/setup.sh"]
+
+  - it: rejects a mongodb.openFileSoftLimit that is not an integer
+    template: templates/configmap.yaml
+    set:
+      mongodb.openFileSoftLimit: "64k"
+    asserts:
+      - failedTemplate:
+          errorPattern: "mongodb.openFileSoftLimit must be a positive integer, got 64k"
+
+  - it: rejects a mongodb.openFileSoftLimit of 0
+    template: templates/configmap.yaml
+    set:
+      mongodb.openFileSoftLimit: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: "mongodb.openFileSoftLimit must be a positive integer, got 0"
+
+  - it: ignores mongodb.openFileSoftLimit with the Percona Operator
+    template: templates/configmap.yaml
+    set:
+      useBitnami: false
+      usePerconaOperator: true
+      mongodb.openFileSoftLimit: "64k"
+    asserts:
+      - hasDocuments:
+          count: 1

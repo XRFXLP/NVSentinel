@@ -86,6 +86,20 @@ Nil/empty → 990 (MongoDB minimum). Integer >= 990.
 {{- end }}
 
 {{/*
+mongodb.openFileSoftLimit feeds the Bitnami mongodb.command, which raises the
+mongod soft open-file limit. A value that is not a positive integer renders as
+0 there and silently leaves the limit unchanged, so reject it.
+*/}}
+{{- define "mongodb-store.validateOpenFileSoftLimit" -}}
+{{- if not .Values.usePerconaOperator -}}
+{{- $raw := (.Values.mongodb | default dict).openFileSoftLimit -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" ($raw | toString)) -}}
+{{- fail (printf "mongodb-store.mongodb.openFileSoftLimit must be a positive integer, got %v. See docs/configuration/mongodb-store.md#open-file-limit-bitnami" $raw) -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 New empty members read oplog size from our values, not vendored chart templates.
 Bitnami: mongodb.extraFlags must include --oplogSize=<oplogSizeMB> (a mounted
 snippet mongodb.conf makes the image skip dbPath/logpath and crashloop).
