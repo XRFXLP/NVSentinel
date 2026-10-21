@@ -238,6 +238,8 @@ The nodes that run MongoDB must give containers a soft open-file limit (`RLIMIT_
 
 mongod uses one file descriptor for each client connection, and it accepts connections only up to about 80 percent of its soft limit. The number of connections grows with the cluster, because each platform-connectors pod has its own connection pool. If mongod runs out of file descriptors, it crashes, and every module that reads the datastore stops. This happens when the number of connections gets near the limit. That number goes up when the cluster grows, when more pods connect, or when connection pools get larger. A cluster can therefore run correctly for a long time before it fails.
 
+64000 is the MongoDB minimum. Each platform-connectors pod opens about 3 connections, so each node adds about 3 connections. A soft limit of 64000 lets mongod accept about 51000 connections, which is enough for about 17000 nodes. For clusters above about 15000 nodes, use a higher limit, such as the `1048576` in the drop-in below.
+
 Many node images already set a high limit. Some do not. For example, Ubuntu images built with `kubernetes-sigs/image-builder` with default settings give containers a soft limit of 1024. image-builder installs the containerd `LimitNOFILE` drop-in only on Flatcar and Azure Linux. On other images, build with `containerd_enable_limit_no_file: true`.
 
 On other nodes, set `LimitNOFILE` in a systemd drop-in for the container runtime:
