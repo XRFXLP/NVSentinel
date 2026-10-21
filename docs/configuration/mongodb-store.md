@@ -236,7 +236,7 @@ mongodb-store:
 
 The nodes that run MongoDB must give containers a soft open-file limit (`RLIMIT_NOFILE`) of at least 64000. This applies to Bitnami and to the Percona Operator. The chart does not set this limit. The container gets it from the container runtime on the node.
 
-mongod uses one file descriptor for each client connection, and it accepts connections only up to about 80 percent of its soft limit. The number of connections grows with the cluster, because each platform-connectors pod has its own connection pool. If mongod runs out of file descriptors, it crashes, and every module that reads the datastore stops. This happens only when the cluster grows, so a cluster can run correctly for a long time before it fails.
+mongod uses one file descriptor for each client connection, and it accepts connections only up to about 80 percent of its soft limit. The number of connections grows with the cluster, because each platform-connectors pod has its own connection pool. If mongod runs out of file descriptors, it crashes, and every module that reads the datastore stops. This happens when the number of connections gets near the limit. That number goes up when the cluster grows, when more pods connect, or when connection pools get larger. A cluster can therefore run correctly for a long time before it fails.
 
 Many node images already set a high limit. Some do not. For example, Ubuntu images built with `kubernetes-sigs/image-builder` with default settings give containers a soft limit of 1024. image-builder installs the containerd `LimitNOFILE` drop-in only on Flatcar and Azure Linux. On other images, build with `containerd_enable_limit_no_file: true`.
 
