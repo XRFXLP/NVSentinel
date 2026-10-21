@@ -272,10 +272,16 @@ kubectl -n nvsentinel delete pod -l app.kubernetes.io/name=mongodb
 kubectl -n nvsentinel delete pod -l app.kubernetes.io/component=mongod
 
 # If some MongoDB pods are still running, restart one pod at a time, so that the replica set keeps a primary.
-# Delete one pod, wait until its replacement is ready, then do the next pod. For example, with Bitnami:
+# Delete one pod, wait until its replacement exists and is ready, then do the next pod.
+# The replacement can take a few seconds to appear, so wait for it to exist first (kubectl 1.31 or later).
+# Bitnami (pods mongodb-0, mongodb-1, mongodb-2):
 kubectl -n nvsentinel delete pod mongodb-2
+kubectl -n nvsentinel wait --for=create pod/mongodb-2 --timeout=10m
 kubectl -n nvsentinel wait --for=condition=Ready pod/mongodb-2 --timeout=10m
-# Use the Percona Operator pod names (mongodb-rs0-0, mongodb-rs0-1, mongodb-rs0-2) in the same way.
+# Percona Operator (pods mongodb-rs0-0, mongodb-rs0-1, mongodb-rs0-2):
+kubectl -n nvsentinel delete pod mongodb-rs0-2
+kubectl -n nvsentinel wait --for=create pod/mongodb-rs0-2 --timeout=10m
+kubectl -n nvsentinel wait --for=condition=Ready pod/mongodb-rs0-2 --timeout=10m
 
 # Step 3: Verify the limit on every replica
 # Bitnami
