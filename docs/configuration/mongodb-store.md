@@ -240,6 +240,8 @@ mongod uses one file descriptor for each client connection, and it accepts conne
 
 64000 is the MongoDB minimum. Each platform-connectors pod opens about 3 connections, so each node adds about 3 connections. A soft limit of 64000 lets mongod accept about 51000 connections, which is enough for about 17000 nodes. For clusters above about 15000 nodes, use a higher limit, such as the `1048576` in the drop-in below.
 
+With the [deployment platform connector](platform-connectors.md#deployment-platform-connector), the number of connections from platform connectors stays fixed and does not grow with the number of nodes. The node still needs a soft limit of at least 64000, because mongod also uses file descriptors for its data files.
+
 Many node images already set a high limit. Some do not. For example, Ubuntu images built with `kubernetes-sigs/image-builder` with default settings give containers a soft limit of 1024. image-builder installs the containerd `LimitNOFILE` drop-in only on Flatcar and Azure Linux. On other images, build with `containerd_enable_limit_no_file: true`.
 
 On other nodes, set `LimitNOFILE` in a systemd drop-in for the container runtime:
