@@ -921,9 +921,12 @@ func restartReconciler(t *testing.T, setup *testSetup) *testSetup {
 		gvk,
 	)
 
-	if err := reconciler.LoadState(setup.ctx); err != nil {
+	allMatches, err := annotationMgr.LoadAllMatches(setup.ctx, setup.k8sClient)
+	if err != nil {
 		t.Fatalf("Failed to load state after restart: %v", err)
 	}
+
+	reconciler.RestoreState(allMatches)
 
 	return &testSetup{
 		ctx:        setup.ctx,
@@ -959,9 +962,12 @@ func restartReconcilerWithCRD(t *testing.T, setup *testSetup, policies []config.
 		gvk,
 	)
 
-	if err := reconciler.LoadState(setup.ctx); err != nil {
+	allMatches, err := annotationMgr.LoadAllMatches(setup.ctx, setup.k8sClient)
+	if err != nil {
 		t.Fatalf("Failed to load state after restart: %v", err)
 	}
+
+	reconciler.RestoreState(allMatches)
 
 	return &testSetup{
 		ctx:        setup.ctx,
