@@ -240,7 +240,7 @@ mongod uses one file descriptor for each client connection, and it accepts conne
 
 64000 is the MongoDB minimum. Each platform-connectors pod opens about 3 connections, so each node adds about 3 connections. A soft limit of 64000 lets mongod accept about 51000 connections, which is enough for about 17000 nodes. For clusters above about 15000 nodes, use a higher limit, such as the `1048576` in the drop-in below.
 
-With the [deployment platform connector](platform-connectors.md#deployment-platform-connector), the number of connections from platform connectors stays fixed and does not grow with the number of nodes. The node still needs a soft limit of at least 64000, because mongod also uses file descriptors for its data files.
+With the [deployment platform connector](platform-connectors.md#deployment-platform-connector), the number of connections from platform connectors stays fixed and does not grow with the number of nodes, after you also set `platformConnector.daemonset.enabled: false`. While the DaemonSet runs, each of its pods opens its own connections, also when no publisher sends events to it. The node still needs a soft limit of at least 64000, because mongod also uses file descriptors for its data files.
 
 Many node images already set a high limit. Some do not. For example, Ubuntu images built with `kubernetes-sigs/image-builder` with default settings give containers a soft limit of 1024. image-builder installs the containerd `LimitNOFILE` drop-in only on Flatcar and Azure Linux. On other images, build with `containerd_enable_limit_no_file: true`.
 
@@ -257,7 +257,7 @@ sudo systemctl daemon-reload
 sudo systemctl restart containerd
 ```
 
-The new limit applies only to containers that start after the change. Restart the MongoDB pods one at a time after you change the nodes.
+The new limit applies only to pods that are created after the change. A container that restarts in an existing pod keeps the old limit. After you change the nodes, delete the MongoDB pods one at a time, so that each pod is created again.
 
 To check the limits that mongod runs with:
 

@@ -264,17 +264,23 @@ sudo systemctl restart containerd
 # For nodes built with kubernetes-sigs/image-builder, also rebuild the image with
 # containerd_enable_limit_no_file: true, so that new nodes get the limit
 
-# Step 2: Restart the MongoDB pods. The new limit applies only to containers that start after the change.
+# Step 2: Delete the MongoDB pods, so that they are created again. The new limit applies only to pods that are
+# created after the change. A container that restarts in an existing pod keeps the old limit.
 # If all MongoDB pods are crashing, there is no primary to keep, so delete them all:
 # Bitnami
 kubectl -n nvsentinel delete pod -l app.kubernetes.io/name=mongodb
 # Percona Operator
 kubectl -n nvsentinel delete pod -l app.kubernetes.io/component=mongod
 
-# If some MongoDB pods are still running, restart one pod at a time, so that the replica set keeps a primary.
-# Delete one pod, wait until its replacement exists and is ready, then do the next pod.
+# If some MongoDB pods are still running, keep the majority of the replica set:
+#   1. First delete the crashing pods, one at a time, lowest number first. With the OrderedReady policy
+#      (the Bitnami default), the StatefulSet does not create a pod again while a pod with a lower number
+#      is not ready. If you delete a running pod first, it does not come back, and the replica set can
+#      lose its majority.
+#   2. Then delete the running pods, one at a time, highest number first.
+# For each pod, wait until its replacement exists and is ready before you do the next pod.
 # The replacement can take a few seconds to appear, so wait for it to exist first (kubectl 1.31 or later).
-# Bitnami (pods mongodb-0, mongodb-1, mongodb-2):
+# Example for one pod. Bitnami (pods mongodb-0, mongodb-1, mongodb-2):
 kubectl -n nvsentinel delete pod mongodb-2
 kubectl -n nvsentinel wait --for=create pod/mongodb-2 --timeout=10m
 kubectl -n nvsentinel wait --for=condition=Ready pod/mongodb-2 --timeout=10m
