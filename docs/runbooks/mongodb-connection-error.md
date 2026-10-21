@@ -20,6 +20,10 @@ MongoDB connection failure can occur due to the following reasons:
 ### 3. **Storage Class Is Missing**
    - PersistentVolumeClaims (PVCs) use StorageClass to dynamically provision volume. Without a valid StorageClass, PVCs cannot bind to storage and MongoDB pods cannot start without bounded PVCs
 
+### 4. **Open-File Limit Too Low**
+   - The node gives containers a soft open-file limit below 64000, for example 1024
+   - mongod runs out of file descriptors when the number of client connections grows with the cluster, and crashes
+
 ## Quick Diagnosis
 
 Run these commands to identify the issue:
@@ -48,6 +52,7 @@ kubectl -n nvsentinel logs -l app.kubernetes.io/name=mongodb --tail=100
 # - Initialization errors: "waiting for initialization", "replica set"
 # - Storage errors: "WiredTiger", "disk space", "I/O error"
 # - Memory errors: "out of memory", "OOM"
+# - Open-file limit errors: "Too many open files", "Soft rlimits for open file descriptors too low"
 
 # 4. Check PVC status
 kubectl -n nvsentinel get pvc | grep mongodb
@@ -201,3 +206,72 @@ kubectl -n nvsentinel get pvc -l app.kubernetes.io/name=mongodb -o jsonpath='{.i
 kubectl get storageclass
 # If required storage class doesn't exists then upgrade the cluster with correctly configured storage class
 ```
+
+### Issue 4: Open-File Limit Too Low
+
+mongod uses one file descriptor for each client connection. Each platform-connectors pod has its own connection pool, so the number of connections grows with the number of nodes. If the node gives containers a low soft open-file limit, mongod runs out of file descriptors and crashes. This usually happens after the cluster grows, for example from 50 to 500 nodes.
+
+**Symptoms:**
+
+- MongoDB pods are in `CrashLoopBackOff`, often with exit code 139.
+- The StatefulSet shows `0/3` ready. Because of the `OrderedReady` policy, later replicas do not start.
+- fault-quarantine, node-drainer and fault-remediation crash with `ReplicaSetNoPrimary` or `connection refused`.
+
+**Diagnosis:**
+
+```bash
+# Step 1: Check the exit code of the last crash
+# Bitnami: container "mongodb". Percona Operator: pod "mongodb-rs0-0", container "mongod".
+kubectl -n nvsentinel get pod mongodb-0 -o jsonpath='{.status.containerStatuses[?(@.name=="mongodb")].lastState.terminated.exitCode}'
+
+# Step 2: Look for open-file limit errors in the log of the crashed container
+kubectl -n nvsentinel logs mongodb-0 -c mongodb --previous | grep -i -E "too many open files|soft rlimits"
+# "Soft rlimits for open file descriptors too low" shows the soft limit in "currentValue"
+
+# Step 3: Find the nodes that run MongoDB
+# Bitnami
+kubectl -n nvsentinel get pods -l app.kubernetes.io/name=mongodb -o wide
+# Percona Operator
+kubectl -n nvsentinel get pods -l app.kubernetes.io/component=mongod -o wide
+
+# Step 4: On each of those nodes, check the limit that the container runtime gives to containers
+systemctl show containerd --property=LimitNOFILESoft --property=LimitNOFILE
+# LimitNOFILESoft below 64000 (for example 1024) confirms this issue
+```
+
+If a MongoDB pod is running, you can also read the limit of mongod directly:
+
+```bash
+kubectl -n nvsentinel exec mongodb-0 -c mongodb -- bash -c 'grep "Max open files" /proc/$(pgrep -x mongod)/limits'
+```
+
+**Solution:**
+
+```bash
+# Step 1: On every node that can run MongoDB, raise the limit of the container runtime
+sudo mkdir -p /etc/systemd/system/containerd.service.d
+printf '[Service]\nLimitNOFILE=1048576\n' | sudo tee /etc/systemd/system/containerd.service.d/limit-nofile.conf
+sudo systemctl daemon-reload
+sudo systemctl restart containerd
+# For nodes built with kubernetes-sigs/image-builder, also rebuild the image with
+# containerd_enable_limit_no_file: true, so that new nodes get the limit
+
+# Step 2: Restart the MongoDB pods. The new limit applies only to containers that start after the change.
+# Bitnami
+kubectl -n nvsentinel delete pod -l app.kubernetes.io/name=mongodb
+# Percona Operator
+kubectl -n nvsentinel delete pod -l app.kubernetes.io/component=mongod
+
+# Step 3: Verify the limit (repeat for each replica)
+kubectl -n nvsentinel exec mongodb-0 -c mongodb -- bash -c 'grep "Max open files" /proc/$(pgrep -x mongod)/limits'
+# The soft limit (first number) must be at least 64000
+
+# Step 4: Verify that the StatefulSet is ready
+kubectl -n nvsentinel get statefulset mongodb
+```
+
+If a MongoDB pod moves to a node that you did not change, it fails again. Change every node that can run MongoDB, or use [node placement](../configuration/mongodb-store.md#node-placement) to keep MongoDB on nodes that you changed.
+
+fault-quarantine, node-drainer and fault-remediation reconnect when the replica set has a primary. If MongoDB was down for a long time, see [Stale Events](stale-events.md).
+
+To find this problem before mongod fails, monitor the connection capacity of mongod. See [Open-file limit](../configuration/mongodb-store.md#open-file-limit-node-prerequisite).
