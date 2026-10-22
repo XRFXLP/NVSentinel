@@ -61,7 +61,7 @@ go_tools:
 # Protocol Buffers / gRPC
 protobuf:
   # renovate: datasource=github-releases depName=protocolbuffers/protobuf depType=protobuf
-  protobuf: 'v33.4'
+  protobuf: 'v33.6'
   # renovate: datasource=go depName=google.golang.org/protobuf depType=protobuf
   protoc_gen_go: 'v1.36.10'
   # renovate: datasource=go depName=google.golang.org/grpc/cmd/protoc-gen-go-grpc depType=protobuf
