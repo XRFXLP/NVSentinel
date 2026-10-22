@@ -61,13 +61,13 @@ go_tools:
 # Protocol Buffers / gRPC
 protobuf:
   # renovate: datasource=github-releases depName=protocolbuffers/protobuf depType=protobuf
-  protobuf: 'v33.4'
+  protobuf: 'v36.2'
   # renovate: datasource=go depName=google.golang.org/protobuf depType=protobuf
-  protoc_gen_go: 'v1.36.10'
+  protoc_gen_go: 'v1.36.12'
   # renovate: datasource=go depName=google.golang.org/grpc/cmd/protoc-gen-go-grpc depType=protobuf
-  protoc_gen_go_grpc: 'v1.5.1'
+  protoc_gen_go_grpc: 'v1.6.2'
   # renovate: datasource=pypi depName=grpcio-tools depType=protobuf
-  grpcio_tools: '1.75.1'
+  grpcio_tools: '1.84.0'
   # CRD/Protoc-gen-crd
   # renovate: datasource=github-tags depName=yandex/protoc-gen-crd depType=protobuf
   protoc_gen_crd: 'v1.1.0'
