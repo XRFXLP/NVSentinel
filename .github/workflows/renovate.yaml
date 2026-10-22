@@ -23,6 +23,9 @@
 name: Renovate
 
 on:
+  # SPIKE ONLY: dispatch needs the workflow on the default branch.
+  push:
+    branches: [renovate-spike]
   schedule:
     - cron: "0 5 * * 1"  # Mondays 05:00 UTC
   workflow_dispatch:
@@ -40,7 +43,9 @@ permissions:
   contents: read
 
 env:
-  RENOVATE_BRANCH_PREFIX: renovate/
+  # SPIKE ONLY: fresh prefix and title suffix so earlier closed spike PRs do not block updates.
+  RENOVATE_BRANCH_PREFIX: renovate-run3/
+  RENOVATE_COMMIT_MESSAGE_SUFFIX: (spike 3)
 
 jobs:
   renovate:
@@ -60,9 +65,16 @@ jobs:
         if: ${{ inputs.dryRun }}
         run: echo "RENOVATE_DRY_RUN=full" >> "$GITHUB_ENV"
 
+      # SPIKE ONLY: the fork's main has no repo config, so pass it as global config.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Run Renovate
         uses: renovatebot/github-action@f0f41e5f2e706165f6814b1d0f0d0e319de7d1d9  # v46.3.8
         with:
+          configurationFile: .github/renovate.json5
           renovate-version: '43@sha256:00185c0d63462acec8331cc9a94dcd74a763f2765fca0edcc3ff568af1dc8104'
         env:
           RENOVATE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -70,6 +82,9 @@ jobs:
           RENOVATE_ONBOARDING: "false"
           RENOVATE_GIT_AUTHOR: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
           LOG_LEVEL: info
+          # SPIKE ONLY: the fork's main has no annotations; use this branch as the base.
+          RENOVATE_BASE_BRANCH_PATTERNS: '["renovate-spike"]'
+          RENOVATE_REQUIRE_CONFIG: optional
 
   plan:
     name: Find PRs that need regenerated code
