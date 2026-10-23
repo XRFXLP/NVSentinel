@@ -53,7 +53,9 @@ env:
 jobs:
   renovate:
     name: Renovate
-    runs-on: ubuntu-24.04
+    if: github.repository == 'nvidia/nvsentinel'
+    # Renovate runs in a container, so the runner needs Docker.
+    runs-on: linux-amd64-cpu32
     timeout-minutes: 30
     permissions:
       contents: write
@@ -69,6 +71,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Install yq
+        run: |
+          if ! command -v yq &> /dev/null; then
+            sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+            sudo chmod +x /usr/local/bin/yq
+          fi
 
       - name: Load Renovate version from .versions.yaml
         id: versions
@@ -94,7 +103,7 @@ jobs:
     name: Find PRs that need regenerated code
     needs: renovate
     if: ${{ !inputs.dryRun }}
-    runs-on: ubuntu-24.04
+    runs-on: linux-amd64-cpu8
     timeout-minutes: 10
     permissions:
       contents: read
@@ -107,6 +116,17 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Install yq and jq
+        run: |
+          if ! command -v yq &> /dev/null; then
+            sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+            sudo chmod +x /usr/local/bin/yq
+          fi
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq jq
+          fi
 
       - name: Compare tool versions with the base branch
         id: plan
@@ -138,7 +158,7 @@ jobs:
     name: Regenerate code on ${{ matrix.branch }}
     needs: plan
     if: ${{ needs.plan.outputs.branches != '[]' && needs.plan.outputs.branches != '' }}
-    runs-on: ubuntu-24.04
+    runs-on: linux-amd64-cpu16
     timeout-minutes: 45
     permissions:
       contents: write
