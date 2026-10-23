@@ -32,7 +32,8 @@ VERSIONS_FILE="${REPO_ROOT}/.versions.yaml"
 #   - go, python: toolchain upgrades are their own change.
 #   - docker_buildx: 'latest' is not a version.
 #   - renovate: tag@digest, which the annotation regex does not read.
-UNTRACKED="languages.go languages.python container_tools.docker_buildx container_tools.renovate"
+#   - kind_node_image: tag@digest; it must come from the release notes of the pinned kind version.
+UNTRACKED="languages.go languages.python container_tools.docker_buildx container_tools.renovate testing_tools.kind_node_image"
 
 errors=0
 

@@ -29,6 +29,7 @@ GOCOVER_COBERTURA_VERSION := $(shell $(YQ) '.go_tools.gocover_cobertura' .versio
 GOLANGCI_LINT_VERSION := $(shell $(YQ) '.go_tools.golangci_lint' .versions.yaml)
 GOTESTSUM_VERSION := $(shell $(YQ) '.go_tools.gotestsum' .versions.yaml)
 GRPCIO_TOOLS_VERSION := $(shell $(YQ) '.protobuf.grpcio_tools' .versions.yaml)
+KIND_NODE_IMAGE := $(shell $(YQ) '.testing_tools.kind_node_image' .versions.yaml)
 KO_VERSION := $(shell $(YQ) '.container_tools.ko' .versions.yaml)
 POETRY_VERSION := $(shell $(YQ) '.build_tools.poetry' .versions.yaml)
 PROTOBUF_VERSION := $(shell $(YQ) '.protobuf.protobuf' .versions.yaml)
@@ -862,7 +863,14 @@ cluster-create: ## Create local ctlptl-managed Kind cluster with registry
 		echo "Error: ctlptl config file $(CTLPTL_CONFIG_FILE) not found"; \
 		exit 1; \
 	fi
-	ctlptl apply -f $(CTLPTL_CONFIG_FILE)
+	@if [ -z "$(KIND_NODE_IMAGE)" ] || [ "$(KIND_NODE_IMAGE)" = "null" ]; then \
+		echo "Error: testing_tools.kind_node_image is not set in .versions.yaml"; \
+		exit 1; \
+	fi
+	@echo "Using node image $(KIND_NODE_IMAGE)"
+	# Set the pinned node image on every node, so the Kubernetes version does not follow kind's default.
+	NODE_IMAGE="$(KIND_NODE_IMAGE)" $(YQ) '(select(.kind == "Cluster") | .kindV1Alpha4Cluster.nodes[].image) = strenv(NODE_IMAGE)' \
+		$(CTLPTL_CONFIG_FILE) | ctlptl apply -f -
 	@echo "Waiting for all nodes to be ready..."
 	@kubectl wait --for=condition=ready nodes --all --timeout=300s
 	@echo "Raising kindnet memory limit"
