@@ -64,6 +64,16 @@ jobs:
       # Renovate reads Dependabot alerts to flag security updates in PRs.
       security-events: read
     steps:
+      # Only to read .versions.yaml. Renovate clones the repository itself.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load Renovate version from .versions.yaml
+        id: versions
+        run: echo "renovate=$(yq '.container_tools.renovate' .versions.yaml)" >> "$GITHUB_OUTPUT"
+
       - name: Configure dry-run mode
         if: ${{ inputs.dryRun }}
         run: echo "RENOVATE_DRY_RUN=full" >> "$GITHUB_ENV"
@@ -71,7 +81,7 @@ jobs:
       - name: Run Renovate
         uses: renovatebot/github-action@f0f41e5f2e706165f6814b1d0f0d0e319de7d1d9  # v46.3.8
         with:
-          renovate-version: '43@sha256:00185c0d63462acec8331cc9a94dcd74a763f2765fca0edcc3ff568af1dc8104'
+          renovate-version: ${{ steps.versions.outputs.renovate }}
         env:
           RENOVATE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RENOVATE_REPOSITORIES: '["${{ github.repository }}"]'

@@ -85,6 +85,8 @@ linting:
 # Container Tools
 container_tools:
   docker_buildx: 'latest'
+  # Self-hosted Renovate image as tag@digest. Used by .github/workflows/renovate.yaml and make renovate-lint.
+  renovate: '43@sha256:00185c0d63462acec8331cc9a94dcd74a763f2765fca0edcc3ff568af1dc8104'
   # renovate: datasource=github-releases depName=ko-build/ko depType=container_tools
   ko: 'v0.19.1'
   # renovate: datasource=github-releases depName=sigstore/cosign depType=container_tools

@@ -44,10 +44,18 @@
   ],
 
   packageRules: [
+    // One PR per .versions.yaml section. Renovate makes the branch name from the
+    // group name (renovate/go-tools). make renovate-lint fails if a section has
+    // annotations but no rule here.
     {
-      // One PR per .versions.yaml section.
       matchManagers: ["custom.regex"],
-      groupName: "{{depType}} tools",
+      matchDepTypes: ["build_tools"],
+      groupName: "build tools",
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["go_tools"],
+      groupName: "go tools",
     },
     {
       // protoc and its plugins generate code together (make protos-generate), so
@@ -56,6 +64,26 @@
       matchDepTypes: ["protobuf"],
       groupName: "protobuf tools",
       separateMajorMinor: false,
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["linting"],
+      groupName: "linting tools",
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["container_tools"],
+      groupName: "container tools",
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["testing_tools"],
+      groupName: "testing tools",
+    },
+    {
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["cluster"],
+      groupName: "cluster charts",
     },
     {
       // These pins drop the leading v that the upstream tags carry.
