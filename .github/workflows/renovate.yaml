@@ -95,7 +95,7 @@ jobs:
           RENOVATE_ONBOARDING: "false"
           RENOVATE_GIT_AUTHOR: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
           # Scheduled runs have no inputs.
-          LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
+          LOG_LEVEL: debug  # SPIKE ONLY: see why each branch is or is not rebased
           # SPIKE ONLY: use this branch as the base. Upstream requires branches to be up to date with main,
           # which makes Renovate's default rebaseWhen (auto) rebase behind-base branches; set that here.
           RENOVATE_BASE_BRANCH_PATTERNS: '["renovate-spike4"]'
