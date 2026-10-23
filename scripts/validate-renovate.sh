@@ -17,7 +17,7 @@
 # Checks the Renovate setup for .versions.yaml:
 #   1. Every pin has a "# renovate:" annotation on the line above it, whose depType is the
 #      pin's section, unless the pin is in UNTRACKED. Renovate skips a pin without one silently.
-#   2. Every annotated section has a group rule in .github/renovate.json5.
+#   2. Every annotated section has a packageRules entry with a groupName in .github/renovate.json5.
 #   3. renovate-config-validator accepts .github/renovate.json5 as repository config, using the
 #      pinned Renovate image. Given no path, the validator finds the file and does not treat it
 #      as global config.
@@ -27,7 +27,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VERSIONS_FILE="${REPO_ROOT}/.versions.yaml"
-CONFIG_FILE="${REPO_ROOT}/.github/renovate.json5"
 
 # Pins that Renovate does not update, as section.key:
 #   - go, python: toolchain upgrades are their own change.
@@ -44,8 +43,9 @@ annotation_errors=$(awk -v untracked="${UNTRACKED}" '
     n = split(untracked, list, " ")
     for (i = 1; i <= n; i++) skip[list[i]] = 1
   }
-  /^[a-z_]+:[[:space:]]*$/ { section = $1; sub(/:$/, "", section); prev = ""; next }
-  /^  [a-z_]+:[[:space:]]*["\x27]/ {
+  # A section is a top-level key with no value. A pin is any key under it with a scalar value.
+  /^[A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ { section = $1; sub(/:$/, "", section); prev = ""; next }
+  /^  [A-Za-z0-9_-]+:[[:space:]]*[^[:space:]#]/ {
     key = $1; sub(/:$/, "", key)
     id = section "." key
     annotated = (prev ~ /^  # renovate: datasource=[^ ]+ depName=[^ ]+ depType=[^ ]+$/)
@@ -57,12 +57,14 @@ annotation_errors=$(awk -v untracked="${UNTRACKED}" '
       want = "depType=" section
       if (substr(prev, length(prev) - length(want) + 1) != want)
         printf "%s:%d: %s annotation must end with %s\n", FILENAME, NR, id, want
-      if ($0 ~ /^  [a-z_]+:[[:space:]]*["\x27][^"\x27]*:/)
+      if ($0 !~ /^  [^:]+:[[:space:]]*["\x27]/)
+        printf "%s:%d: %s value must be quoted, or the annotation regex does not read it\n", FILENAME, NR, id
+      else if ($0 ~ /^  [^:]+:[[:space:]]*["\x27][^"\x27]*:/)
         printf "%s:%d: %s value contains \":\", which the annotation regex does not read\n", FILENAME, NR, id
     }
   }
-  prev ~ /^  # renovate:/ && $0 !~ /^  [a-z_]+:[[:space:]]*["\x27]/ {
-    printf "%s:%d: annotation is not followed by a quoted pin\n", FILENAME, NR - 1
+  prev ~ /^  # renovate:/ && $0 !~ /^  [A-Za-z0-9_-]+:[[:space:]]*[^[:space:]#]/ {
+    printf "%s:%d: annotation is not followed by a pin\n", FILENAME, NR - 1
   }
   { prev = $0 }
 ' "${VERSIONS_FILE}")
@@ -72,22 +74,40 @@ if [ -n "${annotation_errors}" ]; then
   errors=1
 fi
 
+RENOVATE_IMAGE="ghcr.io/renovatebot/renovate:$(yq '.container_tools.renovate' "${VERSIONS_FILE}")"
+
 echo "Checking that every annotated section has a group rule..."
 
-while read -r dep_type; do
-  if ! grep -qF "matchDepTypes: [\"${dep_type}\"]" "${CONFIG_FILE}"; then
-    echo "${CONFIG_FILE}: no packageRules entry with matchDepTypes: [\"${dep_type}\"]" >&2
-    errors=1
-  fi
-done < <(grep -oE 'depType=[a-z_]+' "${VERSIONS_FILE}" | sort -u | cut -d= -f2)
-
-echo "Validating .github/renovate.json5 with renovate-config-validator..."
-
-RENOVATE_VERSION="$(yq '.container_tools.renovate' "${VERSIONS_FILE}")"
+# Parse the config with the json5 package that ships in the Renovate image, so comments and
+# rules without a groupName cannot pass. The check fails if the image no longer has json5.
+mapfile -t dep_types < <(grep -oE 'depType=[A-Za-z0-9_-]+' "${VERSIONS_FILE}" | cut -d= -f2 | sort -u)
 
 if ! docker run --rm \
   -v "${REPO_ROOT}/.github:/usr/src/app/.github:ro" \
-  "ghcr.io/renovatebot/renovate:${RENOVATE_VERSION}" \
+  --entrypoint node \
+  "${RENOVATE_IMAGE}" \
+  -e '
+    const fs = require("fs");
+    const JSON5 = require(require.resolve("json5", { paths: ["/usr/local/renovate"] }));
+    const rules = JSON5.parse(fs.readFileSync(".github/renovate.json5", "utf8")).packageRules || [];
+    let failed = false;
+    for (const depType of process.argv.slice(1)) {
+      const grouped = rules.some((r) => (r.matchDepTypes || []).includes(depType) && r.groupName);
+      if (!grouped) {
+        console.error(".github/renovate.json5: no packageRules entry with a groupName for depType " + depType);
+        failed = true;
+      }
+    }
+    process.exit(failed ? 1 : 0);
+  ' "${dep_types[@]}"; then
+  errors=1
+fi
+
+echo "Validating .github/renovate.json5 with renovate-config-validator..."
+
+if ! docker run --rm \
+  -v "${REPO_ROOT}/.github:/usr/src/app/.github:ro" \
+  "${RENOVATE_IMAGE}" \
   renovate-config-validator --strict; then
   errors=1
 fi
