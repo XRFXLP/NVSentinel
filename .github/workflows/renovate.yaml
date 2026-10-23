@@ -24,7 +24,9 @@ name: Renovate
 
 on:
   schedule:
-    - cron: "0 5 * * 1"  # Mondays 05:00 UTC
+    # Thursdays 05:00 UTC. Releases go out on Mondays, so this leaves two working
+    # days to merge the PRs or fix their conflicts before the release.
+    - cron: "0 5 * * 4"
   workflow_dispatch:
     inputs:
       dryRun:
@@ -60,7 +62,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      issues: write
+      # Renovate lists issues to close old config-error and Dependency Dashboard issues.
+      # It cannot open a config-error issue; make renovate-lint fails CI on a bad config.
+      issues: read
       # Renovate writes a status check on each branch; without this the run aborts.
       statuses: write
       # Renovate reads Dependabot alerts to flag security updates in PRs.
