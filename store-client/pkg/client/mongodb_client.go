@@ -668,22 +668,6 @@ func (c *MongoDBClient) UpdateDocument(
 		})
 }
 
-// InsertMany inserts multiple documents
-func (c *MongoDBClient) InsertMany(ctx context.Context, documents []any) (*InsertManyResult, error) {
-	result, err := c.mongoCol.InsertMany(ctx, documents)
-	if err != nil {
-		return nil, datastore.NewInsertError(
-			datastore.ProviderMongoDB,
-			"failed to insert documents",
-			err,
-		).WithMetadata("count", len(documents))
-	}
-
-	return &InsertManyResult{
-		InsertedIDs: result.InsertedIDs,
-	}, nil
-}
-
 // UpdateManyDocuments performs a general update operation on multiple documents
 func (c *MongoDBClient) UpdateManyDocuments(
 	ctx context.Context, filter any, update any,
