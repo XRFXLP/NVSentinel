@@ -56,7 +56,7 @@ go_tools:
   # renovate: datasource=github-releases depName=google/go-containerregistry depType=go_tools
   crane: 'v0.22.1'
   # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools depType=go_tools
-  controller_gen: 'v0.23.0'
+  controller_gen: 'v0.22.0'
 
 # Protocol Buffers / gRPC
 protobuf:
