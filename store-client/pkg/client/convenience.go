@@ -26,15 +26,6 @@ import (
 
 // Common operations that consolidate patterns found across all modules
 
-// UpdateHealthEventStatus updates a health event status field
-// This consolidates the common pattern used by fault-quarantine-module,
-// node-drainer, and fault-remediation
-func UpdateHealthEventStatus(ctx context.Context, client DatabaseClient, eventID string,
-	statusField string, status any) error {
-	statusPath := fmt.Sprintf("healtheventstatus.%s", statusField)
-	return client.UpdateDocumentStatus(ctx, eventID, statusPath, status)
-}
-
 // UpdateHealthEventNodeQuarantineStatus updates the node quarantine status
 // Used by fault-quarantine-module
 func UpdateHealthEventNodeQuarantineStatus(ctx context.Context, client DatabaseClient,
@@ -50,20 +41,6 @@ func UpdateHealthEventNodeQuarantineStatus(ctx context.Context, client DatabaseC
 	fields["healtheventstatus.spanids."+tracing.ServiceFaultQuarantine] = spanID
 
 	return client.UpdateDocumentStatusFields(ctx, eventID, fields)
-}
-
-// UpdateHealthEventPodEvictionStatus updates the pod eviction status
-// Used by node-drainer
-func UpdateHealthEventPodEvictionStatus(ctx context.Context, client DatabaseClient,
-	eventID string, status any) error {
-	return UpdateHealthEventStatus(ctx, client, eventID, "userpodsevictionstatus", status)
-}
-
-// UpdateHealthEventRemediationStatus updates the remediation status
-// Used by fault-remediation
-func UpdateHealthEventRemediationStatus(ctx context.Context, client DatabaseClient,
-	eventID string, status any) error {
-	return UpdateHealthEventStatus(ctx, client, eventID, "remediation", status)
 }
 
 // Backward compatibility helpers
