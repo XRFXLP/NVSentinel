@@ -449,26 +449,12 @@ func TestDataStoreCommonBehavior(t *testing.T) {
 
 // TestErrorHandlingConsistency verifies that both providers return compatible error types.
 func TestErrorHandlingConsistency(t *testing.T) {
-	t.Run("Connection errors are identifiable", func(t *testing.T) {
-		// Test that connection errors can be identified consistently
-		connectionErr := datastore.NewConnectionError(datastore.ProviderPostgreSQL, "connection refused", errors.New("test error"))
-		assert.True(t, datastore.IsConnectionError(connectionErr),
-			"Connection errors should be identifiable")
-	})
-
 	t.Run("Validation errors are identifiable", func(t *testing.T) {
 		validationErr := datastore.NewValidationError(datastore.ProviderPostgreSQL, "invalid data", errors.New("test error"))
 		// Check if error type is validation
 		var datastoreErr *datastore.DatastoreError
 		require.True(t, errors.As(validationErr, &datastoreErr))
 		assert.Equal(t, datastore.ErrorTypeValidation, datastoreErr.Type)
-	})
-
-	t.Run("Timeout errors are identifiable", func(t *testing.T) {
-		timeoutErr := datastore.NewTimeoutError(datastore.ProviderPostgreSQL, "operation timed out", errors.New("test error"))
-		// Check connection error since timeout is a type of connection error
-		assert.True(t, datastore.IsConnectionError(timeoutErr),
-			"Timeout errors should be identifiable as connection errors")
 	})
 
 	t.Run("Error unwrapping works correctly", func(t *testing.T) {

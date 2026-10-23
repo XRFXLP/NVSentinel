@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
-	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/mongodb/watcher"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -68,27 +67,6 @@ func UpdateHealthEventRemediationStatus(ctx context.Context, client DatabaseClie
 }
 
 // Backward compatibility helpers
-
-// ConvertToMongoDBConfig converts the new DatabaseConfig to the existing MongoDBConfig
-// This allows existing code to gradually migrate while maintaining compatibility
-func ConvertToMongoDBConfig(dbConfig config.DatabaseConfig) MongoDBConfig {
-	return MongoDBConfig{
-		URI:        dbConfig.GetConnectionURI(),
-		Database:   dbConfig.GetDatabaseName(),
-		Collection: dbConfig.GetCollectionName(),
-		ClientTLSCertConfig: MongoDBClientTLSCertConfig{
-			TlsCertPath: dbConfig.GetCertConfig().GetCertPath(),
-			TlsKeyPath:  dbConfig.GetCertConfig().GetKeyPath(),
-			CaCertPath:  dbConfig.GetCertConfig().GetCACertPath(),
-		},
-		TotalPingTimeoutSeconds:          dbConfig.GetTimeoutConfig().GetPingTimeoutSeconds(),
-		TotalPingIntervalSeconds:         dbConfig.GetTimeoutConfig().GetPingIntervalSeconds(),
-		TotalCACertTimeoutSeconds:        dbConfig.GetTimeoutConfig().GetCACertTimeoutSeconds(),
-		TotalCACertIntervalSeconds:       dbConfig.GetTimeoutConfig().GetCACertIntervalSeconds(),
-		ChangeStreamRetryDeadlineSeconds: dbConfig.GetTimeoutConfig().GetChangeStreamRetryDeadlineSeconds(),
-		ChangeStreamRetryIntervalSeconds: dbConfig.GetTimeoutConfig().GetChangeStreamRetryIntervalSeconds(),
-	}
-}
 
 // Legacy type aliases for backward compatibility
 type MongoDBConfig = watcher.MongoDBConfig
