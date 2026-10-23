@@ -23,6 +23,9 @@
 name: Renovate
 
 on:
+  # SPIKE ONLY: dispatch needs the workflow on the default branch.
+  push:
+    branches: [renovate-spike4]
   schedule:
     - cron: "0 5 * * 1"  # Mondays 05:00 UTC
   workflow_dispatch:
@@ -48,7 +51,9 @@ permissions:
   contents: read
 
 env:
-  RENOVATE_BRANCH_PREFIX: renovate/
+  # SPIKE ONLY: fresh prefix and title suffix so earlier spike PRs do not interfere.
+  RENOVATE_BRANCH_PREFIX: renovate-run4/
+  RENOVATE_COMMIT_MESSAGE_SUFFIX: (spike 4)
 
 jobs:
   renovate:
@@ -81,6 +86,8 @@ jobs:
       - name: Run Renovate
         uses: renovatebot/github-action@f0f41e5f2e706165f6814b1d0f0d0e319de7d1d9  # v46.3.8
         with:
+          # SPIKE ONLY: the fork's main has no repo config, so pass it as global config.
+          configurationFile: .github/renovate.json5
           renovate-version: ${{ steps.versions.outputs.renovate }}
         env:
           RENOVATE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -89,6 +96,11 @@ jobs:
           RENOVATE_GIT_AUTHOR: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
           # Scheduled runs have no inputs.
           LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
+          # SPIKE ONLY: use this branch as the base. Upstream requires branches to be up to date with main,
+          # which makes Renovate's default rebaseWhen (auto) rebase behind-base branches; set that here.
+          RENOVATE_BASE_BRANCH_PATTERNS: '["renovate-spike4"]'
+          RENOVATE_REQUIRE_CONFIG: optional
+          RENOVATE_REBASE_WHEN: behind-base-branch
 
   plan:
     name: Find PRs that need regenerated code
