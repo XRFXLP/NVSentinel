@@ -18,8 +18,12 @@ load('./helpers.star', 'merge_dicts')
 
 # Suppress unused image warning for log-collector because it's used in dynamically-created
 # jobs by the fault-remediation controller (not deployed via Helm templates).
+# TILT_MAX_PARALLEL_UPDATES sets how many resources Tilt builds and deploys at the same time.
+# The default is the Tilt default. make tilt-ci sets more, because a cold install in CI waits
+# for free slots (see #2136).
 update_settings(
     k8s_upsert_timeout_secs=600,
+    max_parallel_updates=int(os.getenv('TILT_MAX_PARALLEL_UPDATES') or '3'),
     suppress_unused_image_warnings=['localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest']
 )
 
