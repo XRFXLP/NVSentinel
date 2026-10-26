@@ -52,11 +52,13 @@ else:
 if use_pc_deployment:
     print("Publishing to the deployment platform connector (USE_DEPLOYMENT_PLATFORM_CONNECTOR=1)")
 
+# helm_resource does not wait for its helm_repo, so each chart lists its repo in resource_deps.
 helm_repo('jetstack', 'https://charts.jetstack.io')
 helm_resource(
     'cert-manager',
     chart='jetstack/cert-manager',
     namespace='cert-manager',
+    resource_deps=['jetstack'],
     flags=[
         '--create-namespace',
         '--set=installCRDs=true',
@@ -69,6 +71,7 @@ helm_resource(
     'prometheus-operator',
     chart='prometheus-community/kube-prometheus-stack',
     namespace='monitoring',
+    resource_deps=['prometheus-community'],
     flags=[
         '--create-namespace',
         '--set=prometheus.enabled=true',
@@ -95,6 +98,7 @@ helm_resource(
     'kwok',
     chart='sigs-kwok/kwok',
     namespace='kube-system',
+    resource_deps=['sigs-kwok'],
     flags=[
         '--version=0.3.0'  # pin: an unpinned chart floats to new releases mid-flight
     ]
