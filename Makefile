@@ -23,6 +23,7 @@ endif
 # Load versions from .versions.yaml
 ADDLICENSE_VERSION := $(shell $(YQ) '.linting.addlicense' .versions.yaml)
 BLACK_VERSION := $(shell $(YQ) '.linting.black' .versions.yaml)
+DEADCODE_VERSION := $(shell $(YQ) '.go_tools.deadcode' .versions.yaml)
 DOCKER_BUILDX_VERSION := $(shell $(YQ) '.container_tools.docker_buildx' .versions.yaml)
 GO_VERSION := $(shell $(YQ) '.languages.go' .versions.yaml)
 GOCOVER_COBERTURA_VERSION := $(shell $(YQ) '.go_tools.gocover_cobertura' .versions.yaml)
@@ -132,7 +133,7 @@ dev-env-setup: ## Setup complete development environment (installs all required 
 
 # Install lint tools
 .PHONY: install-lint-tools
-install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobertura ## Install all lint tools (golangci-lint, gotestsum, gocover-cobertura)
+install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobertura install-deadcode ## Install all lint tools (golangci-lint, gotestsum, gocover-cobertura, deadcode)
 	@echo "All lint tools installed successfully"
 	@echo ""
 	@echo "=== Installed Tool Versions and Locations ==="
@@ -155,6 +156,12 @@ install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobe
 		echo "    Location: $$(which gocover-cobertura)"; \
 	else \
 		echo "gocover-cobertura: not found"; \
+	fi
+	@if command -v deadcode >/dev/null 2>&1; then \
+		echo "deadcode: installed (no version command available)"; \
+		echo "    Location: $$(which deadcode)"; \
+	else \
+		echo "deadcode: not found"; \
 	fi
 	@echo "=============================================="
 
@@ -198,6 +205,17 @@ install-gocover-cobertura:
 		$(GO) install github.com/boumenot/gocover-cobertura@$(GOCOVER_COBERTURA_VERSION); \
 	else \
 		echo "gocover-cobertura is already installed"; \
+	fi
+
+# Install deadcode
+.PHONY: install-deadcode
+install-deadcode:
+	@echo "Installing deadcode..."
+	@if ! command -v deadcode >/dev/null 2>&1; then \
+		echo "deadcode not found, installing..."; \
+		$(GO) install golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION); \
+	else \
+		echo "deadcode is already installed"; \
 	fi
 
 # Install Go $(GO_VERSION) for CI environments (Linux and macOS, amd64 and arm64)

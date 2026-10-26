@@ -25,8 +25,9 @@
 #      for unused types, fields, constants and variables, which deadcode does
 #      not report.
 #
-# Both run once per e2e build tag set. Code is reported only when it is dead
-# under every tag set, since some helpers are used by one architecture only.
+# Both run with every e2e build tag enabled at once, so files built for one
+# architecture only are checked too, and a helper that only one architecture's
+# tests call still counts as used.
 
 set -euo pipefail
 
@@ -36,7 +37,7 @@ NC='\033[0m'
 
 DEADCODE=${DEADCODE:-deadcode}
 GOLANGCI_LINT=${GOLANGCI_LINT:-golangci-lint}
-TAG_SETS=("amd64_group,mongodb,integration" "arm64_group,mongodb,integration")
+TAGS="amd64_group,arm64_group,mongodb,integration"
 
 ROOT=$(git rev-parse --show-toplevel)
 cd "$ROOT"
@@ -44,79 +45,52 @@ cd "$ROOT"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
+# Overrides any GOWORK set in the caller's environment.
+export GOWORK="$WORK/go.work"
+
 mapfile -t MODULES < <(git ls-files '*go.mod' | xargs -n1 dirname | sort)
 
 (cd "$WORK" && go work init "${MODULES[@]/#/$ROOT/}")
 
-# Keeps only the findings present in every per-tag-set result file.
-intersect() {
-	local result=$1
-	shift
-
-	sort -u "$1" >"$result"
-	shift
-
-	for f in "$@"; do
-		comm -12 "$result" <(sort -u "$f") >"$result.tmp"
-		mv "$result.tmp" "$result"
-	done
-}
-
 echo "Checking for functions no binary or test reaches (deadcode)..."
 
-mapfile -t PACKAGES < <(GOWORK="$WORK/go.work" go list -m -f '{{.Path}}/...')
+mapfile -t PACKAGES < <(go list -m -f '{{.Path}}/...')
 
-deadcode_results=()
-
-for i in "${!TAG_SETS[@]}"; do
-	out="$WORK/deadcode.$i"
-	GOWORK="$WORK/go.work" "$DEADCODE" -test -tags "${TAG_SETS[$i]}" "${PACKAGES[@]}" >"$out.raw"
-	sed -E 's/:[0-9]+:[0-9]+: unreachable func: /: /' "$out.raw" |
-		{ grep -vE '(_test\.go|/mock[^/]*\.go|_mock\.go): [^ ]+\.[^ ]+$' || true; } >"$out"
-	deadcode_results+=("$out")
-done
-
-intersect "$WORK/deadcode" "${deadcode_results[@]}"
+"$DEADCODE" -test -tags "$TAGS" "${PACKAGES[@]}" >"$WORK/deadcode.raw"
+sed -E 's/:[0-9]+:[0-9]+: unreachable func: /: /' "$WORK/deadcode.raw" |
+	{ grep -vE '(_test\.go|/mock[^/]*\.go|_mock\.go): [^ ]+\.[^ ]+$' || true; } |
+	sort -u >"$WORK/deadcode"
 
 echo "Checking for unused code, including test files (golangci-lint unused)..."
 
-unused_results=()
+: >"$WORK/unused"
 
-for i in "${!TAG_SETS[@]}"; do
-	out="$WORK/unused.$i"
-	: >"$out"
+for module in "${MODULES[@]}"; do
+	rc=0
+	(
+		cd "$module"
+		GOWORK=off "$GOLANGCI_LINT" run \
+			--config "$ROOT/.golangci.yml" \
+			--tests \
+			--enable-only unused \
+			--build-tags "$TAGS" \
+			--issues-exit-code 1 \
+			--output.text.path stdout \
+			--output.text.print-issued-lines=false \
+			--output.code-climate.path "$WORK/code-climate.json" \
+			./...
+	) >"$WORK/golangci.out" 2>&1 || rc=$?
 
-	for module in "${MODULES[@]}"; do
-		rc=0
-		(
-			cd "$module"
-			GOWORK=off "$GOLANGCI_LINT" run \
-				--config "$ROOT/.golangci.yml" \
-				--tests \
-				--enable-only unused \
-				--build-tags "${TAG_SETS[$i]}" \
-				--issues-exit-code 1 \
-				--output.text.path stdout \
-				--output.text.print-issued-lines=false \
-				--output.code-climate.path "$WORK/code-climate.json" \
-				./...
-		) >"$WORK/golangci.out" 2>&1 || rc=$?
+	# Exit code 1 means issues were found; anything else means the run itself failed.
+	if [[ $rc -ne 0 && $rc -ne 1 ]]; then
+		echo -e "${RED}golangci-lint failed on $module (exit $rc):${NC}"
+		cat "$WORK/golangci.out"
+		exit "$rc"
+	fi
 
-		# Exit code 1 means issues were found; anything else means the run itself failed.
-		if [[ $rc -ne 0 && $rc -ne 1 ]]; then
-			echo -e "${RED}golangci-lint failed on $module (exit $rc):${NC}"
-			cat "$WORK/golangci.out"
-			exit "$rc"
-		fi
-
-		# Paths are relative to the repository root, where .golangci.yml lives.
-		{ grep -E '^[^ ]+\.go:[0-9]+:[0-9]+: ' "$WORK/golangci.out" || true; } >>"$out"
-	done
-
-	unused_results+=("$out")
+	# Paths are relative to the repository root, where .golangci.yml lives.
+	{ grep -E '^[^ ]+\.go:[0-9]+:[0-9]+: ' "$WORK/golangci.out" || true; } >>"$WORK/unused"
 done
-
-intersect "$WORK/unused" "${unused_results[@]}"
 
 if [[ -s "$WORK/deadcode" || -s "$WORK/unused" ]]; then
 	if [[ -s "$WORK/deadcode" ]]; then
