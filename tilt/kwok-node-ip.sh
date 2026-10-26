@@ -52,5 +52,15 @@ fi
 size=$((1 << (32 - prefix)))
 address=$(( ((a << 24) | (b << 16) | (c << 8) | d) & ~(size - 1) & 0xFFFFFFFF ))
 address=$((address + size - 2))
+node_ip="$(( (address >> 24) & 255 )).$(( (address >> 16) & 255 )).$(( (address >> 8) & 255 )).$(( address & 255 ))"
 
-echo "$(( (address >> 24) & 255 )).$(( (address >> 16) & 255 )).$(( (address >> 8) & 255 )).$(( address & 255 ))"
+# A custom network can use this address for its gateway or for a container with a fixed IP.
+used=$(docker network inspect "$KIND_NETWORK" \
+    --format '{{range .IPAM.Config}}{{.Gateway}}{{"\n"}}{{end}}{{range .Containers}}{{.IPv4Address}}{{"\n"}}{{end}}' |
+    cut -d/ -f1)
+if grep -qxF "$node_ip" <<< "$used"; then
+    echo "Error: $node_ip is in use on Docker network $KIND_NETWORK; set KWOK_NODE_IP to an unused address" >&2
+    exit 1
+fi
+
+echo "$node_ip"
