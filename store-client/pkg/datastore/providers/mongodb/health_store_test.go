@@ -159,6 +159,72 @@ func (m *MockSingleResult) Err() error {
 	return args.Error(0)
 }
 
+func TestMongoHealthEventStore_FindLatestHealthEventByQuery(t *testing.T) {
+	ctx := context.Background()
+	mockDB := new(MockDatabaseClient)
+	mockResult := new(MockSingleResult)
+	store := &MongoHealthEventStore{
+		databaseClient: mockDB,
+	}
+
+	expectedFilter := mockQueryBuilder{}.ToMongo()
+	expectedOptions := &client.FindOneOptions{
+		Sort: bson.D{
+			{Key: "createdAt", Value: -1},
+			{Key: "_id", Value: -1},
+		},
+	}
+
+	// Test successful find
+	t.Run("successful find", func(t *testing.T) {
+		mockDB.On("FindOne", ctx, expectedFilter, expectedOptions).Return(mockResult, nil)
+		mockResult.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(nil).Run(func(args mock.Arguments) {
+			// Simulate decoding
+			event := args.Get(0).(*map[string]any)
+			*event = map[string]any{"createdAt": time.Now()}
+		})
+
+		result, err := store.FindLatestHealthEventByQuery(ctx, mockQueryBuilder{})
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.False(t, result.CreatedAt.IsZero())
+		assert.NotNil(t, result.RawEvent)
+
+		mockDB.AssertExpectations(t)
+		mockResult.AssertExpectations(t)
+	})
+
+	// Test no document found
+	t.Run("no document found", func(t *testing.T) {
+		mockDB.ExpectedCalls = nil
+		mockResult.ExpectedCalls = nil
+
+		mockDB.On("FindOne", ctx, expectedFilter, expectedOptions).Return(mockResult, nil)
+		mockResult.On("Decode", mock.AnythingOfType("*map[string]interface {}")).Return(errors.New("no documents in result"))
+
+		result, err := store.FindLatestHealthEventByQuery(ctx, mockQueryBuilder{})
+		assert.NoError(t, err)
+		assert.Nil(t, result)
+
+		mockDB.AssertExpectations(t)
+		mockResult.AssertExpectations(t)
+	})
+
+	// Test database error
+	t.Run("database error", func(t *testing.T) {
+		mockDB.ExpectedCalls = nil
+
+		mockDB.On("FindOne", ctx, expectedFilter, expectedOptions).Return((*MockSingleResult)(nil), errors.New("db error"))
+
+		result, err := store.FindLatestHealthEventByQuery(ctx, mockQueryBuilder{})
+		assert.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "failed to find latest health event by query")
+
+		mockDB.AssertExpectations(t)
+	})
+}
+
 // mockQueryBuilder is a minimal QueryBuilder for tests.
 type mockQueryBuilder struct{}
 
