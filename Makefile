@@ -888,18 +888,28 @@ cluster-create: ## Create local ctlptl-managed Kind cluster with registry
 	fi
 	@# kind's load balancer sends traffic to control planes that are not up yet
 	@# while fewer than half are healthy, so joining one can fail at random. A
-	@# failed create removes the cluster's nodes, so try again from scratch.
-	@for attempt in 1 2 3; do \
-		if ctlptl apply -f $(CTLPTL_CONFIG_FILE); then \
-			break; \
-		fi; \
-		if [ $$attempt -eq 3 ]; then \
-			echo "Error: cluster creation failed after $$attempt attempts"; \
-			exit 1; \
-		fi; \
-		echo "Cluster creation failed on attempt $$attempt, retrying..."; \
-		ctlptl delete cluster $(CLUSTER_NAME) --ignore-not-found; \
-	done
+	@# failed create removes the cluster's nodes, so try again from scratch. A
+	@# cluster that already existed is only applied once and never deleted.
+	@cluster=$$($(YQ) 'select(.kind == "Cluster") | .name' $(CTLPTL_CONFIG_FILE)); \
+	if [ -z "$$cluster" ]; then \
+		echo "Error: no Cluster in $(CTLPTL_CONFIG_FILE)"; \
+		exit 1; \
+	fi; \
+	if kind get clusters 2>/dev/null | grep -qx "$${cluster#kind-}"; then \
+		ctlptl apply -f $(CTLPTL_CONFIG_FILE); \
+	else \
+		for attempt in 1 2 3; do \
+			if ctlptl apply -f $(CTLPTL_CONFIG_FILE); then \
+				break; \
+			fi; \
+			if [ $$attempt -eq 3 ]; then \
+				echo "Error: cluster creation failed after $$attempt attempts"; \
+				exit 1; \
+			fi; \
+			echo "Cluster creation failed on attempt $$attempt, retrying..."; \
+			ctlptl delete cluster "$$cluster" --ignore-not-found; \
+		done; \
+	fi
 	@echo "Waiting for all nodes to be ready..."
 	@kubectl wait --for=condition=ready nodes --all --timeout=300s
 	@echo "Raising kindnet memory limit"
