@@ -1,0 +1,92 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# E2E tests that do not depend on the datastore, and the one CI job that runs each of them.
+#
+# Each line has a top-level test name and the E2E_JOB_ID of a job in .github/workflows/e2e-test.yml.
+# The other jobs skip the test. A test that is not in this file runs in every job.
+#
+# Add a test here only if the datastore does not change what it checks: health monitor detection,
+# node labels, preflight and janitor requests. Keep tests for quarantine, drain, remediation, the
+# health events analyzer, the platform connector, resume tokens and the CSP health monitor, which
+# has its own datastore, out of this file.
+#
+# Every health monitor that can publish to the deployment platform connector keeps at least one
+# test in the deployment platform connector job of its architecture.
+#
+# To balance the jobs, use the test durations in results/e2e-tests.json of each job.
+
+# gpu_health_monitor_test.go
+TestDCGMBootstrapCompletedAnnotation amd64-mongodb-percona
+TestGPUHealthMonitorDCGMConnectionError amd64-postgresql
+TestGPUHealthMonitorMultipleErrors amd64-mongodb-percona
+TestGPUHealthMonitorThermalMarginViolationLifecycle amd64-postgresql
+TestGpuHealthMonitorStoreOnlyEvents amd64-postgresql
+TestGpuNvlinkWatchSemicolonMessageParsing amd64-mongodb-deployment-pc
+
+# janitor_test.go
+TestJanitorDuplicateGPUResetNonOverlappingGPUs arm64-postgresql-deployment-pc
+TestJanitorDuplicateGPUResetOverlappingGPUs arm64-postgresql
+TestJanitorDuplicateRebootDetection arm64-mongodb-no-tls
+TestJanitorDuplicateTerminateNodeDetection arm64-postgresql
+TestJanitorNodeLocking arm64-mongodb-percona
+TestJanitorRebootWithTLSAuth arm64-postgresql-deployment-pc
+TestJanitorWebhookRejectsNonExistentNode arm64-postgresql-deployment-pc
+
+# kubernetes_object_monitor_test.go
+TestKubernetesObjectMonitor arm64-postgresql-deployment-pc
+TestKubernetesObjectMonitorInitContainerFailures arm64-postgresql
+TestKubernetesObjectMonitorMainContainerFailures arm64-mongodb
+TestKubernetesObjectMonitorWithRuleOverride arm64-mongodb-percona
+TestKubernetesObjectMonitorWithStoreOnlyStrategy arm64-mongodb-no-tls
+
+# nic_health_monitor_counter_test.go
+TestNICCounterBelowThreshold amd64-mongodb-deployment-pc
+TestNICCounterBootIDClearsBreachState amd64-postgresql
+TestNICCounterEthernetDegradation amd64-postgresql
+TestNICCounterIBDegradation amd64-postgresql
+
+# nic_health_monitor_test.go
+TestNICHealthMonitorBootIDChange arm64-mongodb-percona
+TestNICHealthMonitorConditionMessage arm64-mongodb-no-tls
+TestNICHealthMonitorIBDeviceDisappearance arm64-postgresql-deployment-pc
+TestNICHealthMonitorIBStateDetection arm64-postgresql
+TestNICHealthMonitorMultiPortFault arm64-mongodb-no-tls
+TestNICHealthMonitorMultipleDownRecoveryCycles arm64-mongodb-no-tls
+TestNICHealthMonitorPersistence arm64-mongodb-percona
+TestNICHealthMonitorPhysStateDisabled arm64-mongodb
+TestNICHealthMonitorRoCEStateDetection arm64-mongodb
+TestNICHealthMonitorVFSkip arm64-mongodb-percona
+
+# nvcre_certification_monitor_test.go
+TestNVCRECertificationMonitor arm64-postgresql-deployment-pc
+
+# preflight_test.go
+TestPreflightEndToEnd amd64-mongodb-deployment-pc
+
+# syslog_health_monitor_cancellation_test.go
+TestSyslogHealthMonitorCancellationRules amd64-postgresql
+TestSyslogHealthMonitorCancellationUncordonsNode amd64-postgresql
+
+# syslog_health_monitor_test.go
+TestSyslogHealthMonitorNAPISoftLockupDetection amd64-postgresql
+TestSyslogHealthMonitorNICDriverDetection amd64-postgresql
+TestSyslogHealthMonitorSXIDDetection amd64-mongodb-percona
+TestSyslogHealthMonitorStoreOnlyStrategy amd64-postgresql
+TestSyslogHealthMonitorXIDDetection amd64-postgresql
+TestSyslogHealthMonitorXIDWithoutMetadata amd64-mongodb-deployment-pc
+
+# topology_test.go
+TestKataTopology amd64-postgresql
+TestTopologyLabels amd64-postgresql
