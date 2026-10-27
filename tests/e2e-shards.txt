@@ -32,15 +32,20 @@
 # Every health monitor that can publish to the deployment platform connector keeps at least one
 # test in the deployment platform connector job of its architecture.
 #
+# The tests in health_events_analyzer_recovery_test.go and health_events_analyzer_test.go run in the
+# same job, in file order. TestMultipleRemediationsNotTriggered needs a node with no remediations.
+# The analyzer tests take nodes from the node pool, but other tests use the same nodes without the
+# pool. When the earlier analyzer tests run first, they take those nodes, as on main.
+#
 # To balance the jobs, use the test durations in results/e2e-tests.json of each job.
 
 # Tests that do not depend on the datastore: one job for each architecture.
 
 # gpu_health_monitor_test.go
-TestDCGMBootstrapCompletedAnnotation amd64-mongodb-no-tls
-TestGPUHealthMonitorDCGMConnectionError amd64-mongodb
-TestGPUHealthMonitorMultipleErrors amd64-mongodb
-TestGPUHealthMonitorThermalMarginViolationLifecycle amd64-mongodb-deployment-pc
+TestDCGMBootstrapCompletedAnnotation amd64-mongodb
+TestGPUHealthMonitorDCGMConnectionError amd64-mongodb-deployment-pc
+TestGPUHealthMonitorMultipleErrors amd64-mongodb-no-tls
+TestGPUHealthMonitorThermalMarginViolationLifecycle amd64-mongodb-percona
 TestGpuHealthMonitorStoreOnlyEvents amd64-mongodb-deployment-pc
 TestGpuNvlinkWatchSemicolonMessageParsing amd64-mongodb-deployment-pc
 
@@ -62,8 +67,8 @@ TestKubernetesObjectMonitorWithStoreOnlyStrategy arm64-mongodb-percona
 
 # nic_health_monitor_counter_test.go
 TestNICCounterBelowThreshold amd64-mongodb-deployment-pc
-TestNICCounterBootIDClearsBreachState amd64-mongodb-no-tls
-TestNICCounterEthernetDegradation amd64-mongodb
+TestNICCounterBootIDClearsBreachState amd64-mongodb
+TestNICCounterEthernetDegradation amd64-mongodb-deployment-pc
 TestNICCounterIBDegradation amd64-mongodb
 
 # nic_health_monitor_test.go
@@ -85,20 +90,20 @@ TestNVCRECertificationMonitor arm64-postgresql-deployment-pc
 TestPreflightEndToEnd amd64-mongodb-deployment-pc
 
 # syslog_health_monitor_cancellation_test.go
-TestSyslogHealthMonitorCancellationRules amd64-mongodb-deployment-pc
+TestSyslogHealthMonitorCancellationRules amd64-mongodb
 TestSyslogHealthMonitorCancellationUncordonsNode amd64-mongodb-deployment-pc
 
 # syslog_health_monitor_test.go
-TestSyslogHealthMonitorNAPISoftLockupDetection amd64-mongodb-no-tls
+TestSyslogHealthMonitorNAPISoftLockupDetection amd64-mongodb
 TestSyslogHealthMonitorNICDriverDetection amd64-mongodb-percona
 TestSyslogHealthMonitorSXIDDetection amd64-mongodb-percona
-TestSyslogHealthMonitorStoreOnlyStrategy amd64-mongodb-no-tls
-TestSyslogHealthMonitorXIDDetection amd64-mongodb-percona
+TestSyslogHealthMonitorStoreOnlyStrategy amd64-mongodb
+TestSyslogHealthMonitorXIDDetection amd64-mongodb
 TestSyslogHealthMonitorXIDWithoutMetadata amd64-mongodb-deployment-pc
 
 # topology_test.go
-TestKataTopology amd64-mongodb
-TestTopologyLabels amd64-mongodb
+TestKataTopology amd64-mongodb-no-tls
+TestTopologyLabels amd64-mongodb-percona
 
 # Pipeline tests: one MongoDB job and one PostgreSQL job for each architecture.
 # MongoDB-only tests have one MongoDB job for each architecture.
@@ -124,15 +129,15 @@ TestNodeRecoveryDuringDrain arm64-mongodb-percona arm64-postgresql-deployment-pc
 TestPartialRecoveryClearsStaleRemediationFailed arm64-mongodb arm64-postgresql-deployment-pc
 
 # fault_quarantine_test.go
-TestDontCordonIfEventDoesntMatchCELExpression amd64-mongodb-percona amd64-postgresql
-TestFaultQuarantineWithProcessingStrategy amd64-mongodb amd64-postgresql
+TestDontCordonIfEventDoesntMatchCELExpression amd64-mongodb-no-tls amd64-postgresql
+TestFaultQuarantineWithProcessingStrategy amd64-mongodb-percona amd64-postgresql
 TestPreCordonedNodeHandling amd64-mongodb amd64-postgresql
 
 # fault_remediation_inprogress_test.go
-TestEventDuringInProgressCRIsRetriedAfterCompletion amd64-mongodb amd64-postgresql
+TestEventDuringInProgressCRIsRetriedAfterCompletion amd64-mongodb-deployment-pc amd64-postgresql
 
 # fault_remediation_test.go
-TestNewCRsAreCreatedAfterFaultsAreRemediated amd64-mongodb-deployment-pc amd64-postgresql
+TestNewCRsAreCreatedAfterFaultsAreRemediated amd64-mongodb-percona amd64-postgresql
 
 # gpu_reset_test.go
 TestGPUReset arm64-mongodb-percona arm64-postgresql
@@ -141,19 +146,19 @@ TestGPUReset arm64-mongodb-percona arm64-postgresql
 TestHealthEventsAnalyzerAnnotationRecovery amd64-mongodb-no-tls arm64-mongodb
 
 # health_events_analyzer_test.go
-TestHealthEventsAnalyzerProcessingStrategyRuleOverride amd64-mongodb
-TestHealthEventsAnalyzerStoreOnlyStrategy amd64-mongodb-deployment-pc
-TestMultipleRemediationsCompleted amd64-mongodb-percona
-TestMultipleRemediationsNotTriggered amd64-mongodb-deployment-pc
-TestRepeatedNICRules_RepeatedNonFatalSignals_TriggersExpectedEscalations amd64-mongodb
-TestRepeatedXID31OnSameGPU amd64-mongodb-percona
-TestRepeatedXIDOnSameGPU amd64-mongodb-percona
-TestSoloNoBurstRule amd64-mongodb-percona
-TestXID74Reg0ECCParityError amd64-mongodb-percona
+TestHealthEventsAnalyzerProcessingStrategyRuleOverride amd64-mongodb-no-tls
+TestHealthEventsAnalyzerStoreOnlyStrategy amd64-mongodb-no-tls
+TestMultipleRemediationsCompleted amd64-mongodb-no-tls
+TestMultipleRemediationsNotTriggered amd64-mongodb-no-tls
+TestRepeatedNICRules_RepeatedNonFatalSignals_TriggersExpectedEscalations amd64-mongodb-no-tls
+TestRepeatedXID31OnSameGPU amd64-mongodb-no-tls
+TestRepeatedXIDOnSameGPU amd64-mongodb-no-tls
+TestSoloNoBurstRule amd64-mongodb-no-tls
+TestXID74Reg0ECCParityError amd64-mongodb-no-tls
 TestXID74Reg0SoloNVLinkError amd64-mongodb-no-tls
 TestXID74Reg2Bit16Or19SetRule amd64-mongodb-no-tls
 TestXID74Reg4ECCError amd64-mongodb-no-tls
-TestXIDErrorOnGPCAndTPC amd64-mongodb-percona
+TestXIDErrorOnGPCAndTPC amd64-mongodb-no-tls
 
 # log_collector_test.go
 TestLogCollectorFailure arm64-mongodb-percona arm64-postgresql
@@ -162,20 +167,20 @@ TestLogCollectorFailure arm64-mongodb-percona arm64-postgresql
 TestMaintenanceRequestLifecycle amd64-mongodb-deployment-pc amd64-postgresql
 
 # node_drainer_pod_policies_test.go
-TestNodeDrainerPodPolicies amd64-mongodb amd64-postgresql
+TestNodeDrainerPodPolicies amd64-mongodb-deployment-pc amd64-postgresql
 
 # node_drainer_test.go
-TestNodeDrainerEvictionModes amd64-mongodb-no-tls amd64-postgresql
-TestNodeDrainerPartialDrain amd64-mongodb-deployment-pc amd64-postgresql
+TestNodeDrainerEvictionModes amd64-mongodb-percona amd64-postgresql
+TestNodeDrainerPartialDrain amd64-mongodb-percona amd64-postgresql
 
 # platform_connector_dedup_test.go
 TestPlatformConnectorDeduplicatesRepeatedHealthEvents amd64-mongodb-deployment-pc amd64-postgresql
 
 # platform_connector_node_condition_test.go
-TestPlatformConnectorClearsCompactedLongEntityCondition amd64-mongodb-percona amd64-postgresql
+TestPlatformConnectorClearsCompactedLongEntityCondition amd64-mongodb-no-tls amd64-postgresql
 
 # scale_test.go
-TestScaleHealthEvents amd64-mongodb-percona amd64-postgresql
+TestScaleHealthEvents amd64-mongodb amd64-postgresql
 
 # validation_request_test.go
-TestValidationController amd64-mongodb-no-tls amd64-postgresql
+TestValidationController amd64-mongodb-percona amd64-postgresql
