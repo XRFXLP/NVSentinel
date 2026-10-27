@@ -12,62 +12,71 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# E2E tests that do not depend on the datastore, and the one CI job that runs each of them.
+# The CI jobs that run each E2E test, so that the jobs do not all run the same tests.
 #
-# Each line has a top-level test name and the E2E_JOB_ID of a job in .github/workflows/e2e-test.yml.
-# The other jobs skip the test. A test that is not in this file runs in every job.
+# Each line has a top-level test name and one or more E2E_JOB_ID values of jobs in
+# .github/workflows/e2e-test.yml. Only these jobs run the test. A test that is not in this file
+# runs in every job.
 #
-# Add a test here only if the datastore does not change what it checks: health monitor detection,
-# node labels, preflight and janitor requests. Keep tests for quarantine, drain, remediation, the
-# health events analyzer, the platform connector, resume tokens and the CSP health monitor, which
-# has its own datastore, out of this file.
+# Tests that do not depend on the datastore run in one job for each architecture: health monitor
+# detection, node labels, preflight and janitor requests.
+#
+# Pipeline tests run in one MongoDB job and one PostgreSQL job for each architecture. The MongoDB,
+# MongoDB (no TLS) and MongoDB (Percona) jobs use the same MongoDB engine with a different
+# connection or operator, so one of them is sufficient for each test.
+#
+# Keep these tests out of this file, so that every job runs them: the smoke tests, change streams,
+# resume tokens, cold start, the circuit breaker cursor and the deployment platform connector tests.
+# They check the connection to each datastore and its change stream.
 #
 # Every health monitor that can publish to the deployment platform connector keeps at least one
 # test in the deployment platform connector job of its architecture.
 #
 # To balance the jobs, use the test durations in results/e2e-tests.json of each job.
 
+# Tests that do not depend on the datastore: one job for each architecture.
+
 # gpu_health_monitor_test.go
-TestDCGMBootstrapCompletedAnnotation amd64-mongodb-percona
-TestGPUHealthMonitorDCGMConnectionError amd64-postgresql
-TestGPUHealthMonitorMultipleErrors amd64-mongodb-percona
-TestGPUHealthMonitorThermalMarginViolationLifecycle amd64-postgresql
-TestGpuHealthMonitorStoreOnlyEvents amd64-postgresql
+TestDCGMBootstrapCompletedAnnotation amd64-mongodb-no-tls
+TestGPUHealthMonitorDCGMConnectionError amd64-mongodb
+TestGPUHealthMonitorMultipleErrors amd64-mongodb
+TestGPUHealthMonitorThermalMarginViolationLifecycle amd64-mongodb-deployment-pc
+TestGpuHealthMonitorStoreOnlyEvents amd64-mongodb-deployment-pc
 TestGpuNvlinkWatchSemicolonMessageParsing amd64-mongodb-deployment-pc
 
 # janitor_test.go
-TestJanitorDuplicateGPUResetNonOverlappingGPUs arm64-postgresql-deployment-pc
-TestJanitorDuplicateGPUResetOverlappingGPUs arm64-postgresql
+TestJanitorDuplicateGPUResetNonOverlappingGPUs arm64-mongodb-percona
+TestJanitorDuplicateGPUResetOverlappingGPUs arm64-mongodb-percona
 TestJanitorDuplicateRebootDetection arm64-mongodb-no-tls
-TestJanitorDuplicateTerminateNodeDetection arm64-postgresql
-TestJanitorNodeLocking arm64-mongodb-percona
-TestJanitorRebootWithTLSAuth arm64-postgresql-deployment-pc
-TestJanitorWebhookRejectsNonExistentNode arm64-postgresql-deployment-pc
+TestJanitorDuplicateTerminateNodeDetection arm64-mongodb-percona
+TestJanitorNodeLocking arm64-postgresql
+TestJanitorRebootWithTLSAuth arm64-postgresql
+TestJanitorWebhookRejectsNonExistentNode arm64-mongodb
 
 # kubernetes_object_monitor_test.go
 TestKubernetesObjectMonitor arm64-postgresql-deployment-pc
-TestKubernetesObjectMonitorInitContainerFailures arm64-postgresql
+TestKubernetesObjectMonitorInitContainerFailures arm64-mongodb
 TestKubernetesObjectMonitorMainContainerFailures arm64-mongodb
-TestKubernetesObjectMonitorWithRuleOverride arm64-mongodb-percona
-TestKubernetesObjectMonitorWithStoreOnlyStrategy arm64-mongodb-no-tls
+TestKubernetesObjectMonitorWithRuleOverride arm64-mongodb
+TestKubernetesObjectMonitorWithStoreOnlyStrategy arm64-mongodb-percona
 
 # nic_health_monitor_counter_test.go
 TestNICCounterBelowThreshold amd64-mongodb-deployment-pc
-TestNICCounterBootIDClearsBreachState amd64-postgresql
-TestNICCounterEthernetDegradation amd64-postgresql
-TestNICCounterIBDegradation amd64-postgresql
+TestNICCounterBootIDClearsBreachState amd64-mongodb-no-tls
+TestNICCounterEthernetDegradation amd64-mongodb
+TestNICCounterIBDegradation amd64-mongodb
 
 # nic_health_monitor_test.go
 TestNICHealthMonitorBootIDChange arm64-mongodb-percona
 TestNICHealthMonitorConditionMessage arm64-mongodb-no-tls
 TestNICHealthMonitorIBDeviceDisappearance arm64-postgresql-deployment-pc
-TestNICHealthMonitorIBStateDetection arm64-postgresql
-TestNICHealthMonitorMultiPortFault arm64-mongodb-no-tls
-TestNICHealthMonitorMultipleDownRecoveryCycles arm64-mongodb-no-tls
-TestNICHealthMonitorPersistence arm64-mongodb-percona
+TestNICHealthMonitorIBStateDetection arm64-mongodb-percona
+TestNICHealthMonitorMultiPortFault arm64-mongodb
+TestNICHealthMonitorMultipleDownRecoveryCycles arm64-mongodb
+TestNICHealthMonitorPersistence arm64-mongodb-no-tls
 TestNICHealthMonitorPhysStateDisabled arm64-mongodb
-TestNICHealthMonitorRoCEStateDetection arm64-mongodb
-TestNICHealthMonitorVFSkip arm64-mongodb-percona
+TestNICHealthMonitorRoCEStateDetection arm64-mongodb-percona
+TestNICHealthMonitorVFSkip arm64-mongodb-no-tls
 
 # nvcre_certification_monitor_test.go
 TestNVCRECertificationMonitor arm64-postgresql-deployment-pc
@@ -76,17 +85,97 @@ TestNVCRECertificationMonitor arm64-postgresql-deployment-pc
 TestPreflightEndToEnd amd64-mongodb-deployment-pc
 
 # syslog_health_monitor_cancellation_test.go
-TestSyslogHealthMonitorCancellationRules amd64-postgresql
-TestSyslogHealthMonitorCancellationUncordonsNode amd64-postgresql
+TestSyslogHealthMonitorCancellationRules amd64-mongodb-deployment-pc
+TestSyslogHealthMonitorCancellationUncordonsNode amd64-mongodb-deployment-pc
 
 # syslog_health_monitor_test.go
-TestSyslogHealthMonitorNAPISoftLockupDetection amd64-postgresql
-TestSyslogHealthMonitorNICDriverDetection amd64-postgresql
+TestSyslogHealthMonitorNAPISoftLockupDetection amd64-mongodb-no-tls
+TestSyslogHealthMonitorNICDriverDetection amd64-mongodb-percona
 TestSyslogHealthMonitorSXIDDetection amd64-mongodb-percona
-TestSyslogHealthMonitorStoreOnlyStrategy amd64-postgresql
-TestSyslogHealthMonitorXIDDetection amd64-postgresql
+TestSyslogHealthMonitorStoreOnlyStrategy amd64-mongodb-no-tls
+TestSyslogHealthMonitorXIDDetection amd64-mongodb-percona
 TestSyslogHealthMonitorXIDWithoutMetadata amd64-mongodb-deployment-pc
 
 # topology_test.go
-TestKataTopology amd64-postgresql
-TestTopologyLabels amd64-postgresql
+TestKataTopology amd64-mongodb
+TestTopologyLabels amd64-mongodb
+
+# Pipeline tests: one MongoDB job and one PostgreSQL job for each architecture.
+# MongoDB-only tests have one MongoDB job for each architecture.
+
+# csp_health_monitor_test.go
+TestCSPHealthMonitorAWSMaintenanceEvent arm64-mongodb-no-tls arm64-postgresql
+TestCSPHealthMonitorGCPMaintenanceEvent arm64-mongodb-no-tls arm64-postgresql
+TestCSPHealthMonitorQuarantineThreshold arm64-mongodb-percona arm64-postgresql-deployment-pc
+TestCSPHealthMonitorStoreOnlyProcessingStrategy arm64-mongodb arm64-postgresql-deployment-pc
+
+# external_remediation_test.go
+TestExtRRAsymmetricFalse arm64-mongodb-no-tls arm64-postgresql
+TestExtRRLifecycleHappyPath arm64-mongodb-no-tls arm64-postgresql
+TestExtRROperatorDeleteEscape arm64-mongodb arm64-postgresql-deployment-pc
+TestExtRRWebhookRejectsInvalidSpec arm64-mongodb-no-tls arm64-postgresql
+
+# fault_management_test.go
+TestDryRunMode arm64-mongodb-no-tls arm64-postgresql-deployment-pc
+TestManualUncordonPropagation arm64-mongodb-percona arm64-postgresql-deployment-pc
+TestManualUncordonWithFaultRemediation arm64-mongodb-no-tls arm64-postgresql
+TestNodeDeletedDuringDrain arm64-mongodb-no-tls arm64-postgresql
+TestNodeRecoveryDuringDrain arm64-mongodb-percona arm64-postgresql-deployment-pc
+TestPartialRecoveryClearsStaleRemediationFailed arm64-mongodb arm64-postgresql-deployment-pc
+
+# fault_quarantine_test.go
+TestDontCordonIfEventDoesntMatchCELExpression amd64-mongodb-percona amd64-postgresql
+TestFaultQuarantineWithProcessingStrategy amd64-mongodb amd64-postgresql
+TestPreCordonedNodeHandling amd64-mongodb amd64-postgresql
+
+# fault_remediation_inprogress_test.go
+TestEventDuringInProgressCRIsRetriedAfterCompletion amd64-mongodb amd64-postgresql
+
+# fault_remediation_test.go
+TestNewCRsAreCreatedAfterFaultsAreRemediated amd64-mongodb-deployment-pc amd64-postgresql
+
+# gpu_reset_test.go
+TestGPUReset arm64-mongodb-percona arm64-postgresql
+
+# health_events_analyzer_recovery_test.go
+TestHealthEventsAnalyzerAnnotationRecovery amd64-mongodb-no-tls arm64-mongodb
+
+# health_events_analyzer_test.go
+TestHealthEventsAnalyzerProcessingStrategyRuleOverride amd64-mongodb
+TestHealthEventsAnalyzerStoreOnlyStrategy amd64-mongodb-deployment-pc
+TestMultipleRemediationsCompleted amd64-mongodb-percona
+TestMultipleRemediationsNotTriggered amd64-mongodb-deployment-pc
+TestRepeatedNICRules_RepeatedNonFatalSignals_TriggersExpectedEscalations amd64-mongodb
+TestRepeatedXID31OnSameGPU amd64-mongodb-percona
+TestRepeatedXIDOnSameGPU amd64-mongodb-percona
+TestSoloNoBurstRule amd64-mongodb-percona
+TestXID74Reg0ECCParityError amd64-mongodb-percona
+TestXID74Reg0SoloNVLinkError amd64-mongodb-no-tls
+TestXID74Reg2Bit16Or19SetRule amd64-mongodb-no-tls
+TestXID74Reg4ECCError amd64-mongodb-no-tls
+TestXIDErrorOnGPCAndTPC amd64-mongodb-percona
+
+# log_collector_test.go
+TestLogCollectorFailure arm64-mongodb-percona arm64-postgresql
+
+# maintenance_request_test.go
+TestMaintenanceRequestLifecycle amd64-mongodb-deployment-pc amd64-postgresql
+
+# node_drainer_pod_policies_test.go
+TestNodeDrainerPodPolicies amd64-mongodb amd64-postgresql
+
+# node_drainer_test.go
+TestNodeDrainerEvictionModes amd64-mongodb-no-tls amd64-postgresql
+TestNodeDrainerPartialDrain amd64-mongodb-deployment-pc amd64-postgresql
+
+# platform_connector_dedup_test.go
+TestPlatformConnectorDeduplicatesRepeatedHealthEvents amd64-mongodb-deployment-pc amd64-postgresql
+
+# platform_connector_node_condition_test.go
+TestPlatformConnectorClearsCompactedLongEntityCondition amd64-mongodb-percona amd64-postgresql
+
+# scale_test.go
+TestScaleHealthEvents amd64-mongodb-percona amd64-postgresql
+
+# validation_request_test.go
+TestValidationController amd64-mongodb-no-tls amd64-postgresql
