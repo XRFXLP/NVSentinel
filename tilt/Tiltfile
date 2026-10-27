@@ -83,9 +83,13 @@ helm_resource(
     ],
 )
 
+# Tilt runs a local_resource without allow_parallel=True only while nothing else builds, so it waits
+# for the longest image build. The local resources here only run kubectl, helm or docker and do not
+# change shared files, so they can run in parallel (see #2136).
 local_resource(
     'kai-scheduler',
     cmd='helm upgrade --install kai-scheduler oci://ghcr.io/nvidia/kai-scheduler/kai-scheduler --version v0.12.10 --create-namespace -n kai-scheduler --wait',
+    allow_parallel=True,
 )
 
 helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
@@ -110,6 +114,7 @@ local_resource(
     'kwok-node-ip',
     cmd='./set-kwok-node-ip.sh',
     resource_deps=['kwok'],
+    allow_parallel=True,
 )
 helm_resource(
     'kwok-stage-fast',
@@ -253,6 +258,7 @@ local_resource(
         echo "cert-manager is ready"
     ''',
     resource_deps=['cert-manager'],
+    allow_parallel=True,
 )
 
 k8s_yaml(yaml)
@@ -337,12 +343,14 @@ local_resource(
     'wait-for-janitor-cert',
     cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/janitor-webhook-cert -n nvsentinel',
     resource_deps=['cert-manager-resources'],
+    allow_parallel=True,
 )
 
 local_resource(
     'wait-for-janitor-provider-cert',
     cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/janitor-provider-grpc-cert -n nvsentinel',
     resource_deps=['cert-manager-resources'],
+    allow_parallel=True,
 )
 
 k8s_resource(
@@ -359,6 +367,7 @@ local_resource(
     'wait-for-lifecycle-manager-cert',
     cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/lifecycle-manager-webhook-cert -n nvsentinel',
     resource_deps=['cert-manager-resources'],
+    allow_parallel=True,
 )
 
 k8s_resource(
@@ -459,6 +468,7 @@ local_resource(
     'nic-metadata-stub',
     cmd='./inject-nic-metadata-stub.sh',
     resource_deps=['platform-connectors', 'labeler'],
+    allow_parallel=True,
 )
 
 k8s_resource(
