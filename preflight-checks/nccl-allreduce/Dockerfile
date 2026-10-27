@@ -29,7 +29,7 @@ ARG VERSION="0.1.0"
 # =============================================================================
 # Build stage: Install Python dependencies
 # =============================================================================
-FROM public.ecr.aws/docker/library/python:3.13-trixie@sha256:4a0820d8b1b1a1e012a23ff9a1296a3e28b48896a4d27a328a91ee197ce619d9 AS build
+FROM public.ecr.aws/docker/library/python:3.15-trixie@sha256:8268b5058c72832502a7eabc0c719892769c09389ed95fc213f3c308cbedc6dd AS build
 
 ARG VERSION
 
