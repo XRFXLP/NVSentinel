@@ -25,18 +25,26 @@ NAMESPACE="nvsentinel"
 
 STUB_B64=$(printf '%s' '{"version":"1.0","timestamp":"2026-01-01T00:00:00Z","node_name":"stub","driver_version":"570.148.08","chassis_serial":null,"gpus":[{"gpu_id":0,"uuid":"GPU-stub-0","pci_address":"0001:00:00.0","serial_number":"0","device_name":"NVIDIA A100","nvlinks":[],"numa_node":0}],"nvswitches":[],"nic_topology":{"mlx5_0":["NODE"]}}' | base64 | tr -d '\n')
 
-if ! nodes=$(kubectl get nodes -l nvsentinel.dgxc.nvidia.com/driver.installed=true \
-    --no-headers -o custom-columns=NAME:.metadata.name 2>&1); then
-    echo "ERROR: kubectl failed: $nodes" >&2
-    exit 1
-fi
+# labeler adds the label soon after it starts. Wait for it, so that this script can run as soon as
+# labeler is ready.
+nodes=""
+for _ in $(seq 1 24); do
+    if ! nodes=$(kubectl get nodes -l nvsentinel.dgxc.nvidia.com/driver.installed=true \
+        --no-headers -o custom-columns=NAME:.metadata.name 2>&1); then
+        echo "ERROR: kubectl failed: $nodes" >&2
+        exit 1
+    fi
+    [ -n "$nodes" ] && break
+    sleep 5
+done
 
 if [ -z "$nodes" ]; then
     echo "No GPU worker nodes found, skipping metadata stub injection"
     exit 0
 fi
 
-failed=0
+# Create the pods on all nodes first, so that they pull the image and run at the same time.
+pods=()
 
 for node in $nodes; do
     # Skip KWOK nodes — they simulate pods but have no real filesystem.
@@ -80,12 +88,17 @@ EOF
 
     kubectl apply -f "$tmpfile"
     rm -f "$tmpfile"
+    pods+=("$pod_name")
+done
 
-    echo "Waiting for inject pod to complete on $node"
+failed=0
+
+for pod_name in "${pods[@]}"; do
+    echo "Waiting for inject pod $pod_name to complete"
     # The pod can wait for an image pull while Tilt builds and pushes images at the same time.
     if ! kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
         pod/"$pod_name" -n "$NAMESPACE" --timeout=180s; then
-        echo "ERROR: inject pod failed on $node" >&2
+        echo "ERROR: inject pod $pod_name failed" >&2
         kubectl describe pod "$pod_name" -n "$NAMESPACE" || true
         kubectl logs "$pod_name" -n "$NAMESPACE" 2>/dev/null || true
         failed=1

@@ -482,10 +482,12 @@ k8s_resource(
     resource_deps=['platform-connectors', 'nic-metadata-stub']
 )
 
+# The stub needs only the driver.installed label from labeler. It runs early, before Tilt pushes
+# most images, so that its image pull is fast.
 local_resource(
     'nic-metadata-stub',
     cmd='./inject-nic-metadata-stub.sh',
-    resource_deps=['platform-connectors', 'labeler'],
+    resource_deps=['labeler'],
     allow_parallel=True,
 )
 
