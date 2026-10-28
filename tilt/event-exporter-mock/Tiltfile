@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-docker_build(
+# ko builds the image with the Go build cache, which is faster than the Dockerfile build.
+custom_build(
     'event-exporter-mock',
-    '.',
-    dockerfile='./Dockerfile'
+    '../../scripts/ko-tilt-build.sh . $EXPECTED_REF',
+    deps=['./'],
+    skips_local_docker=True
 )
 
 k8s_yaml([

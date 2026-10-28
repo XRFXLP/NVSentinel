@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-docker_build(
-    "simple-health-client",
-    context="../..",
-    dockerfile="./Dockerfile"
+# ko builds the image with the Go build cache, which is faster than the Dockerfile build.
+custom_build(
+    'simple-health-client',
+    '../../scripts/ko-tilt-build.sh . $EXPECTED_REF',
+    deps=['./', '../../data-models', '../../commons', '../../store-client'],
+    skips_local_docker=True
 )
 
 # Deploy the service
