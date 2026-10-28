@@ -482,12 +482,13 @@ k8s_resource(
     resource_deps=['platform-connectors', 'nic-metadata-stub']
 )
 
-# The stub needs only the driver.installed label from labeler. It runs early, before Tilt pushes
-# most images, so that its image pull is fast.
+# The stub needs the driver.installed label from labeler, and the kai-scheduler admission webhook,
+# which admits each new pod. It runs early, before Tilt pushes most images, so that its image pull is
+# fast.
 local_resource(
     'nic-metadata-stub',
     cmd='./inject-nic-metadata-stub.sh',
-    resource_deps=['labeler'],
+    resource_deps=['labeler', 'kai-scheduler'],
     allow_parallel=True,
 )
 
