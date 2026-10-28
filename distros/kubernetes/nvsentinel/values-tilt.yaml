@@ -4325,12 +4325,15 @@ csp-health-monitor:
     logLevel: debug
   configToml:
     clusterName: "nvsentinel"
-    maintenanceEventPollIntervalSeconds: 30
+    # The minimum intervals that the monitor accepts, so that the E2E tests wait less for each poll.
+    maintenanceEventPollIntervalSeconds: 10
     postMaintenanceHealthyDelayMinutes: 1
     gcp:
       endpointOverride: "csp-api-mock.nvsentinel.svc.cluster.local:50051"
+      apiPollingIntervalSeconds: 30
     aws:
       endpointOverride: "http://csp-api-mock.nvsentinel.svc.cluster.local:8080/aws/health"
+      pollingIntervalSeconds: 30
   
   affinity:
     podAntiAffinity:
