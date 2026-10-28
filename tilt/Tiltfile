@@ -94,6 +94,7 @@ helm_resource(
 local_resource(
     'kai-scheduler',
     cmd='''
+        set -e
         status=$(helm status kai-scheduler -n kai-scheduler 2>/dev/null | awk '/^STATUS:/ {print $2}')
         case "$status" in
             pending-*)
