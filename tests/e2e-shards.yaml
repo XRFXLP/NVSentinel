@@ -86,27 +86,6 @@ TestHandleOutOfSequenceLabel_SkipToFinalWithRemoval: all
 TestHandleOutOfSequenceLabel_UnexpectedLabel: all
 TestResultSentGuard_PreventsDuplicateSend: all
 
-# Tests that do not depend on the datastore run in one job for each architecture: health monitor
-# detection, node labels, preflight and janitor requests.
-#
-# Pipeline tests run in one MongoDB job and one PostgreSQL job for each architecture. The MongoDB,
-# MongoDB (no TLS) and MongoDB (Percona) jobs use the same MongoDB engine with a different
-# connection or operator, so one of them is sufficient for each test.
-#
-# Keep these tests out of this file, so that every job runs them: the smoke tests, change streams,
-# resume tokens, cold start, the circuit breaker cursor and the deployment platform connector tests.
-# They check the connection to each datastore and its change stream.
-#
-# Every health monitor that can publish to the deployment platform connector keeps at least one
-# test in the deployment platform connector job of its architecture.
-#
-# The tests in health_events_analyzer_recovery_test.go and health_events_analyzer_test.go run in the
-# same job, in file order. TestMultipleRemediationsNotTriggered needs a node with no remediations.
-# The analyzer tests take nodes from the node pool, but other tests use the same nodes without the
-# pool. When the earlier analyzer tests run first, they take those nodes, as on main.
-#
-# To balance the jobs, use the test durations in results/e2e-tests.json of each job.
-
 # Tests that do not depend on the datastore: one job for each architecture.
 
 # gpu_health_monitor_test.go
