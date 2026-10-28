@@ -65,7 +65,7 @@ test-ci:
 	$(MAKE) test
 
 # Run end-to-end tests (override standard test to use gotestsum with custom format)
-# E2E_SHARD names one CI job (E2E_JOB_ID). The job skips the tests in e2e-shards.yaml that do not name it.
+# E2E_SHARD names one CI job (E2E_JOB_ID). The job runs only its tests and the tests in "all" in e2e-shards.yaml.
 .PHONY: test
 test: ## Run end-to-end tests (USE_POSTGRESQL=1 excludes MongoDB-only tests, E2E_SHARD=<job> runs one CI job's tests)
 	@echo "Running end-to-end tests on $(MODULE_NAME) with tags: $(TEST_TAGS)..."
@@ -95,5 +95,5 @@ help: ## Show help for available targets
 	@echo ""
 	@echo "Database-specific behavior:"
 	@echo "  USE_POSTGRESQL=1 make test  - Excludes MongoDB-only tests (health_events_analyzer)"
-	@echo "  E2E_SHARD=<job> make test   - Skips the tests in e2e-shards.yaml that do not name the job"
+	@echo "  E2E_SHARD=<job> make test   - Runs only the job's tests in e2e-shards.yaml"
 	@echo "  make test                   - Includes all tests (default, for MongoDB)"

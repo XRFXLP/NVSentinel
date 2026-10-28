@@ -13,14 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Prints the go test -skip pattern for one E2E CI job: the tests in e2e-shards.yaml that do not name
-# this job. Prints nothing if no test is skipped.
+# Prints the go test -skip pattern for one E2E CI job: the tests in e2e-shards.yaml that are not in
+# the list of this job or in "all". Prints nothing if no test is skipped.
 #
 # Usage: e2e-skip-pattern.sh <E2E_JOB_ID>
 #
-# The script fails if e2e-shards.yaml is not complete and correct: each test function in tests/ is
-# listed once, each listed test exists, and each job is in the E2E workflow matrix. Otherwise a new
-# test runs in every job, and a misspelled job name makes that job skip the test.
+# The script fails if e2e-shards.yaml is not complete and correct: each key is "all" or a job in the
+# E2E workflow matrix, each test function in tests/ is listed, each listed test exists, and no test
+# is listed twice for a job. Otherwise a new test runs in every job, and a misspelled job name makes
+# that job skip its tests.
 
 set -euo pipefail
 
@@ -42,9 +43,9 @@ fi
 tests=$(grep -rhoE '^func Test[A-Za-z0-9_]+\(t \*testing\.T\)' --include='*_test.go' "$dir" |
     sed -E 's/^func (Test[A-Za-z0-9_]+).*/\1/')
 
-# One line for each test: the test name, then its jobs or "all". yq keeps a duplicate key, so the
-# check below finds it.
-entries=$(yq 'to_entries[] | [.key] + ([.value] | flatten) | join(" ")' "$shards")
+# One "job <key> <type>" line for each key, and one "test <key> <number of items that are not
+# names> <tests>" line for each list. yq keeps a duplicate key, so the checks below find it.
+entries=$(yq 'to_entries[] | (("job " + .key + " " + (.value | tag)), (select(.value | tag == "!!seq") | "test " + .key + " " + (.value | map(select(tag != "!!str")) | length | tostring) + " " + (.value | map(select(tag == "!!str")) | join(" "))))' "$shards")
 
 awk -v jobs="$jobs" -v tests="$tests" -v job="$job" -v shards="$shards" '
     function fail(msg) {
@@ -54,26 +55,32 @@ awk -v jobs="$jobs" -v tests="$tests" -v job="$job" -v shards="$shards" '
     }
     BEGIN {
         n = split(jobs, list, "\n"); for (i = 1; i <= n; i++) known[list[i]] = 1
+        known["all"] = 1
         ntests = split(tests, defined, "\n"); for (i = 1; i <= ntests; i++) exists[defined[i]] = 1
     }
-    {
-        if (!($1 in exists)) fail($1 " is not a test function in tests/")
-        if ($1 in seen) fail($1 " is listed twice")
-        if (NF < 2) fail($1 " has no job")
-        seen[$1] = 1
-        runs = (NF == 2 && $2 == "all")
-        if (!runs) {
-            for (i = 2; i <= NF; i++) {
-                if (!($i in known)) fail($1 ": " $i " is not a job in the E2E matrix")
-                if ($i == job) runs = 1
-            }
+    $1 == "job" {
+        if (!($2 in known)) fail($2 " is not \"all\" or a job in the E2E matrix")
+        if ($2 in keys) fail($2 " is listed twice")
+        if ($3 != "!!seq") fail($2 " is not a list of tests")
+        keys[$2] = 1
+    }
+    $1 == "test" {
+        if ($3 != 0) fail($2 " has an item that is not a test name")
+        for (i = 4; i <= NF; i++) {
+            if (!($i in exists)) fail($i " in " $2 " is not a test function in tests/")
+            if (($2, $i) in pairs) fail($i " is listed twice in " $2)
+            pairs[$2, $i] = 1
+            if ($2 == "all") inall[$i] = 1; else injob[$i] = 1
+            if ($2 == "all" || $2 == job) runs[$i] = 1
         }
-        if (!runs) skip = skip (skip == "" ? "" : "|") $1
     }
     END {
         if (failed) exit 1
         for (i = 1; i <= ntests; i++) {
-            if (!(defined[i] in seen)) fail(defined[i] " is not listed. Add it with its jobs, or with \"all\"")
+            t = defined[i]
+            if (!(t in inall) && !(t in injob)) fail(t " is not listed. Add it to its jobs, or to \"all\"")
+            if ((t in inall) && (t in injob)) fail(t " is in \"all\" and in a job. Keep it in one of them")
+            if (!(t in runs)) skip = skip (skip == "" ? "" : "|") t
         }
         if (skip != "") print "^(" skip ")$"
     }

@@ -12,222 +12,382 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The CI jobs that run each E2E test, so that the jobs do not all run the same tests.
+# The E2E tests that each CI job runs, so that the jobs do not all run the same tests.
 #
-# Each key is a top-level test name. The value is a list of E2E_JOB_ID values of jobs in
-# .github/workflows/e2e-test.yml, or "all" for every job. Only these jobs run the test. The build
-# tags of the test file still select the architecture.
+# Each key is the E2E_JOB_ID of a job in .github/workflows/e2e-test.yml. Its value lists the tests
+# that the job runs. The tests in "all" run in every job. A job skips each test that is not in its
+# list or in "all". The build tags of the test file still select the architecture.
 #
-# Every test function in tests/ must be in this file, and every test in this file must exist.
-# e2e-skip-pattern.sh fails if not. So, when you add a test, you must select its jobs.
+# Every test function in tests/ must be in this file, in "all" or in one or more jobs, and every
+# test in this file must exist. e2e-skip-pattern.sh fails if not. So, when you add a test, you must
+# select its jobs.
 #
-# These tests run in all jobs: the smoke tests, change streams, resume tokens, cold start, the
-# circuit breaker cursor and the deployment platform connector tests. They check the connection to
-# each datastore and its change stream.
+# These tests are in "all": the smoke tests, change streams, resume tokens, cold start, the circuit
+# breaker cursor and the deployment platform connector tests. They check the connection to each
+# datastore and its change stream.
 #
-# Tests that do not depend on the datastore run in one job for each architecture: health monitor
+# Tests that do not depend on the datastore are in one job for each architecture: health monitor
 # detection, node labels, preflight and janitor requests.
 #
-# Pipeline tests run in one MongoDB job and one PostgreSQL job for each architecture. The MongoDB,
+# Pipeline tests are in one MongoDB job and one PostgreSQL job for each architecture. The MongoDB,
 # MongoDB (no TLS) and MongoDB (Percona) jobs use the same MongoDB engine with a different
-# connection or operator, so one of them is sufficient for each test.
+# connection or operator, so one of them is sufficient for each test. MongoDB-only tests are in one
+# MongoDB job for each architecture.
 #
-# Every health monitor that can publish to the deployment platform connector keeps at least one
-# test in the deployment platform connector job of its architecture.
+# Every health monitor that can publish to the deployment platform connector has at least one test
+# in the deployment platform connector job of its architecture.
 #
-# The tests in health_events_analyzer_recovery_test.go and health_events_analyzer_test.go run in the
-# same job, in file order. TestMultipleRemediationsNotTriggered needs a node with no remediations.
-# The analyzer tests take nodes from the node pool, but other tests use the same nodes without the
-# pool. When the earlier analyzer tests run first, they take those nodes, as on main.
+# The tests in health_events_analyzer_recovery_test.go and health_events_analyzer_test.go are in the
+# same job, and run in file order. TestMultipleRemediationsNotTriggered needs a node with no
+# remediations. The analyzer tests take nodes from the node pool, but other tests use the same nodes
+# without the pool. When the earlier analyzer tests run first, they take those nodes, as on main.
 #
 # To balance the jobs, use the test durations in results/e2e-tests.json of each job.
 
-# Tests that check the datastore connection and change stream: every job.
+all:
+  # Tests that check the datastore connection and change stream.
 
-# cold_start_test.go
-TestFaultRemediationColdStart: all
-TestNodeDrainerColdStart: all
+  # cold_start_test.go
+  - TestFaultRemediationColdStart
+  - TestNodeDrainerColdStart
 
-# event_exporter_test.go
-TestEventExporterChangeStream: all
-TestEventExporterResumeToken: all
+  # event_exporter_test.go
+  - TestEventExporterChangeStream
+  - TestEventExporterResumeToken
 
-# fault_quarantine_test.go
-TestCircuitBreakerCursorCreateSkipsAccumulatedEvents: all
+  # fault_quarantine_test.go
+  - TestCircuitBreakerCursorCreateSkipsAccumulatedEvents
 
-# fault_remediation_resume_token_test.go
-TestFaultRemediationResumeTokenAdvances: all
+  # fault_remediation_resume_token_test.go
+  - TestFaultRemediationResumeTokenAdvances
 
-# platform_connector_deployment_test.go
-TestPlatformConnectorDeploymentAcknowledgesWhenNodeUpdatesFail: all
-TestPlatformConnectorDeploymentCallerContract: all
-TestPlatformConnectorDeploymentDeliversAfterOutage: all
+  # platform_connector_deployment_test.go
+  - TestPlatformConnectorDeploymentAcknowledgesWhenNodeUpdatesFail
+  - TestPlatformConnectorDeploymentCallerContract
+  - TestPlatformConnectorDeploymentDeliversAfterOutage
 
-# smoke_test.go
-TestFatalHealthEvent: all
-TestFatalUnsupportedHealthEvent: all
+  # smoke_test.go
+  - TestFatalHealthEvent
+  - TestFatalUnsupportedHealthEvent
 
-# zz_stale_resume_token_test.go
-TestStaleResumeTokenRecovery: all
+  # zz_stale_resume_token_test.go
+  - TestStaleResumeTokenRecovery
 
-# Other tests that run in every job.
+  # Other tests.
 
-# gpu_reset_test.go: the test skips itself.
-TestGPUResetScale: all
+  # gpu_reset_test.go: the test skips itself.
+  - TestGPUResetScale
 
-# helpers/label_watcher_test.go: unit tests of the test helpers.
-TestHandleLabelAbsent_PrematureRemoval: all
-TestHandleLabelAbsent_SuccessfulRemoval: all
-TestHandleLabelPresent_DuplicateUpdateIgnored: all
-TestHandleMatchedLabel_FinalNoRemoval: all
-TestHandleOutOfSequenceLabel_MissedEarlyLabels: all
-TestHandleOutOfSequenceLabel_SkipToFinalNoRemoval: all
-TestHandleOutOfSequenceLabel_SkipToFinalWithRemoval: all
-TestHandleOutOfSequenceLabel_UnexpectedLabel: all
-TestResultSentGuard_PreventsDuplicateSend: all
+  # helpers/label_watcher_test.go: unit tests of the test helpers.
+  - TestHandleLabelAbsent_PrematureRemoval
+  - TestHandleLabelAbsent_SuccessfulRemoval
+  - TestHandleLabelPresent_DuplicateUpdateIgnored
+  - TestHandleMatchedLabel_FinalNoRemoval
+  - TestHandleOutOfSequenceLabel_MissedEarlyLabels
+  - TestHandleOutOfSequenceLabel_SkipToFinalNoRemoval
+  - TestHandleOutOfSequenceLabel_SkipToFinalWithRemoval
+  - TestHandleOutOfSequenceLabel_UnexpectedLabel
+  - TestResultSentGuard_PreventsDuplicateSend
 
-# Tests that do not depend on the datastore: one job for each architecture.
+amd64-mongodb:
+  # Tests that do not depend on the datastore.
 
-# gpu_health_monitor_test.go
-TestDCGMBootstrapCompletedAnnotation: [amd64-mongodb]
-TestGPUHealthMonitorDCGMConnectionError: [amd64-mongodb-deployment-pc]
-TestGPUHealthMonitorMultipleErrors: [amd64-mongodb-no-tls]
-TestGPUHealthMonitorThermalMarginViolationLifecycle: [amd64-mongodb-percona]
-TestGpuHealthMonitorStoreOnlyEvents: [amd64-mongodb-deployment-pc]
-TestGpuNvlinkWatchSemicolonMessageParsing: [amd64-mongodb-deployment-pc]
+  # gpu_health_monitor_test.go
+  - TestDCGMBootstrapCompletedAnnotation
 
-# janitor_test.go
-TestJanitorDuplicateGPUResetNonOverlappingGPUs: [arm64-mongodb-percona]
-TestJanitorDuplicateGPUResetOverlappingGPUs: [arm64-mongodb-percona]
-TestJanitorDuplicateRebootDetection: [arm64-mongodb-no-tls]
-TestJanitorDuplicateTerminateNodeDetection: [arm64-mongodb-percona]
-TestJanitorNodeLocking: [arm64-postgresql]
-TestJanitorRebootWithTLSAuth: [arm64-postgresql]
-TestJanitorWebhookRejectsNonExistentNode: [arm64-mongodb]
+  # nic_health_monitor_counter_test.go
+  - TestNICCounterBootIDClearsBreachState
+  - TestNICCounterIBDegradation
 
-# kubernetes_object_monitor_test.go
-TestKubernetesObjectMonitor: [arm64-postgresql-deployment-pc]
-TestKubernetesObjectMonitorInitContainerFailures: [arm64-mongodb]
-TestKubernetesObjectMonitorMainContainerFailures: [arm64-mongodb]
-TestKubernetesObjectMonitorWithRuleOverride: [arm64-mongodb]
-TestKubernetesObjectMonitorWithStoreOnlyStrategy: [arm64-mongodb-percona]
+  # syslog_health_monitor_cancellation_test.go
+  - TestSyslogHealthMonitorCancellationRules
 
-# nic_health_monitor_counter_test.go
-TestNICCounterBelowThreshold: [amd64-mongodb-deployment-pc]
-TestNICCounterBootIDClearsBreachState: [amd64-mongodb]
-TestNICCounterEthernetDegradation: [amd64-mongodb-deployment-pc]
-TestNICCounterIBDegradation: [amd64-mongodb]
+  # syslog_health_monitor_test.go
+  - TestSyslogHealthMonitorNAPISoftLockupDetection
+  - TestSyslogHealthMonitorStoreOnlyStrategy
+  - TestSyslogHealthMonitorXIDDetection
 
-# nic_health_monitor_test.go
-TestNICHealthMonitorBootIDChange: [arm64-mongodb-percona]
-TestNICHealthMonitorConditionMessage: [arm64-mongodb-no-tls]
-TestNICHealthMonitorIBDeviceDisappearance: [arm64-postgresql-deployment-pc]
-TestNICHealthMonitorIBStateDetection: [arm64-mongodb-percona]
-TestNICHealthMonitorMultiPortFault: [arm64-mongodb]
-TestNICHealthMonitorMultipleDownRecoveryCycles: [arm64-mongodb]
-TestNICHealthMonitorPersistence: [arm64-mongodb-no-tls]
-TestNICHealthMonitorPhysStateDisabled: [arm64-mongodb]
-TestNICHealthMonitorRoCEStateDetection: [arm64-mongodb-percona]
-TestNICHealthMonitorVFSkip: [arm64-mongodb-no-tls]
+  # Pipeline tests.
 
-# nvcre_certification_monitor_test.go
-TestNVCRECertificationMonitor: [arm64-postgresql-deployment-pc]
+  # fault_quarantine_test.go
+  - TestPreCordonedNodeHandling
 
-# preflight_test.go
-TestPreflightEndToEnd: [amd64-mongodb-deployment-pc]
+  # scale_test.go
+  - TestScaleHealthEvents
 
-# syslog_health_monitor_cancellation_test.go
-TestSyslogHealthMonitorCancellationRules: [amd64-mongodb]
-TestSyslogHealthMonitorCancellationUncordonsNode: [amd64-mongodb-deployment-pc]
+amd64-mongodb-no-tls:
+  # Tests that do not depend on the datastore.
 
-# syslog_health_monitor_test.go
-TestSyslogHealthMonitorNAPISoftLockupDetection: [amd64-mongodb]
-TestSyslogHealthMonitorNICDriverDetection: [amd64-mongodb-percona]
-TestSyslogHealthMonitorSXIDDetection: [amd64-mongodb-percona]
-TestSyslogHealthMonitorStoreOnlyStrategy: [amd64-mongodb]
-TestSyslogHealthMonitorXIDDetection: [amd64-mongodb]
-TestSyslogHealthMonitorXIDWithoutMetadata: [amd64-mongodb-deployment-pc]
+  # gpu_health_monitor_test.go
+  - TestGPUHealthMonitorMultipleErrors
 
-# topology_test.go
-TestKataTopology: [amd64-mongodb-no-tls]
-TestTopologyLabels: [amd64-mongodb-percona]
+  # topology_test.go
+  - TestKataTopology
 
-# Pipeline tests: one MongoDB job and one PostgreSQL job for each architecture.
-# MongoDB-only tests have one MongoDB job for each architecture.
+  # Pipeline tests.
 
-# csp_health_monitor_test.go
-TestCSPHealthMonitorAWSMaintenanceEvent: [arm64-mongodb-no-tls, arm64-postgresql]
-TestCSPHealthMonitorGCPMaintenanceEvent: [arm64-mongodb-no-tls, arm64-postgresql]
-TestCSPHealthMonitorQuarantineThreshold: [arm64-mongodb-percona, arm64-postgresql-deployment-pc]
-TestCSPHealthMonitorStoreOnlyProcessingStrategy: [arm64-mongodb, arm64-postgresql-deployment-pc]
+  # fault_quarantine_test.go
+  - TestDontCordonIfEventDoesntMatchCELExpression
 
-# external_remediation_test.go
-TestExtRRAsymmetricFalse: [arm64-mongodb-no-tls, arm64-postgresql]
-TestExtRRLifecycleHappyPath: [arm64-mongodb-no-tls, arm64-postgresql]
-TestExtRROperatorDeleteEscape: [arm64-mongodb, arm64-postgresql-deployment-pc]
-TestExtRRWebhookRejectsInvalidSpec: [arm64-mongodb-no-tls, arm64-postgresql]
+  # health_events_analyzer_recovery_test.go
+  - TestHealthEventsAnalyzerAnnotationRecovery
 
-# fault_management_test.go
-TestDryRunMode: [arm64-mongodb-no-tls, arm64-postgresql-deployment-pc]
-TestManualUncordonPropagation: [arm64-mongodb-percona, arm64-postgresql-deployment-pc]
-TestManualUncordonWithFaultRemediation: [arm64-mongodb-no-tls, arm64-postgresql]
-TestNodeDeletedDuringDrain: [arm64-mongodb-no-tls, arm64-postgresql]
-TestNodeRecoveryDuringDrain: [arm64-mongodb-percona, arm64-postgresql-deployment-pc]
-TestPartialRecoveryClearsStaleRemediationFailed: [arm64-mongodb, arm64-postgresql-deployment-pc]
+  # health_events_analyzer_test.go
+  - TestHealthEventsAnalyzerProcessingStrategyRuleOverride
+  - TestHealthEventsAnalyzerStoreOnlyStrategy
+  - TestMultipleRemediationsCompleted
+  - TestMultipleRemediationsNotTriggered
+  - TestRepeatedNICRules_RepeatedNonFatalSignals_TriggersExpectedEscalations
+  - TestRepeatedXID31OnSameGPU
+  - TestRepeatedXIDOnSameGPU
+  - TestSoloNoBurstRule
+  - TestXID74Reg0ECCParityError
+  - TestXID74Reg0SoloNVLinkError
+  - TestXID74Reg2Bit16Or19SetRule
+  - TestXID74Reg4ECCError
+  - TestXIDErrorOnGPCAndTPC
 
-# fault_quarantine_test.go
-TestDontCordonIfEventDoesntMatchCELExpression: [amd64-mongodb-no-tls, amd64-postgresql]
-TestFaultQuarantineWithProcessingStrategy: [amd64-mongodb-percona, amd64-postgresql]
-TestPreCordonedNodeHandling: [amd64-mongodb, amd64-postgresql]
+  # platform_connector_node_condition_test.go
+  - TestPlatformConnectorClearsCompactedLongEntityCondition
 
-# fault_remediation_inprogress_test.go
-TestEventDuringInProgressCRIsRetriedAfterCompletion: [amd64-mongodb-deployment-pc, amd64-postgresql]
+amd64-mongodb-percona:
+  # Tests that do not depend on the datastore.
 
-# fault_remediation_test.go
-TestNewCRsAreCreatedAfterFaultsAreRemediated: [amd64-mongodb-percona, amd64-postgresql]
+  # gpu_health_monitor_test.go
+  - TestGPUHealthMonitorThermalMarginViolationLifecycle
 
-# gpu_reset_test.go
-TestGPUReset: [arm64-mongodb-percona, arm64-postgresql]
+  # syslog_health_monitor_test.go
+  - TestSyslogHealthMonitorNICDriverDetection
+  - TestSyslogHealthMonitorSXIDDetection
 
-# health_events_analyzer_recovery_test.go
-TestHealthEventsAnalyzerAnnotationRecovery: [amd64-mongodb-no-tls, arm64-mongodb]
+  # topology_test.go
+  - TestTopologyLabels
 
-# health_events_analyzer_test.go
-TestHealthEventsAnalyzerProcessingStrategyRuleOverride: [amd64-mongodb-no-tls]
-TestHealthEventsAnalyzerStoreOnlyStrategy: [amd64-mongodb-no-tls]
-TestMultipleRemediationsCompleted: [amd64-mongodb-no-tls]
-TestMultipleRemediationsNotTriggered: [amd64-mongodb-no-tls]
-TestRepeatedNICRules_RepeatedNonFatalSignals_TriggersExpectedEscalations: [amd64-mongodb-no-tls]
-TestRepeatedXID31OnSameGPU: [amd64-mongodb-no-tls]
-TestRepeatedXIDOnSameGPU: [amd64-mongodb-no-tls]
-TestSoloNoBurstRule: [amd64-mongodb-no-tls]
-TestXID74Reg0ECCParityError: [amd64-mongodb-no-tls]
-TestXID74Reg0SoloNVLinkError: [amd64-mongodb-no-tls]
-TestXID74Reg2Bit16Or19SetRule: [amd64-mongodb-no-tls]
-TestXID74Reg4ECCError: [amd64-mongodb-no-tls]
-TestXIDErrorOnGPCAndTPC: [amd64-mongodb-no-tls]
+  # Pipeline tests.
 
-# log_collector_test.go
-TestLogCollectorFailure: [arm64-mongodb-percona, arm64-postgresql]
+  # fault_quarantine_test.go
+  - TestFaultQuarantineWithProcessingStrategy
 
-# maintenance_request_test.go
-TestMaintenanceRequestLifecycle: [amd64-mongodb-deployment-pc, amd64-postgresql]
+  # fault_remediation_test.go
+  - TestNewCRsAreCreatedAfterFaultsAreRemediated
 
-# node_drainer_pod_policies_test.go
-TestNodeDrainerPodPolicies: [amd64-mongodb-deployment-pc, amd64-postgresql]
+  # node_drainer_test.go
+  - TestNodeDrainerEvictionModes
+  - TestNodeDrainerPartialDrain
 
-# node_drainer_test.go
-TestNodeDrainerEvictionModes: [amd64-mongodb-percona, amd64-postgresql]
-TestNodeDrainerPartialDrain: [amd64-mongodb-percona, amd64-postgresql]
+  # validation_request_test.go
+  - TestValidationController
 
-# platform_connector_dedup_test.go
-TestPlatformConnectorDeduplicatesRepeatedHealthEvents: [amd64-mongodb-deployment-pc, amd64-postgresql]
+amd64-postgresql:
+  # Pipeline tests.
 
-# platform_connector_node_condition_test.go
-TestPlatformConnectorClearsCompactedLongEntityCondition: [amd64-mongodb-no-tls, amd64-postgresql]
+  # fault_quarantine_test.go
+  - TestDontCordonIfEventDoesntMatchCELExpression
+  - TestFaultQuarantineWithProcessingStrategy
+  - TestPreCordonedNodeHandling
 
-# scale_test.go
-TestScaleHealthEvents: [amd64-mongodb, amd64-postgresql]
+  # fault_remediation_inprogress_test.go
+  - TestEventDuringInProgressCRIsRetriedAfterCompletion
 
-# validation_request_test.go
-TestValidationController: [amd64-mongodb-percona, amd64-postgresql]
+  # fault_remediation_test.go
+  - TestNewCRsAreCreatedAfterFaultsAreRemediated
+
+  # maintenance_request_test.go
+  - TestMaintenanceRequestLifecycle
+
+  # node_drainer_pod_policies_test.go
+  - TestNodeDrainerPodPolicies
+
+  # node_drainer_test.go
+  - TestNodeDrainerEvictionModes
+  - TestNodeDrainerPartialDrain
+
+  # platform_connector_dedup_test.go
+  - TestPlatformConnectorDeduplicatesRepeatedHealthEvents
+
+  # platform_connector_node_condition_test.go
+  - TestPlatformConnectorClearsCompactedLongEntityCondition
+
+  # scale_test.go
+  - TestScaleHealthEvents
+
+  # validation_request_test.go
+  - TestValidationController
+
+amd64-mongodb-deployment-pc:
+  # Tests that do not depend on the datastore.
+
+  # gpu_health_monitor_test.go
+  - TestGPUHealthMonitorDCGMConnectionError
+  - TestGpuHealthMonitorStoreOnlyEvents
+  - TestGpuNvlinkWatchSemicolonMessageParsing
+
+  # nic_health_monitor_counter_test.go
+  - TestNICCounterBelowThreshold
+  - TestNICCounterEthernetDegradation
+
+  # preflight_test.go
+  - TestPreflightEndToEnd
+
+  # syslog_health_monitor_cancellation_test.go
+  - TestSyslogHealthMonitorCancellationUncordonsNode
+
+  # syslog_health_monitor_test.go
+  - TestSyslogHealthMonitorXIDWithoutMetadata
+
+  # Pipeline tests.
+
+  # fault_remediation_inprogress_test.go
+  - TestEventDuringInProgressCRIsRetriedAfterCompletion
+
+  # maintenance_request_test.go
+  - TestMaintenanceRequestLifecycle
+
+  # node_drainer_pod_policies_test.go
+  - TestNodeDrainerPodPolicies
+
+  # platform_connector_dedup_test.go
+  - TestPlatformConnectorDeduplicatesRepeatedHealthEvents
+
+arm64-mongodb:
+  # Tests that do not depend on the datastore.
+
+  # janitor_test.go
+  - TestJanitorWebhookRejectsNonExistentNode
+
+  # kubernetes_object_monitor_test.go
+  - TestKubernetesObjectMonitorInitContainerFailures
+  - TestKubernetesObjectMonitorMainContainerFailures
+  - TestKubernetesObjectMonitorWithRuleOverride
+
+  # nic_health_monitor_test.go
+  - TestNICHealthMonitorMultiPortFault
+  - TestNICHealthMonitorMultipleDownRecoveryCycles
+  - TestNICHealthMonitorPhysStateDisabled
+
+  # Pipeline tests.
+
+  # csp_health_monitor_test.go
+  - TestCSPHealthMonitorStoreOnlyProcessingStrategy
+
+  # external_remediation_test.go
+  - TestExtRROperatorDeleteEscape
+
+  # fault_management_test.go
+  - TestPartialRecoveryClearsStaleRemediationFailed
+
+  # health_events_analyzer_recovery_test.go
+  - TestHealthEventsAnalyzerAnnotationRecovery
+
+arm64-mongodb-no-tls:
+  # Tests that do not depend on the datastore.
+
+  # janitor_test.go
+  - TestJanitorDuplicateRebootDetection
+
+  # nic_health_monitor_test.go
+  - TestNICHealthMonitorConditionMessage
+  - TestNICHealthMonitorPersistence
+  - TestNICHealthMonitorVFSkip
+
+  # Pipeline tests.
+
+  # csp_health_monitor_test.go
+  - TestCSPHealthMonitorAWSMaintenanceEvent
+  - TestCSPHealthMonitorGCPMaintenanceEvent
+
+  # external_remediation_test.go
+  - TestExtRRAsymmetricFalse
+  - TestExtRRLifecycleHappyPath
+  - TestExtRRWebhookRejectsInvalidSpec
+
+  # fault_management_test.go
+  - TestDryRunMode
+  - TestManualUncordonWithFaultRemediation
+  - TestNodeDeletedDuringDrain
+
+arm64-mongodb-percona:
+  # Tests that do not depend on the datastore.
+
+  # janitor_test.go
+  - TestJanitorDuplicateGPUResetNonOverlappingGPUs
+  - TestJanitorDuplicateGPUResetOverlappingGPUs
+  - TestJanitorDuplicateTerminateNodeDetection
+
+  # kubernetes_object_monitor_test.go
+  - TestKubernetesObjectMonitorWithStoreOnlyStrategy
+
+  # nic_health_monitor_test.go
+  - TestNICHealthMonitorBootIDChange
+  - TestNICHealthMonitorIBStateDetection
+  - TestNICHealthMonitorRoCEStateDetection
+
+  # Pipeline tests.
+
+  # csp_health_monitor_test.go
+  - TestCSPHealthMonitorQuarantineThreshold
+
+  # fault_management_test.go
+  - TestManualUncordonPropagation
+  - TestNodeRecoveryDuringDrain
+
+  # gpu_reset_test.go
+  - TestGPUReset
+
+  # log_collector_test.go
+  - TestLogCollectorFailure
+
+arm64-postgresql:
+  # Tests that do not depend on the datastore.
+
+  # janitor_test.go
+  - TestJanitorNodeLocking
+  - TestJanitorRebootWithTLSAuth
+
+  # Pipeline tests.
+
+  # csp_health_monitor_test.go
+  - TestCSPHealthMonitorAWSMaintenanceEvent
+  - TestCSPHealthMonitorGCPMaintenanceEvent
+
+  # external_remediation_test.go
+  - TestExtRRAsymmetricFalse
+  - TestExtRRLifecycleHappyPath
+  - TestExtRRWebhookRejectsInvalidSpec
+
+  # fault_management_test.go
+  - TestManualUncordonWithFaultRemediation
+  - TestNodeDeletedDuringDrain
+
+  # gpu_reset_test.go
+  - TestGPUReset
+
+  # log_collector_test.go
+  - TestLogCollectorFailure
+
+arm64-postgresql-deployment-pc:
+  # Tests that do not depend on the datastore.
+
+  # kubernetes_object_monitor_test.go
+  - TestKubernetesObjectMonitor
+
+  # nic_health_monitor_test.go
+  - TestNICHealthMonitorIBDeviceDisappearance
+
+  # nvcre_certification_monitor_test.go
+  - TestNVCRECertificationMonitor
+
+  # Pipeline tests.
+
+  # csp_health_monitor_test.go
+  - TestCSPHealthMonitorQuarantineThreshold
+  - TestCSPHealthMonitorStoreOnlyProcessingStrategy
+
+  # external_remediation_test.go
+  - TestExtRROperatorDeleteEscape
+
+  # fault_management_test.go
+  - TestDryRunMode
+  - TestManualUncordonPropagation
+  - TestNodeRecoveryDuringDrain
+  - TestPartialRecoveryClearsStaleRemediationFailed
