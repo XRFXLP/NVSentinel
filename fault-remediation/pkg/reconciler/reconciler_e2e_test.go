@@ -32,6 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -455,7 +456,12 @@ func createTestNode(ctx context.Context, name string, annotations map[string]str
 	// deleted. Wait until the cache has the node.
 	err = wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true,
 		func(ctx context.Context) (bool, error) {
-			return ctrlRuntimeClient.Get(ctx, client.ObjectKey{Name: name}, &corev1.Node{}) == nil, nil
+			err := ctrlRuntimeClient.Get(ctx, client.ObjectKey{Name: name}, &corev1.Node{})
+			if apierrors.IsNotFound(err) {
+				return false, nil
+			}
+
+			return err == nil, err
 		})
 	if err != nil {
 		log.Fatalf("Test node %s did not reach the informer cache: %v", name, err)
