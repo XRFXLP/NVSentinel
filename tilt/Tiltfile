@@ -56,7 +56,8 @@ if use_pc_deployment:
 # and the next attempt fails. Each Helm release depends on this resource, which removes such releases.
 local_resource(
     'remove-pending-helm-releases',
-    cmd='./remove-pending-helm-releases.sh',
+    cmd='./remove-pending-helm-releases.sh cert-manager/cert-manager monitoring/prometheus-operator ' +
+        'kai-scheduler/kai-scheduler kube-system/kwok',
     allow_parallel=True,
 )
 
@@ -105,7 +106,8 @@ local_resource(
     'kai-scheduler',
     cmd='''
         set -e
-        if ! helm status kai-scheduler -n kai-scheduler >/dev/null 2>&1; then
+        release=$(helm list -n kai-scheduler --short --filter '^kai-scheduler$')
+        if [ -z "$release" ]; then
             kubectl delete validatingwebhookconfiguration kai-podgroup-validation-v2alpha2 kai-queue-validation-v2 validating-kai-admission --ignore-not-found
             kubectl delete mutatingwebhookconfiguration mutating-kai-admission --ignore-not-found
         fi

@@ -13,17 +13,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Removes each Helm release that is in a pending state.
+# Usage: remove-pending-helm-releases.sh <namespace>/<release>...
+#
+# Removes each given Helm release that is in a pending state.
 #
 # When tilt ci stops an attempt while Helm installs or upgrades a release, the release stays in a
 # pending state. Each later helm upgrade of that release then fails with "another operation
 # (install/upgrade/rollback) is in progress", so the next attempt fails too.
 set -euo pipefail
 
-releases=$(helm list --all-namespaces --pending --no-headers)
+for arg in "$@"; do
+    namespace=${arg%%/*}
+    release=${arg#*/}
 
-while read -r name namespace _; do
-    [ -n "$name" ] || continue
-    echo "Removing Helm release $name in namespace $namespace, which is in a pending state"
-    helm uninstall "$name" -n "$namespace" --wait
-done <<< "$releases"
+    pending=$(helm list -n "$namespace" --pending --short --filter "^${release}\$")
+    if [ -n "$pending" ]; then
+        echo "Removing Helm release $release in namespace $namespace, which is in a pending state"
+        helm uninstall "$release" -n "$namespace" --wait
+    fi
+done
