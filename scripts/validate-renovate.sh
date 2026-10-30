@@ -17,8 +17,10 @@
 # Checks the Renovate setup for .versions.yaml:
 #   1. Every pin has a "# renovate:" annotation on the line above it, whose depType is the
 #      pin's section, unless the pin is in UNTRACKED. Renovate skips a pin without one silently.
-#   2. Every annotated section has a packageRules entry with a groupName in .github/renovate.json5.
-#   3. renovate-config-validator accepts .github/renovate.json5 as repository config, using the
+#   2. Every annotated section, and every depTypeTemplate of a custom manager, has a packageRules
+#      entry with a groupName in .github/renovate.json5.
+#   3. A custom manager reads each pin outside .versions.yaml, in PINNED_FILES.
+#   4. renovate-config-validator accepts .github/renovate.json5 as repository config, using the
 #      pinned Renovate image. Given no path, the validator finds the file and does not treat it
 #      as global config.
 
@@ -76,7 +78,10 @@ fi
 
 RENOVATE_IMAGE="ghcr.io/renovatebot/renovate:$(yq '.container_tools.renovate' "${VERSIONS_FILE}")"
 
-echo "Checking that every annotated section has a group rule..."
+echo "Checking the group rules and the pinned files..."
+
+# Files outside .versions.yaml that pin a tool version. The tool reads its version from the file.
+PINNED_FILES="fern/fern.config.json"
 
 # Parse the config with the json5 package that ships in the Renovate image, so comments and
 # rules without a groupName cannot pass. The check fails if the image no longer has json5.
@@ -89,17 +94,32 @@ if ! docker run --rm \
   -e '
     const fs = require("fs");
     const JSON5 = require(require.resolve("json5", { paths: ["/usr/local/renovate"] }));
-    const rules = JSON5.parse(fs.readFileSync(".github/renovate.json5", "utf8")).packageRules || [];
+    const config = JSON5.parse(fs.readFileSync(".github/renovate.json5", "utf8"));
+    const rules = config.packageRules || [];
+    const managers = config.customManagers || [];
+    const [pinnedFiles, ...versionsDepTypes] = process.argv.slice(1);
+    const depTypes = new Set(versionsDepTypes);
+    for (const m of managers) {
+      if (m.depTypeTemplate) depTypes.add(m.depTypeTemplate);
+    }
     let failed = false;
-    for (const depType of process.argv.slice(1)) {
+    for (const depType of depTypes) {
       const grouped = rules.some((r) => (r.matchDepTypes || []).includes(depType) && r.groupName);
       if (!grouped) {
         console.error(".github/renovate.json5: no packageRules entry with a groupName for depType " + depType);
         failed = true;
       }
     }
+    // A pattern is "/regex/" or a glob. The pinned files use only the regex form.
+    const matches = (p, file) => p.startsWith("/") && p.endsWith("/") && new RegExp(p.slice(1, -1)).test(file);
+    for (const file of pinnedFiles.split(" ").filter(Boolean)) {
+      if (!managers.some((m) => (m.managerFilePatterns || []).some((p) => matches(p, file)))) {
+        console.error(".github/renovate.json5: no custom manager reads " + file);
+        failed = true;
+      }
+    }
     process.exit(failed ? 1 : 0);
-  ' "${dep_types[@]}"; then
+  ' "${PINNED_FILES}" "${dep_types[@]}"; then
   errors=1
 fi
 
