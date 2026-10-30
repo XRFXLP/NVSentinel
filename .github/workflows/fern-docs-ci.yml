@@ -72,7 +72,7 @@ jobs:
         # fern check reads the pages of each version in fern/docs.yml from these directories.
         run: |
           set -eo pipefail
-          git fetch --quiet --tags https://github.com/NVIDIA/NVSentinel.git
+          git fetch --force --no-tags https://github.com/NVIDIA/NVSentinel.git 'refs/tags/v1.2*:refs/tags/v1.2*'
           for version_file in fern/versions/v*.yml; do
             [ -f "$version_file" ] || continue
             version=$(basename "$version_file" .yml)
