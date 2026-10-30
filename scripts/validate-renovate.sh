@@ -19,7 +19,8 @@
 #      pin's section, unless the pin is in UNTRACKED. Renovate skips a pin without one silently.
 #   2. Every annotated section, and every depTypeTemplate of a custom manager, has a packageRules
 #      entry with a groupName in .github/renovate.json5.
-#   3. A custom manager reads each pin outside .versions.yaml, in PINNED_FILES.
+#   3. A custom manager reads each pin outside .versions.yaml, in PINNED_FILES, and its
+#      matchStrings find the version in the file.
 #   4. renovate-config-validator accepts .github/renovate.json5 as repository config, using the
 #      pinned Renovate image. Given no path, the validator finds the file and does not treat it
 #      as global config.
@@ -88,7 +89,7 @@ PINNED_FILES="fern/fern.config.json"
 mapfile -t dep_types < <(grep -oE 'depType=[A-Za-z0-9_-]+' "${VERSIONS_FILE}" | cut -d= -f2 | sort -u)
 
 if ! docker run --rm \
-  -v "${REPO_ROOT}/.github:/usr/src/app/.github:ro" \
+  -v "${REPO_ROOT}:/usr/src/app:ro" \
   --entrypoint node \
   "${RENOVATE_IMAGE}" \
   -e '
@@ -112,9 +113,15 @@ if ! docker run --rm \
     }
     // A pattern is "/regex/" or a glob. The pinned files use only the regex form.
     const matches = (p, file) => p.startsWith("/") && p.endsWith("/") && new RegExp(p.slice(1, -1)).test(file);
+    // Renovate takes the version from the currentValue group of a match string.
+    const extracts = (m, text) => (m.matchStrings || []).some((s) => new RegExp(s).exec(text)?.groups?.currentValue);
     for (const file of pinnedFiles.split(" ").filter(Boolean)) {
-      if (!managers.some((m) => (m.managerFilePatterns || []).some((p) => matches(p, file)))) {
+      const readers = managers.filter((m) => (m.managerFilePatterns || []).some((p) => matches(p, file)));
+      if (readers.length === 0) {
         console.error(".github/renovate.json5: no custom manager reads " + file);
+        failed = true;
+      } else if (!readers.some((m) => extracts(m, fs.readFileSync(file, "utf8")))) {
+        console.error(".github/renovate.json5: no matchStrings of the custom managers for " + file + " finds a version in it");
         failed = true;
       }
     }
