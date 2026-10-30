@@ -23,6 +23,9 @@
 name: Renovate
 
 on:
+  # SPIKE ONLY: dispatch needs the workflow on the default branch.
+  push:
+    branches: [renovate-spike-fern]
   schedule:
     # Thursdays 05:00 UTC. Releases go out on Mondays, so this leaves two working
     # days to merge the PRs or fix their conflicts before the release.
@@ -50,14 +53,15 @@ permissions:
   contents: read
 
 env:
-  RENOVATE_BRANCH_PREFIX: renovate/
+  # SPIKE ONLY: fresh prefix and title suffix so earlier spike PRs do not interfere.
+  RENOVATE_BRANCH_PREFIX: renovate-run5/
+  RENOVATE_COMMIT_MESSAGE_SUFFIX: (spike fern)
 
 jobs:
   renovate:
     name: Renovate
-    if: github.repository == 'nvidia/nvsentinel'
-    # Renovate runs in a container, so the runner needs Docker.
-    runs-on: linux-amd64-cpu32
+    # SPIKE ONLY: run on the fork, on a GitHub-hosted runner.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: write
@@ -94,6 +98,8 @@ jobs:
       - name: Run Renovate
         uses: renovatebot/github-action@a63d9a7bc606f7336fd20b47f2f32259a35e6213  # v46.3.9
         with:
+          # SPIKE ONLY: the fork's main has no repo config, so pass it as global config.
+          configurationFile: .github/renovate.json5
           renovate-version: ${{ steps.versions.outputs.renovate }}
         env:
           RENOVATE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -101,12 +107,16 @@ jobs:
           RENOVATE_ONBOARDING: "false"
           RENOVATE_GIT_AUTHOR: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
           # Scheduled runs have no inputs.
-          LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
+          LOG_LEVEL: debug  # SPIKE ONLY
+          # SPIKE ONLY: use this branch as the base, and update only the Fern pin.
+          RENOVATE_BASE_BRANCH_PATTERNS: '["renovate-spike-fern"]'
+          RENOVATE_REQUIRE_CONFIG: optional
+          RENOVATE_INCLUDE_PATHS: '["fern/**"]'
 
   plan:
     name: Find PRs that need regenerated code
     needs: renovate
-    if: ${{ !inputs.dryRun }}
+    if: false  # SPIKE ONLY: no regenerate jobs
     runs-on: linux-amd64-cpu8
     timeout-minutes: 10
     permissions:
