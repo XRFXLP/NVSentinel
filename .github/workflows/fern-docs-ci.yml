@@ -9,7 +9,7 @@ name: Fern Docs (CI)
 on:
   push:
     branches:
-      - "pull-request/[0-9]+"
+      - "fern-ci-spike"
   workflow_dispatch:
 
 permissions:
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   changed-files:
-    runs-on: linux-amd64-cpu32
+    runs-on: ubuntu-24.04
     outputs:
       docs: ${{ steps.changes.outputs.docs }}
     steps:
@@ -42,8 +42,7 @@ jobs:
   fern-check:
     name: Fern Configuration Check
     needs: changed-files
-    if: needs.changed-files.outputs.docs == 'true'
-    runs-on: linux-amd64-cpu32
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -73,6 +72,7 @@ jobs:
         # fern check reads the pages of each version in fern/docs.yml from these directories.
         run: |
           set -eo pipefail
+          git fetch --quiet --tags https://github.com/NVIDIA/NVSentinel.git
           for version_file in fern/versions/v*.yml; do
             [ -f "$version_file" ] || continue
             version=$(basename "$version_file" .yml)
