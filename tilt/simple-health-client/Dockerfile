@@ -15,7 +15,7 @@
 # syntax=docker/dockerfile:1.6
 
 
-FROM public.ecr.aws/docker/library/golang:1.27.3-trixie@sha256:fbb7ae40b62ff8afe31662df570d39b4f5052ac32b90dae8e60d7657a20a74f4 AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.3-trixie@sha256:d9fa6e7ba43678ee1e5d1617007db9a134612032a74e2d86b44a9f582f1564cc AS builder
 
 # TODO: remove when pushing to GitHub
 ENV CGO_ENABLED=0
