@@ -38,7 +38,7 @@ COPY metadata-collector/ .
 # package main, so adding one breaks the image while `go build ./...` and the tests still pass.
 RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o metadata-collector .
 
-FROM nvcr.io/nvidia/cuda:13.4.3-base-ubuntu22.04@sha256:7416c5229cb6c5b2e7cd7a5930ec97db03f3e064d56b8abacf525f6b4da0b271
+FROM nvcr.io/nvidia/cuda:13.5.0-base-ubuntu22.04@sha256:4df174aaa911425cc8ab5beb6f897dfeafa92f03884c25176db134743f6e3736
 
 RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
 
