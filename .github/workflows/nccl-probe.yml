@@ -1,0 +1,37 @@
+name: NCCL image probe
+on:
+  push:
+    branches:
+      - test/2332-sbom
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      IMAGE: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:main-ca52644
+    steps:
+      - name: Install Grype
+        id: grype
+        uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
+      - name: Runner
+        run: nproc; free -m; df -h / /mnt; command -v skopeo || (sudo apt-get update -q && sudo apt-get install -y -q skopeo)
+      - name: Pull the image (linux/amd64) to an OCI directory
+        run: |
+          start=$(date +%s)
+          skopeo --override-os linux --override-arch amd64 copy -q "docker://${IMAGE}" "oci:/mnt/nccl:latest"
+          echo "pull took $(( $(date +%s) - start ))s"; du -sh /mnt/nccl; df -h / /mnt
+      - name: Scan the OCI directory with Grype, limited to 13 GiB of memory
+        env:
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+        run: |
+          ( while sleep 15; do echo "[$(date +%T)] used=$(free -m | awk '/Mem/{print $3}')MB grype_rss=$(ps -C grype -o rss= | awk '{s+=$1} END{print int(s/1024)}')MB tmp=$(du -sh /tmp 2>/dev/null | cut -f1)"; done ) &
+          start=$(date +%s)
+          set +e
+          sudo systemd-run --quiet --scope -p MemoryMax=13G -p MemorySwapMax=0 --uid="$(id -u)" --gid="$(id -g)" --setenv=HOME="$HOME" \
+            "${GRYPE}" -v "oci-dir:/mnt/nccl" --only-fixed -o json --file /mnt/result.json
+          rc=$?
+          echo "grype exit=${rc} after $(( $(date +%s) - start ))s"
+          [ -f /mnt/result.json ] && jq '.matches | length' /mnt/result.json
+          df -h / /mnt
