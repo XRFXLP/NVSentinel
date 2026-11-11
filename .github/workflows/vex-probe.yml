@@ -1,0 +1,40 @@
+name: VEX probe
+on:
+  push:
+    branches:
+      - test/2332-sbom
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE: registry:ghcr.io/nvidia/nvsentinel/gpu-reset:main-ca52644
+    steps:
+      - name: Install Grype
+        id: grype
+        uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
+      - name: Write the VEX documents
+        run: |
+          base='{"@context":"https://openvex.dev/ns/v0.2.0","@id":"https://github.com/NVIDIA/NVSentinel/.openvex.json","author":"NVIDIA NVSentinel maintainers","timestamp":"2026-11-11T00:00:00Z","version":1}'
+          jq -n --argjson b "$base" '$b + {statements: []}' > empty.json
+          jq -n --argjson b "$base" '$b + {statements: [{vulnerability: {name: "CVE-2026-109518"}, products: [{"@id": "pkg:oci/gpu-reset"}], status: "not_affected", justification: "vulnerable_code_not_in_execute_path", impact_statement: "probe"}]}' > image.json
+          cat image.json
+      - name: Scan without VEX, and print the image and package PURLs
+        env:
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+        run: |
+          "${GRYPE}" "${IMAGE}" --only-fixed -o json --file none.json
+          jq -r '.source.target.userInput, (.matches[] | "\(.vulnerability.id) \(.artifact.purl)")' none.json
+          jq -r '.matches[] | select(.artifact.name == "apt") | .artifact.purl' none.json | head -1 > apt-purl
+      - name: Scan with each VEX document
+        env:
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+        run: |
+          base=$(jq 'del(.statements)' empty.json)
+          jq --arg purl "$(cat apt-purl)" '.statements[0].products[0].subcomponents = [{"@id": $purl}]' image.json > subcomponent.json
+          for doc in empty image subcomponent; do
+            "${GRYPE}" "${IMAGE}" --only-fixed --vex "${doc}.json" -o json --file "${doc}-out.json"
+            echo "${doc}: $(jq '.matches | length' "${doc}-out.json") findings, $(jq '.ignoredMatches // [] | length' "${doc}-out.json") ignored: $(jq -c '[.matches[] | .artifact.name]' "${doc}-out.json")"
+          done
