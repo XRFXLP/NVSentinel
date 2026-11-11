@@ -20,13 +20,15 @@ on:
   schedule:
     - cron: '0 6 * * 1'  # Mondays at 06:00 UTC
   workflow_dispatch: {}
+  push:
+    branches:
+      - test/2332-sbom
 
 permissions:
   contents: read
 
 jobs:
   find-images:
-    if: github.repository == 'nvidia/nvsentinel'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -46,7 +48,7 @@ jobs:
         id: images
         env:
           GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
+          REPOSITORY: NVIDIA/NVSentinel
         run: |
           set -euo pipefail
           sha=$(gh run list -R "${REPOSITORY}" --workflow publish.yml --branch main --status success \
@@ -55,7 +57,7 @@ jobs:
             echo "::error::No successful run of publish.yml on main"
             exit 1
           fi
-          images=$(./scripts/retry.sh scripts/published-images.sh "main-${sha:0:7}")
+          images=$(./scripts/retry.sh scripts/published-images.sh "main-${sha:0:7}" | jq -c '[.[] | select(.large or (.name | IN("fault-quarantine", "gpu-reset")))]')
           echo "images=${images}" >> "${GITHUB_OUTPUT}"
           jq -r '.[] | "\(.ref) \(.size_mb) MB"' <<< "${images}"
 
