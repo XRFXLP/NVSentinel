@@ -16,12 +16,12 @@ jobs:
         id: grype
         uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
       - name: Runner
-        run: nproc; free -m; df -h / /mnt; command -v skopeo || (sudo apt-get update -q && sudo apt-get install -y -q skopeo)
+        run: nproc; free -m; df -h /; command -v skopeo || (sudo apt-get update -q && sudo apt-get install -y -q skopeo)
       - name: Pull the image (linux/amd64) to an OCI directory
         run: |
           start=$(date +%s)
-          skopeo --override-os linux --override-arch amd64 copy -q "docker://${IMAGE}" "oci:/mnt/nccl:latest"
-          echo "pull took $(( $(date +%s) - start ))s"; du -sh /mnt/nccl; df -h / /mnt
+          skopeo --override-os linux --override-arch amd64 copy -q "docker://${IMAGE}" "oci:${RUNNER_TEMP}/nccl:latest"
+          echo "pull took $(( $(date +%s) - start ))s"; du -sh ${RUNNER_TEMP}/nccl; df -h /
       - name: Scan the OCI directory with Grype, limited to 13 GiB of memory
         env:
           GRYPE: ${{ steps.grype.outputs.cmd }}
@@ -30,8 +30,8 @@ jobs:
           start=$(date +%s)
           set +e
           sudo systemd-run --quiet --scope -p MemoryMax=13G -p MemorySwapMax=0 --uid="$(id -u)" --gid="$(id -g)" --setenv=HOME="$HOME" \
-            "${GRYPE}" -v "oci-dir:/mnt/nccl" --only-fixed -o json --file /mnt/result.json
+            "${GRYPE}" -v "oci-dir:${RUNNER_TEMP}/nccl" --only-fixed -o json --file ${RUNNER_TEMP}/result.json
           rc=$?
           echo "grype exit=${rc} after $(( $(date +%s) - start ))s"
-          [ -f /mnt/result.json ] && jq '.matches | length' /mnt/result.json
-          df -h / /mnt
+          [ -f ${RUNNER_TEMP}/result.json ] && jq '.matches | length' ${RUNNER_TEMP}/result.json
+          df -h /
