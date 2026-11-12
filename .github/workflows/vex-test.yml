@@ -24,12 +24,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e  # v0.4
+      - uses: imjasonh/setup-crane@v0.4
       - id: grype
         uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
-      - uses: aquasecurity/setup-trivy@9ea583eb67910444b1f64abf338bd2e105a0a93d  # v0.2.3
+      - uses: aquasecurity/setup-trivy@v0.2.3
         with:
-          version: v0.67.2
+          version: latest
 
       - name: Copy the image and write a test statement for apt
         id: copy
