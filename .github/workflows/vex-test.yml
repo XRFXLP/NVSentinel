@@ -24,10 +24,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: imjasonh/setup-crane@v0.4
+      - uses: imjasonh/setup-crane@v0.7
       - id: grype
         uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
-      - uses: aquasecurity/setup-trivy@v0.2.3
+      - uses: aquasecurity/setup-trivy@v0.3.1
         with:
           version: latest
 
