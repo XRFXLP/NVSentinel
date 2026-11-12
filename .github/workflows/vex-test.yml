@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 30
     env:
       SOURCE: ghcr.io/nvidia/nvsentinel/log-collector:main-12e6a0c
-      IMAGE: ghcr.io/xrfxlp/nvsentinel-vex-test/log-collector
+      IMAGE: ghcr.io/xrfxlp/nvsentinel/log-collector
       CVE: CVE-2026-109518
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
