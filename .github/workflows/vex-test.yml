@@ -1,0 +1,86 @@
+# Temporary test of the OpenVEX attestation, in the fork only.
+name: VEX Attestation Test
+
+on:
+  push:
+    branches: [test/2333-vex]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE: ghcr.io/nvidia/nvsentinel/log-collector:main-12e6a0c
+      IMAGE: ghcr.io/xrfxlp/nvsentinel-vex-test/log-collector
+      CVE: CVE-2026-109518
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e  # v0.4
+      - id: grype
+        uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
+      - uses: aquasecurity/setup-trivy@9ea583eb67910444b1f64abf338bd2e105a0a93d  # v0.2.3
+        with:
+          version: v0.67.2
+
+      - name: Copy the image and write a test statement for apt
+        id: copy
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+          crane copy "${SOURCE}" "${IMAGE}:test"
+          digest=$(crane digest "${IMAGE}:test")
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          crane manifest "${IMAGE}@${digest}" | jq -r '.mediaType, (.manifests[]? | "\(.platform.architecture) \(.digest)")'
+          "${{ steps.grype.outputs.cmd }}" "registry:${IMAGE}@${digest}" --only-fixed -o json > before.json
+          jq -r --arg cve "${CVE}" '.matches[] | select(.vulnerability.id == $cve) | .artifact.purl' before.json | sort -u | tee purls.txt
+          apt=$(grep '^pkg:deb/[^/]*/apt@' purls.txt)
+          jq --arg cve "${CVE}" --arg apt "${apt}" '.statements = [{
+              vulnerability: {name: $cve}, timestamp: "2026-11-12T00:00:00Z",
+              products: [{"@id": "pkg:oci/log-collector", subcomponents: [{"@id": $apt}]}],
+              status: "not_affected", justification: "vulnerable_code_not_in_execute_path",
+              impact_statement: "Test statement."}]' .openvex.json > vex.tmp && mv vex.tmp .openvex.json
+          cat .openvex.json
+
+      - name: Generate SBOM and Attest
+        uses: ./.github/actions/sbom-and-attest
+        with:
+          image_name: ${{ env.IMAGE }}
+          image_digest: ${{ steps.copy.outputs.digest }}
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify and use the attestation
+        env:
+          DIGEST: ${{ steps.copy.outputs.digest }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "== verify-attestation"
+          cosign verify-attestation --type openvex \
+            --certificate-identity-regexp '^https://github\.com/XRFXLP/NVSentinel/\.github/workflows/vex-test\.yml@refs/heads/' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE}@${DIGEST}" | jq -r .payload | base64 -d | jq .predicate > attested.json
+          diff <(jq -S . .openvex.json) <(jq -S . attested.json) && echo "attested document matches .openvex.json"
+          echo "== grype without VEX"
+          "${{ steps.grype.outputs.cmd }}" "registry:${IMAGE}@${DIGEST}" --only-fixed -o json \
+            | jq -r --arg cve "${CVE}" '.matches[] | select(.vulnerability.id == $cve) | .artifact.purl' | sort -u
+          echo "== grype with the attested document"
+          "${{ steps.grype.outputs.cmd }}" "registry:${IMAGE}@${DIGEST}" --only-fixed --vex attested.json -o json \
+            | jq -r --arg cve "${CVE}" '.matches[] | select(.vulnerability.id == $cve) | .artifact.purl' | sort -u
+          for ref in "${IMAGE}:test" "${IMAGE}@${DIGEST}"; do
+            for vex in none attested.json oci; do
+              echo "== trivy ${ref} --vex ${vex}"
+              args=(); [ "${vex}" != none ] && args=(--vex "${vex}")
+              trivy image -q --platform linux/amd64 --scanners vuln -f json "${args[@]}" "${ref}" \
+                | jq -r --arg cve "${CVE}" '.Results[]?.Vulnerabilities[]? | select(.VulnerabilityID == $cve) | .PkgName' | sort -u
+            done
+          done
