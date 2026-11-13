@@ -109,7 +109,7 @@ jobs:
 
       - name: Setup Helm
         if: matrix.component == 'helm-charts'
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e  # v5.1.0
         with:
           version: ${{ steps.helm-version.outputs.helm_version }}
 
@@ -370,7 +370,7 @@ jobs:
         run: go install github.com/fgrosse/go-coverage-report/cmd/go-coverage-report@v1.5.0
 
       - name: Get changed files
-        uses: tj-actions/changed-files@aa08304bd477b800d468db44fe10f6c61f7f7b11  # v42.1.0
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         id: changed-files
         with:
           write_output_files: true
