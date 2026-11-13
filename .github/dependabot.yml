@@ -137,4 +137,3 @@ updates:
       docker-dependencies:
         patterns: ["*"]
 
-# Fork-only test trigger; reverted in the next commit.
