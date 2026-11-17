@@ -8,7 +8,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.15.0
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute v1.0.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.18
-	github.com/aws/aws-sdk-go-v2/service/ec2 v1.345.0
+	github.com/aws/aws-sdk-go-v2/service/ec2 v1.347.0
 	github.com/go-logr/logr v1.4.4
 	github.com/nebius/gosdk v0.2.93
 	github.com/nvidia/nvsentinel/api v0.0.0-00010101000000-000000000000
@@ -19,7 +19,7 @@ require (
 	go.opentelemetry.io/otel v1.47.0
 	golang.org/x/oauth2 v0.38.0
 	golang.org/x/sync v0.25.0
-	google.golang.org/api v0.313.0
+	google.golang.org/api v0.315.0
 	google.golang.org/grpc v1.85.0
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
