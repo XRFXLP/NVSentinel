@@ -111,3 +111,4 @@ replace (
 	github.com/nvidia/nvsentinel/data-models => ../data-models
 	github.com/nvidia/nvsentinel/store-client => ../store-client
 )
+// fork test of dependabot-gomod-push.yml
