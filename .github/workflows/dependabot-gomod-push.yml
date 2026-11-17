@@ -36,12 +36,12 @@ jobs:
   push:
     name: Push Go module fixup
     if: >
-      github.repository == 'nvidia/nvsentinel' &&
+      github.repository == 'xrfxlp/nvsentinel' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       startsWith(github.event.workflow_run.head_branch, 'dependabot/go_modules/')
-    runs-on: linux-amd64-cpu4
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: read
