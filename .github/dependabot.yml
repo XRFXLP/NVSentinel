@@ -21,7 +21,7 @@ updates:
       - "/janitor"
     target-branch: "test/gomod-fixup"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     labels: ["dependencies"]
     groups:
       kubernetes:
