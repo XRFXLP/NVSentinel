@@ -92,6 +92,14 @@ jobs:
 
           make gomod-lint
 
+      # Fork test only: make sure there is a patch, so that the push job has something to push.
+      - name: Force a change for the fork test
+        if: steps.dependency-only.outputs.skip != 'true'
+        run: |
+          if [ -z "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "// fork test of dependabot-gomod-push.yml" >> commons/go.mod
+          fi
+
       - name: Write the patch
         if: steps.dependency-only.outputs.skip != 'true'
         id: patch

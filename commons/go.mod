@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	cel.dev/cel-go v0.33.2
 	github.com/BurntSushi/toml v1.6.0
-	github.com/google/uuid v1.6.0
+	github.com/google/uuid v1.5.0
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/nvidia/nvsentinel/data-models v0.0.0
