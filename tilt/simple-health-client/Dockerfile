@@ -15,7 +15,7 @@
 # syntax=docker/dockerfile:1.6
 
 
-FROM public.ecr.aws/docker/library/golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9 AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.4-trixie@sha256:0f82c58710c405cc012da2fbd2b04bde9ced20392a89f66062822d711d7d6b4b AS builder
 
 # TODO: remove when pushing to GitHub
 ENV CGO_ENABLED=0
@@ -49,7 +49,7 @@ COPY commons/ ../../commons/
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o simple-health-client main.go
 
-FROM nvcr.io/nvidia/distroless/go:v4.2.1@sha256:f68eec2eff2ecd70354573605ed5ab3bc6c727ae26978260e2486c34cc5adeec
+FROM nvcr.io/nvidia/distroless/go:v4.2.3@sha256:537925be7885b4681ac627aaa7adfa9fe722e694be98b6e6abd94984b9c0c49e
 
 WORKDIR /app
 
